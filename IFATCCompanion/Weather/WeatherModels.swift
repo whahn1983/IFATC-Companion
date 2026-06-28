@@ -113,4 +113,6 @@ struct RideReportItem: Identifiable {
     var bearing: Double?
     var nearFix: String?
     var sourceRaw: String
+    /// Age of the source report in minutes, when the report time is known.
+    var ageMinutes: Double? = nil
 }

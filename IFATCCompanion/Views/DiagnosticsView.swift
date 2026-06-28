@@ -12,6 +12,7 @@ struct DiagnosticsView: View {
             ScrollView {
                 VStack(spacing: 14) {
                     mockCard
+                    liveATCCard
                     phaseCard
                     weatherStatusCard
                     unicomCard
@@ -51,6 +52,29 @@ struct DiagnosticsView: View {
                     Text("Route: \(mock.route.departure) → \(mock.route.destination)")
                         .font(.caption).foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+    }
+
+    private var liveATCCard: some View {
+        Card(title: "Multiplayer / ATC Staffing", systemImage: "person.2.wave.2") {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    StatusPill(text: model.liveATC.humanControllerActive ? "Human ATC" : "No human ATC",
+                               level: model.liveATC.humanControllerActive ? .amber : .green,
+                               systemImage: "headphones")
+                    Spacer()
+                    StatusPill(text: model.liveATC.multiplayerOnline ? "Online" : "Solo",
+                               level: model.liveATC.multiplayerOnline ? .green : .neutral,
+                               systemImage: "dot.radiowaves.up.forward")
+                }
+                Text(model.liveATC.summary).font(.caption).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if settings.mockMode {
+                    Toggle("Simulate staffed ATC (demo)", isOn: $model.simulateStaffedATC)
+                    Text("Staffing detection runs automatically in live mode using the Connect manifest.")
+                        .font(.caption2).foregroundStyle(.tertiary)
                 }
             }
         }

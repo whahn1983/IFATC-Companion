@@ -26,6 +26,12 @@ final class IFStateMappingStore {
         case liveryName
         case nearestAirportICAO
         case callsign
+        // Multiplayer / ATC-staffing detection (all optional; coverage varies).
+        case atcActive
+        case atcFacilityName
+        case atcFacilityCount
+        case isOnline
+        case serverName
 
         /// Candidate name signatures (normalised, lowercased, separators removed),
         /// in priority order.
@@ -49,6 +55,11 @@ final class IFStateMappingStore {
             case .liveryName: return ["liveryname", "livery"]
             case .nearestAirportICAO: return ["nearestairporticao", "nearestairport"]
             case .callsign: return ["callsign", "username", "displayname"]
+            case .atcActive: return ["isatcactive", "atcactive", "atcisactive", "controlleractive"]
+            case .atcFacilityName: return ["activeatcfacilityname", "atcfacilityname", "controllerfacility", "atcfacilit", "atcname"]
+            case .atcFacilityCount: return ["activeatcfacilitycount", "atcfacilitycount", "activeatccount", "atccount"]
+            case .isOnline: return ["ismultiplayer", "isonline", "online", "multiplayer"]
+            case .serverName: return ["servername", "sessionname", "server"]
             }
         }
     }

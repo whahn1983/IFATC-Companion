@@ -18,7 +18,8 @@ struct WeatherRouteAnalyzer {
                          position: CLLocationCoordinate2D,
                          routeEnd: CLLocationCoordinate2D?,
                          altitudeFt: Double,
-                         nearestFix: String? = nil) -> [RideReportItem] {
+                         nearestFix: String? = nil,
+                         now: Date = Date()) -> [RideReportItem] {
 
         let courseTo = routeEnd.map { Geo.bearing(from: position, to: $0) }
 
@@ -54,12 +55,14 @@ struct WeatherRouteAnalyzer {
                 return lo...hi
             }
 
+            let age = pirep.time.map { max(0, now.timeIntervalSince($0) / 60) }
             items.append(RideReportItem(severity: severity,
                                         altitudeBand: band,
                                         distanceAheadNM: distanceAhead,
                                         bearing: bearingToPirep,
                                         nearFix: nearestFix,
-                                        sourceRaw: pirep.raw))
+                                        sourceRaw: pirep.raw,
+                                        ageMinutes: age))
         }
 
         return items.sorted { ($0.distanceAheadNM ?? .greatestFiniteMagnitude) < ($1.distanceAheadNM ?? .greatestFiniteMagnitude) }

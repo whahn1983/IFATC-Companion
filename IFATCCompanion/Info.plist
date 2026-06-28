@@ -24,6 +24,10 @@
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>IFATC Companion connects to Infinite Flight on your local Wi-Fi network to read flight data and exchange ATC messages. No data leaves your network.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>IFATC Companion uses the microphone for push-to-talk so you can speak readbacks and requests instead of tapping. Audio is processed on-device and is not recorded or sent anywhere.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>IFATC Companion recognizes your spoken readbacks and requests on-device to drive the ATC conversation. Speech is processed locally and is not stored or transmitted.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_infiniteflight._tcp</string>

@@ -1,4 +1,5 @@
 import SwiftUI
+import Speech
 
 struct ATCView: View {
     @EnvironmentObject var model: AppModel
@@ -6,12 +7,14 @@ struct ATCView: View {
     @EnvironmentObject var connect: IFConnectManager
     @EnvironmentObject var unicom: UNICOMAutomationService
     @EnvironmentObject var speech: SpeechService
+    @EnvironmentObject var recognizer: SpeechRecognitionService
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 14) {
                     statusHeader
+                    if model.liveATC.humanControllerActive { standbyBanner }
                     currentTransmissionCard
                     unicomCard
                     responseButtons
@@ -88,6 +91,27 @@ struct ATCView: View {
 
     private var assignedAltText: String {
         model.assignedAltitude > 0 ? PhraseologyEngine().formatAltDisplay(model.assignedAltitude) : "—"
+    }
+
+    // MARK: - Human ATC standby
+
+    private var standbyBanner: some View {
+        Card {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "person.fill.checkmark")
+                    .font(.title3)
+                    .foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Human ATC Active")
+                        .font(.headline)
+                    Text("\(model.liveATC.summary) Follow the live controller.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+        }
     }
 
     // MARK: - Current transmission
@@ -168,14 +192,57 @@ struct ATCView: View {
         }
     }
 
+    @ViewBuilder
     private var pttPlaceholder: some View {
-        Button { } label: {
-            Label("Push to Talk (coming soon)", systemImage: "mic.slash")
-                .frame(maxWidth: .infinity, minHeight: 44)
+        VStack(spacing: 6) {
+            pushToTalkButton
+            if recognizer.isListening {
+                Text(recognizer.partialText.isEmpty ? "Listening…" : recognizer.partialText)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else if !model.lastSpokenText.isEmpty {
+                HStack(spacing: 6) {
+                    Image(systemName: "quote.bubble").font(.caption)
+                    Text("\"\(model.lastSpokenText)\"")
+                        .lineLimit(1)
+                    if let intent = model.lastSpokenIntent {
+                        Spacer()
+                        Text(intent.title).font(.caption.weight(.semibold))
+                            .foregroundStyle(intent == .unknown ? .orange : .green)
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            if recognizer.authorization == .denied || recognizer.authorization == .restricted {
+                Text("Enable Speech Recognition & Microphone in Settings to use push-to-talk.")
+                    .font(.caption2).foregroundStyle(.orange)
+            } else if let err = recognizer.lastError {
+                Text(err).font(.caption2).foregroundStyle(.orange)
+            }
         }
-        .buttonStyle(.bordered)
-        .tint(.secondary)
-        .disabled(true)
+    }
+
+    private var pushToTalkButton: some View {
+        Label(recognizer.isListening ? "Listening — release to send" : "Hold to Talk",
+              systemImage: recognizer.isListening ? "mic.fill" : "mic")
+            .frame(maxWidth: .infinity, minHeight: 48)
+            .contentShape(Rectangle())
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill((recognizer.isListening ? Color.red : Color.accentColor).opacity(0.18)))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke((recognizer.isListening ? Color.red : Color.accentColor).opacity(0.5), lineWidth: 1))
+            .foregroundStyle(recognizer.isListening ? Color.red : Color.accentColor)
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in if !recognizer.isListening { recognizer.startListening() } }
+                    .onEnded { _ in recognizer.stopListening() }
+            )
+            .accessibilityHint("Press and hold to speak a readback or request.")
     }
 
     // MARK: - Transcript

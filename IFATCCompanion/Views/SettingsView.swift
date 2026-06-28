@@ -5,6 +5,7 @@ struct SettingsView: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var settings: AppSettings
     @EnvironmentObject var connect: IFConnectManager
+    @EnvironmentObject var profiles: PhraseologyProfileStore
     @State private var showResetConfirm = false
 
     private let voices = SpeechService.availableVoices()
@@ -104,14 +105,27 @@ struct SettingsView: View {
     // MARK: - Phraseology
 
     private var phraseologySection: some View {
-        Section("Phraseology") {
+        Section {
             Picker("Mode", selection: $settings.phraseologyMode) {
                 ForEach(PhraseologyMode.allCases) { Text($0.title).tag($0) }
             }
+            Text(settings.phraseologyMode.detail)
+                .font(.caption).foregroundStyle(.secondary)
             Picker("Flight number style", selection: $settings.digitStyle) {
                 ForEach(CallsignDigitStyle.allCases) { Text($0.title).tag($0) }
             }
+            NavigationLink {
+                PhraseologyProfilesView()
+            } label: {
+                Label("Custom Profiles\(activeProfileSuffix)", systemImage: "text.badge.star")
+            }
+        } header: {
+            Text("Phraseology")
         }
+    }
+
+    private var activeProfileSuffix: String {
+        profiles.activeProfile.map { " — \($0.name)" } ?? ""
     }
 
     // MARK: - UNICOM

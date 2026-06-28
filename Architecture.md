@@ -1,6 +1,6 @@
 # Architecture
 
-IFATC Companion is a native iOS SwiftUI app (bundle identifier `com.h3consultingpartners.ifatccompanion`, display name "IFATC Companion"). It is built with Xcode 26.x against the iOS 26 SDK with a minimum deployment target of iOS 17.0. The app is deterministic and local-only: no backend, no AI/LLM, no accounts, no analytics.
+IFATC Companion is a native iOS SwiftUI app (bundle identifier `com.h3consultingpartners.ifatccompanion`, display name "IFATC Companion"). It is built with Xcode 26.x against the iOS 26 SDK with a minimum deployment target of iOS 17.0. The app is deterministic and local-only: no backend, no generative AI/LLM, no accounts, no analytics. Push-to-talk uses Apple's on-device Speech framework for transcription only (not an LLM, no network); recognized text is mapped to actions deterministically.
 
 ## Layered overview
 
@@ -42,6 +42,8 @@ This is the boundary between the app and Infinite Flight, deliberately isolated 
 - **IFConnectClient** — the Infinite Flight Connect API v2 client, implemented over `Network.framework` TCP. Handles the wire protocol and raw state/command exchange.
 - **IFConnectManifestService** — state manifest discovery. Reads the Connect API's manifest of available state fields and commands so the app knows what data and which UNICOM commands are available in the current Infinite Flight session.
 
+- **LiveATCDetector / LiveATCStatus** — derives multiplayer and human-ATC-staffing context from manifest-mapped states (best-effort, signature-based). When a human controller is detected, `AppModel` puts the companion into standby and stops generating controller calls.
+
 **Isolation guarantee:** the Connect layer is the only code that talks to Infinite Flight. If Infinite Flight is not present, unreachable, or does not expose a given field/command, the layer reports unavailability and the rest of the app continues using manual overrides or the mock feed. It never crashes the app.
 
 ## ATC state machine and phase detection
@@ -52,6 +54,18 @@ This is the boundary between the app and Infinite Flight, deliberately isolated 
 ## Phraseology
 
 - **PhraseologyEngine** — a deterministic, template-based engine that renders ATC calls into realistic phraseology ("niner", "flight level three seven zero", spoken headings/frequencies, etc.). Given the same inputs it always produces the same output. No AI is involved.
+- **Phonetic** — pure phonetics with selectable FAA/ICAO packs (digit words "tree/fower/fife", "decimal" vs "point" frequency separator, QNH/hPa vs inHg altimeter).
+- **PhraseologyProfile / PhraseologyProfileStore** — user-created profiles overriding individual call templates (with `{placeholder}` tokens) and mapping airline codes to spoken radio names. Persisted as JSON in `UserDefaults`; exportable/importable for sharing.
+
+## Procedures and taxi routing
+
+- **ProcedureParser / ProcedureLibrary** — parse SID/STAR/approach name strings into structured `Procedure` values, enriched with known fixes from a small built-in library. Clearance, descent-via-arrival, and approach clearances reference these by name.
+- **TaxiRoutePlanner / AirportLayout** — a simplified airport-surface model (taxiways, ramp, per-runway routes, runway crossings) producing deterministic taxi instructions, with a built-in dataset for the demo airports and a generated fallback elsewhere.
+
+## Push-to-talk
+
+- **SpeechRecognitionService** — on-device push-to-talk via Apple's `Speech` framework (`SFSpeechRecognizer` + `AVAudioEngine`), preferring on-device recognition. Transcribes microphone input only; no network.
+- **PilotIntentParser** — deterministic keyword rules mapping recognized text to a `PilotIntent`, dispatched by `AppModel` to the matching pilot action.
 
 ## Pilot responses
 
@@ -67,6 +81,8 @@ This is the boundary between the app and Infinite Flight, deliberately isolated 
 - **Parsers** — best-effort parsers for the raw NOAA text/products into structured values.
 - **WeatherRouteAnalyzer** — analyzes weather along the flight plan route.
 - **RideReportEngine** — produces a ride-quality / turbulence summary ("ride report") from the available weather and PIREP/SIGMET data.
+- **TurbulenceModel** — a composite, deterministic ride-quality model blending PIREPs (weighted by distance ahead and report age), SIGMET advisories, and a low-level wind-shear proxy from the surface METAR into a continuous ride index and severity.
+- **RouteMapView** — a MapKit route/weather overlay (route line, departure/destination, live aircraft position, severity-colored PIREP turbulence markers).
 
 ## Speech
 
@@ -114,12 +130,13 @@ Under `IFATCCompanion/` (representative layout; synchronized file groups auto-in
 IFATCCompanion/
 ├── App/              # App entry point, ContentView, TabView shell
 ├── Models/           # AircraftState, FlightPlan, FlightPhase
-├── Connect/          # IFConnectManager, IFConnectClient, IFConnectManifestService
-├── ATC/              # PhaseDetector, ATCStateMachine, PhraseologyEngine, PilotResponseEngine
+├── Connect/          # IFConnectManager, IFConnectClient, IFConnectManifestService, LiveATCDetector
+├── ATC/              # PhaseDetector, ATCStateMachine, PilotResponseEngine, ProcedureLibrary, TaxiRoutePlanner, PilotIntentParser
+├── Phraseology/      # Phonetic, PhraseologyEngine, PhraseologyProfile (+Store)
 ├── UNICOM/           # UNICOMAutomationService
-├── Weather/          # AviationWeatherService, parsers, WeatherRouteAnalyzer, RideReportEngine
-├── Speech/           # SpeechService
+├── Weather/          # AviationWeatherService, parsers, WeatherRouteAnalyzer, RideReportEngine, TurbulenceModel
+├── Speech/           # SpeechService, SpeechRecognitionService
 ├── Settings/         # AppSettings
 ├── Mock/             # MockSimulatorFeed
-└── Views/            # ATC, Flight, Weather, Settings, Diagnostics tab views
+└── Views/            # ATC, Flight, Weather, Settings, Diagnostics tabs, RouteMapView, PhraseologyProfilesView
 ```

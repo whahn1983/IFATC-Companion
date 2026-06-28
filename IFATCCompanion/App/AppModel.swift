@@ -14,6 +14,8 @@ final class AppModel: ObservableObject {
     let connect: IFConnectManager
     let mock: MockSimulatorFeed
     let unicom: UNICOMAutomationService
+    let phraseologyProfiles: PhraseologyProfileStore
+    let speechRecognizer: SpeechRecognitionService
 
     private let weatherService: AviationWeatherService
 
@@ -22,7 +24,10 @@ final class AppModel: ObservableObject {
     private var stateMachine: ATCStateMachine
     private var pilotEngine: PilotResponseEngine
     private var phaseDetector = PhaseDetector()
+    private let taxiPlanner = TaxiRoutePlanner()
+    private let intentParser = PilotIntentParser()
     private var routeAnalyzer = WeatherRouteAnalyzer()
+    private var turbulenceModel = TurbulenceModel()
     private var rideEngine: RideReportEngine
     private let airports = AirportDatabase.shared
 
@@ -37,6 +42,15 @@ final class AppModel: ObservableObject {
     @Published var phaseDebug = PhaseDetector.Debug()
     @Published var assignedAltitude: Int = 0
 
+    // Multiplayer / human-ATC staffing. When a human controller is detected the
+    // companion stands by (stops generating controller calls).
+    @Published var liveATC: LiveATCStatus = .none
+    /// Mock-mode demo toggle to exercise the "step aside" behavior in the Simulator.
+    @Published var simulateStaffedATC: Bool = false
+
+    /// Whether the companion should defer to a human controller right now.
+    var companionStandby: Bool { liveATC.shouldStandBy }
+
     // Weather state.
     @Published var departureMETAR: METAR?
     @Published var destinationMETAR: METAR?
@@ -45,6 +59,7 @@ final class AppModel: ObservableObject {
     @Published var pireps: [PIREP] = []
     @Published var sigmets: [SIGMET] = []
     @Published var rideReportItems: [RideReportItem] = []
+    @Published var rideAssessment: RideAssessment = .smooth
     @Published var weatherStatus: String = "Not loaded"
 
     private var lastATCTransmission: ATCTransmission?
@@ -60,12 +75,28 @@ final class AppModel: ObservableObject {
         self.connect = IFConnectManager()
         self.mock = MockSimulatorFeed()
         self.unicom = UNICOMAutomationService()
+        let profiles = PhraseologyProfileStore()
+        self.phraseologyProfiles = profiles
+        self.speechRecognizer = SpeechRecognitionService()
         self.weatherService = AviationWeatherService(baseURL: settings.weatherBaseURL)
 
-        self.engine = PhraseologyEngine(digitStyle: settings.digitStyle, mode: settings.phraseologyMode)
+        var engine = PhraseologyEngine(digitStyle: settings.digitStyle, mode: settings.phraseologyMode)
+        engine.profile = profiles.activeProfile
+        self.engine = engine
         self.stateMachine = ATCStateMachine(engine: engine)
         self.pilotEngine = PilotResponseEngine(engine: engine)
         self.rideEngine = RideReportEngine(engine: engine)
+    }
+
+    /// Apply the current settings + active profile to the engine and rebuild the
+    /// engine-dependent objects.
+    private func applyEngineConfig() {
+        engine.digitStyle = settings.digitStyle
+        engine.mode = settings.phraseologyMode
+        engine.profile = phraseologyProfiles.activeProfile
+        stateMachine = ATCStateMachine(engine: engine)
+        pilotEngine = PilotResponseEngine(engine: engine)
+        rideEngine = RideReportEngine(engine: engine)
     }
 
     // MARK: - Lifecycle
@@ -85,6 +116,9 @@ final class AppModel: ObservableObject {
         mock.onState = { [weak self] state in self?.handle(state: state) }
         connect.onState = { [weak self] state in self?.handle(state: state) }
 
+        // Route recognized push-to-talk speech to the deterministic intent handler.
+        speechRecognizer.onResult = { [weak self] text in self?.handleSpokenInput(text) }
+
         observeSettings()
         syncFlightPlanFromSettings()
         diagnostics.log(.app, "IFATC Companion ready. Mock mode: \(settings.mockMode).")
@@ -100,14 +134,18 @@ final class AppModel: ObservableObject {
         // Keep phraseology engines and dependent objects in sync with settings.
         settings.$digitStyle
             .combineLatest(settings.$phraseologyMode)
-            .sink { [weak self] style, mode in
-                guard let self else { return }
-                self.engine.digitStyle = style
-                self.engine.mode = mode
-                self.stateMachine = ATCStateMachine(engine: self.engine)
-                self.pilotEngine = PilotResponseEngine(engine: self.engine)
-                self.rideEngine = RideReportEngine(engine: self.engine)
-            }
+            .sink { [weak self] _, _ in self?.applyEngineConfig() }
+            .store(in: &cancellables)
+
+        // Rebuild engines when the active phraseology profile changes.
+        phraseologyProfiles.$activeProfileID
+            .dropFirst()
+            .sink { [weak self] _ in self?.applyEngineConfig() }
+            .store(in: &cancellables)
+
+        phraseologyProfiles.$profiles
+            .dropFirst()
+            .sink { [weak self] _ in self?.applyEngineConfig() }
             .store(in: &cancellables)
 
         settings.$unicomModeRaw
@@ -117,6 +155,37 @@ final class AppModel: ObservableObject {
         settings.$debugLogging
             .sink { [weak self] on in self?.diagnostics.verbose = on }
             .store(in: &cancellables)
+
+        // Track live ATC-staffing status from the Connect link (live mode only).
+        connect.$liveATC
+            .sink { [weak self] status in
+                guard let self, !self.settings.mockMode else { return }
+                self.applyLiveATC(status)
+            }
+            .store(in: &cancellables)
+
+        // In mock mode, derive staffing from the demo toggle.
+        $simulateStaffedATC
+            .sink { [weak self] on in
+                guard let self, self.settings.mockMode else { return }
+                self.applyLiveATC(on
+                    ? LiveATCStatus(multiplayerOnline: true, serverName: "Expert",
+                                    humanControllerActive: true,
+                                    activeFacility: self.currentFacility.title)
+                    : .none)
+            }
+            .store(in: &cancellables)
+    }
+
+    /// Apply a new live-ATC status and log standby transitions.
+    private func applyLiveATC(_ status: LiveATCStatus) {
+        let wasStandby = liveATC.shouldStandBy
+        liveATC = status
+        if status.shouldStandBy != wasStandby {
+            diagnostics.log(.atc, status.shouldStandBy
+                ? "Human ATC detected — companion standing by."
+                : "Human ATC cleared — companion resuming.")
+        }
     }
 
     var currentUnicomMode: UNICOMMode {
@@ -130,6 +199,10 @@ final class AppModel: ObservableObject {
         stateMachine.reset()
         atcState = .connectedIdle
         stateMachine.setConnected()
+        applyLiveATC(simulateStaffedATC
+            ? LiveATCStatus(multiplayerOnline: true, serverName: "Expert",
+                            humanControllerActive: true, activeFacility: currentFacility.title)
+            : .none)
         mock.start()
         diagnostics.log(.app, "Mock simulator feed started.")
         Task { await refreshWeather() }
@@ -190,6 +263,14 @@ final class AppModel: ObservableObject {
         let target = stateMachine.mappedState(for: phase)
         let context = buildContext(for: target)
         unicom.connected = settings.mockMode || connect.connectionState.isConnected
+
+        // Defer to a human controller: track state for display, but do not generate
+        // or speak controller calls, and do not fire UNICOM.
+        if companionStandby {
+            atcState = target
+            currentFacility = target.facility
+            return
+        }
 
         if let tx = stateMachine.advance(to: target, context: context) {
             updateAssignedAltitude(for: target, context: context)
@@ -267,6 +348,21 @@ final class AppModel: ObservableObject {
         let windSpeed = metar?.windSpeed ?? 8
         let cruise = flightPlan.cruiseAltitude > 0 ? flightPlan.cruiseAltitude : 37000
 
+        // Parse any entered published procedures (deterministic, best-effort).
+        let sidProc = flightPlan.sid.isEmpty ? nil
+            : ProcedureParser.parseSID(flightPlan.sid, icao: flightPlan.departure)
+        let starProc = flightPlan.star.isEmpty ? nil
+            : ProcedureParser.parseSTAR(flightPlan.star, icao: flightPlan.destination)
+        let approachProc = flightPlan.approach.isEmpty ? nil
+            : ProcedureParser.parseApproach(flightPlan.approach)
+
+        let runway = resolvedRunway(windDir: windDir, arrival: arrival,
+                                    approach: approachProc)
+        let taxiPlan = taxiPlanner.plan(airport: arrival ? flightPlan.destination : flightPlan.departure,
+                                        runway: runway, arrival: arrival)
+        let approachName = approachProc?.displayName
+            ?? (flightPlan.approach.isEmpty ? "the ILS" : flightPlan.approach)
+
         return ATCContext(
             callsign: cs,
             plan: flightPlan,
@@ -276,16 +372,19 @@ final class AppModel: ObservableObject {
             windDirection: windDir,
             windSpeed: windSpeed,
             squawk: deterministicSquawk(),
-            runway: resolvedRunway(windDir: windDir, arrival: arrival),
-            taxiway: "Alpha",
-            crossingRunway: nil,
-            parkingTaxiway: "Bravo",
-            approachName: flightPlan.approach.isEmpty ? "the ILS" : flightPlan.approach,
+            runway: runway,
+            taxiway: taxiPlan.taxiwaysText,
+            crossingRunway: taxiPlan.crossingRunway,
+            parkingTaxiway: taxiPlan.parkingTaxiway,
+            approachName: approachName,
             departureFrequency: 124.300,
             centerFrequency: 132.450,
             approachFrequency: 119.700,
             towerFrequency: 118.300,
-            groundFrequency: 121.800)
+            groundFrequency: 121.800,
+            sidProcedure: sidProc,
+            starProcedure: starProc,
+            approachProcedure: approachProc)
     }
 
     private func deterministicSquawk() -> String {
@@ -293,9 +392,11 @@ final class AppModel: ObservableObject {
         return String(format: "%04o", (abs(n) * 7 + 1) % 4096)
     }
 
-    private func resolvedRunway(windDir: Int, arrival: Bool) -> String {
-        if arrival, !flightPlan.runway.isEmpty { return flightPlan.runway }
-        if !arrival, !flightPlan.runway.isEmpty { return flightPlan.runway }
+    private func resolvedRunway(windDir: Int, arrival: Bool, approach: Procedure? = nil) -> String {
+        // A parsed approach's runway wins on arrival; otherwise an explicit
+        // flight-plan runway; otherwise derive a sensible runway from the wind.
+        if arrival, let rwy = approach?.runway, !rwy.isEmpty { return rwy }
+        if !flightPlan.runway.isEmpty { return flightPlan.runway }
         let dir = windDir == 0 ? 270 : windDir
         var num = Int((Double(dir) / 10).rounded())
         if num <= 0 { num = 36 }
@@ -330,11 +431,52 @@ final class AppModel: ObservableObject {
         diagnostics.log(.app, "Manual flight-plan overrides applied.")
     }
 
+    // MARK: - Push-to-talk
+
+    /// Last recognized spoken phrase and the intent it mapped to (for the UI).
+    @Published var lastSpokenText: String = ""
+    @Published var lastSpokenIntent: PilotIntent?
+
+    /// Parse a recognized utterance into a pilot intent and perform it. Returns
+    /// the recognized intent. Deterministic — no AI in the mapping.
+    @discardableResult
+    func handleSpokenInput(_ text: String) -> PilotIntent {
+        let intent = intentParser.parse(text)
+        lastSpokenText = text
+        lastSpokenIntent = intent
+        diagnostics.log(.atc, "PTT heard: \"\(text)\" -> \(intent.title)")
+        perform(intent)
+        return intent
+    }
+
+    /// Dispatch a recognized intent to the matching pilot action.
+    func perform(_ intent: PilotIntent) {
+        switch intent {
+        case .readback: readBack()
+        case .sayAgain: sayAgain()
+        case .unable: unable()
+        case .wilco: wilco()
+        case .requestHigher: requestHigher()
+        case .requestLower: requestLower()
+        case .requestVectors: requestVectors()
+        case .requestApproach: requestApproach()
+        case .rideReport: requestRideReport()
+        case .destinationWeather: requestDestinationWeather()
+        case .checkIn: requestHandoff()
+        case .unknown: break
+        }
+    }
+
     // MARK: - Pilot button actions
 
     func readBack() {
         let c = buildContext(for: atcState)
         post(pilotEngine.readback(for: atcState, context: c), speak: false)
+    }
+
+    func wilco() {
+        let c = buildContext(for: atcState)
+        post(pilotEngine.wilco(context: c, facility: currentFacility), speak: false)
     }
 
     func sayAgain() {
@@ -409,7 +551,7 @@ final class AppModel: ObservableObject {
         Task {
             await refreshWeather()
             recomputeRideItems()
-            post(rideEngine.rideReport(items: rideReportItems, callsign: c.callsign), speak: true)
+            post(rideEngine.rideReport(assessment: rideAssessment, items: rideReportItems, callsign: c.callsign), speak: true)
         }
     }
 
@@ -499,6 +641,10 @@ final class AppModel: ObservableObject {
         rideReportItems = routeAnalyzer.relevantReports(pireps: pireps, position: pos,
                                                         routeEnd: end, altitudeFt: alt,
                                                         nearestFix: nearestFix)
+        let arrivalPhase = [.descent, .approach, .landing, .taxiIn, .parked].contains(phase)
+        let nearMETAR = arrivalPhase ? (destinationMETAR ?? departureMETAR) : (departureMETAR ?? destinationMETAR)
+        rideAssessment = turbulenceModel.assess(items: rideReportItems, sigmets: sigmets,
+                                                metar: nearMETAR, altitudeFt: alt)
     }
 
     // MARK: - Diagnostics helpers

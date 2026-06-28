@@ -27,5 +27,7 @@ struct ContentView: View {
         .environmentObject(model.connect)
         .environmentObject(model.unicom)
         .environmentObject(model.mock)
+        .environmentObject(model.phraseologyProfiles)
+        .environmentObject(model.speechRecognizer)
         .preferredColorScheme(.dark)
 }

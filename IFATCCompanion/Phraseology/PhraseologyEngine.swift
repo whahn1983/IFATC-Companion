@@ -3,10 +3,23 @@ import Foundation
 /// Builds deterministic, template-based ATC transmissions. No AI — every output
 /// is a pure function of its inputs. Variation comes only from approved template
 /// alternates selected deterministically.
+///
+/// The engine honors two selectable phraseology packs (`PhraseologyMode`): FAA/US
+/// and ICAO. The pack changes digit words ("tree/fower/fife"), the frequency
+/// separator ("decimal" vs "point"), the altimeter/QNH convention, and a handful
+/// of phrase forms (e.g. "taxi to holding point" vs "taxi to runway"). An optional
+/// user `PhraseologyProfile` can override individual call templates and supply
+/// custom airline call sets.
 struct PhraseologyEngine {
 
     var digitStyle: CallsignDigitStyle = .grouped
     var mode: PhraseologyMode = .faa
+
+    /// Optional user-defined overrides (templates + airline call sets).
+    var profile: PhraseologyProfile?
+
+    /// Convenience: whether the ICAO pack is selected.
+    var icao: Bool { mode == .icao }
 
     // MARK: - Callsign
 
@@ -15,12 +28,12 @@ struct PhraseologyEngine {
         let airlineTrim = airline.trimmingCharacters(in: .whitespaces)
         let numTrim = flightNumber.trimmingCharacters(in: .whitespaces).filter { $0.isNumber }
         if !airlineTrim.isEmpty && !numTrim.isEmpty {
-            return "\(airlineTrim) \(spokenFlightNumber(numTrim))"
+            return "\(spokenAirline(airlineTrim)) \(spokenFlightNumber(numTrim))"
         }
         let fb = fallback.trimmingCharacters(in: .whitespaces)
         if !fb.isEmpty {
             // Mixed alphanumeric tail/callsign -> spell it out.
-            return Phonetic.spellToken(fb)
+            return Phonetic.spellToken(fb, icao: icao)
         }
         return "aircraft"
     }
@@ -34,10 +47,17 @@ struct PhraseologyEngine {
         return fb.isEmpty ? "Aircraft" : fb
     }
 
+    /// Spoken telephony name for an airline. A user profile may map an ICAO/IATA
+    /// designator or name to a custom radio name (e.g. "DLH" -> "Lufthansa").
+    func spokenAirline(_ airline: String) -> String {
+        if let custom = profile?.airlineCallName(for: airline) { return custom }
+        return airline
+    }
+
     func spokenFlightNumber(_ digits: String) -> String {
         switch digitStyle {
         case .individual:
-            return Phonetic.spellDigits(digits)
+            return Phonetic.spellDigits(digits, icao: icao)
         case .grouped:
             return groupedNumber(digits)
         }
@@ -49,21 +69,21 @@ struct PhraseologyEngine {
         case 4:
             let a = Int(String(chars[0...1])) ?? 0
             let b = Int(String(chars[2...3])) ?? 0
-            return "\(Phonetic.twoDigitGroup(a)) \(groupTail(b))"
+            return "\(Phonetic.twoDigitGroup(a, icao: icao)) \(groupTail(b))"
         case 3:
-            let first = Phonetic.digitWords[chars[0]] ?? ""
+            let first = Phonetic.digitMap(icao: icao)[chars[0]] ?? ""
             let b = Int(String(chars[1...2])) ?? 0
             return "\(first) \(groupTail(b))"
         case 2:
-            return Phonetic.twoDigitGroup(Int(digits) ?? 0)
+            return Phonetic.twoDigitGroup(Int(digits) ?? 0, icao: icao)
         default:
-            return Phonetic.spellDigits(digits)
+            return Phonetic.spellDigits(digits, icao: icao)
         }
     }
 
     /// Trailing two-digit group: "00" -> "hundred", else natural English.
     private func groupTail(_ n: Int) -> String {
-        n == 0 ? "hundred" : Phonetic.twoDigitGroup(n)
+        n == 0 ? "hundred" : Phonetic.twoDigitGroup(n, icao: icao)
     }
 
     // MARK: - Builders (each returns an ATCTransmission)
@@ -84,102 +104,164 @@ struct PhraseologyEngine {
 
     // Clearance Delivery — IFR clearance.
     func clearance(cs: Callsign, destination: String, cruise: Int, sid: String,
-                   initialAlt: Int, departureFreq: Double, squawk: String) -> ATCTransmission {
+                   initialAlt: Int, departureFreq: Double, squawk: String,
+                   sidProcedure: Procedure? = nil) -> ATCTransmission {
         let destDisplay = destination.isEmpty ? "destination" : destination
-        let sidText = sid.isEmpty ? "the filed route" : "the \(sid) departure"
-        let display = "\(cs.display), cleared to \(destDisplay) via \(sidText), "
+        // Resolve the SID phrasing from a parsed procedure, raw text, or fall back.
+        let sidDisplay: String
+        let sidSpoken: String
+        if let proc = sidProcedure {
+            sidDisplay = "the \(proc.displayName) departure"
+            sidSpoken = "the \(proc.spokenName(icao: icao)) departure"
+        } else if sid.isEmpty {
+            sidDisplay = "the filed route"; sidSpoken = "the filed route"
+        } else {
+            sidDisplay = "the \(sid) departure"
+            sidSpoken = "the " + Phonetic.spellToken(sid, icao: icao) + " departure"
+        }
+        if let template = profile?.template(for: .clearance) {
+            let ph = placeholders(cs: cs, extra: [
+                "dest": destDisplay, "destSpoken": spokenAirport(destination),
+                "sid": sidDisplay, "sidSpoken": sidSpoken,
+                "initialAlt": formatAltDisplay(initialAlt), "initialAltSpoken": Phonetic.altitude(initialAlt, icao: icao),
+                "cruise": formatAltDisplay(cruise), "cruiseSpoken": Phonetic.altitude(cruise, icao: icao),
+                "depFreq": String(format: "%.3f", departureFreq), "depFreqSpoken": Phonetic.frequency(departureFreq, icao: icao),
+                "squawk": squawk, "squawkSpoken": Phonetic.squawk(squawk, icao: icao)])
+            return tx(.clearance, display: render(template.display, ph.display), spoken: render(template.spoken, ph.spoken))
+        }
+        let display = "\(cs.display), cleared to \(destDisplay) via \(sidDisplay), "
             + "climb via SID except maintain \(formatAltDisplay(initialAlt)), "
             + "expect \(formatAltDisplay(cruise)) one zero minutes after departure, "
             + "departure frequency \(String(format: "%.3f", departureFreq)), squawk \(squawk)."
-        let spoken = "\(cs.spoken), cleared to \(spokenAirport(destination)) via \(sid.isEmpty ? "the filed route" : "the " + Phonetic.spellToken(sid) + " departure"), "
-            + "climb via SID except maintain \(Phonetic.altitude(initialAlt)), "
-            + "expect \(Phonetic.altitude(cruise)) one zero minutes after departure, "
-            + "departure frequency \(Phonetic.frequency(departureFreq)), \(Phonetic.squawk(squawk))."
+        let spoken = "\(cs.spoken), cleared to \(spokenAirport(destination)) via \(sidSpoken), "
+            + "climb via SID except maintain \(Phonetic.altitude(initialAlt, icao: icao)), "
+            + "expect \(Phonetic.altitude(cruise, icao: icao)) one zero minutes after departure, "
+            + "departure frequency \(Phonetic.frequency(departureFreq, icao: icao)), \(Phonetic.squawk(squawk, icao: icao))."
         return tx(.clearance, display: display, spoken: spoken)
+    }
+
+    // Center/Approach — descend via a published STAR (arrival).
+    func descendViaArrival(cs: Callsign, star: Procedure, altitude: Int) -> ATCTransmission {
+        let fixClause = star.fixes.count > 1 ? " crossing \(star.fixes[1])" : ""
+        let fixClauseSpoken = star.fixes.count > 1 ? " crossing \(Phonetic.spellToken(star.fixes[1], icao: icao))" : ""
+        return tx(.center,
+           display: "\(cs.display), descend via the \(star.displayName) arrival, maintain \(formatAltDisplay(altitude))\(fixClause).",
+           spoken: "\(cs.spoken), descend via the \(star.spokenName(icao: icao)) arrival, maintain \(Phonetic.altitude(altitude, icao: icao))\(fixClauseSpoken).")
+    }
+
+    // Approach — cleared a published approach procedure.
+    func clearedApproach(cs: Callsign, procedure: Procedure, runway: String) -> ATCTransmission {
+        let rwy = procedure.runway ?? runway
+        return tx(.approach,
+           display: "\(cs.display), cleared \(procedure.displayName) approach.",
+           spoken: "\(cs.spoken), cleared \(procedure.approachType?.spoken ?? "approach") runway \(Phonetic.runway(rwy, icao: icao)) approach.")
     }
 
     // Ground — taxi.
     func taxiToRunway(cs: Callsign, runway: String, via: String, crossing: String?) -> ATCTransmission {
-        var display = "\(cs.display), taxi to runway \(runway) via \(via)"
-        var spoken = "\(cs.spoken), taxi to runway \(Phonetic.runway(runway)) via \(Phonetic.spellToken(via))"
-        if let crossing, !crossing.isEmpty {
-            display += ", cross runway \(crossing)"
-            spoken += ", cross runway \(Phonetic.runway(crossing))"
+        let crossDisplay = (crossing.map { $0.isEmpty ? "" : ", cross runway \($0)" }) ?? ""
+        let crossSpoken = (crossing.map { $0.isEmpty ? "" : ", cross runway \(Phonetic.runway($0, icao: icao))" }) ?? ""
+        if let template = profile?.template(for: .taxiToRunway) {
+            let ph = placeholders(cs: cs, extra: [
+                "runway": runway, "runwaySpoken": Phonetic.runway(runway, icao: icao),
+                "via": via, "viaSpoken": Phonetic.spellToken(via, icao: icao),
+                "crossing": crossDisplay, "crossingSpoken": crossSpoken])
+            return tx(.ground, display: render(template.display, ph.display), spoken: render(template.spoken, ph.spoken))
         }
-        return tx(.ground, display: display + ".", spoken: spoken + ".")
+        // ICAO: "taxi to holding point runway X"; FAA: "taxi to runway X".
+        let lead = icao ? "taxi to holding point runway" : "taxi to runway"
+        let display = "\(cs.display), \(lead) \(runway) via \(via)\(crossDisplay)."
+        let spoken = "\(cs.spoken), \(lead) \(Phonetic.runway(runway, icao: icao)) via \(Phonetic.spellToken(via, icao: icao))\(crossSpoken)."
+        return tx(.ground, display: display, spoken: spoken)
     }
 
     // Tower — line up and wait.
     func lineUpAndWait(cs: Callsign, runway: String) -> ATCTransmission {
         tx(.tower,
            display: "\(cs.display), runway \(runway), line up and wait.",
-           spoken: "\(cs.spoken), runway \(Phonetic.runway(runway)), line up and wait.")
+           spoken: "\(cs.spoken), runway \(Phonetic.runway(runway, icao: icao)), line up and wait.")
     }
 
     // Tower — cleared for takeoff.
     func clearedForTakeoff(cs: Callsign, runway: String, windDir: Int, windSpeed: Int) -> ATCTransmission {
-        tx(.tower,
-           display: "\(cs.display), wind \(String(format: "%03d", windDir)) at \(windSpeed), runway \(runway), cleared for takeoff.",
-           spoken: "\(cs.spoken), \(Phonetic.wind(direction: windDir, speed: windSpeed)), runway \(Phonetic.runway(runway)), cleared for takeoff.")
+        if let template = profile?.template(for: .takeoff) {
+            let ph = placeholders(cs: cs, extra: [
+                "runway": runway, "runwaySpoken": Phonetic.runway(runway, icao: icao),
+                "wind": "\(String(format: "%03d", windDir)) at \(windSpeed)",
+                "windSpoken": Phonetic.wind(direction: windDir, speed: windSpeed, icao: icao)])
+            return tx(.tower, display: render(template.display, ph.display), spoken: render(template.spoken, ph.spoken))
+        }
+        // ICAO uses the hyphenated "cleared for take-off".
+        let phrase = icao ? "cleared for take-off" : "cleared for takeoff"
+        return tx(.tower,
+           display: "\(cs.display), wind \(String(format: "%03d", windDir)) at \(windSpeed), runway \(runway), \(phrase).",
+           spoken: "\(cs.spoken), \(Phonetic.wind(direction: windDir, speed: windSpeed, icao: icao)), runway \(Phonetic.runway(runway, icao: icao)), \(phrase).")
     }
 
     // Departure — radar contact + climb.
     func radarContactClimb(cs: Callsign, altitude: Int) -> ATCTransmission {
         tx(.departure,
            display: "\(cs.display), radar contact, climb and maintain \(formatAltDisplay(altitude)).",
-           spoken: "\(cs.spoken), radar contact, climb and maintain \(Phonetic.altitude(altitude)).")
+           spoken: "\(cs.spoken), radar contact, climb and maintain \(Phonetic.altitude(altitude, icao: icao)).")
     }
 
     // Center — climb.
     func climbMaintain(cs: Callsign, altitude: Int) -> ATCTransmission {
         tx(.center,
            display: "\(cs.display), climb and maintain \(formatAltDisplay(altitude)).",
-           spoken: "\(cs.spoken), climb and maintain \(Phonetic.altitude(altitude)).")
+           spoken: "\(cs.spoken), climb and maintain \(Phonetic.altitude(altitude, icao: icao)).")
     }
 
     // Center — pilot's discretion descent.
     func descendPilotsDiscretion(cs: Callsign, altitude: Int) -> ATCTransmission {
         tx(.center,
            display: "\(cs.display), descend at pilot's discretion, maintain \(formatAltDisplay(altitude)).",
-           spoken: "\(cs.spoken), descend at pilot's discretion, maintain \(Phonetic.altitude(altitude)).")
+           spoken: "\(cs.spoken), descend at pilot's discretion, maintain \(Phonetic.altitude(altitude, icao: icao)).")
     }
 
     // Approach — descend + expect approach.
     func descendExpectApproach(cs: Callsign, altitude: Int, approach: String, runway: String) -> ATCTransmission {
         let appText = approach.isEmpty ? "the I-L-S" : approach
-        tx(.approach,
+        return tx(.approach,
            display: "\(cs.display), descend and maintain \(formatAltDisplay(altitude)), expect \(appText) runway \(runway) approach.",
-           spoken: "\(cs.spoken), descend and maintain \(Phonetic.altitude(altitude)), expect \(approach.isEmpty ? "the I L S" : approach) runway \(Phonetic.runway(runway)) approach.")
+           spoken: "\(cs.spoken), descend and maintain \(Phonetic.altitude(altitude, icao: icao)), expect \(approach.isEmpty ? "the I L S" : approach) runway \(Phonetic.runway(runway, icao: icao)) approach.")
     }
 
     // Approach/Tower — cleared approach.
     func clearedApproach(cs: Callsign, approach: String, runway: String) -> ATCTransmission {
         let appText = approach.isEmpty ? "ILS" : approach
-        tx(.approach,
+        return tx(.approach,
            display: "\(cs.display), cleared \(appText) runway \(runway) approach.",
-           spoken: "\(cs.spoken), cleared \(approach.isEmpty ? "I L S" : approach) runway \(Phonetic.runway(runway)) approach.")
+           spoken: "\(cs.spoken), cleared \(approach.isEmpty ? "I L S" : approach) runway \(Phonetic.runway(runway, icao: icao)) approach.")
     }
 
     // Tower arrival — cleared to land.
     func clearedToLand(cs: Callsign, runway: String, windDir: Int, windSpeed: Int) -> ATCTransmission {
-        tx(.tower,
+        if let template = profile?.template(for: .landing) {
+            let ph = placeholders(cs: cs, extra: [
+                "runway": runway, "runwaySpoken": Phonetic.runway(runway, icao: icao),
+                "wind": "\(String(format: "%03d", windDir)) at \(windSpeed)",
+                "windSpoken": Phonetic.wind(direction: windDir, speed: windSpeed, icao: icao)])
+            return tx(.tower, display: render(template.display, ph.display), spoken: render(template.spoken, ph.spoken))
+        }
+        return tx(.tower,
            display: "\(cs.display), wind \(String(format: "%03d", windDir)) at \(windSpeed), runway \(runway), cleared to land.",
-           spoken: "\(cs.spoken), \(Phonetic.wind(direction: windDir, speed: windSpeed)), runway \(Phonetic.runway(runway)), cleared to land.")
+           spoken: "\(cs.spoken), \(Phonetic.wind(direction: windDir, speed: windSpeed, icao: icao)), runway \(Phonetic.runway(runway, icao: icao)), cleared to land.")
     }
 
     // Ground arrival — taxi to parking.
     func taxiToParking(cs: Callsign, via: String) -> ATCTransmission {
         let viaText = via.isEmpty ? "available taxiways" : via
-        tx(.ground,
+        return tx(.ground,
            display: "\(cs.display), taxi to parking via \(viaText).",
-           spoken: "\(cs.spoken), taxi to parking via \(via.isEmpty ? "available taxiways" : Phonetic.spellToken(via)).")
+           spoken: "\(cs.spoken), taxi to parking via \(via.isEmpty ? "available taxiways" : Phonetic.spellToken(via, icao: icao)).")
     }
 
     // Generic handoff.
     func handoff(cs: Callsign, to facility: ATCFacility, frequency: Double) -> ATCTransmission {
         tx(facility,
            display: "\(cs.display), contact \(facility.spokenName) on \(String(format: "%.3f", frequency)).",
-           spoken: "\(cs.spoken), contact \(facility.spokenName) on \(Phonetic.frequency(frequency)).")
+           spoken: "\(cs.spoken), contact \(facility.spokenName) on \(Phonetic.frequency(frequency, icao: icao)).")
     }
 
     func radarContact(cs: Callsign, facility: ATCFacility) -> ATCTransmission {
@@ -200,7 +282,7 @@ struct PhraseologyEngine {
     func spokenAirport(_ icao: String) -> String {
         let code = icao.uppercased()
         if let city = PhraseologyEngine.cityNames[code] { return city }
-        return code.isEmpty ? "destination" : Phonetic.spellToken(code)
+        return code.isEmpty ? "destination" : Phonetic.spellToken(code, icao: self.icao)
     }
 
     private var numberFormatter: NumberFormatter {
@@ -209,6 +291,34 @@ struct PhraseologyEngine {
         f.locale = Locale(identifier: "en_US")
         f.groupingSeparator = ","
         return f
+    }
+
+    // MARK: - Template rendering
+
+    private struct Placeholders { let display: [String: String]; let spoken: [String: String] }
+
+    private func placeholders(cs: Callsign, extra: [String: String]) -> Placeholders {
+        var display: [String: String] = ["callsign": cs.display]
+        var spoken: [String: String] = ["callsign": cs.spoken]
+        for (key, value) in extra {
+            if key.hasSuffix("Spoken") {
+                spoken[String(key.dropLast("Spoken".count))] = value
+            } else {
+                display[key] = value
+                // Default spoken to display unless an explicit spoken value follows.
+                if spoken[key] == nil { spoken[key] = value }
+            }
+        }
+        return Placeholders(display: display, spoken: spoken)
+    }
+
+    /// Substitute `{placeholder}` tokens in a template string.
+    private func render(_ template: String, _ values: [String: String]) -> String {
+        var result = template
+        for (key, value) in values {
+            result = result.replacingOccurrences(of: "{\(key)}", with: value)
+        }
+        return result
     }
 
     /// Small built-in city lookup so common routes sound natural. Extendable.
