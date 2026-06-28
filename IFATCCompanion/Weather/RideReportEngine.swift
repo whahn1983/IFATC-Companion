@@ -77,12 +77,12 @@ struct RideReportEngine {
     }
 
     /// Build the destination weather transmission from a METAR.
-    func destinationWeather(metar: METAR?, callsign: PhraseologyEngine.Callsign, icao: String) -> ATCTransmission {
+    func destinationWeather(metar: METAR?, callsign: PhraseologyEngine.Callsign, icao icaoCode: String) -> ATCTransmission {
         guard let m = metar else {
-            return center("\(callsign.display), \(engine.spokenAirport(icao)) weather is not available at this time.",
-                          "\(callsign.spoken), \(engine.spokenAirport(icao)) weather is not available at this time.")
+            return center("\(callsign.display), \(engine.spokenAirport(icaoCode)) weather is not available at this time.",
+                          "\(callsign.spoken), \(engine.spokenAirport(icaoCode)) weather is not available at this time.")
         }
-        let city = engine.spokenAirport(icao)
+        let city = engine.spokenAirport(icaoCode)
         var displayParts: [String] = []
         var spokenParts: [String] = []
 
