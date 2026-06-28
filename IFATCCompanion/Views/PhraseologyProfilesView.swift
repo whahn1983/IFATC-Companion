@@ -152,17 +152,21 @@ struct PhraseologyProfileEditor: View {
         }
     }
 
+    private var sortedAirlineKeys: [String] {
+        draft.airlineCallSets.keys.sorted()
+    }
+
     private var airlineSection: some View {
         Section {
-            ForEach(draft.airlineCallSets.sorted(by: { $0.key < $1.key }), id: \.key) { pair in
+            ForEach(sortedAirlineKeys, id: \.self) { key in
                 HStack {
-                    Text(pair.key).font(.body.monospaced())
+                    Text(key).font(.body.monospaced())
                     Spacer()
-                    Text(pair.value).foregroundStyle(.secondary)
+                    Text(draft.airlineCallSets[key] ?? "").foregroundStyle(.secondary)
                 }
             }
             .onDelete { indexSet in
-                let keys = draft.airlineCallSets.sorted(by: { $0.key < $1.key }).map { $0.key }
+                let keys = sortedAirlineKeys
                 indexSet.forEach { draft.airlineCallSets[keys[$0]] = nil }
             }
             HStack {
