@@ -182,7 +182,7 @@ struct SettingsView: View {
     // MARK: - Advanced
 
     private var advancedSection: some View {
-        Section("Advanced") {
+        Section {
             Toggle("Debug logging", isOn: $settings.debugLogging)
             Text("Units: feet / nautical miles / knots")
                 .font(.caption).foregroundStyle(.secondary)
@@ -195,6 +195,8 @@ struct SettingsView: View {
                 Button("Reset", role: .destructive) { model.resetAppData() }
                 Button("Cancel", role: .cancel) {}
             }
+        } header: {
+            Text("Advanced")
         } footer: {
             Text("IFATC Companion v1.0 — local-only, no accounts, no analytics, no AI.\n© 2026 H3 Consulting Partners LLC.")
         }
