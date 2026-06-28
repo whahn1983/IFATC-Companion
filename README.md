@@ -6,19 +6,24 @@ IFATC Companion is a deterministic, local-only air traffic control (ATC) compani
 
 IFATC Companion provides simulated, procedural ATC and pilot phraseology driven entirely by your live flight state, organized into five tabs:
 
-- **ATC** — Live ATC-style conversation transcript driven by an internal state machine. Generates approach, tower, ground, departure, and en-route style calls plus pilot readbacks, all spoken aloud with text-to-speech.
+- **ATC** — Live ATC-style conversation transcript driven by an internal state machine. Generates approach, tower, ground, departure, and en-route style calls plus pilot readbacks, all spoken aloud with text-to-speech. **Push-to-talk** lets you speak readbacks and requests (on-device recognition). When a human controller is detected on a multiplayer server, the companion **stands by** and defers to the live controller.
 - **Flight** — Current aircraft state and flight plan: position, altitude, heading, speed, vertical speed, flight phase, and route.
-- **Weather** — METAR, TAF, PIREP, and SIGMET briefings from NOAA, with a route weather analysis and a "ride report" (turbulence/ride quality) summary.
+- **Weather** — METAR, TAF, PIREP, and SIGMET briefings from NOAA, with a route weather analysis, a composite ride-quality model, and a **ForeFlight-style route/weather map overlay**.
 - **Settings** — Connection (Host/IP + Port), voices, UNICOM automation mode, phraseology and unit preferences.
 - **Diagnostics** — Connection status, Connect API manifest discovery, Mock Mode toggle, and troubleshooting information.
 
 Key feature highlights:
 
-- Deterministic, template-based phraseology engine ("niner", "flight level three seven zero", etc.) — no AI, fully reproducible.
+- Deterministic, template-based phraseology engine ("niner", "flight level three seven zero", etc.) — no generative AI, fully reproducible.
+- **Selectable FAA and ICAO phraseology packs** (digit words, "decimal" vs "point", QNH/hPa vs inHg) plus **user-created phraseology profiles** (custom call templates and airline call sets, shareable as JSON).
+- **Push-to-talk** with on-device speech recognition and deterministic intent parsing.
+- **Procedure-aware** instructions: SID/STAR/approach name parsing with a built-in fix library.
+- **Modeled taxi routing** with taxiways, runway crossings, and ramp routes.
+- **Multiplayer / human-ATC staffing detection** so the companion steps aside for live controllers.
 - Automatic flight-phase detection (parked, taxi, takeoff, climb, cruise, descent, approach, landing, etc.).
 - Offline text-to-speech via `AVSpeechSynthesizer`, with per-facility voices.
 - Optional UNICOM automation: Off, Preview-then-send, or Auto-send.
-- Free aviation weather from NOAA (no API keys).
+- Free aviation weather from NOAA (no API keys), a composite turbulence/ride-quality model, and a MapKit route overlay.
 - Mock Mode for a complete demo in the iOS Simulator with no Infinite Flight present.
 
 ## Requirements
@@ -69,9 +74,10 @@ Use it responsibly and in keeping with Infinite Flight community standards.
 
 - ATC behavior is procedural and template-driven; it does not model every real-world situation or every controller decision.
 - Phase detection is heuristic and may occasionally misjudge transitions.
-- Taxi routing is simplified; there is no full airport surface routing.
-- SID/STAR/approach procedures are not parsed; instructions are generalized.
-- Live multiplayer metadata and real ATC-staffing detection are not yet integrated.
+- Taxi routing is modeled from a built-in airport-surface dataset for the demo airports, with a deterministic fallback elsewhere — it is not full, surveyed surface routing.
+- SID/STAR/approach names are parsed and referenced, enriched from a small built-in fix library; published charts are not ingested in full.
+- Multiplayer / human-ATC staffing detection is best-effort and signature-based against the Connect manifest; exact field coverage varies by Infinite Flight version.
+- Push-to-talk uses on-device speech recognition; accuracy depends on the device and microphone, and intent mapping is keyword-based.
 
 ### UNICOM automation limitations
 
@@ -90,10 +96,10 @@ Weather is sourced from free public NOAA Aviation Weather Center endpoints (avia
 IFATC Companion is **deterministic and local-only**. There is:
 
 - **No** backend server.
-- **No** AI/LLM of any kind.
+- **No** generative AI/LLM of any kind.
 - **No** paid APIs, accounts, login, analytics, ads, or in-app purchases.
 
-All ATC and pilot phraseology is produced by deterministic, template-based engines on-device. The only network usage is the local Infinite Flight Connect connection and free public NOAA weather.
+All ATC and pilot phraseology is produced by deterministic, template-based engines on-device. Push-to-talk uses Apple's on-device Speech framework purely to transcribe your microphone input (it is not an LLM and makes no network calls); the resulting text is mapped to actions by deterministic keyword rules. The only network usage is the local Infinite Flight Connect connection and free public NOAA weather.
 
 ## License
 

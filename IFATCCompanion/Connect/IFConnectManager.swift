@@ -10,6 +10,7 @@ final class IFConnectManager: ObservableObject {
     @Published private(set) var connectionState: IFConnectConnectionState = .disconnected
     @Published private(set) var manifestEntries: [IFManifestEntry] = []
     @Published private(set) var liveCallsign: String?
+    @Published private(set) var liveATC: LiveATCStatus = .none
     @Published private(set) var lastError: String?
 
     let mappingStore = IFStateMappingStore()
@@ -92,6 +93,7 @@ final class IFConnectManager: ObservableObject {
                 }
                 let state = await self.reader.readState(using: self.client)
                 self.onState?(state)
+                self.liveATC = await self.reader.readATCStatus(using: self.client)
                 try? await Task.sleep(nanoseconds: UInt64(self.pollInterval * 1_000_000_000))
             }
         }

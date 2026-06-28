@@ -8,7 +8,15 @@ enum PhraseologyMode: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .faa: return "FAA / US"
-        case .icao: return "ICAO (placeholder)"
+        case .icao: return "ICAO"
+        }
+    }
+
+    /// Short description of the pack's distinguishing conventions.
+    var detail: String {
+        switch self {
+        case .faa: return "US digits, \"point\" frequencies, inHg altimeter."
+        case .icao: return "\"tree/fower/fife\" digits, \"decimal\" frequencies, QNH in hPa."
         }
     }
 }

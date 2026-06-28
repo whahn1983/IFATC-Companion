@@ -9,6 +9,7 @@ struct WeatherView: View {
             ScrollView {
                 VStack(spacing: 14) {
                     actionsCard
+                    routeOverlayCard
                     statusCard
                     metarCard(title: "Departure METAR", metar: model.departureMETAR, icao: model.flightPlan.departure)
                     metarCard(title: "Destination METAR", metar: model.destinationMETAR, icao: model.flightPlan.destination)
@@ -16,6 +17,7 @@ struct WeatherView: View {
                         metarCard(title: "Alternate METAR", metar: model.alternateMETAR, icao: model.flightPlan.alternate)
                     }
                     tafCard
+                    overallRideCard
                     rideReportsCard
                     sigmetCard
                 }
@@ -42,6 +44,28 @@ struct WeatherView: View {
                 .buttonStyle(.bordered)
                 .disabled(refreshing)
             }
+        }
+    }
+
+    private var routeOverlayCard: some View {
+        Card(title: "Route & Weather Overlay", systemImage: "map") {
+            VStack(alignment: .leading, spacing: 8) {
+                RouteMapView()
+                HStack(spacing: 12) {
+                    legendDot(.green, "Light/chop")
+                    legendDot(.yellow, "Light")
+                    legendDot(.orange, "Moderate")
+                    legendDot(.red, "Severe")
+                }
+                .font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func legendDot(_ color: Color, _ label: String) -> some View {
+        HStack(spacing: 4) {
+            Circle().fill(color).frame(width: 8, height: 8)
+            Text(label)
         }
     }
 
@@ -88,6 +112,29 @@ struct WeatherView: View {
                     .fixedSize(horizontal: false, vertical: true)
             } else {
                 Text("No TAF loaded.").foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var overallRideCard: some View {
+        Card(title: "Overall Ride", systemImage: "gauge.with.dots.needle.bottom.50percent") {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    StatusPill(text: model.rideAssessment.severity.title,
+                               level: severityLevel(model.rideAssessment.severity), systemImage: "wind")
+                    Spacer()
+                    Text("Ride index \(Int((model.rideAssessment.index * 100).rounded()))%")
+                        .font(.subheadline.weight(.semibold))
+                }
+                ProgressView(value: model.rideAssessment.index)
+                    .tint(severityLevel(model.rideAssessment.severity).color)
+                if model.rideAssessment.contributors.isEmpty {
+                    Text("Composite model: PIREPs, SIGMETs, and surface wind shear.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Text("Factors: " + model.rideAssessment.contributors.joined(separator: ", "))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
         }
     }

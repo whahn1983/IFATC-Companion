@@ -6,6 +6,8 @@ struct RideReportEngine {
 
     let engine: PhraseologyEngine
 
+    private var icao: Bool { engine.icao }
+
     private func center(_ display: String, _ spoken: String) -> ATCTransmission {
         ATCTransmission(sender: .atc, facility: .center, displayText: display, spokenText: spoken)
     }
@@ -37,17 +39,41 @@ struct RideReportEngine {
             return center(display, spoken)
         case .moderate:
             let near = fix.map { " near \($0)" } ?? ""
-            let nearSpoken = fix.map { " near \(Phonetic.spellToken($0))" } ?? ""
+            let nearSpoken = fix.map { " near \(Phonetic.spellToken($0, icao: icao))" } ?? ""
             let display = "\(callsign.display), moderate turbulence reported\(distDisplay)\(near). Advise if you'd like higher or lower."
             let spoken = "\(callsign.spoken), moderate turbulence reported\(distSpoken)\(nearSpoken). Advise if you'd like higher or lower."
             return center(display, spoken)
         case .severe:
             let near = fix.map { " near \($0)" } ?? ""
-            let nearSpoken = fix.map { " near \(Phonetic.spellToken($0))" } ?? ""
+            let nearSpoken = fix.map { " near \(Phonetic.spellToken($0, icao: icao))" } ?? ""
             let display = "\(callsign.display), severe turbulence reported\(distDisplay)\(near). Recommend deviation or altitude change when able; advise intentions."
             let spoken = "\(callsign.spoken), severe turbulence reported\(distSpoken)\(nearSpoken). Recommend deviation or altitude change when able; advise intentions."
             return center(display, spoken)
         }
+    }
+
+    /// Build a ride report from a composite `RideAssessment` (turbulence model),
+    /// mentioning overall ride quality, the nearest significant report, and the
+    /// contributing factors. Falls back to the item-only report when smooth.
+    func rideReport(assessment: RideAssessment, items: [RideReportItem],
+                    callsign: PhraseologyEngine.Callsign) -> ATCTransmission {
+        guard assessment.severity > .smooth else {
+            return center("\(callsign.display), overall ride is smooth along your route at this time.",
+                          "\(callsign.spoken), overall ride is smooth along your route at this time.")
+        }
+
+        let lead = items.filter { $0.severity == assessment.severity }
+            .min(by: { ($0.distanceAheadNM ?? .greatestFiniteMagnitude) < ($1.distanceAheadNM ?? .greatestFiniteMagnitude) })
+            ?? items.max(by: { $0.severity < $1.severity })
+
+        let distDisplay = distancePhrase(lead?.distanceAheadNM, spoken: false)
+        let distSpoken = distancePhrase(lead?.distanceAheadNM, spoken: true)
+        let factors = assessment.contributors.isEmpty ? "" : " Based on \(assessment.contributors.joined(separator: ", "))."
+        let advice = assessment.severity >= .moderate ? " Advise if you'd like higher or lower for a smoother ride." : ""
+
+        let display = "\(callsign.display), expect \(assessment.severity.spoken)\(distDisplay) along your route.\(factors)\(advice)"
+        let spoken = "\(callsign.spoken), expect \(assessment.severity.spoken)\(distSpoken) along your route.\(factors)\(advice)"
+        return center(display, spoken)
     }
 
     /// Build the destination weather transmission from a METAR.
@@ -62,20 +88,25 @@ struct RideReportEngine {
 
         if let dir = m.windDirection, let spd = m.windSpeed {
             displayParts.append("wind \(String(format: "%03d", dir)) at \(spd)")
-            spokenParts.append(Phonetic.wind(direction: dir, speed: spd, gust: m.windGust))
+            spokenParts.append(Phonetic.wind(direction: dir, speed: spd, gust: m.windGust, icao: icao))
         }
         if let vis = m.visibilitySM {
             let v = Int(vis.rounded())
             displayParts.append("visibility \(v)")
-            spokenParts.append("visibility \(Phonetic.visibility(v))")
+            spokenParts.append("visibility \(Phonetic.visibility(v, icao: icao))")
         }
         if let ceiling = m.ceilingFt {
             displayParts.append("ceiling \(ceiling) \(ceilingCover(m))")
-            spokenParts.append("ceiling \(Phonetic.altitude(ceiling)) \(ceilingCoverSpoken(m))")
+            spokenParts.append("ceiling \(Phonetic.altitude(ceiling, icao: icao)) \(ceilingCoverSpoken(m))")
         }
         if let altim = m.altimeterInHg {
-            displayParts.append("altimeter \(String(format: "%.2f", altim))")
-            spokenParts.append("altimeter \(Phonetic.altimeter(altim))")
+            if icao {
+                let hpa = Int((altim * 33.8638866667).rounded())
+                displayParts.append("QNH \(hpa)")
+            } else {
+                displayParts.append("altimeter \(String(format: "%.2f", altim))")
+            }
+            spokenParts.append(Phonetic.altimeterSetting(inHg: altim, icao: icao))
         }
 
         if displayParts.isEmpty {

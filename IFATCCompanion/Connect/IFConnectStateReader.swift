@@ -50,6 +50,30 @@ struct IFConnectStateReader {
         return try? await client.readState(entry).stringValue
     }
 
+    /// Read multiplayer / ATC-staffing context, if exposed. All signals optional.
+    func readATCStatus(using client: IFConnectClient) async -> LiveATCStatus {
+        func bool(_ logical: IFStateMappingStore.Logical) async -> Bool? {
+            guard let entry = store.entry(for: logical) else { return nil }
+            return try? await client.readState(entry).boolValue
+        }
+        func int(_ logical: IFStateMappingStore.Logical) async -> Int? {
+            guard let entry = store.entry(for: logical) else { return nil }
+            guard let d = try? await client.readState(entry).doubleValue else { return nil }
+            return d.map(Int.init)
+        }
+        func string(_ logical: IFStateMappingStore.Logical) async -> String? {
+            guard let entry = store.entry(for: logical) else { return nil }
+            return try? await client.readState(entry).stringValue
+        }
+
+        let detector = LiveATCDetector()
+        return detector.status(atcActive: await bool(.atcActive),
+                               facilityName: await string(.atcFacilityName),
+                               facilityCount: await int(.atcFacilityCount),
+                               online: await bool(.isOnline),
+                               serverName: await string(.serverName))
+    }
+
     /// IF often reports heading/track in radians; normalize to 0–360 degrees.
     static func normalizeAngle(_ value: Double) -> Double {
         var deg = value

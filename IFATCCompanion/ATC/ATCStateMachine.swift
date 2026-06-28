@@ -22,6 +22,10 @@ struct ATCContext {
     var approachFrequency: Double
     var towerFrequency: Double
     var groundFrequency: Double
+    // Parsed published procedures (optional; populated when the pilot enters them).
+    var sidProcedure: Procedure? = nil
+    var starProcedure: Procedure? = nil
+    var approachProcedure: Procedure? = nil
 }
 
 /// Deterministic ATC interaction state machine. Maps physical `FlightPhase` to
@@ -77,7 +81,8 @@ struct ATCStateMachine {
             return engine.clearance(cs: c.callsign, destination: c.plan.destination,
                                     cruise: c.cruiseAltitude, sid: c.plan.sid,
                                     initialAlt: c.initialClimbAltitude,
-                                    departureFreq: c.departureFrequency, squawk: c.squawk)
+                                    departureFreq: c.departureFrequency, squawk: c.squawk,
+                                    sidProcedure: c.sidProcedure)
         case .groundTaxi, .pushbackTaxi:
             return engine.taxiToRunway(cs: c.callsign, runway: c.runway,
                                        via: c.taxiway, crossing: c.crossingRunway)
@@ -92,11 +97,17 @@ struct ATCStateMachine {
             // On reaching cruise, a brief center check-in/radar contact.
             return engine.radarContact(cs: c.callsign, facility: .center)
         case .descent:
+            if let star = c.starProcedure {
+                return engine.descendViaArrival(cs: c.callsign, star: star, altitude: max(10000, c.assignedAltitude))
+            }
             return engine.descendPilotsDiscretion(cs: c.callsign, altitude: max(10000, c.assignedAltitude))
         case .approach:
             return engine.descendExpectApproach(cs: c.callsign, altitude: max(3000, c.assignedAltitude),
                                                 approach: c.approachName, runway: c.runway)
         case .final:
+            if let approach = c.approachProcedure {
+                return engine.clearedApproach(cs: c.callsign, procedure: approach, runway: c.runway)
+            }
             return engine.clearedApproach(cs: c.callsign, approach: c.approachName, runway: c.runway)
         case .landing:
             return engine.clearedToLand(cs: c.callsign, runway: c.runway,

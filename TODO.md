@@ -1,20 +1,55 @@
 # TODO / Roadmap
 
-Future work for IFATC Companion. Items are aspirational and not committed to a schedule.
+The original roadmap below has been **implemented**. Everything is deterministic
+and local-only, in keeping with the app's design (no backend, no generative
+AI/LLM, free public weather only). On-device speech recognition uses Apple's
+Speech framework for push-to-talk input; the intent mapping that follows is
+deterministic keyword matching.
 
-## Pilot interaction
-- **Speech recognition / push-to-talk** — let the pilot speak readbacks and requests instead of tapping buttons, with on-device recognition.
-- **User-created phraseology profiles** — allow users to define and share custom phraseology templates and call sets.
+## Delivered
 
-## Connect / multiplayer
-- **Live API integration** — pull multiplayer metadata and detect real ATC staffing so the app can step aside (or change behavior) when a human controller is present.
+### Pilot interaction
+- ✅ **Speech recognition / push-to-talk** — hold-to-talk on the ATC tab using
+  on-device speech recognition (`SpeechRecognitionService`), feeding a
+  deterministic `PilotIntentParser` that maps phrases to existing pilot actions.
+- ✅ **User-created phraseology profiles** — `PhraseologyProfile` /
+  `PhraseologyProfileStore` with per-call template overrides and airline call
+  sets, editable in Settings and shareable as JSON.
 
-## ATC realism
-- **More robust taxi routing** — model the airport surface for realistic taxi instructions.
-- **SID/STAR/approach parsing** — parse published procedures and reference them by name.
-- **Procedure-aware instructions** — issue departure/arrival/approach instructions consistent with parsed procedures.
-- **FAA / ICAO phraseology packs** — selectable phraseology standards and regional variations.
+### Connect / multiplayer
+- ✅ **Live API integration** — multiplayer/ATC-staffing detection via the
+  Connect manifest (`LiveATCDetector`); the companion steps aside (stands by,
+  stops generating controller calls) when a human controller is present. A mock
+  toggle in Diagnostics exercises the behavior in the Simulator.
 
-## Weather
-- **ForeFlight-style route/weather overlay** — visual route and weather presentation.
-- **Better turbulence model** — improve the ride report with a more sophisticated turbulence/ride-quality model.
+### ATC realism
+- ✅ **More robust taxi routing** — `TaxiRoutePlanner` models a simplified airport
+  surface (taxiways, ramp, per-runway routes, runway crossings) with a built-in
+  set for the demo airports and a deterministic fallback elsewhere.
+- ✅ **SID/STAR/approach parsing** — `ProcedureParser` / `ProcedureLibrary` parse
+  procedure name strings into structured procedures, enriched with known fixes.
+- ✅ **Procedure-aware instructions** — clearance, descent-via-arrival, and
+  approach clearances reference the parsed procedures by name.
+- ✅ **FAA / ICAO phraseology packs** — selectable packs change digit words
+  ("tree/fower/fife"), the frequency separator ("decimal" vs "point"), and the
+  altimeter/QNH convention (inHg vs hPa), plus phrase forms.
+
+### Weather
+- ✅ **ForeFlight-style route/weather overlay** — `RouteMapView` (MapKit) shows the
+  route line, departure/destination, live aircraft position, and PIREP
+  turbulence reports color-coded by severity.
+- ✅ **Better turbulence model** — `TurbulenceModel` blends PIREPs (weighted by
+  distance ahead and report age), SIGMET advisories, and a low-level wind-shear
+  proxy from the surface METAR into a continuous ride index and severity.
+
+## Known constraints (future refinement)
+
+These features ship with intentionally small, deterministic, offline datasets.
+Natural follow-ups, if desired later:
+
+- Expand the built-in procedure and airport-surface libraries (currently a handful
+  of demo airports; unknown fields fall back to generated/heuristic routes).
+- Map exact Connect manifest field names for ATC staffing once validated against
+  more Infinite Flight versions (detection is signature-based and best-effort).
+- Broaden ICAO regional variations and add metric (QFE/meters) options.
+- Render SIGMET/AIRMET area polygons on the route overlay.
