@@ -59,7 +59,7 @@ struct PhaseDetector {
                 return (arriving ? .taxiIn : .taxiOut, debug)
             }
             // High ground speed -> takeoff roll or landing rollout.
-            let rolloutContext = [.approach, .landing, .descent, .final].contains(previous)
+            let rolloutContext = [.approach, .landing, .descent].contains(previous)
             debug.notes.append("High ground speed on ground")
             return (rolloutContext ? .landing : .takeoff, debug)
         }
