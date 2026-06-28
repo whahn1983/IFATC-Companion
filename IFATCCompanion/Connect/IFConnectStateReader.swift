@@ -59,7 +59,7 @@ struct IFConnectStateReader {
         func int(_ logical: IFStateMappingStore.Logical) async -> Int? {
             guard let entry = store.entry(for: logical) else { return nil }
             guard let d = try? await client.readState(entry).doubleValue else { return nil }
-            return d.map(Int.init)
+            return Int(d)
         }
         func string(_ logical: IFStateMappingStore.Logical) async -> String? {
             guard let entry = store.entry(for: logical) else { return nil }

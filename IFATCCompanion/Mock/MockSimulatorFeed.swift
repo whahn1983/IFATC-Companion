@@ -167,7 +167,7 @@ final class MockSimulatorFeed: ObservableObject {
 
     // MARK: - Routes
 
-    static func defaultRoute() -> Route {
+    nonisolated static func defaultRoute() -> Route {
         let db = AirportDatabase.shared
         let dep = db.coordinate(for: "KIAH") ?? CLLocationCoordinate2D(latitude: 29.98, longitude: -95.34)
         let dest = db.coordinate(for: "KMSP") ?? CLLocationCoordinate2D(latitude: 44.88, longitude: -93.22)
@@ -177,7 +177,7 @@ final class MockSimulatorFeed: ObservableObject {
                                                names: ["TBONE", "KMCI", "KOMA", "KDSM", "FARGO"]))
     }
 
-    static func denverRoute() -> Route {
+    nonisolated static func denverRoute() -> Route {
         let db = AirportDatabase.shared
         let dep = db.coordinate(for: "KDEN") ?? CLLocationCoordinate2D(latitude: 39.85, longitude: -104.67)
         let dest = db.coordinate(for: "KMSP") ?? CLLocationCoordinate2D(latitude: 44.88, longitude: -93.22)
@@ -187,7 +187,7 @@ final class MockSimulatorFeed: ObservableObject {
                                                names: ["AKO", "ONL", "FSD", "REDWG"]))
     }
 
-    private static func synthWaypoints(dep: CLLocationCoordinate2D,
+    nonisolated private static func synthWaypoints(dep: CLLocationCoordinate2D,
                                        dest: CLLocationCoordinate2D,
                                        names: [String]) -> [Waypoint] {
         names.enumerated().map { idx, name in
