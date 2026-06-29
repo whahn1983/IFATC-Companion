@@ -3,6 +3,7 @@ import Foundation
 /// The simulated controller sector currently working the aircraft.
 enum ATCFacility: String, CaseIterable, Codable, Identifiable {
     case clearance
+    case ramp
     case ground
     case tower
     case departure
@@ -12,9 +13,19 @@ enum ATCFacility: String, CaseIterable, Codable, Identifiable {
 
     var id: String { rawValue }
 
+    /// Whether this facility is FAA air traffic control. Ramp is a simulated
+    /// local/airline/company procedure, NOT FAA ATC, and is excluded.
+    var isFAAATC: Bool {
+        switch self {
+        case .clearance, .ground, .tower, .departure, .center, .approach: return true
+        case .ramp, .unicom: return false
+        }
+    }
+
     var title: String {
         switch self {
         case .clearance: return "Clearance"
+        case .ramp: return "Ramp"
         case .ground: return "Ground"
         case .tower: return "Tower"
         case .departure: return "Departure"
@@ -28,6 +39,7 @@ enum ATCFacility: String, CaseIterable, Codable, Identifiable {
     var spokenName: String {
         switch self {
         case .clearance: return "Clearance Delivery"
+        case .ramp: return "Ramp"
         case .ground: return "Ground"
         case .tower: return "Tower"
         case .departure: return "Departure"
@@ -41,6 +53,7 @@ enum ATCFacility: String, CaseIterable, Codable, Identifiable {
     var symbol: String {
         switch self {
         case .clearance: return "doc.text"
+        case .ramp: return "parkingsign"
         case .ground: return "car"
         case .tower: return "building.2"
         case .departure: return "airplane.departure"

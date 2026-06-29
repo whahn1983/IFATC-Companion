@@ -22,11 +22,14 @@ struct PilotResponseEngine {
             let spoken = "Cleared to \(engine.spokenAirport(c.plan.destination)), climb via SID except maintain \(Phonetic.altitude(c.initialClimbAltitude, icao: icao)), \(Phonetic.squawk(c.squawk, icao: icao)), \(cs.spoken)."
             return pilot(display, spoken, facility: .clearance)
         case .pushback:
-            let phrase = icao ? "Push back approved" : "Pushback approved"
-            return pilot("\(phrase), \(cs.display).", "\(phrase), \(cs.spoken).", facility: .ground)
+            // Ramp readback. Echo the tail/face direction when one was given.
+            let dir = c.pushDirection.trimmingCharacters(in: .whitespaces).lowercased()
+            let word = c.rampProfile.rampType.usesFaceDirection ? "face" : "tail"
+            let tail = dir.isEmpty ? "" : ", \(word) \(dir)"
+            let phrase = icao ? "Push approved" : "Pushback approved"
+            return pilot("\(phrase)\(tail), \(cs.display).", "\(phrase)\(tail), \(cs.spoken).", facility: .ramp)
         case .engineStart:
-            let phrase = icao ? "Start-up approved" : "Start up approved"
-            return pilot("\(phrase), \(cs.display).", "\(phrase), \(cs.spoken).", facility: .ground)
+            return pilot("Start approved, \(cs.display).", "Start approved, \(cs.spoken).", facility: .ramp)
         case .lineUpWait:
             return pilot("Runway \(c.runway), line up and wait, \(cs.display).",
                          "Runway \(Phonetic.runway(c.runway, icao: icao)), line up and wait, \(cs.spoken).",
@@ -139,17 +142,19 @@ struct PilotResponseEngine {
     }
 
     func requestPushback(context c: ATCContext) -> ATCTransmission {
-        pilot("Ground, \(c.callsign.display), request pushback.",
-              "Ground, \(c.callsign.spoken), request pushback.",
-              facility: .ground)
+        // Pushback is a Ramp (local/company) request, not FAA Ground ATC.
+        let gate = c.gate.trimmingCharacters(in: .whitespaces)
+        let at = gate.isEmpty ? "" : " at \(gate)"
+        let atSpoken = gate.isEmpty ? "" : " at \(Phonetic.spellToken(gate, icao: icao))"
+        return pilot("Ramp, \(c.callsign.display)\(at), ready to push.",
+                     "Ramp, \(c.callsign.spoken)\(atSpoken), ready to push.",
+                     facility: .ramp)
     }
 
     func requestEngineStart(context c: ATCContext) -> ATCTransmission {
-        // ICAO "request start-up"; FAA "request engine start".
-        let phrase = icao ? "request start-up" : "request engine start"
-        return pilot("Ground, \(c.callsign.display), \(phrase).",
-                     "Ground, \(c.callsign.spoken), \(phrase).",
-                     facility: .ground)
+        return pilot("Ramp, \(c.callsign.display), request engine start.",
+                     "Ramp, \(c.callsign.spoken), request engine start.",
+                     facility: .ramp)
     }
 
     func requestTaxi(context c: ATCContext) -> ATCTransmission {

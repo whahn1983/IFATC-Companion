@@ -72,6 +72,49 @@ Once connected, the app reads live aircraft state and your flight plan automatic
 
 Use it responsibly and in keeping with Infinite Flight community standards.
 
+## Phraseology, Ramp, and clearance modes
+
+IFATC Companion uses **FAA / US phraseology** as the default, authoritative ATC
+mode (FAA JO 7110.65, AIM, Pilot/Controller Glossary, Chart Supplement). ICAO is a
+separate selectable pack and is never mixed into FAA mode. The full call reference
+is in [`docs/GateToGatePhraseology.md`](docs/GateToGatePhraseology.md), the
+structured catalog in [`Resources/GateToGateCallCatalog.json`](Resources/GateToGateCallCatalog.json),
+and the audit of corrections in [`docs/PhraseologyAudit.md`](docs/PhraseologyAudit.md).
+
+- **Simulated private ATC only.** Every call is for *you*. The app is never staffed
+  (human) ATC for other multiplayer users and defers to live controllers.
+- **Ramp is a first-class, simulated facility — not FAA ATC.** Pushback, engine-start
+  coordination, alley/spot movement, hold/give-way, and the handoff to Ground happen
+  on **Ramp** (a *local/airline/company procedure* that varies by airport). Ramp is
+  modeled **separately from Ground** and never issues runway, takeoff, landing,
+  crossing, route, altitude, heading, SID, STAR, or approach instructions.
+- **Non-movement vs movement area.** Ramp controls the non-movement area up to the
+  **spot / movement-area boundary**, where it hands off to **Ground** (FAA ATC),
+  which controls taxiways and runway crossings. On arrival, Ground hands back to Ramp
+  at the ramp boundary when a ramp profile applies.
+- **Ramp profiles.** A `RampProfile` system lets ramp behavior vary by airport
+  without code changes. With no airport profile, a conservative **generic airline
+  ramp** is used: push requires approval, tail/face direction is given only when
+  known (else "push approved, advise ready to taxi"), and the app never invents
+  precise spots.
+- **Safe phraseology, enforced.** A `PhraseologyValidator` blocks banned/outdated
+  wording — never "cleared to taxi", "cleared for pushback", "position and hold",
+  "takeoff at your discretion", "any traffic please advise", or "active runway".
+  Taxi instructions use "taxi/hold short/cross/continue/give way"; takeoff and
+  landing clearances always include the runway; "line up and wait" replaces
+  "position and hold".
+- **UNICOM is intent/status only.** It broadcasts your own intentions (taxiing,
+  crossing, taking/departing runway, inbound, final, clear, parking) and **never**
+  carries ATC clearances or ramp approvals.
+- **Clearance modes (planned).** Commercial flights may receive a PDC/CPDLC-style
+  text clearance instead of a full voice readback; the catalog/docs define both, and
+  a Voice/PDC/Auto setting is the next step (current runtime is voice clearance).
+- **Manual overrides.** When Infinite Flight doesn't expose a field, you can set
+  callsign, airline, flight number, departure/destination/alternate, gate, ramp
+  profile/frequency/spot, runway, SID/STAR/approach, cruise altitude, ATIS codes,
+  departure frequency, squawk, and taxi route. Missing data falls back to
+  conservative phraseology rather than guessing.
+
 ## Known limitations
 
 - ATC behavior is procedural and template-driven; it does not model every real-world situation or every controller decision.

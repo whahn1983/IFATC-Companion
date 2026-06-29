@@ -67,7 +67,9 @@ enum ATCState: String, CaseIterable, Codable, Identifiable {
         switch self {
         case .notConnected, .connectedIdle, .parked: return .ground
         case .clearance: return .clearance
-        case .pushback, .engineStart, .pushbackTaxi, .groundTaxi,
+        // Pushback and engine start are Ramp (local/company), not FAA Ground ATC.
+        case .pushback, .engineStart: return .ramp
+        case .pushbackTaxi, .groundTaxi,
              .runwayCrossing, .holdingShort: return .ground
         case .lineUpWait, .towerDeparture, .landing, .final, .runwayExit: return .tower
         case .initialClimb, .departure: return .departure

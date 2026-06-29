@@ -23,6 +23,7 @@ final class AppModel: ObservableObject {
     private var engine: PhraseologyEngine
     private var stateMachine: ATCStateMachine
     private var pilotEngine: PilotResponseEngine
+    private var rampEngine: RampPhraseologyEngine
     private var phaseDetector = PhaseDetector()
     private let taxiPlanner = TaxiRoutePlanner()
     private let intentParser = PilotIntentParser()
@@ -106,6 +107,7 @@ final class AppModel: ObservableObject {
         self.engine = engine
         self.stateMachine = ATCStateMachine(engine: engine)
         self.pilotEngine = PilotResponseEngine(engine: engine)
+        self.rampEngine = RampPhraseologyEngine(engine: engine)
         self.rideEngine = RideReportEngine(engine: engine)
     }
 
@@ -117,6 +119,7 @@ final class AppModel: ObservableObject {
         engine.profile = phraseologyProfiles.activeProfile
         stateMachine = ATCStateMachine(engine: engine)
         pilotEngine = PilotResponseEngine(engine: engine)
+        rampEngine = RampPhraseologyEngine(engine: engine)
         rideEngine = RideReportEngine(engine: engine)
     }
 
@@ -365,7 +368,8 @@ final class AppModel: ObservableObject {
     private func controller(for state: ATCState) -> ATCFacility {
         switch state {
         case .clearance: return .clearance
-        case .pushback, .engineStart, .pushbackTaxi, .groundTaxi, .runwayCrossing,
+        case .pushback, .engineStart: return .ramp
+        case .pushbackTaxi, .groundTaxi, .runwayCrossing,
              .holdingShort, .groundArrival, .parked: return .ground
         case .lineUpWait, .towerDeparture, .landing, .runwayExit: return .tower
         case .initialClimb, .departure: return .departure
@@ -378,6 +382,7 @@ final class AppModel: ObservableObject {
     /// Frequency the given facility is reached on, from the current context.
     private func frequency(for facility: ATCFacility, context c: ATCContext) -> Double {
         switch facility {
+        case .ramp: return c.rampFrequency
         case .clearance, .ground, .unicom: return c.groundFrequency
         case .tower: return c.towerFrequency
         case .departure: return c.departureFrequency
@@ -513,7 +518,17 @@ final class AppModel: ObservableObject {
         guard !companionStandby else { return }
         manualTuning = true
         hasDeparted = true
-        advanceAndPost(to: .parked, context: buildContext(for: .parked), announceHandoff: false)
+        let c = buildContext(for: .parked)
+        // Simulated arrival Ramp (local/company, non-FAA) entry conversation:
+        // Ground hands off to Ramp at the spot, the pilot checks in inbound, and
+        // Ramp gives a non-movement-area routing to the gate.
+        if !arrivalAnnounced, c.rampProfile.rampType != .none {
+            postPilot(rampEngine.arrivalInbound(cs: c.callsign, gate: c.gate))
+            post(rampEngine.proceedToGate(cs: c.callsign, gate: c.gate,
+                                          via: c.rampProfile.arrivalRampEntryPhrase.contains("inner")
+                                               ? "the inner alley" : "the ramp"), speak: true)
+        }
+        advanceAndPost(to: .parked, context: c, announceHandoff: false)
         if !arrivalAnnounced { announceArrival(); arrivalAnnounced = true }
         if settings.mockMode { mock.setPhase(.parked) }
     }
@@ -596,10 +611,15 @@ final class AppModel: ObservableObject {
         return agl < 1500 && vs < -100
     }
 
-    /// Arrival courtesy call once stopped at the gate.
+    /// Arrival block-in once stopped at the gate. Emits the simulated Ramp
+    /// (local/company, non-FAA) block-in call followed by a System "flight
+    /// complete" advisory.
     private func announceArrival() {
         let c = buildContext(for: .parked)
-        post(engine.welcomeArrival(cs: c.callsign, airport: flightPlan.destination), speak: true)
+        post(rampEngine.monitorRampToGate(cs: c.callsign), speak: true)
+        let display = "\(c.callsign.display) parked\(c.gate.isEmpty ? "" : " at \(c.gate)"). Flight complete."
+        let spoken = "\(c.callsign.spoken) parked. Flight complete."
+        post(ATCTransmission(sender: .system, facility: .ramp, displayText: display, spokenText: spoken), speak: false)
     }
 
     // MARK: - Live flight plan
@@ -731,6 +751,15 @@ final class AppModel: ObservableObject {
         }
         let initialClimb = settings.initialClimbAltitudeFt > 0 ? settings.initialClimbAltitudeFt : 5000
 
+        // Ramp (simulated local/company procedure). Falls back to the generic
+        // airline ramp profile when no airport-specific profile is known.
+        let rampAirport = arrival ? flightPlan.destination : flightPlan.departure
+        let rampProfile = RampProfile.profile(for: rampAirport)
+        // Push direction is only spoken when the profile supplies one; otherwise
+        // the ramp call falls back to "push approved, advise ready to taxi".
+        let pushDirection = rampProfile.defaultPushDirections.first ?? ""
+        let rampSpot = rampProfile.usesSpots ? (rampProfile.defaultSpotNames.first ?? "") : ""
+
         return ATCContext(
             callsign: cs,
             plan: flightPlan,
@@ -750,6 +779,11 @@ final class AppModel: ObservableObject {
             approachFrequency: 119.700,
             towerFrequency: 118.300,
             groundFrequency: 121.800,
+            rampFrequency: rampProfile.rampFrequency,
+            rampProfile: rampProfile,
+            pushDirection: pushDirection,
+            rampSpot: rampSpot,
+            gate: "",
             departureHeading: ((depHeading % 360) + 360) % 360,
             firstFixName: firstWaypoint?.name ?? "",
             traconCeiling: currentTraconCeiling,
