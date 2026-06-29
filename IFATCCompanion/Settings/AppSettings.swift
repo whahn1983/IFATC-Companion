@@ -45,6 +45,9 @@ final class AppSettings: ObservableObject {
     @Published var host: String { didSet { save(host, .host) } }
     @Published var port: Int { didSet { save(port, .port) } }
     @Published var autoDiscover: Bool { didSet { save(autoDiscover, .autoDiscover) } }
+    /// Keep the screen awake while the app is open. Infinite Flight drops the
+    /// Connect link when the companion device's screen locks, so this defaults on.
+    @Published var keepScreenAwake: Bool { didSet { save(keepScreenAwake, .keepScreenAwake) } }
 
     // Manual flight overrides
     @Published var callsign: String { didSet { save(callsign, .callsign) } }
@@ -106,6 +109,7 @@ final class AppSettings: ObservableObject {
         host = defaults.string(forKey: Key.host.rawValue) ?? ""
         port = defaults.object(forKey: Key.port.rawValue) as? Int ?? 10112
         autoDiscover = defaults.object(forKey: Key.autoDiscover.rawValue) as? Bool ?? true
+        keepScreenAwake = defaults.object(forKey: Key.keepScreenAwake.rawValue) as? Bool ?? true
 
         callsign = defaults.string(forKey: Key.callsign.rawValue) ?? ""
         airline = defaults.string(forKey: Key.airline.rawValue) ?? ""
@@ -160,6 +164,7 @@ final class AppSettings: ObservableObject {
     private func copy(from other: AppSettings) {
         isLoading = true
         host = other.host; port = other.port; autoDiscover = other.autoDiscover
+        keepScreenAwake = other.keepScreenAwake
         callsign = other.callsign; airline = other.airline; flightNumber = other.flightNumber
         departure = other.departure; destination = other.destination; alternate = other.alternate
         cruiseAltitude = other.cruiseAltitude; runway = other.runway
@@ -184,7 +189,7 @@ final class AppSettings: ObservableObject {
     // MARK: - Persistence
 
     private enum Key: String, CaseIterable {
-        case host, port, autoDiscover
+        case host, port, autoDiscover, keepScreenAwake
         case callsign, airline, flightNumber, departure, destination, alternate
         case cruiseAltitude, runway, sid, star, approach
         case voiceEnabled, defaultVoiceID, speechRate, speechPitch, respectSilentSwitch

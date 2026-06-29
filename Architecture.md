@@ -39,6 +39,7 @@ The app shell is a SwiftUI `TabView` hosted by `ContentView`, presenting the fiv
 This is the boundary between the app and Infinite Flight, deliberately isolated so the app never crashes when Infinite Flight is absent.
 
 - **IFConnectManager** — high-level connection manager. Owns connection lifecycle, host/port configuration, auto-discovery, reconnection, and exposes connection status. Falls back to manual overrides / Mock Mode when no connection is available.
+- **IFDiscoveryService** — auto-discovery of the Infinite Flight device. Runs two paths in parallel and reports whichever resolves first: (1) a Bonjour `NWBrowser` for `_infiniteflight._tcp` (the safe, entitlement-free path — needs only Local Network permission and the `NSBonjourServices` Info.plist entry), and (2) a BSD/POSIX UDP socket listening for IF's discovery broadcast on port 15000, re-emitting a permission ping every couple of seconds so reception flows once Local Network permission is granted. Receiving raw UDP broadcast on iOS 14+ also requires the `com.apple.developer.networking.multicast` entitlement (Apple-approved), so Bonjour is preferred; manual IP entry remains the always-available fallback.
 - **IFConnectClient** — the Infinite Flight Connect API v2 client, implemented over `Network.framework` TCP. Handles the wire protocol and raw state/command exchange.
 - **IFConnectManifestService** — state manifest discovery. Reads the Connect API's manifest of available state fields and commands so the app knows what data and which UNICOM commands are available in the current Infinite Flight session.
 
@@ -64,6 +65,7 @@ This is the boundary between the app and Infinite Flight, deliberately isolated 
 ## Procedures and taxi routing
 
 - **ProcedureParser / ProcedureLibrary** — parse SID/STAR/approach name strings into structured `Procedure` values, enriched with known fixes from a small built-in library. Clearance, descent-via-arrival, and approach clearances reference these by name.
+- **RunwayDatabase** — the real runway inventory per airport (major US fields incl. EWR/JFK/LGA). `AppModel` picks the active runway by choosing the field's real runway best aligned into the live METAR wind — the same way ATIS/ATC select the active runway — so the companion never assigns a runway that doesn't exist at the airport (e.g. it picks "22R" for a southerly wind at Newark instead of inventing "14"). When the airport isn't in the database it falls back to a wind-derived runway number; an explicit flight-plan runway or parsed approach runway always wins.
 - **TaxiRoutePlanner / AirportLayout** — a simplified airport-surface model (taxiways, ramp, per-runway routes, runway crossings) producing deterministic taxi instructions, with a built-in dataset for the demo airports and a generated fallback elsewhere.
 
 ## Push-to-talk
@@ -94,7 +96,7 @@ This is the boundary between the app and Infinite Flight, deliberately isolated 
 
 ## Settings
 
-- **AppSettings** — user preferences backed by `AppStorage` / `UserDefaults`: host/IP and port, voice selection, UNICOM automation mode, phraseology and unit preferences. No accounts or remote configuration.
+- **AppSettings** — user preferences backed by `AppStorage` / `UserDefaults`: host/IP and port, auto-discovery, keep-screen-awake, voice selection, UNICOM automation mode, phraseology and unit preferences. No accounts or remote configuration. **Keep screen awake** (default on) disables the iOS idle timer while the app is open so the device never sleeps and drops the Infinite Flight Connect link.
 
 ## Diagnostics
 
