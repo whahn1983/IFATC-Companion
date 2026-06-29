@@ -145,7 +145,6 @@ struct SettingsView: View {
 
     private var automationSection: some View {
         Section {
-            Toggle("Automatic ATC", isOn: $settings.automaticATC)
             Stepper(value: $settings.initialClimbAltitudeFt, in: 2000...10000, step: 1000) {
                 Text("Initial climb: \(settings.initialClimbAltitudeFt) ft")
             }
@@ -155,7 +154,7 @@ struct SettingsView: View {
         } header: {
             Text("ATC Automation")
         } footer: {
-            Text("When on, the companion follows your aircraft and runs the full ATC flow automatically — clearance through takeoff once you line up, hand-offs (Departure, Center, Approach, Tower, Ground), climb/descent and taxi-in. Turn off to drive the pre-departure flow with the buttons.")
+            Text("You drive your own calls with the buttons — clearance, pushback, engine start, taxi and ready. The controller's position-based calls play automatically: takeoff clearance once you line up, the hand-off to Departure after you're airborne, and the en-route and arrival sequence. Read backs and check-ins stay manual.")
         }
     }
 

@@ -71,13 +71,24 @@ final class AppModel: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private var started = false
 
-    /// Once airborne, automatic telemetry-driven ATC resumes. Before the first
-    /// departure the pre-departure ground flow (clearance → pushback → engine
-    /// start → taxi → ready) is pilot-driven so no phase is skipped.
+    /// Once airborne, automatic telemetry-driven controller calls run. Before the
+    /// first departure the pre-departure ground flow (clearance → pushback →
+    /// engine start → taxi → ready) is always pilot-driven via the response
+    /// buttons; the only controller call issued automatically on the ground is the
+    /// takeoff clearance, once the aircraft is lined up on the runway.
     private var hasDeparted = false
 
     /// Guards the one-time arrival courtesy call at the gate.
     private var arrivalAnnounced = false
+
+    /// Drives the position-triggered controller calls in mock mode. After the
+    /// pilot reports ready for departure, this plays out the automatic callouts
+    /// (takeoff clearance → hand-offs → climb/descent → approach → taxi-in) on a
+    /// realistic cadence, standing in for the live position telemetry.
+    private var mockAutopilotTask: Task<Void, Never>?
+
+    /// Pause between automatic controller callouts in mock mode (seconds).
+    private static let mockAutoPauseSeconds: Double = 4
 
     init() {
         let settings = AppSettings()
@@ -212,6 +223,8 @@ final class AppModel: ObservableObject {
 
     func startMock() {
         connect.disconnect()
+        mockAutopilotTask?.cancel()
+        mockAutopilotTask = nil
         stateMachine.reset()
         hasDeparted = false
         arrivalAnnounced = false
@@ -232,6 +245,8 @@ final class AppModel: ObservableObject {
 
     func startLive() {
         mock.stop()
+        mockAutopilotTask?.cancel()
+        mockAutopilotTask = nil
         stateMachine.reset()
         hasDeparted = false
         arrivalAnnounced = false
@@ -301,25 +316,30 @@ final class AppModel: ObservableObject {
         }
 
         // --- Pre-departure (on the ground, before the first takeoff) ---
+        // The pilot drives their own calls (clearance → pushback → engine start →
+        // taxi → ready) with the response buttons. The only controller call issued
+        // automatically here is the takeoff clearance, once the aircraft is lined
+        // up on the runway — Tower does not wait for a pilot prompt for that.
         if !hasDeparted {
-            if settings.automaticATC {
-                // Telemetry-driven: walk clearance → pushback → engine start → taxi
-                // → line up → takeoff as the aircraft progresses, one step per tick.
-                autoAdvanceGround(state: state)
-            } else if mapped.isManualGroundFlow {
-                // Manual mode: the pilot drives the ground flow via the buttons so
-                // telemetry never skips a phase. Hold here.
-            } else {
-                // Manual mode but telemetry already shows the takeoff roll — advance.
+            if stateMachine.current == .lineUpWait, !settings.mockMode,
+               isReadyForTakeoffClearance(state: state) {
+                autoIssueTakeoffClearance()
+            } else if !mapped.isManualGroundFlow {
+                // Telemetry already shows the takeoff roll (the pilot rolled without
+                // using the buttons) — advance so the flow is never stuck on ground.
                 advanceAndPost(to: mapped, context: buildContext(for: mapped))
             }
+            // Otherwise hold: the pilot-driven ground flow advances via the buttons.
             atcState = stateMachine.current
             currentFacility = controller(for: stateMachine.current)
             return
         }
 
-        // --- Airborne / arrival (automatic telemetry-driven) ---
-        let target = settings.automaticATC ? adjustedAirborneTarget(mapped: mapped, state: state) : mapped
+        // --- Airborne / arrival (automatic, telemetry-driven controller calls) ---
+        // Controller callouts (hand-offs, climb/descent, approach, landing, taxi-in)
+        // are issued automatically as the aircraft reaches each position. Pilot
+        // read-backs and check-ins stay manual (the response buttons).
+        let target = adjustedAirborneTarget(mapped: mapped, state: state)
         advanceAndPost(to: target, context: buildContext(for: target))
 
         // One-time arrival courtesy once stopped at the gate.
@@ -387,83 +407,58 @@ final class AppModel: ObservableObject {
         fireUnicomForTransition(into: target)
         atcState = stateMachine.current
         currentFacility = controller(for: stateMachine.current)
-        // Give the pilot the readback before progressing to the next section: in
-        // automatic mode, follow each controller instruction that requires one with
-        // the deterministic pilot readback. The context is rebuilt so it reflects the
-        // altitude/approach just assigned.
-        if settings.automaticATC, shouldAutoReadback(target) {
-            postPilot(pilotEngine.readback(for: target, context: buildContext(for: target)))
-        }
     }
 
-    /// Controller instructions a pilot reads back before the flow advances. Courtesy
-    /// / radar-contact check-ins (cruise, Center) are acknowledged, not read back.
-    private func shouldAutoReadback(_ state: ATCState) -> Bool {
-        switch state {
-        case .clearance, .pushback, .engineStart, .pushbackTaxi, .groundTaxi,
-             .lineUpWait, .towerDeparture, .initialClimb, .departure, .climb,
-             .descent, .approach, .final, .landing, .runwayExit, .groundArrival:
-            return true
-        case .notConnected, .connectedIdle, .runwayCrossing, .holdingShort,
-             .center, .cruise, .topOfDescent, .parked, .abnormal:
-            return false
-        }
-    }
-
-    /// Pre-departure auto-advance: choose the next ground state from telemetry and
-    /// issue the pilot request + controller reply for it (one step per tick).
-    private func autoAdvanceGround(state: AircraftState) {
-        guard let next = nextAutoGroundState(state: state) else { return }
-        autoGround(next)
-    }
-
-    /// The next ground state to advance to, or nil to hold. Conditions use ground
-    /// speed, runway alignment and the detected phase as corroborating evidence.
-    private func nextAutoGroundState(state: AircraftState) -> ATCState? {
-        let gs = state.groundSpeed ?? 0
+    /// Whether the aircraft is positioned for the automatic takeoff clearance:
+    /// lined up on the departure runway, already rolling, or telemetry reports the
+    /// takeoff phase. Used in live mode once the pilot has reported ready (the
+    /// state machine is at line-up-and-wait).
+    private func isReadyForTakeoffClearance(state: AircraftState) -> Bool {
         let runway = buildContext(for: stateMachine.current).runway
-        let lined = lineupDetector.isLinedUp(state: state, runway: runway)
-        let rolling = lineupDetector.isDepartingRoll(state: state, runway: runway)
-        let taxiingOrFaster = [.taxiOut, .takeoff].contains(phase)
-        switch stateMachine.current {
-        case .connectedIdle:
-            return .clearance
-        case .clearance:
-            return .pushback
-        case .pushback:
-            return .engineStart
-        case .engineStart:
-            return (gs > 2 || taxiingOrFaster) ? .groundTaxi : nil
-        case .groundTaxi, .pushbackTaxi:
-            return (lined || phase == .takeoff) ? .lineUpWait : nil
-        case .holdingShort:
-            return (lined || phase == .takeoff) ? .lineUpWait : nil
-        case .lineUpWait:
-            return (lined || rolling || phase == .takeoff) ? .towerDeparture : nil
-        default:
-            return nil
-        }
+        return lineupDetector.isLinedUp(state: state, runway: runway)
+            || lineupDetector.isDepartingRoll(state: state, runway: runway)
+            || phase == .takeoff
     }
 
-    /// Issue the auto pilot request (if any) for a ground step, then advance.
-    private func autoGround(_ target: ATCState) {
-        let c = buildContext(for: target)
-        if let pilotTx = autoPilotRequest(for: target, context: c) {
-            postPilot(pilotTx)
-        }
-        advanceAndPost(to: target, context: c)
+    /// Tower automatically clears the aircraft for takeoff (no pilot prompt needed).
+    private func autoIssueTakeoffClearance() {
+        advanceAndPost(to: .towerDeparture, context: buildContext(for: .towerDeparture))
     }
 
-    /// The pilot-initiated request that precedes each automatic ground step.
-    private func autoPilotRequest(for state: ATCState, context c: ATCContext) -> ATCTransmission? {
-        switch state {
-        case .clearance: return pilotEngine.requestClearance(context: c)
-        case .pushback: return pilotEngine.requestPushback(context: c)
-        case .engineStart: return pilotEngine.requestEngineStart(context: c)
-        case .groundTaxi, .pushbackTaxi: return pilotEngine.requestTaxi(context: c)
-        case .lineUpWait: return pilotEngine.readyForDeparture(context: c)
-        case .towerDeparture: return pilotEngine.requestTakeoff(context: c)
-        default: return nil
+    /// Drive the position-triggered controller calls in mock mode. Called once the
+    /// pilot reports ready for departure: it stands in for the missing live
+    /// telemetry by playing the automatic callouts (takeoff clearance through
+    /// arrival) one at a time on a realistic pause. The pilot still reads back and
+    /// checks in manually with the response buttons between calls.
+    private func startMockAutopilot() {
+        guard settings.mockMode else { return }
+        mockAutopilotTask?.cancel()
+        // The autopilot now owns mock emissions, so stop the free-running feed to
+        // avoid re-emitting a phase and oscillating between adjacent ATC states.
+        mock.stop()
+        let pause = UInt64(Self.mockAutoPauseSeconds * 1_000_000_000)
+        // One emission per controller callout, departure through arrival. The
+        // approach and landing phases are emitted twice because each walks two
+        // states (expect → cleared approach; cleared to land → exit runway).
+        let script: [FlightPhase] = [
+            .takeoff,        // cleared for takeoff (after the runway "pause")
+            .initialClimb,   // contact Departure + departure climb
+            .climb,          // contact Center + climb to cruise
+            .cruise,         // radar contact
+            .descent,        // descend via the arrival
+            .approach,       // expect approach
+            .approach,       // cleared approach
+            .landing,        // cleared to land
+            .landing,        // exit the runway, contact Ground
+            .taxiIn,         // taxi to parking
+            .parked          // arrival courtesy
+        ]
+        mockAutopilotTask = Task { [weak self] in
+            for nextPhase in script {
+                try? await Task.sleep(nanoseconds: pause)
+                guard let self, !Task.isCancelled, self.settings.mockMode else { return }
+                self.mock.setPhase(nextPhase)
+            }
         }
     }
 
@@ -883,6 +878,9 @@ final class AppModel: ObservableObject {
     /// tap (or `requestTakeoff`) yields the takeoff clearance.
     func reportReadyForDeparture() {
         groundFlow(pilotEngine.readyForDeparture(context: buildContext(for: .lineUpWait)), to: .lineUpWait)
+        // In mock mode there is no live telemetry to detect the line-up, so kick off
+        // the automatic position-triggered callouts (takeoff clearance onward).
+        if settings.mockMode { startMockAutopilot() }
     }
 
     func requestTakeoff() {
@@ -1005,5 +1003,39 @@ final class AppModel: ObservableObject {
         settings.resetAll()
         syncFlightPlanFromSettings()
         diagnostics.log(.app, "App data reset.")
+    }
+
+    /// Clear the current flight and start a fresh one from the gate. Wipes the
+    /// conversation and ATC/phase state but keeps the user's settings and flight
+    /// plan, then restarts the active feed. Use this between flights so the new
+    /// flight does not inherit the previous chat history.
+    func clearFlight() {
+        mockAutopilotTask?.cancel()
+        mockAutopilotTask = nil
+        speech.stop()
+        transcript.removeAll()
+        latestTransmission = nil
+        lastATCTransmission = nil
+        assignedAltitude = 0
+        hasDeparted = false
+        arrivalAnnounced = false
+        lastSpokenText = ""
+        lastSpokenIntent = nil
+        phase = .preflight
+        phaseDetector = PhaseDetector()
+        stateMachine.reset()
+        atcState = .connectedIdle
+        currentFacility = .ground
+        if settings.mockMode {
+            // Restart the mock feed from the gate.
+            mock.stop()
+            mock.setPhase(.preflight)
+            startMock()
+        } else {
+            // Keep the live IF connection; the conversation rebuilds from the next
+            // telemetry update.
+            stateMachine.setConnected()
+        }
+        diagnostics.log(.app, "Flight cleared — ready for a new flight.")
     }
 }

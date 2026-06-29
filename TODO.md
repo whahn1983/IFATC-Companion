@@ -42,21 +42,24 @@ deterministic keyword matching.
   distance ahead and report age), SIGMET advisories, and a low-level wind-shear
   proxy from the surface METAR into a continuous ride index and severity.
 
-### Automatic ATC (telemetry-driven, real-world flow)
+### Hybrid ATC (pilot-driven calls + automatic position callouts)
 - ✅ **Read the flight plan from Infinite Flight** — `IFConnectManager` reads
   `aircraft/0/flightplan` and `IFFlightPlanParser` extracts departure, destination
   and enroute fixes, merged into the active plan (manual overrides win).
-- ✅ **Automatic gate-to-gate flow** — with Automatic ATC on, the companion runs
-  the full sequence from telemetry: clearance → … → takeoff once lined up
-  (`RunwayLineupDetector`), automatic facility hand-offs, Departure-to-Center at a
-  configurable TRACON ceiling (FL180), descent/approach/cleared-to-land and
-  taxi-in. See [`docs/ATC-Flow.md`](docs/ATC-Flow.md).
+- ✅ **Pilot-driven pre-departure flow** — the pilot drives clearance → pushback →
+  engine start → taxi → ready with the ATC-tab buttons; read backs and check-ins
+  are always manual. See [`docs/ATC-Flow.md`](docs/ATC-Flow.md).
+- ✅ **Automatic, position-triggered controller calls** — the takeoff clearance
+  fires once lined up (`RunwayLineupDetector`); once airborne, facility hand-offs,
+  Departure-to-Center at a configurable TRACON ceiling (FL180),
+  descent/approach/cleared-to-land and taxi-in advance from telemetry. In Mock Mode
+  these play on a short pause (`startMockAutopilot`) after the pilot reports ready.
+- ✅ **Clear Flight** — a button on the ATC tab (`clearFlight()`) wipes the
+  conversation and ATC/phase state to start a new flight, keeping settings and the
+  flight plan.
 - ✅ **Real-world departure instructions** — the takeoff clearance issues the
   initial heading (bearing to the first fix, or "runway heading" when aligned) and
   the initial climb; Departure adds "resume own navigation, direct *fix*".
-- ✅ **Pilot readbacks before progressing** — in Automatic ATC, every controller
-  instruction that requires a readback is followed by the deterministic pilot
-  readback before the flow advances to the next section.
 - ✅ **Real-world arrival** — a filed STAR yields "descend via the *STAR* arrival"
   (else a plain, non-contradictory "descend and maintain *alt*" to an intermediate
   level); Approach issues the **cleared *ILS/GPS/Visual* approach** once the

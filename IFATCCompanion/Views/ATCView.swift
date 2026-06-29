@@ -9,6 +9,8 @@ struct ATCView: View {
     @EnvironmentObject var speech: SpeechService
     @EnvironmentObject var recognizer: SpeechRecognitionService
 
+    @State private var showClearFlightConfirm = false
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -26,11 +28,26 @@ struct ATCView: View {
             .navigationBarTitleDisplayMode(.inline)
             .screenBackground()
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(role: .destructive) {
+                        showClearFlightConfirm = true
+                    } label: {
+                        Label("Clear Flight", systemImage: "arrow.counterclockwise")
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     if speech.isSpeaking {
                         Button { speech.stop() } label: { Image(systemName: "stop.circle.fill") }
                     }
                 }
+            }
+            .confirmationDialog("Clear this flight?",
+                                isPresented: $showClearFlightConfirm,
+                                titleVisibility: .visible) {
+                Button("Clear Flight", role: .destructive) { model.clearFlight() }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Resets the conversation and starts a new flight from the gate. Your settings and flight plan are kept.")
             }
         }
     }
