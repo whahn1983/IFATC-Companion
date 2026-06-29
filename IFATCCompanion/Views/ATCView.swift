@@ -191,9 +191,10 @@ struct ATCView: View {
     // MARK: - Frequency tuning
 
     /// Manual frequency-change buttons: the pilot taps a controller to switch to
-    /// its frequency and get that facility's next instruction. Tapping any of
-    /// these hands control of the flight's progression to the pilot, so calls no
-    /// longer auto-play one after another.
+    /// its frequency. Tuning no longer checks in automatically — afterwards the
+    /// pilot taps Check In to call the controller, or makes a specific request.
+    /// Tapping any of these hands control of the flight's progression to the pilot,
+    /// so calls no longer auto-play one after another.
     private var frequencyCard: some View {
         Card(title: "Tune Frequency", systemImage: "dial.medium") {
             VStack(alignment: .leading, spacing: 10) {
@@ -215,7 +216,7 @@ struct ATCView: View {
                         model.arriveAtGate()
                     }
                 }
-                Text("Tap a controller to change frequency and get the next instruction. You drive every frequency change.")
+                Text("Tap a controller to change frequency. Then tap Check In to call them, or make a request. You drive every frequency change.")
                     .font(.caption2).foregroundStyle(.tertiary)
             }
         }

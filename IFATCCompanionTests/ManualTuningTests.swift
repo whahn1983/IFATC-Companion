@@ -55,19 +55,20 @@ final class ManualTuningTests: XCTestCase {
         model.requestTaxi();             model.readBack()
         model.reportReadyForDeparture(); model.readBack()   // line up and wait
 
-        // Pilot tunes each frequency in turn (re-tapping Center/Approach/Tower for
-        // their successive calls).
-        model.tuneTo(.tower);     model.readBack()   // cleared for takeoff
-        model.tuneTo(.departure); model.readBack()   // departure climb
-        model.tuneTo(.center);    model.readBack()   // climb to cruise
-        model.tuneTo(.center)                        // radar contact (not read back)
-        model.tuneTo(.center);    model.readBack()   // descend via the STAR
-        model.tuneTo(.approach);  model.readBack()   // expect approach
-        model.tuneTo(.approach);  model.readBack()   // cleared approach
-        model.tuneTo(.tower);     model.readBack()   // cleared to land
-        model.tuneTo(.tower);     model.readBack()   // exit runway, contact Ground
-        model.tuneTo(.ground);    model.readBack()   // taxi to parking
-        model.arriveAtGate()                         // arrival courtesy
+        // Pilot tunes each frequency in turn and then checks in to call up the new
+        // controller (tuning no longer checks in automatically). Center/Approach/
+        // Tower are re-tapped for their successive calls.
+        model.tuneTo(.tower);     model.requestHandoff(); model.readBack()   // cleared for takeoff
+        model.tuneTo(.departure); model.requestHandoff(); model.readBack()   // departure climb
+        model.tuneTo(.center);    model.requestHandoff(); model.readBack()   // climb to cruise
+        model.tuneTo(.center);    model.requestHandoff()                     // radar contact (not read back)
+        model.tuneTo(.center);    model.requestHandoff(); model.readBack()   // descend via the STAR
+        model.tuneTo(.approach);  model.requestHandoff(); model.readBack()   // expect approach
+        model.tuneTo(.approach);  model.requestHandoff(); model.readBack()   // cleared approach
+        model.tuneTo(.tower);     model.requestHandoff(); model.readBack()   // cleared to land
+        model.tuneTo(.tower);     model.requestHandoff(); model.readBack()   // exit runway, contact Ground
+        model.tuneTo(.ground);    model.requestHandoff(); model.readBack()   // taxi to parking
+        model.arriveAtGate()                                                 // arrival courtesy
         return model
     }
 
@@ -118,7 +119,7 @@ final class ManualTuningTests: XCTestCase {
         model.requestTaxi();             model.readBack()
         model.reportReadyForDeparture(); model.readBack()
 
-        model.tuneTo(.tower)             // engages manual tuning (cleared for takeoff)
+        model.tuneTo(.tower)             // engages manual tuning (no auto check-in)
         let countAfterTune = model.transcript.count
 
         // Feeding airborne telemetry must NOT add any further controller calls — the
