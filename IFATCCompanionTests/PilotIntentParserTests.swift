@@ -38,6 +38,22 @@ final class PilotIntentParserTests: XCTestCase {
         XCTAssertEqual(parser.parse("roger"), .readback)
     }
 
+    func testDepartureGroundRequests() {
+        XCTAssertEqual(parser.parse("request pushback"), .requestPushback)
+        XCTAssertEqual(parser.parse("Ground, United 598, ready for push"), .requestPushback)
+        XCTAssertEqual(parser.parse("request start-up"), .requestEngineStart)
+        XCTAssertEqual(parser.parse("request engine start"), .requestEngineStart)
+        XCTAssertEqual(parser.parse("request IFR clearance to Denver"), .requestClearance)
+        XCTAssertEqual(parser.parse("request taxi"), .requestTaxi)
+        XCTAssertEqual(parser.parse("holding short runway two seven, ready for departure"), .readyForDeparture)
+        XCTAssertEqual(parser.parse("request takeoff"), .requestTakeoff)
+    }
+
+    func testTaxiReadbackIsNotATaxiRequest() {
+        // Reading back a taxi clearance must remain a readback, not a new request.
+        XCTAssertEqual(parser.parse("taxi to runway two seven via alpha"), .readback)
+    }
+
     func testUnknown() {
         XCTAssertEqual(parser.parse("the weather is nice today"), .unknown)
     }

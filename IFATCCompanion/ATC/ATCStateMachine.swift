@@ -83,9 +83,15 @@ struct ATCStateMachine {
                                     initialAlt: c.initialClimbAltitude,
                                     departureFreq: c.departureFrequency, squawk: c.squawk,
                                     sidProcedure: c.sidProcedure)
+        case .pushback:
+            return engine.pushbackApproved(cs: c.callsign)
+        case .engineStart:
+            return engine.startupApproved(cs: c.callsign)
         case .groundTaxi, .pushbackTaxi:
             return engine.taxiToRunway(cs: c.callsign, runway: c.runway,
                                        via: c.taxiway, crossing: c.crossingRunway)
+        case .lineUpWait:
+            return engine.lineUpAndWait(cs: c.callsign, runway: c.runway)
         case .towerDeparture:
             return engine.clearedForTakeoff(cs: c.callsign, runway: c.runway,
                                             windDir: c.windDirection, windSpeed: c.windSpeed)

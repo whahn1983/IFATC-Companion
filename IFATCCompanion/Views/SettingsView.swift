@@ -16,6 +16,7 @@ struct SettingsView: View {
                 connectionSection
                 voiceSection
                 facilityVoiceSection
+                pilotVoiceSection
                 phraseologySection
                 unicomSection
                 weatherSection
@@ -90,6 +91,17 @@ struct SettingsView: View {
             voicePicker("Departure", selection: $settings.voiceDeparture)
             voicePicker("Center", selection: $settings.voiceCenter)
             voicePicker("Approach", selection: $settings.voiceApproach)
+        }
+    }
+
+    private var pilotVoiceSection: some View {
+        Section {
+            Toggle("Speak pilot readbacks", isOn: $settings.speakPilot)
+            voicePicker("Pilot voice", selection: $settings.voicePilot)
+        } header: {
+            Text("Pilot Voice")
+        } footer: {
+            Text("Speaks your readbacks and requests aloud when you use the buttons. Push-to-talk input is never repeated.")
         }
     }
 

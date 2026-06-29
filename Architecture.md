@@ -49,7 +49,7 @@ This is the boundary between the app and Infinite Flight, deliberately isolated 
 ## ATC state machine and phase detection
 
 - **PhaseDetector** — derives the current `FlightPhase` from `AircraftState` (and flight plan context) using heuristics over altitude, speed, vertical speed, and ground state.
-- **ATCStateMachine** — the procedural core. It consumes the detected phase and pilot actions and advances through ATC interaction states, deciding which calls are due and tracking expected readbacks.
+- **ATCStateMachine** — the procedural core. It consumes the detected phase and pilot actions and advances through ATC interaction states, deciding which calls are due and tracking expected readbacks. The pre-departure ground sequence (clearance → pushback → engine start → taxi → holding short → line up and wait → takeoff) is pilot-driven via the ATC-tab buttons so telemetry can't skip a phase; `AppModel` holds automatic advancement until the aircraft is airborne (`hasDeparted`), then resumes telemetry-driven ATC for the enroute and arrival phases.
 
 ## Phraseology
 
@@ -86,7 +86,7 @@ This is the boundary between the app and Infinite Flight, deliberately isolated 
 
 ## Speech
 
-- **SpeechService** — text-to-speech via `AVSpeechSynthesizer`, fully offline. Supports per-facility voices so different ATC positions can sound distinct. Speaks transcript entries produced by the phraseology and pilot-response engines.
+- **SpeechService** — text-to-speech via `AVSpeechSynthesizer`, fully offline. Supports per-facility controller voices plus a separate pilot voice (with a subtle pitch offset) so the controller and own-ship calls are distinguishable. Pilot transmissions are spoken when triggered by a button/text tap; push-to-talk input is not re-spoken because the user already said it.
 
 ## Settings
 
