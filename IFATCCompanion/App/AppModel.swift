@@ -430,6 +430,11 @@ final class AppModel: ObservableObject {
     /// telemetry by playing the automatic callouts (takeoff clearance through
     /// arrival) one at a time on a realistic pause. The pilot still reads back and
     /// checks in manually with the response buttons between calls.
+    ///
+    /// Each callout waits for the previous transmission to finish being spoken
+    /// before pacing the next one. Without that gate the speech synthesizer simply
+    /// queues every call and plays them back-to-back — so the calls appear to fire
+    /// "all at once" with no pause for the pilot to read back.
     private func startMockAutopilot() {
         guard settings.mockMode else { return }
         mockAutopilotTask?.cancel()
@@ -455,10 +460,29 @@ final class AppModel: ObservableObject {
         ]
         mockAutopilotTask = Task { [weak self] in
             for nextPhase in script {
-                try? await Task.sleep(nanoseconds: pause)
                 guard let self, !Task.isCancelled, self.settings.mockMode else { return }
+                // Let the previous controller call finish being spoken so the next
+                // one doesn't talk over it / pile up in the speech queue.
+                await self.waitForSpeechToFinish()
+                // A realistic beat for the pilot to read back the last instruction.
+                try? await Task.sleep(nanoseconds: pause)
+                guard !Task.isCancelled, self.settings.mockMode else { return }
+                // If the pilot began a read-back during that beat, let it finish
+                // before the controller speaks again.
+                await self.waitForSpeechToFinish()
+                guard !Task.isCancelled, self.settings.mockMode else { return }
                 self.mock.setPhase(nextPhase)
             }
+        }
+    }
+
+    /// Suspend until the speech synthesizer is idle (or the task is cancelled), so
+    /// the automatic mock callouts never talk over the previous transmission.
+    /// Returns immediately when voice is disabled (nothing is ever speaking).
+    private func waitForSpeechToFinish() async {
+        while speech.isSpeaking {
+            if Task.isCancelled { return }
+            try? await Task.sleep(nanoseconds: 200_000_000)
         }
     }
 
