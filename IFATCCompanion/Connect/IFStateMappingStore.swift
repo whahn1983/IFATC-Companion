@@ -21,6 +21,8 @@ final class IFStateMappingStore {
         case onGround
         /// Autopilot approach mode (APPR) armed/engaged.
         case approachMode
+        /// Parking brake set/released.
+        case parkingBrake
         case gForce
         case bankAngle
         case pitch
@@ -67,6 +69,7 @@ final class IFStateMappingStore {
             case .verticalSpeed: return ["verticalspeed", "vspeed", "verticalspeedfpm"]
             case .onGround: return ["isonground", "onground"]
             case .approachMode: return ["autopilotapproach", "approachmode", "apprmode", "isapproach", "appr", "approachhold"]
+            case .parkingBrake: return ["parkingbrake", "parkbrake", "brakeparking"]
             case .gForce: return ["gforce", "accelerationgforce"]
             case .bankAngle: return ["bankangledegrees", "bankangle", "bank"]
             case .pitch: return ["pitchdegrees", "pitch"]

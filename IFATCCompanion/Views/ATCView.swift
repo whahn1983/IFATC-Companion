@@ -210,10 +210,10 @@ struct ATCView: View {
                     }
                     FrequencyButton(title: "Ramp",
                                     systemImage: "parkingsign",
-                                    frequency: "Parking",
-                                    active: model.atcState == .parked,
-                                    enabled: model.atcState != .parked) {
-                        model.arriveAtGate()
+                                    frequency: model.isArrivalRamp ? "To Gate" : "Pushback",
+                                    active: model.currentFacility == .ramp,
+                                    enabled: model.canContactRamp) {
+                        model.contactRamp()
                     }
                 }
                 Text("Tap a controller to change frequency. Then tap Check In to call them, or make a request. You drive every frequency change.")

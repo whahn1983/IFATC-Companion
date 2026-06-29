@@ -194,6 +194,18 @@ struct PilotResponseEngine {
     }
 
     func requestApproach(context c: ATCContext) -> ATCTransmission {
+        // Prefer the parsed procedure (approach *type* + runway) so the runway is
+        // named exactly once — "request the ILS runway 01R approach" — rather than
+        // echoing a display name that already contains "RWY 01R" and then repeating
+        // the runway ("the ILS RWY 01R runway 01R approach").
+        if let approach = c.approachProcedure {
+            let rwy = approach.runway ?? c.runway
+            let typeD = approach.approachType?.display ?? "approach"
+            let typeS = approach.approachType?.spoken ?? "approach"
+            return pilot("\(c.callsign.display), request the \(typeD) runway \(rwy) approach.",
+                         "\(c.callsign.spoken), request the \(typeS) runway \(Phonetic.runway(rwy, icao: icao)) approach.",
+                         facility: .approach)
+        }
         let app = c.approachName.isEmpty ? "ILS" : c.approachName
         return pilot("\(c.callsign.display), request the \(app) runway \(c.runway) approach.",
                      "\(c.callsign.spoken), request the \(c.approachName.isEmpty ? "I L S" : c.approachName) runway \(Phonetic.runway(c.runway, icao: icao)) approach.",

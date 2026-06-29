@@ -25,7 +25,14 @@ struct FlightPlan: Equatable, Codable {
     var destination: String = ""    // ICAO
     var alternate: String = ""      // ICAO
     var cruiseAltitude: Int = 0     // feet
+    /// Manual/override runway (applies to both ends when set in the Flight tab).
     var runway: String = ""
+    /// Departure runway recovered from the flight plan (e.g. "22R" from a `DPT RW22R`
+    /// token). Empty when the plan does not name one.
+    var departureRunway: String = ""
+    /// Arrival runway recovered from the flight plan (a runway token near the end of
+    /// the route). The parsed approach's runway takes precedence over this on arrival.
+    var arrivalRunway: String = ""
     var sid: String = ""
     var star: String = ""
     var approach: String = ""

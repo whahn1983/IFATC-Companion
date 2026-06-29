@@ -124,6 +124,9 @@ final class MockSimulatorFeed: ObservableObject {
         // Simulate the autopilot approach mode (APPR) being engaged once on the
         // approach, so the companion can issue the "cleared … approach" call.
         s.approachModeEngaged = (phase == .approach || phase == .landing)
+        // Parking brake is set at the gate (pre-departure) and once parked after
+        // arrival; released any time the aircraft is moving or airborne.
+        s.parkingBrakeSet = (phase == .preflight || phase == .parked)
         s.nearestAirport = frac < 0.5 ? route.departure : route.destination
         s.nearestAirportDistanceNM = Geo.distanceNM(from: coord,
                                                      to: frac < 0.5 ? route.depCoord : route.destCoord)
