@@ -60,6 +60,10 @@ struct IFConnectStateReader {
     /// The raw flight-plan strings Infinite Flight exposes. Any field may be absent
     /// depending on the IF version / manifest.
     struct FlightPlanPayloads {
+        /// `aircraft/0/flightplan/full_info` — the detailed JSON document with per-fix
+        /// planned altitudes and nested SID/STAR/approach procedure groups. This is the
+        /// richest source (the cruise altitude and procedure names come from here).
+        var fullInfo: String?
         /// `aircraft/0/flightplan` — the full plan (rich JSON on some versions, a
         /// collapsed summary of the legs on others).
         var full: String?
@@ -68,7 +72,7 @@ struct IFConnectStateReader {
         /// `aircraft/0/flightplan/coordinates` — per-fix coordinates.
         var coordinates: String?
 
-        var isEmpty: Bool { full == nil && route == nil && coordinates == nil }
+        var isEmpty: Bool { fullInfo == nil && full == nil && route == nil && coordinates == nil }
     }
 
     /// Read the raw flight-plan string (`aircraft/0/flightplan`), if exposed.
@@ -86,7 +90,8 @@ struct IFConnectStateReader {
             guard let raw, !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
             return raw
         }
-        return FlightPlanPayloads(full: await read(.flightPlan),
+        return FlightPlanPayloads(fullInfo: await read(.flightPlanFullInfo),
+                                  full: await read(.flightPlan),
                                   route: await read(.flightPlanRoute),
                                   coordinates: await read(.flightPlanCoordinates))
     }

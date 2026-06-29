@@ -30,6 +30,12 @@ final class IFStateMappingStore {
         case callsign
         /// Full flight plan as a string (`aircraft/0/flightplan`), parsed best-effort.
         case flightPlan
+        /// The detailed flight-plan document (`aircraft/0/flightplan/full_info`). This
+        /// is the rich JSON Infinite Flight serves with per-fix planned altitudes and
+        /// nested SID/STAR/approach procedure groups — the plain `flightplan` state only
+        /// returns a collapsed summary of the legs, so the cruise altitude and procedure
+        /// names live here.
+        case flightPlanFullInfo
         /// The textual route (`aircraft/0/flightplan/route`). Across IF versions the
         /// `flightplan` state often serves only a collapsed summary of the legs, while
         /// the route string carries every enroute fix — so it is read as a richer
@@ -69,6 +75,7 @@ final class IFStateMappingStore {
             case .nearestAirportICAO: return ["nearestairporticao", "nearestairport"]
             case .callsign: return ["callsign", "username", "displayname"]
             case .flightPlan: return ["flightplan", "flightplanstring", "fpl"]
+            case .flightPlanFullInfo: return ["flightplanfullinfo", "fullinfo", "flightplandetailed", "flightplaninfo"]
             case .flightPlanRoute: return ["flightplanroute", "planroute"]
             case .flightPlanCoordinates: return ["flightplancoordinates", "plancoordinates"]
             case .atcActive: return ["isatcactive", "atcactive", "atcisactive", "controlleractive"]
