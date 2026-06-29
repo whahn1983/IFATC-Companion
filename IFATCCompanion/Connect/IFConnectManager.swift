@@ -184,6 +184,11 @@ final class IFConnectManager: ObservableObject {
             self.discoveryTimeoutTask = nil
             self.diagnostics?.log(.connect, "Discovered \(device.name) at \(device.address):\(device.port)")
             self.discovery.stop()
+            // Clear the active `.discovering` state so the connect() call made from
+            // `onFound` isn't short-circuited by its `guard !connectionState.isActive`
+            // guard — otherwise the search would appear to keep running and never
+            // connect until the user manually reconnected.
+            self.connectionState = .disconnected
             onFound(device)
         }
         discoveryTimeoutTask?.cancel()
