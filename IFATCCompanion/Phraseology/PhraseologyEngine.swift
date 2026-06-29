@@ -42,15 +42,25 @@ struct PhraseologyEngine {
     func displayCallsign(airline: String, flightNumber: String, fallback: String = "") -> String {
         let airlineTrim = airline.trimmingCharacters(in: .whitespaces)
         let numTrim = flightNumber.trimmingCharacters(in: .whitespaces)
-        if !airlineTrim.isEmpty && !numTrim.isEmpty { return "\(airlineTrim) \(numTrim)" }
+        if !airlineTrim.isEmpty && !numTrim.isEmpty { return "\(displayAirline(airlineTrim)) \(numTrim)" }
         let fb = fallback.trimmingCharacters(in: .whitespaces)
         return fb.isEmpty ? "Aircraft" : fb
     }
 
     /// Spoken telephony name for an airline. A user profile may map an ICAO/IATA
-    /// designator or name to a custom radio name (e.g. "DLH" -> "Lufthansa").
+    /// designator or name to a custom radio name (e.g. "DLH" -> "Lufthansa"); a
+    /// built-in airline database covers the common carriers out of the box.
     func spokenAirline(_ airline: String) -> String {
         if let custom = profile?.airlineCallName(for: airline) { return custom }
+        if let name = AirlineDatabase.callName(for: airline) { return name }
+        return airline
+    }
+
+    /// Friendly name shown in the transcript: resolves a designator (e.g. "UAL")
+    /// to its telephony name ("United"), otherwise leaves the text as entered.
+    func displayAirline(_ airline: String) -> String {
+        if let custom = profile?.airlineCallName(for: airline) { return custom }
+        if let name = AirlineDatabase.callName(for: airline) { return name }
         return airline
     }
 
