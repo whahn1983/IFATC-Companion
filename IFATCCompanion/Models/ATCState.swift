@@ -69,11 +69,11 @@ enum ATCState: String, CaseIterable, Codable, Identifiable {
         case .clearance: return .clearance
         case .pushback, .engineStart, .pushbackTaxi, .groundTaxi,
              .runwayCrossing, .holdingShort: return .ground
-        case .lineUpWait, .towerDeparture, .landing, .final: return .tower
+        case .lineUpWait, .towerDeparture, .landing, .final, .runwayExit: return .tower
         case .initialClimb, .departure: return .departure
         case .climb, .center, .cruise, .topOfDescent: return .center
         case .descent, .approach: return .approach
-        case .runwayExit, .groundArrival: return .ground
+        case .groundArrival: return .ground
         case .abnormal: return .center
         }
     }

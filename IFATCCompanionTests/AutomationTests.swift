@@ -149,4 +149,75 @@ final class AutomationTests: XCTestCase {
         XCTAssertTrue(tx?.displayText.contains("FL180") ?? false)
         XCTAssertTrue(tx?.displayText.contains("direct WAGON") ?? false)
     }
+
+    // MARK: - Descent phraseology (non-contradictory)
+
+    func testDescentTargetIsIntermediateBelowCruise() {
+        var ctx = TestSupport.context(cruise: 37000)
+        XCTAssertEqual(ATCStateMachine.descentTargetAltitude(context: ctx), 11000)
+        ctx.cruiseAltitude = 12000
+        XCTAssertEqual(ATCStateMachine.descentTargetAltitude(context: ctx), 8000)
+    }
+
+    func testDescentWithoutStarIsPlainDescendAndMaintain() {
+        var m = ATCStateMachine(engine: engine())
+        m.setConnected()
+        let ctx = TestSupport.context(cruise: 37000)   // no STAR
+        let tx = m.advance(to: .descent, context: ctx)
+        XCTAssertTrue(tx?.displayText.contains("descend and maintain 11,000") ?? false)
+        XCTAssertFalse(tx?.displayText.contains("pilot's discretion") ?? true)
+        XCTAssertFalse(tx?.displayText.contains("FL370") ?? true)
+    }
+
+    func testDescentWithStarSaysDescendViaArrival() {
+        var m = ATCStateMachine(engine: engine())
+        m.setConnected()
+        var ctx = TestSupport.context(cruise: 37000)
+        ctx.starProcedure = ProcedureParser.parseSTAR("KKILR", icao: "KMSP")
+        let tx = m.advance(to: .descent, context: ctx)
+        XCTAssertTrue(tx?.displayText.contains("descend via the KKILR arrival") ?? false)
+        XCTAssertFalse(tx?.displayText.contains("pilot's discretion") ?? true)
+    }
+
+    // MARK: - Cleared approach + runway exit
+
+    func testRunwayExitTellsPilotToExitAndContactGround() {
+        var m = ATCStateMachine(engine: engine())
+        m.setConnected()
+        let tx = m.advance(to: .runwayExit, context: TestSupport.context())
+        XCTAssertEqual(tx?.facility, .tower)
+        XCTAssertTrue(tx?.displayText.contains("exit the runway when able") ?? false)
+        XCTAssertTrue(tx?.displayText.contains("contact Ground") ?? false)
+    }
+
+    func testExitRunwayContactGroundPhraseology() {
+        let e = engine()
+        let cs = e.callsign(airline: "United", flightNumber: "598", fallback: "")
+        let tx = e.exitRunwayContactGround(cs: cs, frequency: 121.8)
+        XCTAssertEqual(tx.facility, .tower)
+        XCTAssertTrue(tx.displayText.contains("121.800"))
+        XCTAssertTrue(tx.displayText.contains("once on the taxiway"))
+    }
+
+    // MARK: - Final-approach establishment
+
+    func testOnFinalApproachDetectedWhenAlignedLowAndDescending() {
+        let d = RunwayLineupDetector()
+        var s = AircraftState()
+        s.onGround = false
+        s.heading = 302            // runway 30L -> 300°
+        s.altitudeAGL = 2000
+        s.verticalSpeed = -700
+        XCTAssertTrue(d.isOnFinalApproach(state: s, runway: "30L"))
+    }
+
+    func testNotOnFinalApproachWhenLevelOrHigh() {
+        let d = RunwayLineupDetector()
+        var s = AircraftState()
+        s.onGround = false
+        s.heading = 300
+        s.altitudeAGL = 9000       // too high
+        s.verticalSpeed = -700
+        XCTAssertFalse(d.isOnFinalApproach(state: s, runway: "30L"))
+    }
 }

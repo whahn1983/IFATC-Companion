@@ -35,6 +35,7 @@ struct IFConnectStateReader {
         s.track = (await double(.track)).map(IFConnectStateReader.normalizeAngle)
         s.verticalSpeed = await double(.verticalSpeed)
         s.onGround = await bool(.onGround)
+        s.approachModeEngaged = await bool(.approachMode)
         s.gForce = await double(.gForce)
         s.bankAngle = await double(.bankAngle)
         s.pitch = await double(.pitch)

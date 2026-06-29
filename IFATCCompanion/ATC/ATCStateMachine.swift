@@ -50,6 +50,14 @@ struct ATCStateMachine {
 
     mutating func reset() { current = .notConnected }
 
+    /// Intermediate altitude (ft MSL) Center assigns at top of descent — clearly
+    /// below cruise (so "descend and maintain …" is never contradictory) and above
+    /// the terminal/approach altitude that Approach later assigns.
+    static func descentTargetAltitude(context c: ATCContext) -> Int {
+        let cruise = c.cruiseAltitude > 0 ? c.cruiseAltitude : 37000
+        return cruise > 15000 ? 11000 : max(4000, cruise - 4000)
+    }
+
     mutating func setConnected() {
         if current == .notConnected { current = .connectedIdle }
     }
@@ -123,12 +131,23 @@ struct ATCStateMachine {
             // On reaching cruise, a brief center check-in/radar contact.
             return engine.radarContact(cs: c.callsign, facility: .center)
         case .descent:
+            // A filed STAR yields "descend via the <STAR> arrival"; otherwise a plain
+            // "descend and maintain <alt>". The target is an intermediate altitude
+            // clearly below cruise (not the cruise level), so it is never contradictory.
+            let alt = ATCStateMachine.descentTargetAltitude(context: c)
             if let star = c.starProcedure {
-                return engine.descendViaArrival(cs: c.callsign, star: star, altitude: max(10000, c.assignedAltitude))
+                return engine.descendViaArrival(cs: c.callsign, star: star, altitude: alt)
             }
-            return engine.descendPilotsDiscretion(cs: c.callsign, altitude: max(10000, c.assignedAltitude))
+            return engine.descendMaintain(cs: c.callsign, altitude: alt)
         case .approach:
-            return engine.descendExpectApproach(cs: c.callsign, altitude: max(3000, c.assignedAltitude),
+            // Approach descends to a terminal intercept altitude (3,000 ft) and tells
+            // the pilot which approach to expect — independent of the higher altitude
+            // Center assigned during the enroute descent.
+            if let approach = c.approachProcedure {
+                return engine.descendExpectApproach(cs: c.callsign, altitude: 3000,
+                                                    procedure: approach, runway: c.runway)
+            }
+            return engine.descendExpectApproach(cs: c.callsign, altitude: 3000,
                                                 approach: c.approachName, runway: c.runway)
         case .final:
             if let approach = c.approachProcedure {
@@ -138,7 +157,10 @@ struct ATCStateMachine {
         case .landing:
             return engine.clearedToLand(cs: c.callsign, runway: c.runway,
                                         windDir: c.windDirection, windSpeed: c.windSpeed)
-        case .groundArrival, .runwayExit:
+        case .runwayExit:
+            // Tower instructs the aircraft to clear the runway and switch to Ground.
+            return engine.exitRunwayContactGround(cs: c.callsign, frequency: c.groundFrequency)
+        case .groundArrival:
             return engine.taxiToParking(cs: c.callsign, via: c.parkingTaxiway)
         case .notConnected, .connectedIdle, .holdingShort, .runwayCrossing,
              .topOfDescent, .parked, .abnormal, .center:

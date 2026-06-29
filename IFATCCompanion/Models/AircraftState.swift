@@ -15,6 +15,10 @@ struct AircraftState: Equatable {
     var track: Double?              // degrees
     var verticalSpeed: Double?      // feet per minute
     var onGround: Bool?
+    /// Autopilot approach mode (APPR) armed/engaged, read from Infinite Flight when
+    /// exposed. Used to detect the aircraft is established on the approach so the
+    /// "cleared … approach" call can be issued before the Tower hand-off.
+    var approachModeEngaged: Bool?
     var gForce: Double?
     var bankAngle: Double?
     var pitch: Double?
