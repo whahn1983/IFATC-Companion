@@ -41,6 +41,36 @@ struct RouteMapView: View {
         routeCoordinates.count >= 2 || model.aircraftState.coordinate != nil
     }
 
+    /// A short signature of the route so the camera refits when the plan changes
+    /// (e.g. after a refresh pulls in the full set of fixes).
+    private var routeSignature: String {
+        "\(model.flightPlan.departure)|\(model.flightPlan.destination)|\(routeCoordinates.count)"
+    }
+
+    /// A region that frames the whole route (departure → all fixes → destination)
+    /// with a little padding, so the entire plan is visible rather than a clipped
+    /// straight line. Returns nil when there isn't enough located geometry.
+    private var routeRegion: MKCoordinateRegion? {
+        let coords = routeCoordinates
+        guard coords.count >= 2 else { return nil }
+        let lats = coords.map(\.latitude), lons = coords.map(\.longitude)
+        guard let minLat = lats.min(), let maxLat = lats.max(),
+              let minLon = lons.min(), let maxLon = lons.max() else { return nil }
+        let center = CLLocationCoordinate2D(latitude: (minLat + maxLat) / 2,
+                                            longitude: (minLon + maxLon) / 2)
+        let span = MKCoordinateSpan(latitudeDelta: max((maxLat - minLat) * 1.4, 0.4),
+                                    longitudeDelta: max((maxLon - minLon) * 1.4, 0.4))
+        return MKCoordinateRegion(center: center, span: span)
+    }
+
+    private func fitRoute() {
+        if let region = routeRegion {
+            position = .region(region)
+        } else {
+            position = .automatic
+        }
+    }
+
     var body: some View {
         Group {
             if hasContent {
@@ -94,6 +124,8 @@ struct RouteMapView: View {
         .mapStyle(.standard(elevation: .flat, pointsOfInterest: .excludingAll))
         .frame(height: 280)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .onAppear { fitRoute() }
+        .onChange(of: routeSignature) { _, _ in fitRoute() }
     }
 
     private func color(for severity: TurbulenceSeverity) -> Color {
