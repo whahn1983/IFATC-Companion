@@ -18,7 +18,14 @@ struct IFATCCompanionApp: App {
                 .environmentObject(model.speechRecognizer)
                 .preferredColorScheme(.dark)
                 .tint(Color("AccentColor"))
-                .onAppear { model.onAppear() }
+                .onAppear {
+                    model.onAppear()
+                    #if canImport(UIKit)
+                    DispatchQueue.main.async {
+                        UIApplication.shared.installKeyboardDismissTapGesture()
+                    }
+                    #endif
+                }
         }
     }
 }
