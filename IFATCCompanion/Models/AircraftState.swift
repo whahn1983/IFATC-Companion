@@ -45,6 +45,15 @@ struct AircraftState: Equatable {
         coordinate != nil && altitudeMSL != nil
     }
 
+    /// Whether this snapshot carries any usable telemetry at all. The Connect link
+    /// returns an all-nil snapshot during the reconnect handshake (every field read
+    /// fails); feeding that to phase detection makes it assume the aircraft is
+    /// airborne (a nil "on ground" reads as false) and default to a climb, which
+    /// would jump a parked aircraft to cruise on reconnect.
+    var hasUsableTelemetry: Bool {
+        onGround != nil || altitudeMSL != nil || coordinate != nil
+    }
+
     var isClimbing: Bool { (verticalSpeed ?? 0) > 300 }
     var isDescending: Bool { (verticalSpeed ?? 0) < -300 }
 }

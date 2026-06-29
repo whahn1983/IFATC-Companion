@@ -61,6 +61,12 @@ deterministic keyword matching.
 - ✅ **Clear Flight** — a button on the ATC tab (`clearFlight()`) wipes the
   conversation and ATC/phase state to start a new flight, keeping settings and the
   flight plan.
+- ✅ **Resume on reconnect** — the in-progress ATC session (state, facility,
+  assigned altitude, transcript, flags) is persisted (`SessionStateStore`) and
+  restored when the link drops and the app reconnects/relaunches, so the flight
+  picks up where it left off instead of being re-derived from telemetry. Empty
+  reconnect-handshake telemetry is ignored so a parked aircraft is never jumped to
+  cruise.
 - ✅ **Real-world departure instructions** — the takeoff clearance issues the
   initial heading (bearing to the first fix, or "runway heading" when aligned) and
   the initial climb; Departure adds "resume own navigation, direct *fix*".

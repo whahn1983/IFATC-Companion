@@ -100,6 +100,20 @@ final class AppModel: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private var started = false
 
+    /// Persists the in-progress ATC session so a disconnect/reconnect (or app
+    /// relaunch) resumes where the flight left off instead of re-deriving the
+    /// conversation from raw telemetry — which would jump a parked aircraft to cruise.
+    private let sessionStore = SessionStateStore()
+    /// Signature of the last persisted state, so we only write when something
+    /// meaningful changed (or the heartbeat below is due).
+    private var lastPersistSignature: String?
+    /// When the snapshot was last written, used to re-stamp it periodically while
+    /// connected so a long, quiet cruise doesn't age the snapshot out of restore.
+    private var lastPersistedAt: Date?
+    /// Re-save at least this often while the session is active, even if nothing
+    /// changed, so `savedAt` stays fresh through long level phases.
+    private let persistHeartbeat: TimeInterval = 120
+
     /// Once airborne, automatic telemetry-driven controller calls run. Before the
     /// first departure the pre-departure ground flow (clearance → pushback →
     /// engine start → taxi → ready) is always pilot-driven via the response
@@ -327,14 +341,19 @@ final class AppModel: ObservableObject {
 
     func startLive() {
         mock.stop()
-        manualTuning = false
         tunedFacility = nil
         clearReadbackGate()
-        stateMachine.reset()
-        hasDeparted = false
-        arrivalAnnounced = false
-        awaitingGateArrival = false
-        currentFacility = .clearance
+        // Resume a recent in-progress session if one was saved (reconnect / relaunch);
+        // otherwise start the conversation fresh. Restoring is what keeps a parked
+        // aircraft from being re-derived straight to cruise after a dropped link.
+        if !restoreSession() {
+            manualTuning = false
+            stateMachine.reset()
+            hasDeparted = false
+            arrivalAnnounced = false
+            awaitingGateArrival = false
+            currentFacility = .clearance
+        }
         if settings.autoDiscover && settings.host.isEmpty {
             connect.startAutoDiscover { [weak self] device in
                 guard let self else { return }
@@ -376,11 +395,33 @@ final class AppModel: ObservableObject {
     /// live/mock feeds use (phase detection → state machine → transcript). Lets tests
     /// drive a full mock scenario without starting timers, networking, or audio.
     func ingestStateForTesting(_ state: AircraftState) { handle(state: state) }
+
+    /// Test hook: capture the current session as a snapshot (as persistence would).
+    func snapshotForTesting() -> SessionSnapshot { currentSnapshot() }
+
+    /// Test hook: restore from a snapshot the same way a reconnect would, so a test
+    /// can verify the conversation resumes where it left off.
+    func applySnapshotForTesting(_ snapshot: SessionSnapshot) { apply(snapshot: snapshot) }
     #endif
 
     private func handle(state: AircraftState) {
         aircraftState = state
         stateMachine.setConnected()
+        // Persist the session on the way out of every path so a drop after this tick
+        // resumes from here.
+        defer { persistSession() }
+
+        // Ignore an empty telemetry snapshot — Infinite Flight returns one during the
+        // reconnect handshake, and PhaseDetector would read its nil "on ground" as
+        // airborne and default to "climb". Driving the flow from that would jump a
+        // parked aircraft to cruise on reconnect. Hold the current (restored) ATC
+        // state until real telemetry arrives. (Partial telemetry — e.g. altitude or
+        // ground state without a position fix — is still processed.)
+        guard state.hasUsableTelemetry else {
+            atcState = stateMachine.current
+            currentFacility = tunedFacility ?? controller(for: stateMachine.current)
+            return
+        }
 
         let result = phaseDetector.detect(state: state, plan: flightPlan,
                                           airports: airports, previous: phase)
@@ -713,6 +754,7 @@ final class AppModel: ObservableObject {
         // No transcript, no state change, and no mock-phase change: tuning only
         // moves the radio. The mock display advances with the conversation when the
         // pilot checks in or makes a request.
+        persistSession()
     }
 
     /// The "Ramp" button. Context-aware: before departure it contacts Ramp for the
@@ -984,6 +1026,9 @@ final class AppModel: ObservableObject {
         }
         diagnostics.log(.atc, "[\(tx.sender.rawValue.uppercased())] \(tx.displayText)")
         if speak { speech.speak(tx) }
+        // A new transcript line is a meaningful change — capture it immediately so a
+        // button-driven call (which doesn't go through the telemetry loop) is saved.
+        persistSession()
     }
 
     /// Post a pilot transmission, speaking it aloud when appropriate. The pilot
@@ -1002,6 +1047,86 @@ final class AppModel: ObservableObject {
     /// True while handling a push-to-talk utterance, so the resulting pilot
     /// transmission is not spoken back over the user.
     private var pilotInputViaVoice = false
+
+    // MARK: - Session persistence
+
+    /// Build a snapshot of the live ATC session for persistence.
+    private func currentSnapshot() -> SessionSnapshot {
+        SessionSnapshot(
+            atcState: atcState,
+            stateMachineCurrent: stateMachine.current,
+            currentFacility: currentFacility,
+            phase: phase,
+            assignedAltitude: assignedAltitude,
+            hasDeparted: hasDeparted,
+            arrivalAnnounced: arrivalAnnounced,
+            awaitingGateArrival: awaitingGateArrival,
+            manualTuning: manualTuning,
+            transcript: transcript,
+            departure: flightPlan.departure,
+            destination: flightPlan.destination,
+            mockMode: settings.mockMode,
+            savedAt: Date())
+    }
+
+    /// Persist the current session when something meaningful changed (or the
+    /// heartbeat is due, so `savedAt` stays fresh through long quiet phases). Only
+    /// live sessions are saved — the mock feed is a deterministic demo that always
+    /// starts fresh.
+    private func persistSession() {
+        guard !settings.mockMode else { return }
+        let sig = [stateMachine.current.rawValue, atcState.rawValue, currentFacility.rawValue,
+                   phase.rawValue, String(assignedAltitude), String(hasDeparted),
+                   String(arrivalAnnounced), String(awaitingGateArrival), String(manualTuning),
+                   String(transcript.count)].joined(separator: "|")
+        let now = Date()
+        let heartbeatDue = lastPersistedAt.map { now.timeIntervalSince($0) >= persistHeartbeat } ?? true
+        guard sig != lastPersistSignature || heartbeatDue else { return }
+        lastPersistSignature = sig
+        lastPersistedAt = now
+        sessionStore.save(currentSnapshot())
+    }
+
+    /// Restore a recent in-progress session, if one was saved, so a reconnect or
+    /// relaunch resumes where the flight left off. Returns whether a session was
+    /// restored. Never restores in mock mode or from a mock snapshot.
+    @discardableResult
+    private func restoreSession() -> Bool {
+        guard !settings.mockMode,
+              let snap = sessionStore.loadResumable(),
+              !snap.mockMode else { return false }
+        apply(snapshot: snap)
+        diagnostics.log(.app, "Resumed session at \(snap.atcState.title) "
+            + "(\(snap.transcript.count) messages) — picking up where the flight left off.")
+        return true
+    }
+
+    /// Apply a snapshot's state to the live model so the conversation resumes from it.
+    private func apply(snapshot snap: SessionSnapshot) {
+        stateMachine.restore(to: snap.stateMachineCurrent)
+        atcState = snap.atcState
+        currentFacility = snap.currentFacility
+        phase = snap.phase
+        assignedAltitude = snap.assignedAltitude
+        hasDeparted = snap.hasDeparted
+        arrivalAnnounced = snap.arrivalAnnounced
+        awaitingGateArrival = snap.awaitingGateArrival
+        manualTuning = snap.manualTuning
+        if !snap.transcript.isEmpty {
+            transcript = snap.transcript
+            let lastATC = snap.transcript.last { $0.sender == .atc }
+            latestTransmission = lastATC
+            lastATCTransmission = lastATC
+        }
+    }
+
+    /// Forget any saved session so the next connect starts fresh (used when the
+    /// pilot deliberately clears the flight or resets app data).
+    private func clearSavedSession() {
+        sessionStore.clear()
+        lastPersistSignature = nil
+        lastPersistedAt = nil
+    }
 
     // MARK: - Context
 
@@ -1495,6 +1620,7 @@ final class AppModel: ObservableObject {
     func resetAppData() {
         transcript.removeAll()
         latestTransmission = nil
+        clearSavedSession()
         settings.resetAll()
         syncFlightPlanFromSettings()
         diagnostics.log(.app, "App data reset.")
@@ -1508,6 +1634,7 @@ final class AppModel: ObservableObject {
         manualTuning = false
         tunedFacility = nil
         clearReadbackGate()
+        clearSavedSession()
         speech.stop()
         transcript.removeAll()
         latestTransmission = nil

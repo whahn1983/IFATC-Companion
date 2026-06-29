@@ -1,8 +1,8 @@
 import Foundation
 
 /// A single line in the ATC transcript — from a simulated controller or the pilot.
-struct ATCTransmission: Identifiable, Equatable {
-    enum Sender: String {
+struct ATCTransmission: Identifiable, Equatable, Codable {
+    enum Sender: String, Codable {
         case atc
         case pilot
         case system
