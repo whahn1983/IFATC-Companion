@@ -116,6 +116,10 @@ struct FlightView: View {
                     overrideField("SID", text: $settings.sid, placeholder: "WAGmm")
                     overrideField("STAR", text: $settings.star, placeholder: "KKILR")
                 }
+                HStack {
+                    overrideField("Arrival Gate", text: $settings.gate, placeholder: "B44")
+                    Spacer().frame(maxWidth: .infinity)
+                }
                 Button {
                     keyboardFocused = false
                     model.applyManualOverrides()

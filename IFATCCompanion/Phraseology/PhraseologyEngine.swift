@@ -185,10 +185,11 @@ struct PhraseologyEngine {
                 "crossing": crossDisplay, "crossingSpoken": crossSpoken])
             return tx(.ground, display: render(template.display, ph.display), spoken: render(template.spoken, ph.spoken))
         }
-        // ICAO: "taxi to holding point runway X"; FAA: "taxi to runway X".
+        // ICAO: "taxi to holding point runway X"; FAA: "taxi to runway X". The taxi
+        // instruction ends by telling the pilot to call Tower when ready to depart.
         let lead = icao ? "taxi to holding point runway" : "taxi to runway"
-        let display = "\(cs.display), \(lead) \(runway) via \(via)\(crossDisplay)."
-        let spoken = "\(cs.spoken), \(lead) \(Phonetic.runway(runway, icao: icao)) via \(Phonetic.spellToken(via, icao: icao))\(crossSpoken)."
+        let display = "\(cs.display), \(lead) \(runway) via \(via)\(crossDisplay). Contact Tower when ready."
+        let spoken = "\(cs.spoken), \(lead) \(Phonetic.runway(runway, icao: icao)) via \(Phonetic.spellToken(via, icao: icao))\(crossSpoken). Contact Tower when ready."
         return tx(.ground, display: display, spoken: spoken)
     }
 
@@ -258,6 +259,14 @@ struct PhraseologyEngine {
         tx(.center,
            display: "\(cs.display), climb and maintain \(formatAltDisplay(altitude)).",
            spoken: "\(cs.spoken), climb and maintain \(Phonetic.altitude(altitude, icao: icao)).")
+    }
+
+    // Center — first call when the aircraft checks in after the Departure hand-off:
+    // radar contact, then the climb to the cruising altitude.
+    func centerRadarContactClimb(cs: Callsign, altitude: Int) -> ATCTransmission {
+        tx(.center,
+           display: "\(cs.display), radar contact, climb and maintain \(formatAltDisplay(altitude)).",
+           spoken: "\(cs.spoken), radar contact, climb and maintain \(Phonetic.altitude(altitude, icao: icao)).")
     }
 
     // Center — descend and maintain an assigned altitude (no STAR filed). A plain,

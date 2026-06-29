@@ -167,7 +167,9 @@ struct ATCStateMachine {
             let top = c.traconCeiling > 0 ? c.traconCeiling : max(c.assignedAltitude, c.initialClimbAltitude)
             return engine.departureClimb(cs: c.callsign, altitude: top, firstFix: c.firstFixName)
         case .climb:
-            return engine.climbMaintain(cs: c.callsign, altitude: c.cruiseAltitude)
+            // Center's first call after the Departure hand-off: radar contact, then
+            // the clearance up to the cruising altitude.
+            return engine.centerRadarContactClimb(cs: c.callsign, altitude: c.cruiseAltitude)
         case .cruise:
             // On reaching cruise, a brief center check-in/radar contact.
             return engine.radarContact(cs: c.callsign, facility: .center)
