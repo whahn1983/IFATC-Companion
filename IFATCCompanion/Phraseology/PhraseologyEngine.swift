@@ -349,6 +349,18 @@ struct PhraseologyEngine {
            spoken: "\(cs.spoken), contact \(to.spokenName) on \(Phonetic.frequency(frequency, icao: icao)).")
     }
 
+    /// Append a pushback hand-off to an IFR clearance so Clearance Delivery tells
+    /// the pilot whom to contact for the push — Ramp (when the airport has a
+    /// ramp/apron layer) or Ground (when it does not). The callsign is omitted
+    /// from the trailing sentence since the clearance already addresses the pilot.
+    func appendingPushbackHandoff(to transmission: ATCTransmission,
+                                  facility: ATCFacility, frequency: Double) -> ATCTransmission {
+        var out = transmission
+        out.displayText += " When ready for pushback, contact \(facility.spokenName) on \(String(format: "%.3f", frequency))."
+        out.spokenText += " When ready for pushback, contact \(facility.spokenName) on \(Phonetic.frequency(frequency, icao: icao))."
+        return out
+    }
+
     /// Arrival courtesy on reaching the gate.
     func welcomeArrival(cs: Callsign, airport: String) -> ATCTransmission {
         let city = spokenAirport(airport)

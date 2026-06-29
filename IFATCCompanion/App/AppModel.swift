@@ -417,11 +417,13 @@ final class AppModel: ObservableObject {
         // Announce a handoff only between two established controllers (not the very
         // first contact, and not Clearance which is the initial call-up). The
         // runway-exit call already tells the pilot to contact Ground, so suppress
-        // the duplicate hand-off when leaving that state. When the pilot tuned the
-        // frequency themselves, the controller does not say "contact …" either.
+        // the duplicate hand-off when leaving that state. The Ramp hand-off for
+        // pushback is already issued at the end of the IFR clearance, so don't
+        // repeat it here. When the pilot tuned the frequency themselves, the
+        // controller does not say "contact …" either.
         let firstContact = previous == .notConnected || previous == .connectedIdle
         if announceHandoff, !firstContact, previous != .runwayExit, fromFacility != toFacility,
-           toFacility != .clearance, lastATCTransmission != nil {
+           toFacility != .clearance, toFacility != .ramp, lastATCTransmission != nil {
             post(engine.handoff(cs: c.callsign, from: fromFacility, to: toFacility,
                                 frequency: frequency(for: toFacility, context: c)), speak: speak)
         }

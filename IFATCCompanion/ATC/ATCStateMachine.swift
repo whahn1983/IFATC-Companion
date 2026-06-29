@@ -45,6 +45,19 @@ struct ATCContext {
     var sidProcedure: Procedure? = nil
     var starProcedure: Procedure? = nil
     var approachProcedure: Procedure? = nil
+
+    /// Whom the pilot contacts for pushback: Ramp when the airport has a
+    /// ramp/apron layer (the common commercial case), otherwise Ground directly.
+    /// Clearance Delivery announces this at the end of the IFR clearance so the
+    /// pilot knows which frequency to tune for the push.
+    var pushbackFacility: ATCFacility {
+        rampProfile.rampType == .none ? .ground : .ramp
+    }
+
+    /// Frequency for the pushback facility resolved by `pushbackFacility`.
+    var pushbackFrequency: Double {
+        pushbackFacility == .ground ? groundFrequency : rampFrequency
+    }
 }
 
 /// Deterministic ATC interaction state machine. Maps physical `FlightPhase` to
@@ -107,11 +120,15 @@ struct ATCStateMachine {
     func transmission(for state: ATCState, from previous: ATCState, context c: ATCContext) -> ATCTransmission? {
         switch state {
         case .clearance:
-            return engine.clearance(cs: c.callsign, destination: c.plan.destination,
-                                    cruise: c.cruiseAltitude, sid: c.plan.sid,
-                                    initialAlt: c.initialClimbAltitude,
-                                    departureFreq: c.departureFrequency, squawk: c.squawk,
-                                    sidProcedure: c.sidProcedure)
+            let cleared = engine.clearance(cs: c.callsign, destination: c.plan.destination,
+                                           cruise: c.cruiseAltitude, sid: c.plan.sid,
+                                           initialAlt: c.initialClimbAltitude,
+                                           departureFreq: c.departureFrequency, squawk: c.squawk,
+                                           sidProcedure: c.sidProcedure)
+            // End the clearance with the pushback hand-off so the pilot knows
+            // which facility/frequency to tune for the push (Ramp or Ground).
+            return engine.appendingPushbackHandoff(to: cleared, facility: c.pushbackFacility,
+                                                   frequency: c.pushbackFrequency)
         case .pushback:
             // Ramp (simulated local/company), not FAA ATC. Includes tail/face
             // direction when known, else "advise ready to taxi".

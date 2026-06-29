@@ -132,4 +132,31 @@ final class ManualTuningTests: XCTestCase {
                        "telemetry should not auto-advance the conversation once tuning manually")
         XCTAssertTrue(model.manualTuning)
     }
+
+    /// The pushback hand-off is issued once — at the end of the IFR clearance —
+    /// not repeated as a separate "contact Ramp" line when the pilot requests the
+    /// push. (Previously Clearance told the pilot to contact Ramp and then Ramp
+    /// approved the push in the same step, which read as a contradiction.)
+    func testPushbackHandoffIssuedOnceByClearance() {
+        let model = makeModel()
+        model.requestClearance(); model.readBack()
+
+        // The clearance itself tells the pilot whom to tune for the push.
+        XCTAssertTrue(contains(model, "When ready for pushback, contact Ramp", sender: .atc))
+        let rampHandoffsAfterClearance = model.transcript.filter {
+            $0.sender == .atc && $0.displayText.contains("contact Ramp")
+        }.count
+
+        model.tuneTo(.ramp)
+        model.requestPushback(); model.readBack()
+
+        // Requesting the push must not insert another "contact Ramp" hand-off; Ramp
+        // simply approves the push.
+        let rampHandoffsAfterPush = model.transcript.filter {
+            $0.sender == .atc && $0.displayText.contains("contact Ramp")
+        }.count
+        XCTAssertEqual(rampHandoffsAfterPush, rampHandoffsAfterClearance,
+                       "requesting pushback should not add another 'contact Ramp' hand-off")
+        XCTAssertTrue(contains(model, "pushback approved", sender: .atc))
+    }
 }

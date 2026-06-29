@@ -36,6 +36,33 @@ final class StateMachineTests: XCTestCase {
         XCTAssertTrue(tx?.displayText.contains("cleared to") ?? false)
     }
 
+    /// Clearance Delivery ends the IFR clearance with the pushback hand-off so the
+    /// pilot knows which frequency to tune for the push. With a ramp/apron layer
+    /// (the default companyRamp profile) that is the Ramp frequency.
+    func testClearanceEndsWithRampPushbackHandoff() {
+        let m = makeMachine()
+        var ctx = TestSupport.context()
+        ctx.rampFrequency = 131.0
+        let tx = m.transmission(for: .clearance, from: .connectedIdle, context: ctx)
+        XCTAssertEqual(tx?.facility, .clearance)
+        XCTAssertTrue(tx?.displayText.contains("When ready for pushback, contact Ramp on 131.000") ?? false,
+                      tx?.displayText ?? "nil")
+    }
+
+    /// When the airport has no ramp layer, the clearance hands off to Ground for
+    /// the push instead of Ramp.
+    func testClearancePushbackHandoffUsesGroundWhenNoRamp() {
+        let m = makeMachine()
+        var ctx = TestSupport.context()
+        var profile = RampProfile.generic
+        profile.rampType = .none
+        ctx.rampProfile = profile
+        let tx = m.transmission(for: .clearance, from: .connectedIdle, context: ctx)
+        XCTAssertTrue(tx?.displayText.contains("contact Ground on 121.800") ?? false,
+                      tx?.displayText ?? "nil")
+        XCTAssertFalse(tx?.displayText.contains("contact Ramp") ?? true)
+    }
+
     func testAdvanceToSameStateReturnsNil() {
         var m = makeMachine()
         m.setConnected()

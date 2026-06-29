@@ -66,6 +66,15 @@ digit-by-digit "one two three four"; digit-by-digit recommended for TTS clarity)
 
 ## Departure ramp transcript (simulated, non-FAA)
 
+Clearance Delivery ends the IFR clearance by telling the pilot whom to contact
+for pushback, so they know which frequency to tune next — Ramp when the airport
+has a ramp/apron layer (the common commercial case), or Ground when it does not:
+
+```
+Clearance → Pilot: United 598, cleared to KMSP … squawk 4271.
+                   When ready for pushback, contact Ramp on 131.000.
+```
+
 ```
 Pilot → Ramp:  Ramp, United 598 at Bravo 44, ready to push.
 Ramp → Pilot:  United 598, pushback approved, tail west.
