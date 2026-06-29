@@ -41,6 +41,10 @@ struct ATCContext {
     /// Altitude (ft MSL) up to which Departure works the climb before handing to
     /// Center. Default 18,000 (FL180). Configurable in settings.
     var traconCeiling: Int = 18000
+    /// Intercept/initial altitude (ft MSL) Approach assigns for the ILS/GPS/Visual
+    /// — the first altitude in the approach section of the flight plan when known,
+    /// otherwise 0 (the state machine then falls back to a default 3,000 ft).
+    var approachInterceptAltitude: Int = 0
     // Parsed published procedures (optional; populated when the pilot enters them).
     var sidProcedure: Procedure? = nil
     var starProcedure: Procedure? = nil
@@ -173,14 +177,17 @@ struct ATCStateMachine {
             }
             return engine.descendMaintain(cs: c.callsign, altitude: alt)
         case .approach:
-            // Approach descends to a terminal intercept altitude (3,000 ft) and tells
-            // the pilot which approach to expect — independent of the higher altitude
-            // Center assigned during the enroute descent.
+            // Approach descends to the terminal intercept altitude and tells the
+            // pilot which approach to expect — independent of the higher altitude
+            // Center assigned during the enroute descent. The intercept altitude is
+            // the first altitude in the approach section of the flight plan when
+            // known, otherwise a default 3,000 ft.
+            let interceptAlt = c.approachInterceptAltitude > 0 ? c.approachInterceptAltitude : 3000
             if let approach = c.approachProcedure {
-                return engine.descendExpectApproach(cs: c.callsign, altitude: 3000,
+                return engine.descendExpectApproach(cs: c.callsign, altitude: interceptAlt,
                                                     procedure: approach, runway: c.runway)
             }
-            return engine.descendExpectApproach(cs: c.callsign, altitude: 3000,
+            return engine.descendExpectApproach(cs: c.callsign, altitude: interceptAlt,
                                                 approach: c.approachName, runway: c.runway)
         case .final:
             if let approach = c.approachProcedure {

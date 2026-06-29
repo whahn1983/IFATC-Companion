@@ -35,6 +35,64 @@ final class AutomationTests: XCTestCase {
         XCTAssertNil(IFFlightPlanParser.parse(""))
     }
 
+    /// The departure/arrival runway must not be mistaken for the first enroute
+    /// waypoint (previously "next waypoint" showed the departure runway).
+    func testParseFlightPlanStripsRunwayTokens() {
+        let plan = IFFlightPlanParser.parse("KIAH RW15L WAGON HOBTT 30L KMSP")
+        XCTAssertEqual(plan?.departure, "KIAH")
+        XCTAssertEqual(plan?.destination, "KMSP")
+        XCTAssertEqual(plan?.waypoints.map { $0.name }, ["WAGON", "HOBTT"])
+    }
+
+    func testParseFlightPlanRecoversCruiseFromFlightLevel() {
+        let plan = IFFlightPlanParser.parse("KIAH WAGON FL370 HOBTT KMSP")
+        XCTAssertEqual(plan?.cruiseAltitude, 37000)
+        XCTAssertEqual(plan?.waypoints.map { $0.name }, ["WAGON", "HOBTT"])
+    }
+
+    /// The richer JSON flight plan yields coordinates, the cruise (TOC) level, and
+    /// the published SID/STAR/approach.
+    func testParseJSONFlightPlanExtractsCoordinatesProceduresAndCruise() {
+        let json = """
+        {"flightPlanItems":[
+          {"name":"KIAH","identifier":"KIAH","location":{"Latitude":29.98,"Longitude":-95.34}},
+          {"name":"WAGON3","children":[
+             {"name":"WAGON","identifier":"WAGON","altitude":12000,"location":{"Latitude":30.5,"Longitude":-95.0}}
+          ]},
+          {"name":"HOBTT","identifier":"HOBTT","altitude":37000,"location":{"Latitude":38.0,"Longitude":-94.0}},
+          {"name":"KKILR1","children":[
+             {"name":"KKILR","identifier":"KKILR","altitude":11000,"location":{"Latitude":43.0,"Longitude":-93.5}}
+          ]},
+          {"name":"ILS 30L","children":[
+             {"name":"FAF30L","identifier":"FAF30L","altitude":3000,"location":{"Latitude":44.5,"Longitude":-93.3}}
+          ]},
+          {"name":"KMSP","identifier":"KMSP","location":{"Latitude":44.88,"Longitude":-93.22}}
+        ]}
+        """
+        let plan = IFFlightPlanParser.parse(json)
+        XCTAssertEqual(plan?.departure, "KIAH")
+        XCTAssertEqual(plan?.destination, "KMSP")
+        XCTAssertEqual(plan?.sid, "WAGON3")
+        XCTAssertEqual(plan?.star, "KKILR1")
+        XCTAssertEqual(plan?.approach, "ILS 30L")
+        XCTAssertEqual(plan?.cruiseAltitude, 37000)
+        XCTAssertEqual(plan?.approachInterceptAltitude, 3000,
+                       "intercept altitude should be the first altitude in the approach section")
+        XCTAssertTrue(plan?.waypoints.contains { $0.name == "WAGON" } ?? false)
+        XCTAssertNotNil(plan?.waypoints.first?.coordinate, "JSON fixes should carry coordinates")
+    }
+
+    // MARK: - Live unit conversion
+
+    /// Infinite Flight reports speeds and vertical speed in m/s; the app expects
+    /// knots and feet-per-minute. (The bug showed ~half the real knots and never
+    /// detected descents.)
+    func testLiveSpeedAndVerticalSpeedUnitConversion() {
+        XCTAssertEqual(158.0 * IFConnectStateReader.metresPerSecondToKnots, 307, accuracy: 1.5)
+        XCTAssertEqual(128.0 * IFConnectStateReader.metresPerSecondToKnots, 249, accuracy: 1.5)
+        XCTAssertEqual(-9.0 * IFConnectStateReader.metresPerSecondToFeetPerMinute, -1772, accuracy: 5)
+    }
+
     // MARK: - Runway line-up detection
 
     func testLinedUpWhenAlignedAndSlowOnGround() {

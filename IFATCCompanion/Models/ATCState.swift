@@ -80,6 +80,24 @@ enum ATCState: String, CaseIterable, Codable, Identifiable {
         }
     }
 
+    /// Whether the controller call issued on entering this state carries an
+    /// instruction the pilot is expected to read back. Automatic (telemetry-driven)
+    /// flow holds on these until the pilot reads back, so calls never fire
+    /// back-to-back. Courtesy calls (radar contact at cruise, the arrival block-in)
+    /// and the non-speaking states do not expect a readback.
+    var expectsReadback: Bool {
+        switch self {
+        case .clearance, .pushback, .engineStart, .pushbackTaxi, .groundTaxi,
+             .runwayCrossing, .holdingShort, .lineUpWait, .towerDeparture,
+             .initialClimb, .departure, .climb, .descent, .approach, .final,
+             .landing, .runwayExit, .groundArrival:
+            return true
+        case .notConnected, .connectedIdle, .center, .cruise, .topOfDescent,
+             .parked, .abnormal:
+            return false
+        }
+    }
+
     /// The pilot-driven pre-departure ground sequence (clearance → pushback →
     /// engine start → taxi → holding short → line up and wait). These steps are
     /// advanced manually via the response buttons so the flow never skips a phase.

@@ -29,6 +29,9 @@ struct FlightPlan: Equatable, Codable {
     var sid: String = ""
     var star: String = ""
     var approach: String = ""
+    /// Intercept/initial altitude (ft MSL) for the approach — the first altitude in
+    /// the approach section of the flight plan when known, else 0 (callers default).
+    var approachInterceptAltitude: Int = 0
     var waypoints: [Waypoint] = []
 
     /// Source of truth flag — when true, fields were entered manually and should
@@ -39,6 +42,18 @@ struct FlightPlan: Equatable, Codable {
 
     var departureName: String { departure.isEmpty ? "departure" : departure }
     var destinationName: String { destination.isEmpty ? "destination" : destination }
+
+    /// Coordinate of the first located enroute fix, used as a route-start fallback
+    /// when the departure airport isn't in the built-in coordinate database.
+    var firstWaypointCoordinate: CLLocationCoordinate2D? {
+        waypoints.first { $0.coordinate != nil }?.coordinate
+    }
+
+    /// Coordinate of the last located enroute fix, used as a route-end fallback
+    /// when the destination airport isn't in the built-in coordinate database.
+    var lastWaypointCoordinate: CLLocationCoordinate2D? {
+        waypoints.last { $0.coordinate != nil }?.coordinate
+    }
 
     /// The next un-passed waypoint relative to a position, or destination.
     func nextWaypoint(from coordinate: CLLocationCoordinate2D?) -> Waypoint? {

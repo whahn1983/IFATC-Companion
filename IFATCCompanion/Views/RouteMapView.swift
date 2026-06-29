@@ -12,11 +12,16 @@ struct RouteMapView: View {
 
     private let airports = AirportDatabase.shared
 
+    // Fall back to the first/last located flight-plan fix when the airport itself
+    // isn't in the built-in coordinate database, so the route still draws for
+    // fields outside the small built-in list.
     private var depCoord: CLLocationCoordinate2D? {
         airports.coordinate(for: model.flightPlan.departure)
+            ?? model.flightPlan.firstWaypointCoordinate
     }
     private var destCoord: CLLocationCoordinate2D? {
         airports.coordinate(for: model.flightPlan.destination)
+            ?? model.flightPlan.lastWaypointCoordinate
     }
 
     /// Ordered route coordinates: departure, located waypoints, destination.
