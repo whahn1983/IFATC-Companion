@@ -42,6 +42,19 @@ deterministic keyword matching.
   distance ahead and report age), SIGMET advisories, and a low-level wind-shear
   proxy from the surface METAR into a continuous ride index and severity.
 
+### Automatic ATC (telemetry-driven, real-world flow)
+- ✅ **Read the flight plan from Infinite Flight** — `IFConnectManager` reads
+  `aircraft/0/flightplan` and `IFFlightPlanParser` extracts departure, destination
+  and enroute fixes, merged into the active plan (manual overrides win).
+- ✅ **Automatic gate-to-gate flow** — with Automatic ATC on, the companion runs
+  the full sequence from telemetry: clearance → … → takeoff once lined up
+  (`RunwayLineupDetector`), automatic facility hand-offs, Departure-to-Center at a
+  configurable TRACON ceiling (FL180), descent/approach/cleared-to-land and
+  taxi-in. See [`docs/ATC-Flow.md`](docs/ATC-Flow.md).
+- ✅ **Real-world departure instructions** — the takeoff clearance issues the
+  initial heading (bearing to the first fix, or "runway heading" when aligned) and
+  the initial climb; Departure adds "resume own navigation, direct *fix*".
+
 ## Known constraints (future refinement)
 
 These features ship with intentionally small, deterministic, offline datasets.

@@ -22,6 +22,14 @@ struct ATCContext {
     var approachFrequency: Double
     var towerFrequency: Double
     var groundFrequency: Double
+    /// Initial assigned heading after departure (bearing to the first fix / route
+    /// intercept). 0 when unknown — the takeoff clearance then says "runway heading".
+    var departureHeading: Int = 0
+    /// Name of the first enroute fix, used for "resume own navigation, direct …".
+    var firstFixName: String = ""
+    /// Altitude (ft MSL) up to which Departure works the climb before handing to
+    /// Center. Default 18,000 (FL180). Configurable in settings.
+    var traconCeiling: Int = 18000
     // Parsed published procedures (optional; populated when the pilot enters them).
     var sidProcedure: Procedure? = nil
     var starProcedure: Procedure? = nil
@@ -93,10 +101,22 @@ struct ATCStateMachine {
         case .lineUpWait:
             return engine.lineUpAndWait(cs: c.callsign, runway: c.runway)
         case .towerDeparture:
+            // When a departure heading is known, the takeoff clearance also issues
+            // the initial heading + climb (real-world style); otherwise the simpler
+            // "cleared for takeoff" form is used.
+            if c.departureHeading > 0 {
+                return engine.clearedForTakeoff(cs: c.callsign, runway: c.runway,
+                                                windDir: c.windDirection, windSpeed: c.windSpeed,
+                                                departureHeading: c.departureHeading,
+                                                initialAltitude: c.initialClimbAltitude)
+            }
             return engine.clearedForTakeoff(cs: c.callsign, runway: c.runway,
                                             windDir: c.windDirection, windSpeed: c.windSpeed)
         case .initialClimb, .departure:
-            return engine.radarContactClimb(cs: c.callsign, altitude: max(c.assignedAltitude, c.initialClimbAltitude))
+            // Departure works the climb up to the TRACON ceiling (default FL180),
+            // joining the filed route.
+            let top = c.traconCeiling > 0 ? c.traconCeiling : max(c.assignedAltitude, c.initialClimbAltitude)
+            return engine.departureClimb(cs: c.callsign, altitude: top, firstFix: c.firstFixName)
         case .climb:
             return engine.climbMaintain(cs: c.callsign, altitude: c.cruiseAltitude)
         case .cruise:

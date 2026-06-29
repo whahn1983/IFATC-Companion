@@ -26,8 +26,16 @@ final class IFConnectManager: ObservableObject {
 
     /// Pushed live aircraft states (AppModel subscribes).
     var onState: ((AircraftState) -> Void)?
+    /// Pushed parsed flight plan whenever the live plan changes (AppModel subscribes).
+    var onFlightPlan: ((FlightPlan) -> Void)?
+
+    /// Last raw flight-plan string read from Infinite Flight (for diagnostics).
+    @Published private(set) var liveFlightPlanRaw: String?
 
     var pollInterval: TimeInterval = 1.0
+    /// How often (in poll ticks) to re-read the flight-plan string. The plan rarely
+    /// changes mid-flight, so this is throttled relative to state polling.
+    var flightPlanReadEveryTicks = 15
 
     func configure(diagnostics: DiagnosticsStore) {
         self.diagnostics = diagnostics
@@ -58,6 +66,7 @@ final class IFConnectManager: ObservableObject {
                 if let cs = liveCallsign, !cs.isEmpty {
                     diagnostics?.log(.state, "Live callsign: \(cs)")
                 }
+                await readFlightPlan()
                 startPolling()
             } catch {
                 let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
@@ -82,6 +91,7 @@ final class IFConnectManager: ObservableObject {
         pollTask?.cancel()
         pollTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            var tick = 0
             while !Task.isCancelled {
                 let connected = await self.client.isConnected
                 if !connected {
@@ -94,9 +104,26 @@ final class IFConnectManager: ObservableObject {
                 let state = await self.reader.readState(using: self.client)
                 self.onState?(state)
                 self.liveATC = await self.reader.readATCStatus(using: self.client)
+                tick += 1
+                if tick % self.flightPlanReadEveryTicks == 0 {
+                    await self.readFlightPlan()
+                }
                 try? await Task.sleep(nanoseconds: UInt64(self.pollInterval * 1_000_000_000))
             }
         }
+    }
+
+    /// Read and parse the flight plan; emit `onFlightPlan` only when it changes.
+    private func readFlightPlan() async {
+        guard let raw = await reader.readFlightPlanRaw(using: client) else { return }
+        guard raw != liveFlightPlanRaw else { return }
+        liveFlightPlanRaw = raw
+        guard let plan = IFFlightPlanParser.parse(raw) else {
+            diagnostics?.log(.state, "Flight plan string present but unparseable.")
+            return
+        }
+        diagnostics?.log(.state, "Flight plan from IF: \(plan.departure)→\(plan.destination), \(plan.waypoints.count) fixes.")
+        onFlightPlan?(plan)
     }
 
     // MARK: - Discovery

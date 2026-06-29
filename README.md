@@ -17,7 +17,8 @@ Key feature highlights:
 - Deterministic, template-based phraseology engine ("niner", "flight level three seven zero", etc.) — no generative AI, fully reproducible.
 - **Selectable FAA and ICAO phraseology packs** (digit words, "decimal" vs "point", QNH/hPa vs inHg) plus **user-created phraseology profiles** (custom call templates and airline call sets, shareable as JSON).
 - **Push-to-talk** with on-device speech recognition and deterministic intent parsing.
-- **Full gate-to-gate departure flow** — the pre-departure ground sequence is pilot-driven so no phase is skipped: request clearance → pushback → engine start → taxi → ready/line-up → takeoff. Once airborne, automatic telemetry-driven ATC resumes.
+- **Automatic ATC (real-world flow)** — when connected, the companion follows your aircraft and runs the full gate-to-gate sequence from telemetry: clearance → pushback → engine start → taxi → **takeoff issued automatically once you line up on the runway** (with the initial departure heading + climb), automatic **facility hand-offs** (Departure, then Center at a configurable FL180 TRACON ceiling, Approach, Tower, Ground), descent, cleared approach, cleared to land, and taxi-in to the gate. The takeoff/departure vectors are built from your filed route. Turn **Automatic ATC** off to drive the pre-departure flow with the buttons instead. The complete call sequence is documented in [`docs/ATC-Flow.md`](docs/ATC-Flow.md).
+- **Flight plan read from Infinite Flight** — the companion reads your IF flight plan (`aircraft/0/flightplan`) and uses the departure, destination and route fixes for clearances and departure vectors (manual overrides still win).
 - **Procedure-aware** instructions: SID/STAR/approach name parsing with a built-in fix library.
 - **Modeled taxi routing** with taxiways, runway crossings, and ramp routes.
 - **Multiplayer / human-ATC staffing detection** so the companion steps aside for live controllers.

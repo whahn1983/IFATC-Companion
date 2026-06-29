@@ -81,6 +81,16 @@ final class AppSettings: ObservableObject {
     @Published var phraseologyMode: PhraseologyMode { didSet { save(phraseologyMode.rawValue, .phraseologyMode) } }
     @Published var digitStyle: CallsignDigitStyle { didSet { save(digitStyle.rawValue, .digitStyle) } }
 
+    // ATC automation
+    /// When on, the companion advances the ATC flow automatically from telemetry
+    /// (auto clearance → … → takeoff once lined up, automatic facility handoffs,
+    /// climb/descent, approach and taxi-in) instead of waiting on button taps.
+    @Published var automaticATC: Bool { didSet { save(automaticATC, .automaticATC) } }
+    /// Initial climb altitude (ft) assigned in the clearance/takeoff before Departure.
+    @Published var initialClimbAltitudeFt: Int { didSet { save(initialClimbAltitudeFt, .initialClimbAltitudeFt) } }
+    /// Flight level at which Departure hands off to Center (TRACON ceiling), e.g. 180.
+    @Published var traconCeilingFL: Int { didSet { save(traconCeilingFL, .traconCeilingFL) } }
+
     // UNICOM
     @Published var unicomModeRaw: String { didSet { save(unicomModeRaw, .unicomMode) } }
 
@@ -129,6 +139,10 @@ final class AppSettings: ObservableObject {
         phraseologyMode = PhraseologyMode(rawValue: defaults.string(forKey: Key.phraseologyMode.rawValue) ?? "") ?? .faa
         digitStyle = CallsignDigitStyle(rawValue: defaults.string(forKey: Key.digitStyle.rawValue) ?? "") ?? .grouped
 
+        automaticATC = defaults.object(forKey: Key.automaticATC.rawValue) as? Bool ?? true
+        initialClimbAltitudeFt = defaults.object(forKey: Key.initialClimbAltitudeFt.rawValue) as? Int ?? 5000
+        traconCeilingFL = defaults.object(forKey: Key.traconCeilingFL.rawValue) as? Int ?? 180
+
         unicomModeRaw = defaults.string(forKey: Key.unicomMode.rawValue) ?? "preview"
 
         routeCorridorNM = defaults.object(forKey: Key.routeCorridorNM.rawValue) as? Double ?? 100
@@ -163,6 +177,9 @@ final class AppSettings: ObservableObject {
         voiceApproach = other.voiceApproach
         voicePilot = other.voicePilot; speakPilot = other.speakPilot
         phraseologyMode = other.phraseologyMode; digitStyle = other.digitStyle
+        automaticATC = other.automaticATC
+        initialClimbAltitudeFt = other.initialClimbAltitudeFt
+        traconCeilingFL = other.traconCeilingFL
         unicomModeRaw = other.unicomModeRaw
         routeCorridorNM = other.routeCorridorNM; altitudeBandFt = other.altitudeBandFt
         weatherBaseURL = other.weatherBaseURL
@@ -180,6 +197,7 @@ final class AppSettings: ObservableObject {
         case voiceGround, voiceTower, voiceDeparture, voiceCenter, voiceApproach
         case voicePilot, speakPilot
         case phraseologyMode, digitStyle
+        case automaticATC, initialClimbAltitudeFt, traconCeilingFL
         case unicomMode
         case routeCorridorNM, altitudeBandFt, weatherBaseURL
         case debugLogging, mockMode

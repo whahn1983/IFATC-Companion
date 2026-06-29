@@ -50,6 +50,14 @@ struct IFConnectStateReader {
         return try? await client.readState(entry).stringValue
     }
 
+    /// Read the raw flight-plan string (`aircraft/0/flightplan`), if exposed.
+    func readFlightPlanRaw(using client: IFConnectClient) async -> String? {
+        guard let entry = store.entry(for: .flightPlan) else { return nil }
+        let raw = try? await client.readState(entry).stringValue
+        guard let raw, !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return raw
+    }
+
     /// Read multiplayer / ATC-staffing context, if exposed. All signals optional.
     func readATCStatus(using client: IFConnectClient) async -> LiveATCStatus {
         func bool(_ logical: IFStateMappingStore.Logical) async -> Bool? {
