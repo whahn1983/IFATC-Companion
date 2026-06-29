@@ -13,7 +13,6 @@ final class MockScenarioTests: XCTestCase {
     private func makeModel() -> AppModel {
         let model = AppModel()
         model.settings.voiceEnabled = false      // no audio in tests
-        model.settings.automaticATC = true
         model.settings.mockMode = true
         model.settings.initialClimbAltitudeFt = 5000
         model.settings.traconCeilingFL = 180
@@ -40,21 +39,33 @@ final class MockScenarioTests: XCTestCase {
     }
 
     /// Drive a full gate-to-gate scenario and return the resulting model.
+    ///
+    /// The pre-departure ground flow is pilot-driven via the response-button
+    /// methods (each instruction read back manually). The position-triggered
+    /// controller calls — which the mock autopilot would play on a timer — are
+    /// reproduced here synchronously by feeding the matching aircraft states, with
+    /// a manual read-back after each substantive instruction.
     private func runFullFlight() -> AppModel {
         let model = makeModel()
-        // Pre-departure ground flow advances one step per tick.
-        feed(model, .preflight, times: 3)   // clearance, pushback, engine start
-        feed(model, .taxiOut)               // taxi to runway
-        feed(model, .takeoff, times: 2)     // line up and wait, cleared for takeoff
-        // Airborne / arrival.
-        feed(model, .initialClimb)          // departure climb
-        feed(model, .climb)                 // center climb to cruise
-        feed(model, .cruise)                // radar contact
-        feed(model, .descent)               // descend via the STAR
-        feed(model, .approach, times: 2)    // expect approach, then cleared approach
-        feed(model, .landing, times: 2)     // cleared to land, then exit runway
-        feed(model, .taxiIn)                // taxi to parking
-        feed(model, .parked)                // arrival courtesy
+
+        // Pilot-driven pre-departure flow (manual buttons + read-backs).
+        model.requestClearance();        model.readBack()
+        model.requestPushback();         model.readBack()
+        model.requestEngineStart();      model.readBack()
+        model.requestTaxi();             model.readBack()
+        model.reportReadyForDeparture(); model.readBack()   // line up and wait
+
+        // Automatic, position-triggered controller calls (pilot reads back / checks
+        // in manually between them).
+        feed(model, .takeoff);              model.readBack()  // cleared for takeoff
+        feed(model, .initialClimb);         model.readBack()  // contact Departure + climb
+        feed(model, .climb);                model.readBack()  // contact Center + climb
+        feed(model, .cruise)                                  // radar contact (not read back)
+        feed(model, .descent);              model.readBack()  // descend via the STAR
+        feed(model, .approach, times: 2);   model.readBack()  // expect, then cleared approach
+        feed(model, .landing, times: 2);    model.readBack()  // cleared to land, then exit runway
+        feed(model, .taxiIn);               model.readBack()  // taxi to parking
+        feed(model, .parked)                                  // arrival courtesy
         return model
     }
 

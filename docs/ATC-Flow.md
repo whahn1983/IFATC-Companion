@@ -12,30 +12,36 @@ call is a template rendered from telemetry + the flight plan.
 
 ## How automation is driven
 
-When connected to Infinite Flight (or in Mock Mode), **Automatic ATC** (Settings →
-ATC Automation, on by default) advances the flow from live telemetry:
+The companion uses a **hybrid** model: **you drive your own pilot calls**, and the
+**controller's position-based calls play automatically**. This holds in both live
+mode and Mock Mode.
+
+**You drive (ATC-tab buttons / push-to-talk):**
+
+- The pre-departure ground sequence — **clearance → pushback → engine start →
+  taxi → ready** — one button per call.
+- **Read backs** after every controller instruction, and **check-ins** when you
+  switch to a new facility. These are always manual; the flow does not wait for
+  them, just as real controllers keep working as you reach each position.
+
+**The controller does automatically (position / telemetry driven):**
 
 - The flight plan is read from IF (`aircraft/0/flightplan`) and parsed for the
   departure, destination and enroute fixes (`IFFlightPlanParser`).
-- The pre-departure ground sequence is paced one step per state update.
 - The **takeoff clearance is issued automatically once the aircraft is lined up**
   on the assigned runway (`RunwayLineupDetector`: on the ground, low speed,
-  heading aligned with the runway).
+  heading aligned with the runway) — Tower does not wait for a prompt.
 - **Facility hand-offs are issued automatically** whenever control passes between
   facilities ("contact Departure/Center/Approach/Tower/Ground on …").
 - **Departure works the climb to the TRACON ceiling** (default FL180, configurable)
   then **hands off to Center passing that altitude**; Center then clears to cruise.
 - Descent, approach, landing and taxi-in advance from telemetry as well.
-- **The pilot reads back each instruction before the flow progresses.** In
-  Automatic ATC, every controller call that requires a readback (clearance, taxi,
-  line-up, takeoff, climb/descent, approach and landing clearances, exit
-  instruction) is followed by the deterministic pilot readback before the next
-  section is issued. Courtesy/radar-contact check-ins are acknowledged, not read
-  back.
 
-Turn Automatic ATC off to drive the pre-departure flow manually with the ATC-tab
-buttons (the original behavior); the pilot readback is then the pilot's own
-button/voice action.
+In **Mock Mode** there is no live position telemetry, so once you report *ready
+for departure* the automatic callouts play out on a short pause (~4 s each),
+standing in for "lined up on the runway" and "positive rate". Use **Clear Flight**
+(top-left of the ATC tab) to wipe the conversation and start a new flight from the
+gate; your settings and flight plan are kept.
 
 ---
 
