@@ -118,6 +118,15 @@ final class IFConnectManager: ObservableObject {
         }
     }
 
+    /// Force an immediate re-read of the flight plan, bypassing the change guard, so
+    /// the pilot can pull in an edit they made mid-flight without waiting for the
+    /// next throttled poll. No-op when not connected.
+    func refreshFlightPlan() async {
+        guard connectionState.isConnected else { return }
+        liveFlightPlanRaw = nil
+        await readFlightPlan()
+    }
+
     /// Read and parse the flight plan; emit `onFlightPlan` only when it changes.
     private func readFlightPlan() async {
         guard let raw = await reader.readFlightPlanRaw(using: client) else { return }

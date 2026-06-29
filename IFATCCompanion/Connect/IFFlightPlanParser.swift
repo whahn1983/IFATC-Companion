@@ -60,8 +60,8 @@ enum IFFlightPlanParser {
 
         var seen = Set<String>()
         plan.waypoints = middle.compactMap { token -> Waypoint? in
-            guard isFix(token), !isRunwayToken(token), altitudeFromToken(token) == nil,
-                  !seen.contains(token) else { return nil }
+            guard isFix(token), !isRunwayToken(token), !isPseudoWaypoint(token),
+                  altitudeFromToken(token) == nil, !seen.contains(token) else { return nil }
             seen.insert(token)
             return Waypoint(name: token)
         }
@@ -96,7 +96,7 @@ enum IFFlightPlanParser {
             guard let dict = item as? [String: Any] else { continue }
             let name = (string(dict, "identifier") ?? string(dict, "name") ?? "")
                 .trimmingCharacters(in: .whitespaces).uppercased()
-            let children = (dict["children"] as? [Any]) ?? []
+            let children = childArray(dict)
 
             if !children.isEmpty {
                 // A SID/STAR/approach grouping. Classify by name and position — a
@@ -130,8 +130,8 @@ enum IFFlightPlanParser {
             fixes.removeLast()
         }
 
-        // Drop runway tokens so the runway is never shown as the next waypoint.
-        plan.waypoints = fixes.filter { !isRunwayToken($0.name) }
+        // Drop runway tokens / IF display markers so neither is shown as a fix.
+        plan.waypoints = fixes.filter { !isRunwayToken($0.name) && !isPseudoWaypoint($0.name) }
         plan.cruiseAltitude = maxAltitude
 
         guard !plan.departure.isEmpty || !plan.destination.isEmpty || !plan.waypoints.isEmpty else {
@@ -140,18 +140,48 @@ enum IFFlightPlanParser {
         return plan
     }
 
-    /// Find the flight-plan item array regardless of where it is nested.
+    /// Find the richest flight-plan item array anywhere in the document.
+    ///
+    /// Infinite Flight serves both a *simplified* `Waypoints` string list (only the
+    /// high-level legs — including non-navigational DPT/TOC/TOD display markers) and
+    /// a *detailed* `FlightPlanItems` array (every fix, with coordinates and nested
+    /// SID/STAR/approach groups). Keys are PascalCase and the two live side-by-side,
+    /// so a case-insensitive search that *prefers the detailed array* is needed —
+    /// otherwise the plan reads as a 5-fix summary with no procedures or coordinates.
     private static func flightPlanItems(in root: Any) -> [Any]? {
-        if let array = root as? [Any] { return array }
-        guard let dict = root as? [String: Any] else { return nil }
-        for key in ["flightPlanItems", "waypoints", "items", "fixes"] {
-            if let array = dict[key] as? [Any], !array.isEmpty { return array }
+        var best: (score: Int, items: [Any])?
+
+        func consider(_ array: [Any], key: String) {
+            guard !array.isEmpty else { return }
+            let k = key.lowercased()
+            let dicts = array.reduce(0) { $0 + (($1 is [String: Any]) ? 1 : 0) }
+            // Arrays of objects (detailed fixes) always rank above string lists.
+            var score = dicts > 0 ? 1000 + dicts : array.count
+            if k.contains("flightplanitem") { score += 5000 }
+            else if k.contains("item") || k.contains("fix") { score += 2000 }
+            else if k.contains("waypoint") { score += 100 }
+            if best == nil || score > best!.score { best = (score, array) }
         }
-        // Recurse one level into a wrapping object (e.g. `detailedInfo`).
-        for value in dict.values {
-            if let found = flightPlanItems(in: value) { return found }
+
+        // Recurse through objects only — never descend into an array's elements, so a
+        // procedure's nested `children` array is never mistaken for the whole plan.
+        func walk(_ node: Any, key: String) {
+            if let array = node as? [Any] { consider(array, key: key); return }
+            if let dict = node as? [String: Any] {
+                for (k, v) in dict { walk(v, key: k) }
+            }
         }
-        return nil
+
+        walk(root, key: "")
+        return best?.items
+    }
+
+    /// A procedure group's child fixes, tolerant of key casing (IF uses `Children`).
+    private static func childArray(_ dict: [String: Any]) -> [Any] {
+        if let c = dict["children"] as? [Any] { return c }
+        if let pair = dict.first(where: { $0.key.lowercased() == "children" }),
+           let c = pair.value as? [Any] { return c }
+        return []
     }
 
     /// Append a single fix (with coordinate + planned altitude when present).
@@ -160,7 +190,7 @@ enum IFFlightPlanParser {
         // A bare string entry (a `waypoints` name list) has no coordinate.
         if let name = item as? String {
             let n = name.trimmingCharacters(in: .whitespaces).uppercased()
-            guard !n.isEmpty, !seen.contains(n) else { return }
+            guard !n.isEmpty, !isPseudoWaypoint(n), !seen.contains(n) else { return }
             seen.insert(n)
             fixes.append(Waypoint(name: n))
             return
@@ -168,7 +198,7 @@ enum IFFlightPlanParser {
         guard let dict = item as? [String: Any] else { return }
         let name = (string(dict, "identifier") ?? string(dict, "name") ?? "")
             .trimmingCharacters(in: .whitespaces).uppercased()
-        guard !name.isEmpty else { return }
+        guard !name.isEmpty, !isPseudoWaypoint(name) else { return }
 
         let coord = coordinate(in: dict)
         let alt = plannedAltitude(in: dict)
@@ -264,6 +294,14 @@ enum IFFlightPlanParser {
         guard token.allSatisfy({ $0.isLetter || $0.isNumber }) else { return false }
         guard token.contains(where: { $0.isLetter }) else { return false }
         return !isICAO(token)
+    }
+
+    /// A non-navigational display marker Infinite Flight inserts into the simplified
+    /// route (departure, top-of-climb, top-of-descent, destination). These are not
+    /// real fixes and must never be shown as waypoints.
+    static func isPseudoWaypoint(_ token: String) -> Bool {
+        ["DPT", "DEP", "DEPARTURE", "TOC", "T/C", "TOD", "T/D",
+         "DEST", "DESTINATION", "ARR", "ARRIVAL"].contains(token.uppercased())
     }
 
     /// A runway token such as `RW14`, `14`, `30L`, `09C` — these appear at the

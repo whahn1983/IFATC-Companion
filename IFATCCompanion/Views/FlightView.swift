@@ -3,6 +3,7 @@ import SwiftUI
 struct FlightView: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var settings: AppSettings
+    @FocusState private var keyboardFocused: Bool
 
     var body: some View {
         NavigationStack {
@@ -14,8 +15,18 @@ struct FlightView: View {
                 }
                 .padding(16)
             }
+            .scrollDismissesKeyboard(.interactively)
             .navigationTitle("Flight")
             .screenBackground()
+            .toolbar {
+                // The override fields include a number-pad (Cruise) with no return key
+                // to dismiss it; this Done button always frees the keyboard so the user
+                // never gets trapped behind it.
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") { keyboardFocused = false }
+                }
+            }
         }
     }
 
@@ -54,12 +65,26 @@ struct FlightView: View {
                 DataRow(label: "Approach", value: orDash(model.flightPlan.approach))
                 if !model.flightPlan.waypoints.isEmpty {
                     Divider()
-                    Text("Waypoints").font(.caption).foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    HStack {
+                        Text("Waypoints (\(model.flightPlan.waypoints.count))")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     Text(model.flightPlan.waypoints.map { $0.name }.joined(separator: "  →  "))
                         .font(.callout)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                Divider()
+                Button {
+                    model.refreshFlightPlan()
+                } label: {
+                    Label(settings.mockMode ? "Refresh Flight Plan"
+                                            : "Refresh from Infinite Flight",
+                          systemImage: "arrow.clockwise")
+                        .frame(maxWidth: .infinity, minHeight: 40)
+                }
+                .buttonStyle(.bordered)
             }
         }
     }
@@ -92,12 +117,21 @@ struct FlightView: View {
                     overrideField("STAR", text: $settings.star, placeholder: "KKILR")
                 }
                 Button {
+                    keyboardFocused = false
                     model.applyManualOverrides()
                 } label: {
                     Label("Apply Overrides", systemImage: "checkmark.circle")
                         .frame(maxWidth: .infinity, minHeight: 44)
                 }
                 .buttonStyle(.borderedProminent)
+                Button(role: .destructive) {
+                    keyboardFocused = false
+                    model.clearManualOverrides()
+                } label: {
+                    Label("Clear Overrides", systemImage: "xmark.circle")
+                        .frame(maxWidth: .infinity, minHeight: 40)
+                }
+                .buttonStyle(.bordered)
             }
         }
     }
@@ -109,6 +143,7 @@ struct FlightView: View {
                 .textInputAutocapitalization(.characters)
                 .autocorrectionDisabled()
                 .textFieldStyle(.roundedBorder)
+                .focused($keyboardFocused)
         }
         .frame(maxWidth: .infinity)
     }
@@ -119,6 +154,7 @@ struct FlightView: View {
             TextField("37000", value: $settings.cruiseAltitude, format: .number)
                 .keyboardType(.numberPad)
                 .textFieldStyle(.roundedBorder)
+                .focused($keyboardFocused)
         }
         .frame(maxWidth: .infinity)
     }

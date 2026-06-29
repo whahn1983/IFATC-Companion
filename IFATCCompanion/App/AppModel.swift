@@ -42,7 +42,9 @@ final class AppModel: ObservableObject {
     @Published var flightPlan = FlightPlan.empty
     @Published var phase: FlightPhase = .preflight
     @Published var atcState: ATCState = .notConnected
-    @Published var currentFacility: ATCFacility = .ground
+    // Clearance Delivery is the first controller a flight calls, so the radio starts
+    // tuned there (not Ground) at the gate.
+    @Published var currentFacility: ATCFacility = .clearance
     @Published var transcript: [ATCTransmission] = []
     @Published var latestTransmission: ATCTransmission?
     @Published var phaseDebug = PhaseDetector.Debug()
@@ -279,6 +281,7 @@ final class AppModel: ObservableObject {
         hasDeparted = false
         arrivalAnnounced = false
         atcState = .connectedIdle
+        currentFacility = .clearance
         stateMachine.setConnected()
         applyLiveATC(simulateStaffedATC
             ? LiveATCStatus(multiplayerOnline: true, serverName: "Expert",
@@ -301,6 +304,7 @@ final class AppModel: ObservableObject {
         stateMachine.reset()
         hasDeparted = false
         arrivalAnnounced = false
+        currentFacility = .clearance
         if settings.autoDiscover && settings.host.isEmpty {
             connect.startAutoDiscover { [weak self] device in
                 guard let self else { return }
@@ -1049,6 +1053,41 @@ final class AppModel: ObservableObject {
         diagnostics.log(.app, "Manual flight-plan overrides applied.")
     }
 
+    /// Clear every manually-entered override field and revert to the live (or mock)
+    /// flight plan. In live mode this forces an immediate re-read so the Infinite
+    /// Flight plan repopulates the fields that were being overridden.
+    func clearManualOverrides() {
+        settings.callsign = ""
+        settings.airline = ""
+        settings.flightNumber = ""
+        settings.departure = ""
+        settings.destination = ""
+        settings.alternate = ""
+        settings.cruiseAltitude = 0
+        settings.runway = ""
+        settings.sid = ""
+        settings.star = ""
+        settings.approach = ""
+        // Re-sync drops manualOverride (both endpoints are now empty) so Connect data
+        // is no longer pinned back by the override flag.
+        syncFlightPlanFromSettings()
+        diagnostics.log(.app, "Manual flight-plan overrides cleared.")
+        if !settings.mockMode { Task { await connect.refreshFlightPlan() } }
+    }
+
+    /// Re-read the flight plan from the active source. In live mode this forces an
+    /// immediate re-read from Infinite Flight (use after editing the plan mid-flight);
+    /// in mock mode it rebuilds from the current settings/mock route.
+    func refreshFlightPlan() {
+        if settings.mockMode {
+            syncFlightPlanFromSettings()
+            diagnostics.log(.app, "Flight plan refreshed from mock route.")
+        } else {
+            Task { await connect.refreshFlightPlan() }
+            diagnostics.log(.app, "Requested flight-plan refresh from Infinite Flight.")
+        }
+    }
+
     // MARK: - Push-to-talk
 
     /// Last recognized spoken phrase and the intent it mapped to (for the UI).
@@ -1374,7 +1413,7 @@ final class AppModel: ObservableObject {
         phaseDetector = PhaseDetector()
         stateMachine.reset()
         atcState = .connectedIdle
-        currentFacility = .ground
+        currentFacility = .clearance
         if settings.mockMode {
             // Restart the mock feed from the gate.
             mock.stop()
