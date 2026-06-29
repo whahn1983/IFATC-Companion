@@ -1113,8 +1113,24 @@ final class AppModel: ObservableObject {
     private func applyLiveCallsign(_ cs: String) {
         let trimmed = cs.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
-              settings.callsign.isEmpty, settings.airline.isEmpty, settings.flightNumber.isEmpty,
-              flightPlan.callsign != trimmed else { return }
+              settings.callsign.isEmpty, settings.airline.isEmpty, settings.flightNumber.isEmpty
+        else { return }
+
+        // Resolve an airline prefix (e.g. "UA598" / "UAL598" -> United 598) so the
+        // companion uses the proper telephony name instead of spelling it out.
+        if let parsed = AirlineDatabase.parse(trimmed) {
+            guard flightPlan.airline != parsed.telephony
+                    || flightPlan.flightNumber != parsed.flightNumber else { return }
+            flightPlan.airline = parsed.telephony
+            flightPlan.flightNumber = parsed.flightNumber
+            flightPlan.callsign = ""
+            diagnostics.log(.app, "Adopted live callsign \(trimmed) as \(parsed.telephony) \(parsed.flightNumber).")
+            return
+        }
+
+        guard flightPlan.callsign != trimmed else { return }
+        flightPlan.airline = ""
+        flightPlan.flightNumber = ""
         flightPlan.callsign = trimmed
         diagnostics.log(.app, "Adopted live callsign from Infinite Flight: \(trimmed).")
     }
@@ -1442,6 +1458,13 @@ final class AppModel: ObservableObject {
         plan.callsign = settings.callsign
         plan.airline = settings.airline.isEmpty && settings.mockMode ? "United" : settings.airline
         plan.flightNumber = settings.flightNumber.isEmpty && settings.mockMode ? "598" : settings.flightNumber
+        // Resolve an airline prefix typed into the Callsign field (e.g. "UAL598")
+        // into a telephony name + flight number when not otherwise specified.
+        if plan.airline.isEmpty, plan.flightNumber.isEmpty,
+           let parsed = AirlineDatabase.parse(plan.callsign) {
+            plan.airline = parsed.telephony
+            plan.flightNumber = parsed.flightNumber
+        }
         plan.departure = settings.departure.isEmpty && settings.mockMode ? mock.route.departure : settings.departure
         plan.destination = settings.destination.isEmpty && settings.mockMode ? mock.route.destination : settings.destination
         plan.alternate = settings.alternate
