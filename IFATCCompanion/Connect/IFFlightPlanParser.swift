@@ -35,14 +35,31 @@ enum IFFlightPlanParser {
 
     /// Build a plan from the several flight-plan states Infinite Flight exposes.
     ///
-    /// `full` (`aircraft/0/flightplan`) is the primary source; on some IF versions it
-    /// is rich JSON (with per-fix coordinates and SID/STAR/approach groups), but on
-    /// others it collapses a long route to a handful of summary legs. When that
-    /// happens, the textual route (`flightplan/route`) carries every enroute fix, so
-    /// its longer fix list is preferred. Coordinates (`flightplan/coordinates`) are
+    /// `fullInfo` (`aircraft/0/flightplan/full_info`) is the richest source — the
+    /// detailed JSON document with per-fix planned altitudes and nested SID/STAR/approach
+    /// procedure groups. It is preferred when present. `full` (`aircraft/0/flightplan`)
+    /// is the fallback: on some IF versions it is also rich JSON, but on others it
+    /// collapses a long route to a handful of summary legs. When the chosen base plan is
+    /// missing enroute fixes, the textual route (`flightplan/route`) carries every fix,
+    /// so its longer list is preferred. Coordinates (`flightplan/coordinates`) are
     /// attached when they line up 1-for-1 with the recovered fixes.
-    static func parse(full: String?, route: String?, coordinates: String?) -> FlightPlan? {
-        var plan = full.flatMap { parse($0) }
+    static func parse(fullInfo: String? = nil, full: String?, route: String?, coordinates: String?) -> FlightPlan? {
+        // Prefer the detailed full_info document; fall back to the plain flightplan
+        // state. full_info is the only state that carries planned altitudes and the
+        // published procedure names, so a successful parse of it wins outright.
+        var plan = fullInfo.flatMap { parse($0) }
+        if let summary = full.flatMap({ parse($0) }) {
+            if var p = plan {
+                // Keep full_info's rich plan, but borrow any endpoint/cruise the summary
+                // recovered that full_info left blank.
+                if p.departure.isEmpty { p.departure = summary.departure }
+                if p.destination.isEmpty { p.destination = summary.destination }
+                if p.cruiseAltitude <= 0 { p.cruiseAltitude = summary.cruiseAltitude }
+                plan = p
+            } else {
+                plan = summary
+            }
+        }
 
         // Prefer the route string's fix list when it recovers more enroute fixes than
         // the (possibly summarised) full payload did — but never trade away a richer
@@ -174,12 +191,15 @@ enum IFFlightPlanParser {
             let children = childArray(dict)
 
             if !children.isEmpty {
-                // A SID/STAR/approach grouping. Classify by name and position — a
-                // procedure before any enroute (non-airport) fix is the SID, one
-                // after is the STAR. The departure airport doesn't count as enroute.
+                // A SID/STAR/approach/track grouping. Infinite Flight tags it with an
+                // explicit `Type` (Sid=0, STAR=1, Approach=2, Track=3); when present that
+                // is authoritative. Otherwise fall back to name + position heuristics — a
+                // procedure before any enroute (non-airport) fix is the SID, one after is
+                // the STAR. The departure airport doesn't count as enroute.
+                let procType = number(dict, ["type", "Type"]).map { Int($0) }
                 let hadEnrouteFix = fixes.contains { !isICAO($0.name) }
-                classifyProcedure(name: name, into: &plan, hasFixesBefore: hadEnrouteFix)
-                let isApproach = isApproachName(name)
+                classifyProcedure(name: name, type: procType, into: &plan, hasFixesBefore: hadEnrouteFix)
+                let isApproach = procType == 2 || (procType == nil && isApproachName(name))
                 for (i, child) in children.enumerated() {
                     appendFix(child, to: &fixes, maxAltitude: &maxAltitude, seen: &seen)
                     // The intercept altitude is the first altitude in the approach
@@ -300,17 +320,29 @@ enum IFFlightPlanParser {
     }
 
     /// Record a SID/STAR/approach name onto the plan from a procedure grouping.
-    private static func classifyProcedure(name: String, into plan: inout FlightPlan,
+    /// `type` is Infinite Flight's procedure enum (Sid=0, STAR=1, Approach=2, Track=3)
+    /// when the document provides it; it is authoritative. When absent (`nil`), fall
+    /// back to name + position heuristics.
+    private static func classifyProcedure(name: String, type: Int?, into plan: inout FlightPlan,
                                           hasFixesBefore: Bool) {
         guard !name.isEmpty else { return }
-        if isApproachName(name) {
-            if plan.approach.isEmpty { plan.approach = name }
-        } else if !hasFixesBefore {
-            // First procedure, near the departure → SID.
+        switch type {
+        case 0:                                   // SID
             if plan.sid.isEmpty { plan.sid = name }
-        } else {
-            // A later procedure near the arrival → STAR (overwrite so the last wins).
+        case 1:                                   // STAR
             plan.star = name
+        case 2:                                   // Approach
+            if plan.approach.isEmpty { plan.approach = name }
+        case 3:                                   // Track (e.g. oceanic) — not a named
+            break                                 // SID/STAR/approach; its fixes stay enroute.
+        default:                                  // Unknown / untyped — heuristic fallback.
+            if isApproachName(name) {
+                if plan.approach.isEmpty { plan.approach = name }
+            } else if !hasFixesBefore {
+                if plan.sid.isEmpty { plan.sid = name }
+            } else {
+                plan.star = name
+            }
         }
     }
 

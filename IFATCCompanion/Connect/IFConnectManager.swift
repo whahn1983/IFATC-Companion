@@ -133,7 +133,7 @@ final class IFConnectManager: ObservableObject {
         guard !payloads.isEmpty else { return }
 
         // Change-detection key spans every payload so an edit to any of them re-reads.
-        let key = [payloads.full, payloads.route, payloads.coordinates]
+        let key = [payloads.fullInfo, payloads.full, payloads.route, payloads.coordinates]
             .compactMap { $0 }.joined(separator: "\u{1F}")
         guard key != liveFlightPlanRaw else { return }
         liveFlightPlanRaw = key
@@ -143,15 +143,18 @@ final class IFConnectManager: ObservableObject {
         // against whatever is observed here.
         logRawFlightPlan(payloads)
 
-        guard let plan = IFFlightPlanParser.parse(full: payloads.full,
+        guard let plan = IFFlightPlanParser.parse(fullInfo: payloads.fullInfo,
+                                                  full: payloads.full,
                                                   route: payloads.route,
                                                   coordinates: payloads.coordinates) else {
             diagnostics?.log(.state, "Flight plan present but unparseable.")
             return
         }
         let located = plan.waypoints.filter { $0.coordinate != nil }.count
+        let withAltitude = plan.waypoints.filter { ($0.altitude ?? 0) > 0 }.count
         diagnostics?.log(.state, "Flight plan from IF: \(plan.departure)→\(plan.destination), "
-            + "\(plan.waypoints.count) fixes (\(located) located), "
+            + "\(plan.waypoints.count) fixes (\(located) located, \(withAltitude) with alt), "
+            + "cruise \(plan.cruiseAltitude > 0 ? "\(plan.cruiseAltitude) ft" : "—"), "
             + "SID \(plan.sid.isEmpty ? "—" : plan.sid), STAR \(plan.star.isEmpty ? "—" : plan.star), "
             + "APP \(plan.approach.isEmpty ? "—" : plan.approach).")
         onFlightPlan?(plan)
@@ -164,6 +167,7 @@ final class IFConnectManager: ObservableObject {
             let max = 2000
             return s.count > max ? String(s.prefix(max)) + "…[\(s.count) chars]" : s
         }
+        if let fullInfo = payloads.fullInfo { diagnostics?.log(.state, "Raw flightplan/full_info: \(trimmed(fullInfo))") }
         if let full = payloads.full { diagnostics?.log(.state, "Raw flightplan: \(trimmed(full))") }
         if let route = payloads.route { diagnostics?.log(.state, "Raw flightplan/route: \(trimmed(route))") }
         if let coords = payloads.coordinates { diagnostics?.log(.state, "Raw flightplan/coordinates: \(trimmed(coords))") }

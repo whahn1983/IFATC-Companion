@@ -133,6 +133,95 @@ final class FlightPlanParserTests: XCTestCase {
         XCTAssertTrue(plan?.waypoints.allSatisfy { $0.coordinate == nil } ?? false)
     }
 
+    // MARK: - Detailed `flightplan/full_info` document
+
+    /// The rich document Infinite Flight serves at `aircraft/0/flightplan/full_info`:
+    /// camelCase keys, per-fix planned `altitude`, and procedure groups tagged with an
+    /// explicit `type` (Sid=0, STAR=1, Approach=2). This is the only state that carries
+    /// the cruise altitude and the published procedure names.
+    private let fullInfoJSON = """
+    {
+      "flightPlanItems": [
+        { "identifier": "KTEB", "altitude": -1, "children": null,
+          "location": { "latitude": 40.8501, "longitude": -74.0608 } },
+        { "name": "RUUDY6", "type": 0, "identifier": "RUUDY6",
+          "children": [
+            { "identifier": "WHITE", "altitude": 4000, "children": null,
+              "location": { "latitude": 40.70, "longitude": -74.30 } },
+            { "identifier": "SBJ", "altitude": 11000, "children": null,
+              "location": { "latitude": 40.58, "longitude": -74.73 } }
+          ] },
+        { "identifier": "LRP", "altitude": 37000, "children": null,
+          "location": { "latitude": 40.12, "longitude": -76.29 } },
+        { "name": "VINNY1", "type": 1, "identifier": "VINNY1",
+          "children": [
+            { "identifier": "MXE", "altitude": 11000, "children": null,
+              "location": { "latitude": 39.98, "longitude": -75.86 } }
+          ] },
+        { "name": "ILS 27R", "type": 2, "identifier": "I27R",
+          "children": [
+            { "identifier": "PETER", "altitude": 3000, "children": null,
+              "location": { "latitude": 39.92, "longitude": -75.40 } }
+          ] },
+        { "identifier": "KPHL", "altitude": -1, "children": null,
+          "location": { "latitude": 39.8719, "longitude": -75.2411 } }
+      ]
+    }
+    """
+
+    /// full_info supplies the cruise altitude (highest planned level), per-fix
+    /// altitudes, and the SID/STAR/approach names — and is preferred over both the
+    /// collapsed summary and the route string when present.
+    func testFullInfoProvidesAltitudesAndProcedures() {
+        let summary = #"{ "Waypoints": ["KTEB","DPT","SBJ","TOC","LRP","TOD","KPHL"] }"#
+        let route = "KTEB WHITE SBJ LRP MXE PETER KPHL"
+        guard let plan = IFFlightPlanParser.parse(fullInfo: fullInfoJSON, full: summary,
+                                                  route: route, coordinates: nil) else {
+            return XCTFail("expected a parsed plan")
+        }
+        XCTAssertEqual(plan.departure, "KTEB")
+        XCTAssertEqual(plan.destination, "KPHL")
+        XCTAssertEqual(plan.waypoints.map(\.name), ["WHITE", "SBJ", "LRP", "MXE", "PETER"])
+
+        // Cruise altitude = highest planned per-fix altitude.
+        XCTAssertEqual(plan.cruiseAltitude, 37000)
+
+        // Procedures classified from the explicit `type` enum.
+        XCTAssertEqual(plan.sid, "RUUDY6")
+        XCTAssertEqual(plan.star, "VINNY1")
+        XCTAssertEqual(plan.approach, "ILS 27R")
+        XCTAssertEqual(plan.approachInterceptAltitude, 3000)
+
+        // Per-fix planned altitudes are preserved on each waypoint.
+        let alt = Dictionary(plan.waypoints.map { ($0.name, $0.altitude) },
+                             uniquingKeysWith: { a, _ in a })
+        XCTAssertEqual(alt["WHITE"] ?? nil, 4000)
+        XCTAssertEqual(alt["SBJ"] ?? nil, 11000)
+        XCTAssertEqual(alt["LRP"] ?? nil, 37000)
+        XCTAssertEqual(alt["PETER"] ?? nil, 3000)
+    }
+
+    /// The explicit procedure `type` is authoritative — it overrides the name/position
+    /// heuristics. A first procedure tagged STAR is the STAR (not the SID), and a
+    /// keyword-less name tagged Approach is the approach.
+    func testProcedureTypeOverridesNameHeuristic() {
+        let json = """
+        { "flightPlanItems": [
+            { "identifier": "EGLL", "children": null, "location": {"latitude":51.47,"longitude":-0.46} },
+            { "name": "LOGAN1", "type": 1, "children": [
+                { "identifier": "LOGAN", "children": null, "location": {"latitude":51.0,"longitude":-0.5} } ] },
+            { "name": "FINALX", "type": 2, "children": [
+                { "identifier": "DET", "altitude": 2000, "children": null, "location": {"latitude":51.3,"longitude":0.6} } ] },
+            { "identifier": "EGKK", "children": null, "location": {"latitude":51.15,"longitude":-0.19} }
+        ] }
+        """
+        let plan = IFFlightPlanParser.parse(json)
+        XCTAssertEqual(plan?.star, "LOGAN1")        // type 1, despite being the first procedure
+        XCTAssertTrue(plan?.sid.isEmpty ?? false)   // …so it is not mistaken for a SID
+        XCTAssertEqual(plan?.approach, "FINALX")    // type 2, despite no approach keyword
+        XCTAssertEqual(plan?.approachInterceptAltitude, 2000)
+    }
+
     func testParseCoordinateList() {
         let pairs = IFFlightPlanParser.parseCoordinateList("40.58, -74.73; 40.12, -76.29")
         XCTAssertEqual(pairs.count, 2)
