@@ -56,16 +56,37 @@ struct PilotResponseEngine {
                          "\(cs.spoken), maintaining \(Phonetic.altitude(c.cruiseAltitude, icao: icao)).",
                          facility: .center)
         case .descent:
-            let alt = max(10000, c.assignedAltitude)
-            return pilot("Pilot's discretion to \(engine.formatAltDisplay(alt)), \(cs.display).",
-                         "Pilot's discretion to \(Phonetic.altitude(alt, icao: icao)), \(cs.spoken).",
+            if let star = c.starProcedure {
+                return pilot("Descend via the \(star.displayName) arrival, \(cs.display).",
+                             "Descend via the \(star.spokenName(icao: icao)) arrival, \(cs.spoken).",
+                             facility: .center)
+            }
+            let alt = ATCStateMachine.descentTargetAltitude(context: c)
+            return pilot("Descend and maintain \(engine.formatAltDisplay(alt)), \(cs.display).",
+                         "Descend and maintain \(Phonetic.altitude(alt, icao: icao)), \(cs.spoken).",
                          facility: .center)
         case .approach:
             let alt = max(3000, c.assignedAltitude)
+            if let approach = c.approachProcedure {
+                let rwy = approach.runway ?? c.runway
+                let typeD = approach.approachType?.display ?? "approach"
+                let typeS = approach.approachType?.spoken ?? "approach"
+                return pilot("Down to \(engine.formatAltDisplay(alt)), expecting the \(typeD) runway \(rwy), \(cs.display).",
+                             "Down to \(Phonetic.altitude(alt, icao: icao)), expecting the \(typeS) runway \(Phonetic.runway(rwy, icao: icao)), \(cs.spoken).",
+                             facility: .approach)
+            }
             return pilot("Down to \(engine.formatAltDisplay(alt)), expecting \(c.approachName.isEmpty ? "ILS" : c.approachName) runway \(c.runway), \(cs.display).",
                          "Down to \(Phonetic.altitude(alt, icao: icao)), expecting \(c.approachName.isEmpty ? "I L S" : c.approachName) runway \(Phonetic.runway(c.runway, icao: icao)), \(cs.spoken).",
                          facility: .approach)
         case .final:
+            if let approach = c.approachProcedure {
+                let rwy = approach.runway ?? c.runway
+                let typeD = approach.approachType?.display ?? "approach"
+                let typeS = approach.approachType?.spoken ?? "approach"
+                return pilot("Cleared the \(typeD) runway \(rwy), \(cs.display).",
+                             "Cleared the \(typeS) runway \(Phonetic.runway(rwy, icao: icao)), \(cs.spoken).",
+                             facility: .approach)
+            }
             return pilot("Cleared \(c.approachName.isEmpty ? "ILS" : c.approachName) runway \(c.runway), \(cs.display).",
                          "Cleared \(c.approachName.isEmpty ? "I L S" : c.approachName) runway \(Phonetic.runway(c.runway, icao: icao)), \(cs.spoken).",
                          facility: .approach)
@@ -73,7 +94,11 @@ struct PilotResponseEngine {
             return pilot("Runway \(c.runway), cleared to land, \(cs.display).",
                          "Runway \(Phonetic.runway(c.runway, icao: icao)), cleared to land, \(cs.spoken).",
                          facility: .tower)
-        case .groundArrival, .runwayExit:
+        case .runwayExit:
+            return pilot("Exiting the runway, contact Ground, \(cs.display).",
+                         "Exiting the runway, contact Ground, \(cs.spoken).",
+                         facility: .tower)
+        case .groundArrival:
             return pilot("Taxi to parking via \(c.parkingTaxiway), \(cs.display).",
                          "Taxi to parking via \(Phonetic.spellToken(c.parkingTaxiway, icao: icao)), \(cs.spoken).",
                          facility: .ground)

@@ -260,14 +260,34 @@ struct PhraseologyEngine {
            spoken: "\(cs.spoken), climb and maintain \(Phonetic.altitude(altitude, icao: icao)).")
     }
 
-    // Center — pilot's discretion descent.
+    // Center — descend and maintain an assigned altitude (no STAR filed). A plain,
+    // non-contradictory descent clearance.
+    func descendMaintain(cs: Callsign, altitude: Int) -> ATCTransmission {
+        tx(.center,
+           display: "\(cs.display), descend and maintain \(formatAltDisplay(altitude)).",
+           spoken: "\(cs.spoken), descend and maintain \(Phonetic.altitude(altitude, icao: icao)).")
+    }
+
+    // Center — pilot's discretion descent (used when the pilot requests lower; the
+    // pilot chooses when to leave the current altitude, then levels at the target).
     func descendPilotsDiscretion(cs: Callsign, altitude: Int) -> ATCTransmission {
         tx(.center,
            display: "\(cs.display), descend at pilot's discretion, maintain \(formatAltDisplay(altitude)).",
            spoken: "\(cs.spoken), descend at pilot's discretion, maintain \(Phonetic.altitude(altitude, icao: icao)).")
     }
 
-    // Approach — descend + expect approach.
+    // Approach — descend + expect a published approach procedure (clean ILS/GPS/
+    // Visual phrasing, avoiding the doubled "RWY … runway …").
+    func descendExpectApproach(cs: Callsign, altitude: Int, procedure: Procedure, runway: String) -> ATCTransmission {
+        let rwy = procedure.runway ?? runway
+        let typeDisplay = procedure.approachType?.display ?? "approach"
+        let typeSpoken = procedure.approachType?.spoken ?? "approach"
+        return tx(.approach,
+           display: "\(cs.display), descend and maintain \(formatAltDisplay(altitude)), expect the \(typeDisplay) runway \(rwy) approach.",
+           spoken: "\(cs.spoken), descend and maintain \(Phonetic.altitude(altitude, icao: icao)), expect the \(typeSpoken) runway \(Phonetic.runway(rwy, icao: icao)) approach.")
+    }
+
+    // Approach — descend + expect approach (free-text approach name fallback).
     func descendExpectApproach(cs: Callsign, altitude: Int, approach: String, runway: String) -> ATCTransmission {
         let appText = approach.isEmpty ? "the I-L-S" : approach
         return tx(.approach,
@@ -295,6 +315,14 @@ struct PhraseologyEngine {
         return tx(.tower,
            display: "\(cs.display), wind \(String(format: "%03d", windDir)) at \(windSpeed), runway \(runway), cleared to land.",
            spoken: "\(cs.spoken), \(Phonetic.wind(direction: windDir, speed: windSpeed, icao: icao)), runway \(Phonetic.runway(runway, icao: icao)), cleared to land.")
+    }
+
+    // Tower rollout — exit the runway and contact Ground once clear. Issued by
+    // Tower after touchdown, before the Ground taxi-in instruction.
+    func exitRunwayContactGround(cs: Callsign, frequency: Double) -> ATCTransmission {
+        tx(.tower,
+           display: "\(cs.display), exit the runway when able, contact Ground on \(String(format: "%.3f", frequency)) once on the taxiway.",
+           spoken: "\(cs.spoken), exit the runway when able, contact Ground on \(Phonetic.frequency(frequency, icao: icao)) once on the taxiway.")
     }
 
     // Ground arrival — taxi to parking.

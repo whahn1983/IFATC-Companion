@@ -54,6 +54,15 @@ deterministic keyword matching.
 - ✅ **Real-world departure instructions** — the takeoff clearance issues the
   initial heading (bearing to the first fix, or "runway heading" when aligned) and
   the initial climb; Departure adds "resume own navigation, direct *fix*".
+- ✅ **Pilot readbacks before progressing** — in Automatic ATC, every controller
+  instruction that requires a readback is followed by the deterministic pilot
+  readback before the flow advances to the next section.
+- ✅ **Real-world arrival** — a filed STAR yields "descend via the *STAR* arrival"
+  (else a plain, non-contradictory "descend and maintain *alt*" to an intermediate
+  level); Approach issues the **cleared *ILS/GPS/Visual* approach** once the
+  aircraft is established (autopilot APPR mode engaged or lined up on final, read
+  from IF telemetry) before the Tower hand-off; after touchdown Tower adds "exit
+  the runway when able, contact Ground … once on the taxiway".
 
 ## Known constraints (future refinement)
 

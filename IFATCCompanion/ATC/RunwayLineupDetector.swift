@@ -31,6 +31,17 @@ struct RunwayLineupDetector {
         return gs > rollGroundSpeed
     }
 
+    /// True when airborne, descending, low, and aligned with the landing runway —
+    /// i.e. established on final. Used to issue the approach clearance even when the
+    /// autopilot approach mode (APPR) is not exposed by Infinite Flight.
+    func isOnFinalApproach(state: AircraftState, runway: String) -> Bool {
+        guard !(state.onGround ?? false) else { return false }
+        guard let aligned = headingAligned(state: state, runway: runway), aligned else { return false }
+        let vs = state.verticalSpeed ?? 0
+        let agl = state.altitudeAGL ?? (state.altitudeMSL ?? 0)
+        return vs < -100 && agl < 4000
+    }
+
     /// Whether the aircraft heading is within tolerance of the runway heading.
     /// Returns nil when the runway/heading can't be determined.
     private func headingAligned(state: AircraftState, runway: String) -> Bool? {

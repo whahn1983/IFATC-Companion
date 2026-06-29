@@ -26,9 +26,16 @@ ATC Automation, on by default) advances the flow from live telemetry:
 - **Departure works the climb to the TRACON ceiling** (default FL180, configurable)
   then **hands off to Center passing that altitude**; Center then clears to cruise.
 - Descent, approach, landing and taxi-in advance from telemetry as well.
+- **The pilot reads back each instruction before the flow progresses.** In
+  Automatic ATC, every controller call that requires a readback (clearance, taxi,
+  line-up, takeoff, climb/descent, approach and landing clearances, exit
+  instruction) is followed by the deterministic pilot readback before the next
+  section is issued. Courtesy/radar-contact check-ins are acknowledged, not read
+  back.
 
 Turn Automatic ATC off to drive the pre-departure flow manually with the ATC-tab
-buttons (the original behavior).
+buttons (the original behavior); the pilot readback is then the pilot's own
+button/voice action.
 
 ---
 
@@ -67,16 +74,24 @@ as periodic Center check-ins (additional sector frequencies are not simulated).
 
 | # | Phase | Facility | Controller call | Companion source | IF alignment |
 |---|-------|----------|-----------------|------------------|--------------|
-| 14 | Top of descent | **Center** | "Descend via the *STAR* arrival" or "descend at pilot's discretion, maintain *alt*." | `descendViaArrival` / `descendPilotsDiscretion` | IF descent |
+| 14 | Top of descent | **Center** | "Descend via the *STAR* arrival, maintain *alt*" (filed STAR) or "descend and maintain *alt*." | `descendViaArrival` / `descendMaintain` | IF descent |
 | 15 | Descending | **Center → Approach** | "Contact Approach on *freq*." | `handoff(from:to:)` | IF hand-off |
-| 16 | Approach | **Approach (TRACON)** | "Descend and maintain *alt*, expect *ILS/RNAV* runway *XX*." | `descendExpectApproach` | IF Approach |
+| 16 | Approach | **Approach (TRACON)** | "Descend and maintain 3,000, expect *ILS/GPS/Visual* runway *XX*." | `descendExpectApproach` | IF Approach |
 | 17 | Vectors | **Approach** | "Fly heading *XXX*, vectors for the *approach*." | `requestVectors` reply | IF vectors |
-| 18 | Established | **Approach** | "Cleared *ILS/RNAV* runway *XX* approach." | `clearedApproach` | IF approach clearance |
+| 18 | Established | **Approach** | "Cleared *ILS/GPS/Visual* runway *XX* approach." | `clearedApproach` | IF approach clearance |
 | 19 | Short final | **Approach → Tower** | "Contact Tower on *freq*." | `handoff(from:to:)` | IF hand-off |
 | 20 | Final | **Tower** | "Wind *…*, runway *XX*, cleared to land." | `clearedToLand` | IF landing clearance |
-| 21 | Rollout | **Tower → Ground** | "Contact Ground on *freq*." | `handoff(from:to:)` | IF hand-off |
+| 21 | Rollout | **Tower** | "Exit the runway when able, contact Ground on *freq* once on the taxiway." | `exitRunwayContactGround` | IF rollout |
 | 22 | Taxi in | **Ground** | "Taxi to parking via *taxiways*." | `taxiToParking` | IF taxi |
 | 23 | At gate | **Ground** | "Welcome to *city*, good day." (shutdown) | `welcomeArrival` | courtesy |
+
+The **cleared-approach call (step 18)** is issued once the aircraft is *established*
+— the autopilot approach mode (**APPR**) is engaged, or it is lined up on final with
+the runway — read from Infinite Flight telemetry (`approachMode`, falling back to a
+heading/altitude/descent-rate proxy). This guarantees the approach clearance is given
+**before** the Tower hand-off. The **top-of-descent altitude** is an intermediate
+level clearly below cruise (so the descent clearance is never contradictory), and
+Approach then steps the aircraft down to ~3,000 ft on the intercept.
 
 ---
 

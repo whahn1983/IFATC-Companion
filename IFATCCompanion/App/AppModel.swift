@@ -271,6 +271,13 @@ final class AppModel: ObservableObject {
 
     // MARK: - State handling
 
+    #if DEBUG
+    /// Test hook: feed a single aircraft-state snapshot through the same pipeline the
+    /// live/mock feeds use (phase detection → state machine → transcript). Lets tests
+    /// drive a full mock scenario without starting timers, networking, or audio.
+    func ingestStateForTesting(_ state: AircraftState) { handle(state: state) }
+    #endif
+
     private func handle(state: AircraftState) {
         aircraftState = state
         stateMachine.setConnected()
@@ -334,8 +341,8 @@ final class AppModel: ObservableObject {
         switch state {
         case .clearance: return .clearance
         case .pushback, .engineStart, .pushbackTaxi, .groundTaxi, .runwayCrossing,
-             .holdingShort, .runwayExit, .groundArrival, .parked: return .ground
-        case .lineUpWait, .towerDeparture, .landing: return .tower
+             .holdingShort, .groundArrival, .parked: return .ground
+        case .lineUpWait, .towerDeparture, .landing, .runwayExit: return .tower
         case .initialClimb, .departure: return .departure
         case .climb, .center, .cruise, .topOfDescent, .descent: return .center
         case .approach, .final: return .approach
@@ -366,9 +373,12 @@ final class AppModel: ObservableObject {
         let fromFacility = controller(for: previous)
         let toFacility = controller(for: target)
         // Announce a handoff only between two established controllers (not the very
-        // first contact, and not Clearance which is the initial call-up).
+        // first contact, and not Clearance which is the initial call-up). The
+        // runway-exit call already tells the pilot to contact Ground, so suppress
+        // the duplicate hand-off when leaving that state.
         let firstContact = previous == .notConnected || previous == .connectedIdle
-        if !firstContact, fromFacility != toFacility, toFacility != .clearance, lastATCTransmission != nil {
+        if !firstContact, previous != .runwayExit, fromFacility != toFacility,
+           toFacility != .clearance, lastATCTransmission != nil {
             post(engine.handoff(cs: c.callsign, from: fromFacility, to: toFacility,
                                 frequency: frequency(for: toFacility, context: c)), speak: speak)
         }
@@ -377,6 +387,27 @@ final class AppModel: ObservableObject {
         fireUnicomForTransition(into: target)
         atcState = stateMachine.current
         currentFacility = controller(for: stateMachine.current)
+        // Give the pilot the readback before progressing to the next section: in
+        // automatic mode, follow each controller instruction that requires one with
+        // the deterministic pilot readback. The context is rebuilt so it reflects the
+        // altitude/approach just assigned.
+        if settings.automaticATC, shouldAutoReadback(target) {
+            postPilot(pilotEngine.readback(for: target, context: buildContext(for: target)))
+        }
+    }
+
+    /// Controller instructions a pilot reads back before the flow advances. Courtesy
+    /// / radar-contact check-ins (cruise, Center) are acknowledged, not read back.
+    private func shouldAutoReadback(_ state: ATCState) -> Bool {
+        switch state {
+        case .clearance, .pushback, .engineStart, .pushbackTaxi, .groundTaxi,
+             .lineUpWait, .towerDeparture, .initialClimb, .departure, .climb,
+             .descent, .approach, .final, .landing, .runwayExit, .groundArrival:
+            return true
+        case .notConnected, .connectedIdle, .runwayCrossing, .holdingShort,
+             .center, .cruise, .topOfDescent, .parked, .abnormal:
+            return false
+        }
     }
 
     /// Pre-departure auto-advance: choose the next ground state from telemetry and
@@ -442,6 +473,8 @@ final class AppModel: ObservableObject {
     private func adjustedAirborneTarget(mapped: ATCState, state: AircraftState) -> ATCState {
         let alt = state.altitudeMSL ?? 0
         let ceiling = Double(currentTraconCeiling)
+        let onGround = state.onGround ?? false
+        let runway = buildContext(for: stateMachine.current).runway
 
         // Departure keeps the climb until passing the TRACON ceiling, then Center.
         if mapped == .climb, alt < ceiling - 200,
@@ -449,13 +482,24 @@ final class AppModel: ObservableObject {
             return .initialClimb
         }
 
-        // Cleared approach once established on final.
-        if mapped == .approach, stateMachine.current == .approach, isOnFinal(state) {
+        // Approach clears the approach once the aircraft is established — autopilot
+        // approach mode (APPR) engaged or lined up on final — before the Tower
+        // hand-off. This must follow the "descend, expect approach" call (.approach).
+        if stateMachine.current == .approach, isEstablishedOnApproach(state, runway: runway) {
             return .final
         }
-        // Cleared to land (Tower) on short final.
-        if stateMachine.current == .final, isOnFinal(state), (state.altitudeAGL ?? 9_999) < 1500 {
+        // Cleared to land (Tower) on short final or at touchdown.
+        if stateMachine.current == .final, onGround || isOnShortFinal(state) {
             return .landing
+        }
+        // After touchdown, Tower instructs to exit the runway and contact Ground.
+        if stateMachine.current == .landing, onGround {
+            return .runwayExit
+        }
+        // Once clear of the runway / at taxi speed, switch to Ground and taxi in.
+        if stateMachine.current == .runwayExit {
+            let gs = state.groundSpeed ?? 0
+            return (onGround && gs < 40) ? .groundArrival : .runwayExit
         }
         return mapped
     }
@@ -465,12 +509,21 @@ final class AppModel: ObservableObject {
         settings.traconCeilingFL > 0 ? settings.traconCeilingFL * 100 : 18000
     }
 
-    /// Whether the aircraft is established on final (airborne, low, descending).
-    private func isOnFinal(_ s: AircraftState) -> Bool {
+    /// Whether the aircraft is established on the approach: the autopilot approach
+    /// mode (APPR) is engaged, or it is lined up on final with the runway. Read from
+    /// Infinite Flight telemetry (mock feed simulates APPR on the approach phase).
+    private func isEstablishedOnApproach(_ s: AircraftState, runway: String) -> Bool {
+        guard !(s.onGround ?? false) else { return false }
+        if s.approachModeEngaged == true { return true }
+        return lineupDetector.isOnFinalApproach(state: s, runway: runway)
+    }
+
+    /// Whether the aircraft is on short final (airborne, low, descending).
+    private func isOnShortFinal(_ s: AircraftState) -> Bool {
         guard !(s.onGround ?? false) else { return false }
         let agl = s.altitudeAGL ?? (s.altitudeMSL ?? 0)
         let vs = s.verticalSpeed ?? 0
-        return agl < 2500 && vs < -100
+        return agl < 1500 && vs < -100
     }
 
     /// Arrival courtesy call once stopped at the gate.
@@ -534,7 +587,7 @@ final class AppModel: ObservableObject {
         case .initialClimb, .departure:
             assignedAltitude = c.traconCeiling > 0 ? c.traconCeiling : max(c.assignedAltitude, c.initialClimbAltitude)
         case .climb, .cruise: assignedAltitude = c.cruiseAltitude
-        case .descent: assignedAltitude = max(10000, c.cruiseAltitude - 10000)
+        case .descent: assignedAltitude = ATCStateMachine.descentTargetAltitude(context: c)
         case .approach: assignedAltitude = 3000
         default: break
         }

@@ -102,7 +102,7 @@ final class MockSimulatorFeed: ObservableObject {
         case .climb:        profile = (0.18, 21000,  390, 1900,  false)
         case .cruise:       profile = (0.50, Double(route.cruiseAltitude), 460, 0, false)
         case .descent:      profile = (0.80, 17000,  410, -1900, false)
-        case .approach:     profile = (0.95, 4000,   240, -1100, false)
+        case .approach:     profile = (0.97, 4000,   240, -1100, false)
         case .landing:      profile = (1.00, 0,      130, -300,  true)
         case .taxiIn:       profile = (1.00, 0,      16,  0,     true)
         case .parked:       profile = (1.00, 0,      0,   0,     true)
@@ -121,6 +121,9 @@ final class MockSimulatorFeed: ObservableObject {
         s.trueAirspeed = profile.gs
         s.verticalSpeed = profile.vs
         s.onGround = profile.ground
+        // Simulate the autopilot approach mode (APPR) being engaged once on the
+        // approach, so the companion can issue the "cleared … approach" call.
+        s.approachModeEngaged = (phase == .approach || phase == .landing)
         s.nearestAirport = frac < 0.5 ? route.departure : route.destination
         s.nearestAirportDistanceNM = Geo.distanceNM(from: coord,
                                                      to: frac < 0.5 ? route.depCoord : route.destCoord)
