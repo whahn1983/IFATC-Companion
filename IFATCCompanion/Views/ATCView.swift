@@ -18,6 +18,7 @@ struct ATCView: View {
                     statusHeader
                     if model.liveATC.humanControllerActive { standbyBanner }
                     currentTransmissionCard
+                    frequencyCard
                     unicomCard
                     responseButtons
                     transcriptCard
@@ -182,6 +183,39 @@ struct ATCView: View {
                     }
                 }
                 Text("UNICOM announces your own intentions only. This is not staffed ATC.")
+                    .font(.caption2).foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    // MARK: - Frequency tuning
+
+    /// Manual frequency-change buttons: the pilot taps a controller to switch to
+    /// its frequency and get that facility's next instruction. Tapping any of
+    /// these hands control of the flight's progression to the pilot, so calls no
+    /// longer auto-play one after another.
+    private var frequencyCard: some View {
+        Card(title: "Tune Frequency", systemImage: "dial.medium") {
+            VStack(alignment: .leading, spacing: 10) {
+                LazyVGrid(columns: gridColumns, spacing: 10) {
+                    ForEach(AppModel.tunableFacilities) { facility in
+                        FrequencyButton(title: facility.title,
+                                        systemImage: facility.symbol,
+                                        frequency: model.frequencyText(for: facility),
+                                        active: model.currentFacility == facility,
+                                        enabled: model.canTune(facility)) {
+                            model.tuneTo(facility)
+                        }
+                    }
+                    FrequencyButton(title: "Ramp",
+                                    systemImage: "parkingsign",
+                                    frequency: "Parking",
+                                    active: model.atcState == .parked,
+                                    enabled: model.atcState != .parked) {
+                        model.arriveAtGate()
+                    }
+                }
+                Text("Tap a controller to change frequency and get the next instruction. You drive every frequency change.")
                     .font(.caption2).foregroundStyle(.tertiary)
             }
         }

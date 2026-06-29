@@ -37,11 +37,21 @@ mode and Mock Mode.
   then **hands off to Center passing that altitude**; Center then clears to cruise.
 - Descent, approach, landing and taxi-in advance from telemetry as well.
 
-In **Mock Mode** there is no live position telemetry, so once you report *ready
-for departure* the automatic callouts play out on a short pause (~4 s each),
-standing in for "lined up on the runway" and "positive rate". Use **Clear Flight**
-(top-left of the ATC tab) to wipe the conversation and start a new flight from the
-gate; your settings and flight plan are kept.
+**Manual frequency tuning.** The ATC tab has a **Tune Frequency** card with one
+button per controller — **Clearance, Ground, Tower, Departure, Center, Approach,**
+and **Ramp** (parking). Tap a controller to switch to its frequency: the companion
+posts your check-in and the controller's *next* instruction for the current phase.
+The same Ground/Tower button serves both the departure and the arrival visit (it
+advances to whichever call lies ahead). **As soon as you tune a frequency
+yourself, the companion stops issuing controller calls automatically** — each call
+then waits for you to tune the next frequency, so they never play one after the
+next without a pause. (Re-tap **Center** to walk climb → cruise → descent; a button
+dims once that controller has no further call.)
+
+In **Mock Mode** there is no live position telemetry, so use the Tune Frequency
+buttons to drive the flight forward after you report *ready for departure*. Use
+**Clear Flight** (top-left of the ATC tab) to wipe the conversation and start a new
+flight from the gate; your settings and flight plan are kept.
 
 ---
 
