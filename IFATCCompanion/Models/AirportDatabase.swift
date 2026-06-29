@@ -25,6 +25,8 @@ struct AirportDatabase {
             ("KATL", "Atlanta Hartsfield", 33.6407, -84.4277),
             ("KLAX", "Los Angeles", 33.9416, -118.4085),
             ("KJFK", "New York JFK", 40.6413, -73.7781),
+            ("KEWR", "Newark Liberty", 40.6925, -74.1687),
+            ("KLGA", "New York LaGuardia", 40.7769, -73.8740),
             ("KSFO", "San Francisco", 37.6213, -122.3790),
             ("KSEA", "Seattle-Tacoma", 47.4502, -122.3088),
             ("KDFW", "Dallas–Fort Worth", 32.8998, -97.0403),

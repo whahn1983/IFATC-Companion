@@ -1,6 +1,9 @@
 import Foundation
 import Combine
 import CoreLocation
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// Central coordinator. Owns all services, holds the published app state the UI
 /// renders, and turns live/mock aircraft state into deterministic ATC dialogue.
@@ -32,6 +35,7 @@ final class AppModel: ObservableObject {
     private var turbulenceModel = TurbulenceModel()
     private var rideEngine: RideReportEngine
     private let airports = AirportDatabase.shared
+    private let runways = RunwayDatabase.shared
 
     // Published UI state.
     @Published var aircraftState = AircraftState.empty
@@ -136,6 +140,7 @@ final class AppModel: ObservableObject {
         started = true
 
         diagnostics.verbose = settings.debugLogging
+        applyKeepScreenAwake()
         speech.configure(settings: settings)
         connect.configure(diagnostics: diagnostics)
         unicom.configure(connect: connect, diagnostics: diagnostics)
@@ -163,6 +168,15 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Disable the iOS idle timer so the screen stays on while the app is open.
+    /// Infinite Flight closes the Connect socket when the companion device sleeps,
+    /// so keeping the screen awake prevents the connection from dropping.
+    private func applyKeepScreenAwake() {
+        #if canImport(UIKit)
+        UIApplication.shared.isIdleTimerDisabled = settings.keepScreenAwake
+        #endif
+    }
+
     private func observeSettings() {
         // Keep phraseology engines and dependent objects in sync with settings.
         settings.$digitStyle
@@ -187,6 +201,10 @@ final class AppModel: ObservableObject {
 
         settings.$debugLogging
             .sink { [weak self] on in self?.diagnostics.verbose = on }
+            .store(in: &cancellables)
+
+        settings.$keepScreenAwake
+            .sink { [weak self] _ in self?.applyKeepScreenAwake() }
             .store(in: &cancellables)
 
         // Track live ATC-staffing status from the Connect link (live mode only).
@@ -730,7 +748,7 @@ final class AppModel: ObservableObject {
         let approachProc = flightPlan.approach.isEmpty ? nil
             : ProcedureParser.parseApproach(flightPlan.approach)
 
-        let runway = resolvedRunway(windDir: windDir, arrival: arrival,
+        let runway = resolvedRunway(windDir: windDir, windSpeed: windSpeed, arrival: arrival,
                                     approach: approachProc)
         let taxiPlan = taxiPlanner.plan(airport: arrival ? flightPlan.destination : flightPlan.departure,
                                         runway: runway, arrival: arrival)
@@ -797,11 +815,17 @@ final class AppModel: ObservableObject {
         return String(format: "%04o", (abs(n) * 7 + 1) % 4096)
     }
 
-    private func resolvedRunway(windDir: Int, arrival: Bool, approach: Procedure? = nil) -> String {
+    private func resolvedRunway(windDir: Int, windSpeed: Int, arrival: Bool,
+                                approach: Procedure? = nil) -> String {
         // A parsed approach's runway wins on arrival; otherwise an explicit
-        // flight-plan runway; otherwise derive a sensible runway from the wind.
+        // flight-plan runway; otherwise pick the real active runway for the field
+        // from the live wind (ATIS-style); otherwise derive one from the wind.
         if arrival, let rwy = approach?.runway, !rwy.isEmpty { return rwy }
         if !flightPlan.runway.isEmpty { return flightPlan.runway }
+        let icao = arrival ? flightPlan.destination : flightPlan.departure
+        if let real = runways.activeRunway(for: icao, windDirection: windDir, windSpeed: windSpeed) {
+            return real
+        }
         let dir = windDir == 0 ? 270 : windDir
         var num = Int((Double(dir) / 10).rounded())
         if num <= 0 { num = 36 }

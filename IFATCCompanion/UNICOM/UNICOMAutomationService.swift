@@ -45,17 +45,23 @@ final class UNICOMAutomationService: ObservableObject {
         let message = event.broadcast(ident: ident, runway: runway)
         let available = connect?.commandAvailable(keywords: event.commandKeywords) != nil
 
+        // When Infinite Flight's Connect API doesn't expose a send command for
+        // this event (common — Connect v2 surfaces few UNICOM messages), the app
+        // still coaches the pilot: it always shows the call so the pilot can make
+        // it in Infinite Flight themselves, rather than reporting a dead end.
+        let manualPrompt = "Announce on UNICOM: \(message)"
+
         switch mode {
         case .off:
             pending = UNICOMSuggestion(event: event, message: message,
                                        isAvailable: available, willAutoSend: false)
-            statusText = "Suggested: \(message)"
+            statusText = manualPrompt
             diagnostics?.log(.unicom, "Suggested (mode off): \(message)")
 
         case .preview:
             pending = UNICOMSuggestion(event: event, message: message,
                                        isAvailable: available, willAutoSend: false)
-            statusText = available ? "Preview — tap Send to broadcast." : "Preview (automation unavailable for this event)."
+            statusText = available ? "Preview — tap Send to broadcast." : manualPrompt
             diagnostics?.log(.unicom, "Preview: \(message) (available: \(available))")
 
         case .auto:
@@ -68,8 +74,11 @@ final class UNICOMAutomationService: ObservableObject {
             } else if available && connected {
                 statusText = "Preview (non-trusted event) — tap Send."
                 diagnostics?.log(.unicom, "Auto held for confirmation: \(message)")
+            } else if available {
+                statusText = "Auto unavailable (not connected) — \(manualPrompt)"
+                diagnostics?.log(.unicom, "Auto could not send: \(message)")
             } else {
-                statusText = available ? "Auto unavailable (not connected)." : "UNICOM automation not available for this event."
+                statusText = manualPrompt
                 diagnostics?.log(.unicom, "Auto could not send: \(message)")
             }
         }
@@ -92,16 +101,16 @@ final class UNICOMAutomationService: ObservableObject {
 
     private func send(event: UNICOMEvent, message: String) async {
         guard let connect else {
-            statusText = "UNICOM automation not available for this event."
+            statusText = "Announce on UNICOM: \(message)"
             return
         }
         let result = await connect.sendCommand(keywords: event.commandKeywords)
         if result.sent {
             statusText = "Sent: \(message)"
         } else if result.resolved == nil {
-            statusText = "UNICOM automation not available for this event."
+            statusText = "Announce on UNICOM: \(message)"
         } else {
-            statusText = "Send failed — keeping companion conversation active."
+            statusText = "Send failed — announce on UNICOM: \(message)"
         }
         // Clear pending after a send attempt.
         if pending?.event == event { pending = nil }

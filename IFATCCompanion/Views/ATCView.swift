@@ -169,7 +169,7 @@ struct ATCView: View {
                 if let pending = unicom.pending {
                     Text(pending.message).font(.body.weight(.medium))
                     if !pending.isAvailable {
-                        Text("Automation not available for this event — broadcast manually in Infinite Flight.")
+                        Text("Infinite Flight has no Connect send command for this call — tap it in Infinite Flight's UNICOM menu.")
                             .font(.caption).foregroundStyle(.orange)
                     }
                     HStack {

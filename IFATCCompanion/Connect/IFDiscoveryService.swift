@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import Network
 
 /// Listens for Infinite Flight's UDP discovery broadcast (port 15000) to auto-find
 /// the iPad's IP address on the local network. Best-effort — if it finds nothing,
@@ -13,6 +14,13 @@ import Darwin
 /// socket never triggers iOS's Local Network permission prompt (that only fires
 /// when the app *sends* local traffic), and without that permission inbound local
 /// traffic is silently dropped.
+///
+/// In parallel we run a Bonjour browser (`NWBrowser`) for the
+/// `_infiniteflight._tcp` service. Bonjour/mDNS is handled by the system and only
+/// needs the Local Network permission plus the `NSBonjourServices` Info.plist
+/// declaration — it requires no special multicast entitlement, so it is the safe,
+/// reliable discovery path on modern iOS. Whichever path finds the device first
+/// wins.
 final class IFDiscoveryService {
 
     struct Device: Equatable {
@@ -25,6 +33,10 @@ final class IFDiscoveryService {
     private let queue = DispatchQueue(label: "com.h3consultingpartners.ifatccompanion.discovery")
     private var fd: Int32 = -1
     private var readSource: DispatchSourceRead?
+    private var pingTimer: DispatchSourceTimer?
+    private var browser: NWBrowser?
+    private var resolverConnection: NWConnection?
+    private var didReport = false
     private var onFound: ((Device) -> Void)?
 
     /// Broadcast payload IF sends. v2 uses `Addresses`/`Port`; v1 also sent a
@@ -40,15 +52,30 @@ final class IFDiscoveryService {
     func start(onFound: @escaping (Device) -> Void) {
         stop()
         self.onFound = onFound
+        didReport = false
         queue.async { [weak self] in
             self?.openSocket()
+            self?.startBonjourBrowser()
         }
     }
 
     func stop() {
         onFound = nil
+        pingTimer?.cancel()
+        pingTimer = nil
         readSource?.cancel()   // cancel handler closes the fd
         readSource = nil
+        browser?.cancel()
+        browser = nil
+        resolverConnection?.cancel()
+        resolverConnection = nil
+    }
+
+    /// Deliver a discovered device exactly once and tear everything down.
+    private func report(_ device: Device) {
+        guard !didReport, let callback = onFound else { return }
+        didReport = true
+        DispatchQueue.main.async { callback(device) }
     }
 
     // MARK: - Socket setup
@@ -90,7 +117,19 @@ final class IFDiscoveryService {
         source.resume()
 
         // Trigger the iOS Local Network permission prompt and unblock reception.
+        // The prompt is asynchronous: the first ping shows it, but inbound traffic
+        // stays blocked until the user grants permission, after which we need to be
+        // actively sending again for reception to flow. So we re-ping every couple
+        // of seconds for the lifetime of the discovery window rather than once.
         sendPermissionPing(on: s)
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + 2, repeating: 2)
+        timer.setEventHandler { [weak self] in
+            guard let self, self.fd == s else { return }
+            self.sendPermissionPing(on: s)
+        }
+        pingTimer = timer
+        timer.resume()
     }
 
     /// Send a harmless broadcast datagram so iOS shows the Local Network prompt.
@@ -129,7 +168,72 @@ final class IFDiscoveryService {
         let device = Device(name: broadcast.DeviceName ?? "Infinite Flight",
                             address: address,
                             port: broadcast.Port ?? 10112)
-        let callback = onFound
-        DispatchQueue.main.async { callback?(device) }
+        report(device)
+    }
+
+    // MARK: - Bonjour (mDNS) discovery
+
+    /// Browse for `_infiniteflight._tcp` via Bonjour, then resolve the first
+    /// result to a concrete host/port. Requires only Local Network permission and
+    /// the `NSBonjourServices` Info.plist entry — no multicast entitlement.
+    private func startBonjourBrowser() {
+        let params = NWParameters()
+        params.includePeerToPeer = true
+        let descriptor = NWBrowser.Descriptor.bonjour(type: "_infiniteflight._tcp", domain: nil)
+        let browser = NWBrowser(for: descriptor, using: params)
+        browser.browseResultsChangedHandler = { [weak self] results, _ in
+            guard let self, !self.didReport else { return }
+            for result in results {
+                if case let .service(name, _, _, _) = result.endpoint {
+                    self.resolve(endpoint: result.endpoint, serviceName: name)
+                    break
+                }
+            }
+        }
+        browser.stateUpdateHandler = { state in
+            if case .failed = state { browser.cancel() }
+        }
+        self.browser = browser
+        browser.start(queue: queue)
+    }
+
+    /// Open a short-lived connection to a Bonjour endpoint to learn its resolved
+    /// IPv4 host and port, then report it and cancel the connection.
+    private func resolve(endpoint: NWEndpoint, serviceName: String) {
+        resolverConnection?.cancel()
+        let connection = NWConnection(to: endpoint, using: .tcp)
+        resolverConnection = connection
+        connection.stateUpdateHandler = { [weak self] state in
+            guard let self else { return }
+            guard case .ready = state else {
+                if case .failed = state { connection.cancel() }
+                return
+            }
+            if case let .hostPort(host, port)? = connection.currentPath?.remoteEndpoint {
+                let address = Self.ipv4String(from: host)
+                if let address, !address.isEmpty {
+                    self.report(Device(name: serviceName.isEmpty ? "Infinite Flight" : serviceName,
+                                       address: address,
+                                       port: Int(port.rawValue)))
+                }
+            }
+            connection.cancel()
+        }
+        connection.start(queue: queue)
+    }
+
+    /// Extract a usable IPv4 dotted-quad string from an `NWEndpoint.Host`.
+    private static func ipv4String(from host: NWEndpoint.Host) -> String? {
+        switch host {
+        case .ipv4(let addr):
+            return addr.debugDescription.split(separator: "%").first.map(String.init)
+        case .ipv6(let addr):
+            // Strip any "%interface" zone suffix; Network.framework can still dial it.
+            return addr.debugDescription.split(separator: "%").first.map(String.init)
+        case .name(let name, _):
+            return name
+        @unknown default:
+            return nil
+        }
     }
 }

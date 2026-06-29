@@ -55,6 +55,11 @@ struct SettingsView: View {
                     .frame(maxWidth: 100)
             }
             Toggle("Auto-discover on local network", isOn: $settings.autoDiscover)
+            Toggle("Keep screen awake", isOn: $settings.keepScreenAwake)
+            if settings.keepScreenAwake {
+                Text("Prevents the screen from locking, which would drop the Infinite Flight connection.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             if !settings.mockMode {
                 Button {
                     model.reconnect()
