@@ -61,6 +61,8 @@ final class AppSettings: ObservableObject {
     @Published var sid: String { didSet { save(sid, .sid) } }
     @Published var star: String { didSet { save(star, .star) } }
     @Published var approach: String { didSet { save(approach, .approach) } }
+    /// Arrival gate / stand to taxi to (manual-override only; IF doesn't expose it).
+    @Published var gate: String { didSet { save(gate, .gate) } }
 
     // Voice
     @Published var voiceEnabled: Bool { didSet { save(voiceEnabled, .voiceEnabled) } }
@@ -122,6 +124,7 @@ final class AppSettings: ObservableObject {
         sid = defaults.string(forKey: Key.sid.rawValue) ?? ""
         star = defaults.string(forKey: Key.star.rawValue) ?? ""
         approach = defaults.string(forKey: Key.approach.rawValue) ?? ""
+        gate = defaults.string(forKey: Key.gate.rawValue) ?? ""
 
         voiceEnabled = defaults.object(forKey: Key.voiceEnabled.rawValue) as? Bool ?? true
         defaultVoiceID = defaults.string(forKey: Key.defaultVoiceID.rawValue) ?? ""
@@ -168,7 +171,7 @@ final class AppSettings: ObservableObject {
         callsign = other.callsign; airline = other.airline; flightNumber = other.flightNumber
         departure = other.departure; destination = other.destination; alternate = other.alternate
         cruiseAltitude = other.cruiseAltitude; runway = other.runway
-        sid = other.sid; star = other.star; approach = other.approach
+        sid = other.sid; star = other.star; approach = other.approach; gate = other.gate
         voiceEnabled = other.voiceEnabled; defaultVoiceID = other.defaultVoiceID
         speechRate = other.speechRate; speechPitch = other.speechPitch
         respectSilentSwitch = other.respectSilentSwitch
@@ -191,7 +194,7 @@ final class AppSettings: ObservableObject {
     private enum Key: String, CaseIterable {
         case host, port, autoDiscover, keepScreenAwake
         case callsign, airline, flightNumber, departure, destination, alternate
-        case cruiseAltitude, runway, sid, star, approach
+        case cruiseAltitude, runway, sid, star, approach, gate
         case voiceEnabled, defaultVoiceID, speechRate, speechPitch, respectSilentSwitch
         case voiceGround, voiceTower, voiceDeparture, voiceCenter, voiceApproach
         case voicePilot, speakPilot

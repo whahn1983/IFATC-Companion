@@ -39,14 +39,26 @@ mode and Mock Mode.
 
 **Manual frequency tuning.** The ATC tab has a **Tune Frequency** card with one
 button per controller — **Clearance, Ground, Tower, Departure, Center, Approach,**
-and **Ramp** (parking). Tap a controller to switch to its frequency: the companion
-posts your check-in and the controller's *next* instruction for the current phase.
-The same Ground/Tower button serves both the departure and the arrival visit (it
-advances to whichever call lies ahead). **As soon as you tune a frequency
-yourself, the companion stops issuing controller calls automatically** — each call
-then waits for you to tune the next frequency, so they never play one after the
-next without a pause. (Re-tap **Center** to walk climb → cruise → descent; a button
-dims once that controller has no further call.)
+and **Ramp** (parking). Tap a controller to switch to its frequency, then tap
+**Check In** to call it up and get its instruction. The same Ground/Tower button
+serves both the departure and the arrival visit (it advances to whichever call lies
+ahead).
+
+How tuning interacts with the automatic flow depends on the mode:
+
+- **Live mode (connected to Infinite Flight).** The controller's position-based
+  calls and facility hand-offs **still fire automatically from telemetry** even
+  while you tune by hand. A hand-off only prompts *"contact Departure on 124.3"* —
+  it then **waits** for you to tune that frequency and check in before the new
+  controller gives its instruction. Calls that stay on the same frequency (the
+  takeoff clearance after line-up, *descend via the STAR* at top of descent, the
+  cleared-approach, *exit the runway*) play on their own. Tuning the controller you
+  were just handed to never produces a redundant "contact …" for a frequency you're
+  already on. This is the recommended way to fly.
+- **Mock Mode.** There is no live position telemetry, so tuning a frequency
+  advances the conversation only on a button press — each call waits for you to tune
+  the next frequency. (Re-tap **Center** to walk climb → cruise → descent; a button
+  dims once that controller has no further call.)
 
 In **Mock Mode** there is no live position telemetry, so use the Tune Frequency
 buttons to drive the flight forward after you report *ready for departure*. Use
@@ -62,10 +74,17 @@ flight from the gate; your settings and flight plan are kept.
 | 1 | At gate | **Clearance Delivery** | "Cleared to *dest* via *SID/route*, climb via SID except maintain *initial alt*, expect *cruise* 10 min after departure, departure frequency *freq*, squawk *code*." | `clearance(…)` | IF Clearance/Ground; squawk/altitude exist |
 | 2 | At gate | **Ground** | "Push back approved." | `pushbackApproved` | IF pushback |
 | 3 | At gate | **Ground** | "Start up approved." (often pilot's discretion) | `startupApproved` | n/a in IF (courtesy) |
-| 4 | Taxi out | **Ground** | "Taxi to runway *XX* via *taxiways*, hold short *…*." | `taxiToRunway` | IF taxi/hold-short |
+| 4 | Taxi out | **Ground** | "Taxi to runway *XX* via *taxiways*, hold short *…*. Contact Tower when ready." | `taxiToRunway` | IF taxi/hold-short |
 | 5 | Approaching rwy | **Ground → Tower** | "Contact Tower on *freq*." | `handoff(from:to:)` | IF hand-off |
 | 6 | Holding short | **Tower** | "Runway *XX*, line up and wait." | `lineUpAndWait` | IF LUAW |
 | 7 | Lined up | **Tower** | "Wind *…*, runway *XX*, cleared for takeoff, fly heading *XXX* / runway heading, climb and maintain *initial alt*." | `clearedForTakeoff(departureHeading:…)` | IF takeoff clearance (+ real-world departure instructions) |
+
+The takeoff clearance fires automatically once the aircraft is on the runway —
+immediately if it is already rolling, otherwise a few seconds after it settles
+**lined up and stopped** on the centerline. The "direct …" fix in the Departure
+climb (step 9) is the next filed fix **ahead** of the aircraft, never a runway-end
+fix it has already passed. Center's first call after the Departure hand-off (step
+11) leads with **"radar contact"** before the climb to the cruise level.
 | 8 | Airborne | **Tower → Departure** | "Contact Departure on *freq*." | `handoff(from:to:)` | IF hand-off |
 | 9 | Initial climb | **Departure (TRACON)** | "Radar contact, climb and maintain *FL180*, resume own navigation direct *fix*." | `departureClimb` | IF Departure; vectors/own-nav are real-world |
 | 10 | Passing FL180 | **Departure → Center** | "Contact Center on *freq*." | `handoff(from:to:)` | IF hand-off |
@@ -100,6 +119,13 @@ as periodic Center check-ins (additional sector frequencies are not simulated).
 | 21 | Rollout | **Tower** | "Exit the runway when able, contact Ground on *freq* once on the taxiway." | `exitRunwayContactGround` | IF rollout |
 | 22 | Taxi in | **Ground** | "Taxi to parking via *taxiways*." | `taxiToParking` | IF taxi |
 | 23 | At gate | **Ground** | "Welcome to *city*, good day." (shutdown) | `welcomeArrival` | courtesy |
+
+On arrival the simulated **Ramp** taxi-in is staged so the calls never all fire at
+once: *"proceed to gate B44 via the ramp"* when you contact Ramp, then *"monitor
+ramp to the gate"* as the aircraft slows to a stop, then the *"Flight complete"*
+block-in once it is actually parked with the parking brake set. The **arrival gate**
+is taken from the manual-override **Gate** field (Infinite Flight does not expose
+it); when no gate is entered the calls say "the gate".
 
 The **cleared-approach call (step 18)** is issued once the aircraft is *established*
 — the autopilot approach mode (**APPR**) is engaged, or it is lined up on final with

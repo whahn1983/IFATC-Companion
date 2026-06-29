@@ -3,6 +3,7 @@ import SwiftUI
 @main
 struct IFATCCompanionApp: App {
     @StateObject private var model = AppModel()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
@@ -25,6 +26,15 @@ struct IFATCCompanionApp: App {
                         UIApplication.shared.installKeyboardDismissTapGesture()
                     }
                     #endif
+                }
+                .onChange(of: scenePhase) { _, newPhase in
+                    // Force a reconnect whenever the app returns from the background so
+                    // live flight details resume updating without a manual Reconnect.
+                    switch newPhase {
+                    case .background: model.markBackgrounded()
+                    case .active: model.handleReturnToForeground()
+                    default: break
+                    }
                 }
         }
     }

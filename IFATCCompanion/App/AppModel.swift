@@ -142,6 +142,26 @@ final class AppModel: ObservableObject {
     /// advances the conversation. Cleared once the state machine advances.
     private var tunedFacility: ATCFacility?
 
+    /// While the pilot is tuning frequencies by hand in *live* mode, the controller's
+    /// position-based calls and facility hand-offs still fire automatically from
+    /// telemetry — but once a hand-off ("contact Approach on …") is issued, the new
+    /// controller's instruction waits until the pilot tunes that frequency and checks
+    /// in. This holds the facility the pilot has been handed to but not yet checked in
+    /// with, so the automatic flow pauses there instead of talking for a controller
+    /// the pilot hasn't switched to. Nil when no hand-off is pending.
+    private var pendingCheckInFacility: ATCFacility?
+
+    /// Live-mode countdown that issues the takeoff clearance a few seconds after the
+    /// aircraft is detected lined up and stopped on the departure runway, so Tower
+    /// does not clear the takeoff the instant the nose swings onto the centerline.
+    var takeoffClearanceDelay: TimeInterval = 5
+    private var takeoffClearanceTimer: Task<Void, Never>?
+
+    /// True once the arrival "monitor ramp to the gate" call has been issued, so the
+    /// staged arrival (proceed-to-gate → monitor → flight complete) never collapses
+    /// into a single burst when the aircraft is already stopped at the gate.
+    private var gateMonitored = false
+
     // MARK: - Readback gate
     //
     // Real controllers wait for the pilot to read an instruction back before
@@ -222,6 +242,9 @@ final class AppModel: ObservableObject {
 
         // Read the flight plan from Infinite Flight when it changes.
         connect.onFlightPlan = { [weak self] plan in self?.mergeLiveFlightPlan(plan) }
+
+        // Adopt the live callsign from Infinite Flight (unless one is set manually).
+        connect.onCallsign = { [weak self] cs in self?.applyLiveCallsign(cs) }
 
         // Route recognized push-to-talk speech to the deterministic intent handler.
         speechRecognizer.onResult = { [weak self] text in self?.handleSpokenInput(text) }
@@ -318,11 +341,14 @@ final class AppModel: ObservableObject {
         connect.disconnect()
         manualTuning = false
         tunedFacility = nil
+        pendingCheckInFacility = nil
         clearReadbackGate()
+        cancelTakeoffClearanceTimer()
         stateMachine.reset()
         hasDeparted = false
         arrivalAnnounced = false
         awaitingGateArrival = false
+        gateMonitored = false
         atcState = .connectedIdle
         currentFacility = .clearance
         stateMachine.setConnected()
@@ -342,7 +368,9 @@ final class AppModel: ObservableObject {
     func startLive() {
         mock.stop()
         tunedFacility = nil
+        pendingCheckInFacility = nil
         clearReadbackGate()
+        cancelTakeoffClearanceTimer()
         // Resume a recent in-progress session if one was saved (reconnect / relaunch);
         // otherwise start the conversation fresh. Restoring is what keeps a parked
         // aircraft from being re-derived straight to cruise after a dropped link.
@@ -352,6 +380,7 @@ final class AppModel: ObservableObject {
             hasDeparted = false
             arrivalAnnounced = false
             awaitingGateArrival = false
+            gateMonitored = false
             currentFacility = .clearance
         }
         if settings.autoDiscover && settings.host.isEmpty {
@@ -386,6 +415,28 @@ final class AppModel: ObservableObject {
 
     func reconnect() {
         if settings.mockMode { startMock() } else { connect.disconnect(); startLive() }
+    }
+
+    /// True after the app has been sent to the background, so the next return to the
+    /// foreground forces a fresh Connect link.
+    private var wasBackgrounded = false
+
+    /// Record that the app went to the background (the OS may have torn down or
+    /// silently stalled the Infinite Flight TCP link while we were away).
+    func markBackgrounded() { wasBackgrounded = true }
+
+    /// When the app returns to the foreground after being backgrounded, force a
+    /// reconnect so live flight details resume updating immediately. (Infinite Flight
+    /// can leave the socket looking "connected" while no new telemetry flows, which
+    /// otherwise required a manual Reconnect.) The in-progress session is restored on
+    /// reconnect, so the conversation picks up where it left off. No-op in Mock Mode.
+    func handleReturnToForeground() {
+        guard started, wasBackgrounded else { return }
+        wasBackgrounded = false
+        guard !settings.mockMode else { return }
+        diagnostics.log(.app, "Returned to foreground — forcing an Infinite Flight reconnect.")
+        connect.disconnect()
+        startLive()
     }
 
     // MARK: - State handling
@@ -441,11 +492,19 @@ final class AppModel: ObservableObject {
             return
         }
 
-        // After contacting arrival Ramp, hold the "flight complete" block-in until the
-        // aircraft is actually parked at the gate (stopped, parking brake set). This
-        // runs even while manually tuned, since the pilot drove the Ramp call by hand.
+        // After contacting arrival Ramp, walk the arrival in to the gate in stages so
+        // the ramp calls never all fire at once: first "monitor ramp to the gate" as
+        // the aircraft slows toward a stop, then — a tick later — the block-in /
+        // "flight complete" once it is actually parked with the parking brake set.
+        // This runs even while manually tuned, since the pilot drove the Ramp call.
         if awaitingGateArrival {
-            if isParkedAtGate(state) { completeGateArrival() }
+            if !gateMonitored, isSlowingAtGate(state) {
+                gateMonitored = true
+                let c = buildContext(for: .groundArrival, arrivalOverride: true)
+                post(rampEngine.monitorRampToGate(cs: c.callsign), speak: true)
+            } else if gateMonitored, isParkedAtGate(state) {
+                completeGateArrival()
+            }
             atcState = stateMachine.current
             currentFacility = controller(for: stateMachine.current)
             return
@@ -461,9 +520,12 @@ final class AppModel: ObservableObject {
                 // Hold: the controller is waiting for the pilot to read back the
                 // last call (or to answer the "how do you read?" prompt) before
                 // issuing anything further.
-            } else if stateMachine.current == .lineUpWait, !settings.mockMode, !manualTuning,
-                      isReadyForTakeoffClearance(state: state) {
-                autoIssueTakeoffClearance()
+            } else if stateMachine.current == .lineUpWait, !settings.mockMode {
+                // Tower clears the takeoff automatically once the aircraft is on the
+                // runway — immediately if it's already rolling, otherwise a few
+                // seconds after it settles lined up and stopped. This fires even while
+                // the pilot is tuning frequencies by hand (they tuned Tower for it).
+                autoAdvanceTakeoffClearance(state: state)
             } else if !manualTuning, !mapped.isManualGroundFlow, isForward(mapped) {
                 // Telemetry already shows the takeoff roll (the pilot rolled without
                 // using the buttons) — advance so the flow is never stuck on ground.
@@ -476,13 +538,17 @@ final class AppModel: ObservableObject {
         }
 
         // --- Airborne / arrival ---
-        // When the pilot is changing controllers manually with the frequency
-        // buttons, the conversation advances only on a button press. Keep the
-        // position/phase display fresh, but do not auto-issue controller calls —
-        // that is what makes the calls pile up "one after the next".
+        // When the pilot is changing controllers manually with the frequency buttons:
+        //  • In Mock Mode there is no live telemetry, so the conversation advances only
+        //    on a button press (keep the display fresh and return).
+        //  • In live mode the controller's position-based calls and facility hand-offs
+        //    still fire automatically from telemetry — but each hand-off only prompts
+        //    "contact <next> on …" and then waits for the pilot to tune that frequency
+        //    and check in before the new controller gives its instruction.
         if manualTuning {
+            if !settings.mockMode { advanceSemiAutomatic(mapped: mapped, state: state) }
             atcState = stateMachine.current
-            currentFacility = tunedFacility ?? controller(for: stateMachine.current)
+            currentFacility = tunedFacility ?? pendingCheckInFacility ?? controller(for: stateMachine.current)
             return
         }
 
@@ -562,7 +628,11 @@ final class AppModel: ObservableObject {
                                 automatic: Bool = false) {
         let previous = stateMachine.current
         // The conversation is advancing, so any pending manual tune has now been
-        // acted on — the controller working the new state speaks for itself.
+        // acted on — the controller working the new state speaks for itself. Capture
+        // which facility the pilot had tuned first: if they already switched to the
+        // controller now taking over, that controller must not tell them to "contact"
+        // it (they're already there).
+        let wasTuned = tunedFacility
         tunedFacility = nil
         guard let tx = stateMachine.advance(to: target, context: c) else {
             atcState = stateMachine.current
@@ -583,7 +653,7 @@ final class AppModel: ObservableObject {
         // cleared (established), so don't repeat it when .final advances to .landing.
         if announceHandoff, !firstContact, previous != .runwayExit, previous != .final,
            fromFacility != toFacility, toFacility != .clearance, toFacility != .ramp,
-           lastATCTransmission != nil {
+           wasTuned != toFacility, lastATCTransmission != nil {
             post(engine.handoff(cs: c.callsign, from: fromFacility, to: toFacility,
                                 frequency: frequency(for: toFacility, context: c)), speak: speak)
         }
@@ -614,8 +684,108 @@ final class AppModel: ObservableObject {
 
     /// Tower automatically clears the aircraft for takeoff (no pilot prompt needed).
     private func autoIssueTakeoffClearance() {
+        cancelTakeoffClearanceTimer()
         advanceAndPost(to: .towerDeparture, context: buildContext(for: .towerDeparture),
                        automatic: true)
+    }
+
+    /// Drive the automatic takeoff clearance from telemetry while at line-up-and-wait
+    /// (live mode). If the aircraft is already rolling, clear it immediately; if it is
+    /// lined up and stopped, arm a short countdown and clear it once that elapses; if
+    /// it is neither (still maneuvering onto the runway), stand down the countdown.
+    private func autoAdvanceTakeoffClearance(state: AircraftState) {
+        let runway = buildContext(for: stateMachine.current).runway
+        if lineupDetector.isDepartingRoll(state: state, runway: runway) || phase == .takeoff {
+            autoIssueTakeoffClearance()
+        } else if isLinedUpAndStopped(state, runway: runway) {
+            armTakeoffClearance()
+        } else {
+            cancelTakeoffClearanceTimer()
+        }
+    }
+
+    /// Whether the aircraft is established and stopped on the runway centerline,
+    /// ready for the takeoff clearance after the brief realism delay.
+    private func isLinedUpAndStopped(_ s: AircraftState, runway: String) -> Bool {
+        lineupDetector.isLinedUp(state: s, runway: runway)
+            && (s.onGround ?? true) && (s.groundSpeed ?? 0) < 5
+    }
+
+    /// Start the takeoff-clearance countdown if one isn't already running. When it
+    /// elapses, re-check the aircraft is still lined up and waiting, then clear it.
+    private func armTakeoffClearance() {
+        guard takeoffClearanceTimer == nil else { return }
+        takeoffClearanceTimer = Task { @MainActor [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(nanoseconds: UInt64(max(0, self.takeoffClearanceDelay) * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self.takeoffClearanceTimer = nil
+            guard !self.hasDeparted, self.stateMachine.current == .lineUpWait,
+                  !self.settings.mockMode, !self.readbackGateClosed,
+                  self.isReadyForTakeoffClearance(state: self.aircraftState) else { return }
+            self.autoIssueTakeoffClearance()
+        }
+    }
+
+    private func cancelTakeoffClearanceTimer() {
+        takeoffClearanceTimer?.cancel()
+        takeoffClearanceTimer = nil
+    }
+
+    /// Whether the aircraft is slow enough on the ground to be settling onto the gate
+    /// (used to stage the arrival "monitor ramp to the gate" call before the block-in).
+    private func isSlowingAtGate(_ s: AircraftState) -> Bool {
+        (s.onGround ?? true) && (s.groundSpeed ?? 0) < 8
+    }
+
+    // MARK: - Semi-automatic airborne flow (live + manual tuning)
+
+    /// In live mode, while the pilot tunes frequencies by hand, keep issuing the
+    /// controller's automatic, position-based calls and facility hand-offs — but
+    /// withhold a new controller's instruction until the pilot tunes that frequency
+    /// and checks in. Same-facility continuations (descend-via-STAR, cleared-approach,
+    /// exit-the-runway) play on their own; a change of controller only prompts the
+    /// "contact <next> on …" hand-off and then waits.
+    private func advanceSemiAutomatic(mapped: ATCState, state: AircraftState) {
+        // Hold while the last instruction is unacknowledged, or while we're waiting
+        // for the pilot to check in on a frequency they were just handed to.
+        guard !readbackGateClosed, pendingCheckInFacility == nil else { return }
+
+        let target = adjustedAirborneTarget(mapped: mapped, state: state)
+        guard isForward(target), target != stateMachine.current else { return }
+
+        let fromFacility = controller(for: stateMachine.current)
+        let toFacility = controller(for: target)
+
+        if toFacility == fromFacility {
+            // The same controller keeps working the aircraft — issue the call now.
+            let previousState = stateMachine.current
+            advanceAndPost(to: target, context: buildContext(for: target),
+                           announceHandoff: false, automatic: true)
+            if previousState != .final, stateMachine.current == .final {
+                // The cleared-approach call hands the pilot to Tower; wait for them to
+                // tune Tower and check in for the landing clearance.
+                announceApproachToTowerHandoff()
+                pendingCheckInFacility = .tower
+            } else if stateMachine.current == .runwayExit {
+                // The exit-the-runway call already tells the pilot to contact Ground;
+                // wait for them to tune Ground and check in for the taxi-in.
+                pendingCheckInFacility = .ground
+            }
+        } else {
+            // Control passes to a new facility: prompt the hand-off and wait for the
+            // pilot to switch frequency and check in before that controller speaks.
+            issueAutoHandoff(from: fromFacility, to: toFacility)
+            pendingCheckInFacility = toFacility
+        }
+    }
+
+    /// Issue a stand-alone "contact <next> on …" hand-off (no state-machine advance):
+    /// the new controller's instruction follows once the pilot checks in.
+    private func issueAutoHandoff(from: ATCFacility, to: ATCFacility) {
+        let c = buildContext(for: stateMachine.current)
+        post(engine.handoff(cs: c.callsign, from: from, to: to,
+                            frequency: frequency(for: to, context: c)), speak: true)
     }
 
     // MARK: - Readback gate
@@ -793,7 +963,9 @@ final class AppModel: ObservableObject {
                                           via: c.rampProfile.arrivalRampEntryPhrase.contains("inner")
                                                ? "the inner alley" : "the ramp"), speak: true)
         }
-        // Now monitor for the actual gate stop; the block-in fires there, not here.
+        // Now monitor for the actual gate stop; the staged "monitor ramp" then the
+        // block-in fire from telemetry as the aircraft slows and parks, not here.
+        gateMonitored = false
         awaitingGateArrival = true
         atcState = .groundArrival
         // In mock mode advance the scripted aircraft to the gate so the monitored
@@ -928,13 +1100,24 @@ final class AppModel: ObservableObject {
     /// complete" advisory.
     private func announceArrival() {
         let c = buildContext(for: .parked)
-        post(rampEngine.monitorRampToGate(cs: c.callsign), speak: true)
         let display = "\(c.callsign.display) parked\(c.gate.isEmpty ? "" : " at \(c.gate)"). Flight complete."
         let spoken = "\(c.callsign.spoken) parked. Flight complete."
         post(ATCTransmission(sender: .system, facility: .ramp, displayText: display, spokenText: spoken), speak: false)
     }
 
     // MARK: - Live flight plan
+
+    /// Adopt the callsign Infinite Flight reports for the user's aircraft, so the
+    /// companion uses it without a manual override. A manually-entered callsign,
+    /// airline, or flight number always wins (the pilot pinned those on purpose).
+    private func applyLiveCallsign(_ cs: String) {
+        let trimmed = cs.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              settings.callsign.isEmpty, settings.airline.isEmpty, settings.flightNumber.isEmpty,
+              flightPlan.callsign != trimmed else { return }
+        flightPlan.callsign = trimmed
+        diagnostics.log(.app, "Adopted live callsign from Infinite Flight: \(trimmed).")
+    }
 
     /// Merge a flight plan read from Infinite Flight into the active plan. Manual
     /// overrides win; otherwise empty fields are filled from the live plan.
@@ -1163,6 +1346,15 @@ final class AppModel: ObservableObject {
         let depCoord = airports.coordinate(for: flightPlan.departure)
         let firstWaypoint = flightPlan.waypoints.first
         let firstLocated = flightPlan.waypoints.first { $0.coordinate != nil }
+        // The "resume own navigation, direct …" fix in the departure climb: once
+        // airborne, the next fix *ahead* of the aircraft (not the runway-end fix the
+        // aircraft has already passed); on the ground, simply the first filed fix.
+        let directFix: Waypoint?
+        if hasDeparted, let pos = aircraftState.coordinate {
+            directFix = flightPlan.nextUnpassedWaypoint(from: pos, origin: depCoord)
+        } else {
+            directFix = firstWaypoint
+        }
         let intercept = firstLocated?.coordinate ?? airports.coordinate(for: flightPlan.destination)
         let depHeading: Int
         if let depCoord, let intercept {
@@ -1204,9 +1396,9 @@ final class AppModel: ObservableObject {
             rampProfile: rampProfile,
             pushDirection: pushDirection,
             rampSpot: rampSpot,
-            gate: "",
+            gate: flightPlan.gate,
             departureHeading: ((depHeading % 360) + 360) % 360,
-            firstFixName: firstWaypoint?.name ?? "",
+            firstFixName: directFix?.name ?? "",
             traconCeiling: currentTraconCeiling,
             approachInterceptAltitude: flightPlan.approachInterceptAltitude,
             sidProcedure: sidProc,
@@ -1259,6 +1451,7 @@ final class AppModel: ObservableObject {
         plan.sid = settings.sid
         plan.star = settings.star
         plan.approach = settings.approach
+        plan.gate = settings.gate
         plan.manualOverride = !settings.departure.isEmpty || !settings.destination.isEmpty
         if settings.mockMode { plan.waypoints = mock.route.waypoints }
         flightPlan = plan
@@ -1285,6 +1478,7 @@ final class AppModel: ObservableObject {
         settings.sid = ""
         settings.star = ""
         settings.approach = ""
+        settings.gate = ""
         // Re-sync drops manualOverride (both endpoints are now empty) so Connect data
         // is no longer pinned back by the override flag.
         syncFlightPlanFromSettings()
@@ -1438,6 +1632,9 @@ final class AppModel: ObservableObject {
     /// longer checks in automatically).
     func requestHandoff() {
         guard !companionStandby else { return }
+        // Checking in satisfies any pending hand-off the controller prompted: the new
+        // controller now speaks for itself, so the semi-automatic flow resumes.
+        pendingCheckInFacility = nil
         guard let target = nextState(workedBy: currentFacility, after: stateMachine.current),
               target != stateMachine.current else {
             // Nothing new ahead for this controller — a plain check-in / radar-contact
@@ -1633,7 +1830,9 @@ final class AppModel: ObservableObject {
     func clearFlight() {
         manualTuning = false
         tunedFacility = nil
+        pendingCheckInFacility = nil
         clearReadbackGate()
+        cancelTakeoffClearanceTimer()
         clearSavedSession()
         speech.stop()
         transcript.removeAll()
@@ -1643,6 +1842,7 @@ final class AppModel: ObservableObject {
         hasDeparted = false
         arrivalAnnounced = false
         awaitingGateArrival = false
+        gateMonitored = false
         lastSpokenText = ""
         lastSpokenIntent = nil
         phase = .preflight

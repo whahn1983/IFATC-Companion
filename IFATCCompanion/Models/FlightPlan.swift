@@ -36,6 +36,9 @@ struct FlightPlan: Equatable, Codable {
     var sid: String = ""
     var star: String = ""
     var approach: String = ""
+    /// Arrival gate / stand identifier (e.g. "B44"). Manual-override only — Infinite
+    /// Flight does not expose it. Used by the arrival Ramp taxi-to-gate instruction.
+    var gate: String = ""
     /// Intercept/initial altitude (ft MSL) for the approach — the first altitude in
     /// the approach section of the flight plan when known, else 0 (callers default).
     var approachInterceptAltitude: Int = 0
@@ -70,5 +73,29 @@ struct FlightPlan: Equatable, Codable {
             Geo.distanceNM(from: coordinate, to: $0.coordinate!) <
             Geo.distanceNM(from: coordinate, to: $1.coordinate!)
         })
+    }
+
+    /// The next waypoint *ahead* of the aircraft along the filed route — the fix the
+    /// pilot has not yet passed — used for the "resume own navigation, direct …"
+    /// clearance so the companion never clears the pilot direct to a fix already
+    /// behind them (e.g. the runway-end fix). When the route origin is known, a fix
+    /// is "ahead" if it lies farther down-route than the aircraft's current progress;
+    /// otherwise it falls back to the nearest located fix, then the first waypoint.
+    func nextUnpassedWaypoint(from coordinate: CLLocationCoordinate2D?,
+                              origin: CLLocationCoordinate2D?) -> Waypoint? {
+        let located = waypoints.filter { $0.coordinate != nil }
+        guard let coordinate, !located.isEmpty else { return waypoints.first }
+        if let origin {
+            let progress = Geo.distanceNM(from: origin, to: coordinate)
+            if let ahead = located.first(where: {
+                Geo.distanceNM(from: origin, to: $0.coordinate!) > progress + 1
+            }) {
+                return ahead
+            }
+        }
+        return located.min(by: {
+            Geo.distanceNM(from: coordinate, to: $0.coordinate!) <
+            Geo.distanceNM(from: coordinate, to: $1.coordinate!)
+        }) ?? waypoints.first
     }
 }
