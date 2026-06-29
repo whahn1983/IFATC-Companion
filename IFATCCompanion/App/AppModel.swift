@@ -26,6 +26,7 @@ final class AppModel: ObservableObject {
     private var phaseDetector = PhaseDetector()
     private let taxiPlanner = TaxiRoutePlanner()
     private let intentParser = PilotIntentParser()
+    private let lineupDetector = RunwayLineupDetector()
     private var routeAnalyzer = WeatherRouteAnalyzer()
     private var turbulenceModel = TurbulenceModel()
     private var rideEngine: RideReportEngine
@@ -74,6 +75,9 @@ final class AppModel: ObservableObject {
     /// departure the pre-departure ground flow (clearance → pushback → engine
     /// start → taxi → ready) is pilot-driven so no phase is skipped.
     private var hasDeparted = false
+
+    /// Guards the one-time arrival courtesy call at the gate.
+    private var arrivalAnnounced = false
 
     init() {
         let settings = AppSettings()
@@ -124,6 +128,9 @@ final class AppModel: ObservableObject {
         // Route state from whichever feed is active.
         mock.onState = { [weak self] state in self?.handle(state: state) }
         connect.onState = { [weak self] state in self?.handle(state: state) }
+
+        // Read the flight plan from Infinite Flight when it changes.
+        connect.onFlightPlan = { [weak self] plan in self?.mergeLiveFlightPlan(plan) }
 
         // Route recognized push-to-talk speech to the deterministic intent handler.
         speechRecognizer.onResult = { [weak self] text in self?.handleSpokenInput(text) }
@@ -207,6 +214,7 @@ final class AppModel: ObservableObject {
         connect.disconnect()
         stateMachine.reset()
         hasDeparted = false
+        arrivalAnnounced = false
         atcState = .connectedIdle
         stateMachine.setConnected()
         applyLiveATC(simulateStaffedATC
@@ -226,6 +234,7 @@ final class AppModel: ObservableObject {
         mock.stop()
         stateMachine.reset()
         hasDeparted = false
+        arrivalAnnounced = false
         if settings.autoDiscover && settings.host.isEmpty {
             connect.startAutoDiscover { [weak self] device in
                 guard let self else { return }
@@ -273,38 +282,220 @@ final class AppModel: ObservableObject {
 
         if !phase.isGround { hasDeparted = true }
 
-        let target = stateMachine.mappedState(for: phase)
-        let context = buildContext(for: target)
+        let mapped = stateMachine.mappedState(for: phase)
         unicom.connected = settings.mockMode || connect.connectionState.isConnected
 
         // Defer to a human controller: track state for display, but do not generate
         // or speak controller calls, and do not fire UNICOM.
         if companionStandby {
-            atcState = target
-            currentFacility = target.facility
+            atcState = mapped
+            currentFacility = controller(for: mapped)
             return
         }
 
-        // Pre-departure ground flow is pilot-driven: clearance, pushback, engine
-        // start, taxi, ready and line-up are requested via the response buttons so
-        // telemetry never skips (or rewinds) those phases. Hold the current state
-        // until the aircraft is airborne, after which automatic ATC resumes and
-        // catches up to the takeoff/departure call.
-        if !hasDeparted, target.isManualGroundFlow {
+        // --- Pre-departure (on the ground, before the first takeoff) ---
+        if !hasDeparted {
+            if settings.automaticATC {
+                // Telemetry-driven: walk clearance → pushback → engine start → taxi
+                // → line up → takeoff as the aircraft progresses, one step per tick.
+                autoAdvanceGround(state: state)
+            } else if mapped.isManualGroundFlow {
+                // Manual mode: the pilot drives the ground flow via the buttons so
+                // telemetry never skips a phase. Hold here.
+            } else {
+                // Manual mode but telemetry already shows the takeoff roll — advance.
+                advanceAndPost(to: mapped, context: buildContext(for: mapped))
+            }
             atcState = stateMachine.current
-            currentFacility = stateMachine.current.facility
+            currentFacility = controller(for: stateMachine.current)
             return
         }
 
-        if let tx = stateMachine.advance(to: target, context: context) {
-            updateAssignedAltitude(for: target, context: context)
-            post(tx, speak: true)
+        // --- Airborne / arrival (automatic telemetry-driven) ---
+        let target = settings.automaticATC ? adjustedAirborneTarget(mapped: mapped, state: state) : mapped
+        advanceAndPost(to: target, context: buildContext(for: target))
+
+        // One-time arrival courtesy once stopped at the gate.
+        if stateMachine.current == .parked, !arrivalAnnounced {
+            announceArrival()
+            arrivalAnnounced = true
+        }
+
+        atcState = stateMachine.current
+        currentFacility = controller(for: stateMachine.current)
+    }
+
+    // MARK: - Automatic flow
+
+    /// The controller (facility) actually working a given ATC state. Used to drive
+    /// realistic "contact …" handoffs whenever control passes between facilities,
+    /// and to label the current facility in the UI.
+    private func controller(for state: ATCState) -> ATCFacility {
+        switch state {
+        case .clearance: return .clearance
+        case .pushback, .engineStart, .pushbackTaxi, .groundTaxi, .runwayCrossing,
+             .holdingShort, .runwayExit, .groundArrival, .parked: return .ground
+        case .lineUpWait, .towerDeparture, .landing: return .tower
+        case .initialClimb, .departure: return .departure
+        case .climb, .center, .cruise, .topOfDescent, .descent: return .center
+        case .approach, .final: return .approach
+        case .notConnected, .connectedIdle, .abnormal: return currentFacility
+        }
+    }
+
+    /// Frequency the given facility is reached on, from the current context.
+    private func frequency(for facility: ATCFacility, context c: ATCContext) -> Double {
+        switch facility {
+        case .clearance, .ground, .unicom: return c.groundFrequency
+        case .tower: return c.towerFrequency
+        case .departure: return c.departureFrequency
+        case .center: return c.centerFrequency
+        case .approach: return c.approachFrequency
+        }
+    }
+
+    /// Advance the state machine and post the resulting controller call, preceding
+    /// it with a "contact …" handoff whenever the controlling facility changes.
+    private func advanceAndPost(to target: ATCState, context c: ATCContext, speak: Bool = true) {
+        let previous = stateMachine.current
+        guard let tx = stateMachine.advance(to: target, context: c) else {
             atcState = stateMachine.current
-            currentFacility = target.facility
-            fireUnicomForTransition(into: target)
-        } else {
-            atcState = stateMachine.current
-            currentFacility = stateMachine.current.facility
+            currentFacility = controller(for: stateMachine.current)
+            return
+        }
+        let fromFacility = controller(for: previous)
+        let toFacility = controller(for: target)
+        // Announce a handoff only between two established controllers (not the very
+        // first contact, and not Clearance which is the initial call-up).
+        let firstContact = previous == .notConnected || previous == .connectedIdle
+        if !firstContact, fromFacility != toFacility, toFacility != .clearance, lastATCTransmission != nil {
+            post(engine.handoff(cs: c.callsign, from: fromFacility, to: toFacility,
+                                frequency: frequency(for: toFacility, context: c)), speak: speak)
+        }
+        updateAssignedAltitude(for: target, context: c)
+        post(tx, speak: speak)
+        fireUnicomForTransition(into: target)
+        atcState = stateMachine.current
+        currentFacility = controller(for: stateMachine.current)
+    }
+
+    /// Pre-departure auto-advance: choose the next ground state from telemetry and
+    /// issue the pilot request + controller reply for it (one step per tick).
+    private func autoAdvanceGround(state: AircraftState) {
+        guard let next = nextAutoGroundState(state: state) else { return }
+        autoGround(next)
+    }
+
+    /// The next ground state to advance to, or nil to hold. Conditions use ground
+    /// speed, runway alignment and the detected phase as corroborating evidence.
+    private func nextAutoGroundState(state: AircraftState) -> ATCState? {
+        let gs = state.groundSpeed ?? 0
+        let runway = buildContext(for: stateMachine.current).runway
+        let lined = lineupDetector.isLinedUp(state: state, runway: runway)
+        let rolling = lineupDetector.isDepartingRoll(state: state, runway: runway)
+        let taxiingOrFaster = [.taxiOut, .takeoff].contains(phase)
+        switch stateMachine.current {
+        case .connectedIdle:
+            return .clearance
+        case .clearance:
+            return .pushback
+        case .pushback:
+            return .engineStart
+        case .engineStart:
+            return (gs > 2 || taxiingOrFaster) ? .groundTaxi : nil
+        case .groundTaxi, .pushbackTaxi:
+            return (lined || phase == .takeoff) ? .lineUpWait : nil
+        case .holdingShort:
+            return (lined || phase == .takeoff) ? .lineUpWait : nil
+        case .lineUpWait:
+            return (lined || rolling || phase == .takeoff) ? .towerDeparture : nil
+        default:
+            return nil
+        }
+    }
+
+    /// Issue the auto pilot request (if any) for a ground step, then advance.
+    private func autoGround(_ target: ATCState) {
+        let c = buildContext(for: target)
+        if let pilotTx = autoPilotRequest(for: target, context: c) {
+            postPilot(pilotTx)
+        }
+        advanceAndPost(to: target, context: c)
+    }
+
+    /// The pilot-initiated request that precedes each automatic ground step.
+    private func autoPilotRequest(for state: ATCState, context c: ATCContext) -> ATCTransmission? {
+        switch state {
+        case .clearance: return pilotEngine.requestClearance(context: c)
+        case .pushback: return pilotEngine.requestPushback(context: c)
+        case .engineStart: return pilotEngine.requestEngineStart(context: c)
+        case .groundTaxi, .pushbackTaxi: return pilotEngine.requestTaxi(context: c)
+        case .lineUpWait: return pilotEngine.readyForDeparture(context: c)
+        case .towerDeparture: return pilotEngine.requestTakeoff(context: c)
+        default: return nil
+        }
+    }
+
+    /// Adjust the telemetry-mapped airborne state for real-ATC realism: keep
+    /// Departure working the climb until the TRACON ceiling, and insert the
+    /// cleared-approach / cleared-to-land steps when established on final.
+    private func adjustedAirborneTarget(mapped: ATCState, state: AircraftState) -> ATCState {
+        let alt = state.altitudeMSL ?? 0
+        let ceiling = Double(currentTraconCeiling)
+
+        // Departure keeps the climb until passing the TRACON ceiling, then Center.
+        if mapped == .climb, alt < ceiling - 200,
+           [.towerDeparture, .initialClimb, .departure].contains(stateMachine.current) {
+            return .initialClimb
+        }
+
+        // Cleared approach once established on final.
+        if mapped == .approach, stateMachine.current == .approach, isOnFinal(state) {
+            return .final
+        }
+        // Cleared to land (Tower) on short final.
+        if stateMachine.current == .final, isOnFinal(state), (state.altitudeAGL ?? 9_999) < 1500 {
+            return .landing
+        }
+        return mapped
+    }
+
+    /// TRACON ceiling in feet (where Departure hands off to Center).
+    private var currentTraconCeiling: Int {
+        settings.traconCeilingFL > 0 ? settings.traconCeilingFL * 100 : 18000
+    }
+
+    /// Whether the aircraft is established on final (airborne, low, descending).
+    private func isOnFinal(_ s: AircraftState) -> Bool {
+        guard !(s.onGround ?? false) else { return false }
+        let agl = s.altitudeAGL ?? (s.altitudeMSL ?? 0)
+        let vs = s.verticalSpeed ?? 0
+        return agl < 2500 && vs < -100
+    }
+
+    /// Arrival courtesy call once stopped at the gate.
+    private func announceArrival() {
+        let c = buildContext(for: .parked)
+        post(engine.welcomeArrival(cs: c.callsign, airport: flightPlan.destination), speak: true)
+    }
+
+    // MARK: - Live flight plan
+
+    /// Merge a flight plan read from Infinite Flight into the active plan. Manual
+    /// overrides win; otherwise empty fields are filled from the live plan.
+    private func mergeLiveFlightPlan(_ live: FlightPlan) {
+        var plan = flightPlan
+        let manual = plan.manualOverride
+        let before = (plan.departure, plan.destination)
+
+        if (!manual || plan.departure.isEmpty), !live.departure.isEmpty { plan.departure = live.departure }
+        if (!manual || plan.destination.isEmpty), !live.destination.isEmpty { plan.destination = live.destination }
+        if (!manual || plan.waypoints.isEmpty), !live.waypoints.isEmpty { plan.waypoints = live.waypoints }
+        flightPlan = plan
+
+        // Refresh weather only when the endpoints actually changed.
+        if before != (plan.departure, plan.destination) {
+            Task { await refreshWeather() }
         }
     }
 
@@ -339,7 +530,9 @@ final class AppModel: ObservableObject {
     private func updateAssignedAltitude(for state: ATCState, context c: ATCContext) {
         switch state {
         case .clearance: assignedAltitude = c.initialClimbAltitude
-        case .initialClimb, .departure: assignedAltitude = max(c.assignedAltitude, c.initialClimbAltitude)
+        case .towerDeparture: assignedAltitude = c.initialClimbAltitude
+        case .initialClimb, .departure:
+            assignedAltitude = c.traconCeiling > 0 ? c.traconCeiling : max(c.assignedAltitude, c.initialClimbAltitude)
         case .climb, .cruise: assignedAltitude = c.cruiseAltitude
         case .descent: assignedAltitude = max(10000, c.cruiseAltitude - 10000)
         case .approach: assignedAltitude = 3000
@@ -401,12 +594,26 @@ final class AppModel: ObservableObject {
         let approachName = approachProc?.displayName
             ?? (flightPlan.approach.isEmpty ? "the ILS" : flightPlan.approach)
 
+        // Initial departure heading: bearing from the field toward the first fix,
+        // or the destination when no located fixes are available.
+        let depCoord = airports.coordinate(for: flightPlan.departure)
+        let firstWaypoint = flightPlan.waypoints.first
+        let firstLocated = flightPlan.waypoints.first { $0.coordinate != nil }
+        let intercept = firstLocated?.coordinate ?? airports.coordinate(for: flightPlan.destination)
+        let depHeading: Int
+        if let depCoord, let intercept {
+            depHeading = Int(Geo.bearing(from: depCoord, to: intercept).rounded())
+        } else {
+            depHeading = 0
+        }
+        let initialClimb = settings.initialClimbAltitudeFt > 0 ? settings.initialClimbAltitudeFt : 5000
+
         return ATCContext(
             callsign: cs,
             plan: flightPlan,
             assignedAltitude: assignedAltitude,
             cruiseAltitude: cruise,
-            initialClimbAltitude: 5000,
+            initialClimbAltitude: initialClimb,
             windDirection: windDir,
             windSpeed: windSpeed,
             squawk: deterministicSquawk(),
@@ -420,6 +627,9 @@ final class AppModel: ObservableObject {
             approachFrequency: 119.700,
             towerFrequency: 118.300,
             groundFrequency: 121.800,
+            departureHeading: ((depHeading % 360) + 360) % 360,
+            firstFixName: firstWaypoint?.name ?? "",
+            traconCeiling: currentTraconCeiling,
             sidProcedure: sidProc,
             starProcedure: starProc,
             approachProcedure: approachProc)
@@ -597,14 +807,7 @@ final class AppModel: ObservableObject {
     /// phase (pushback, engine start, taxi, …) is skipped.
     private func groundFlow(_ pilotRequest: ATCTransmission, to state: ATCState) {
         postPilot(pilotRequest)
-        let c = buildContext(for: state)
-        if let tx = stateMachine.advance(to: state, context: c) {
-            updateAssignedAltitude(for: state, context: c)
-            post(tx, speak: true)
-            fireUnicomForTransition(into: state)
-        }
-        atcState = stateMachine.current
-        currentFacility = stateMachine.current.facility
+        advanceAndPost(to: state, context: buildContext(for: state))
     }
 
     func requestClearance() {

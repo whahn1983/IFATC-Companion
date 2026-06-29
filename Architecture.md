@@ -44,12 +44,16 @@ This is the boundary between the app and Infinite Flight, deliberately isolated 
 
 - **LiveATCDetector / LiveATCStatus** — derives multiplayer and human-ATC-staffing context from manifest-mapped states (best-effort, signature-based). When a human controller is detected, `AppModel` puts the companion into standby and stops generating controller calls.
 
+- **IFFlightPlanParser** — best-effort parser for the flight-plan string Infinite Flight exposes at `aircraft/0/flightplan`. `IFConnectManager` reads it after connecting and periodically while polling, parses departure/destination/fixes, and pushes the result to `AppModel`, which merges it into the active `FlightPlan` (manual overrides win). The departure heading used in the takeoff clearance is the bearing from the field to the first fix.
+
 **Isolation guarantee:** the Connect layer is the only code that talks to Infinite Flight. If Infinite Flight is not present, unreachable, or does not expose a given field/command, the layer reports unavailability and the rest of the app continues using manual overrides or the mock feed. It never crashes the app.
 
 ## ATC state machine and phase detection
 
 - **PhaseDetector** — derives the current `FlightPhase` from `AircraftState` (and flight plan context) using heuristics over altitude, speed, vertical speed, and ground state.
-- **ATCStateMachine** — the procedural core. It consumes the detected phase and pilot actions and advances through ATC interaction states, deciding which calls are due and tracking expected readbacks. The pre-departure ground sequence (clearance → pushback → engine start → taxi → holding short → line up and wait → takeoff) is pilot-driven via the ATC-tab buttons so telemetry can't skip a phase; `AppModel` holds automatic advancement until the aircraft is airborne (`hasDeparted`), then resumes telemetry-driven ATC for the enroute and arrival phases.
+- **ATCStateMachine** — the procedural core. It consumes the detected phase and pilot actions and advances through ATC interaction states, deciding which calls are due and tracking expected readbacks.
+
+- **Automatic ATC (`AppModel`)** — when **Automatic ATC** is on (Settings → ATC Automation, default on), the full real-world flow is driven from telemetry: the pre-departure ground sequence (clearance → pushback → engine start → taxi → line up → takeoff) advances one step per state update, the **takeoff clearance fires automatically once the aircraft is lined up** on the assigned runway (`RunwayLineupDetector`), and **facility hand-offs are issued automatically** whenever control passes between facilities. Departure works the climb to a configurable **TRACON ceiling** (default FL180) before handing to Center, which clears to cruise; descent, approach, cleared-to-land and taxi-in then advance from telemetry. With Automatic ATC off, the pre-departure flow is pilot-driven via the ATC-tab buttons (telemetry can't skip a phase) and automatic advancement is held until airborne (`hasDeparted`). The complete call sequence is documented in [`docs/ATC-Flow.md`](docs/ATC-Flow.md).
 
 ## Phraseology
 

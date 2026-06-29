@@ -26,6 +26,8 @@ final class IFStateMappingStore {
         case liveryName
         case nearestAirportICAO
         case callsign
+        /// Full flight plan as a string (`aircraft/0/flightplan`), parsed best-effort.
+        case flightPlan
         // Multiplayer / ATC-staffing detection (all optional; coverage varies).
         case atcActive
         case atcFacilityName
@@ -55,6 +57,7 @@ final class IFStateMappingStore {
             case .liveryName: return ["liveryname", "livery"]
             case .nearestAirportICAO: return ["nearestairporticao", "nearestairport"]
             case .callsign: return ["callsign", "username", "displayname"]
+            case .flightPlan: return ["flightplan", "flightplanstring", "fpl"]
             case .atcActive: return ["isatcactive", "atcactive", "atcisactive", "controlleractive"]
             case .atcFacilityName: return ["activeatcfacilityname", "atcfacilityname", "controllerfacility", "atcfacilit", "atcname"]
             case .atcFacilityCount: return ["activeatcfacilitycount", "atcfacilitycount", "activeatccount", "atccount"]

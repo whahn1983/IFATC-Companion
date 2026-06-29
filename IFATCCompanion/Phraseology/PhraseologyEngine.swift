@@ -215,11 +215,42 @@ struct PhraseologyEngine {
            spoken: "\(cs.spoken), \(Phonetic.wind(direction: windDir, speed: windSpeed, icao: icao)), runway \(Phonetic.runway(runway, icao: icao)), \(phrase).")
     }
 
+    // Tower — cleared for takeoff with departure instructions (initial heading +
+    // climb). The heading is the bearing to the first fix / route intercept; when
+    // it is within 10° of the runway heading we say "fly runway heading".
+    func clearedForTakeoff(cs: Callsign, runway: String, windDir: Int, windSpeed: Int,
+                           departureHeading: Int, initialAltitude: Int) -> ATCTransmission {
+        let phrase = icao ? "cleared for take-off" : "cleared for takeoff"
+        let rwyHeading = PhraseologyEngine.runwayHeading(runway)
+        let aligned = rwyHeading.map { Self.angularDiff(Double(departureHeading), Double($0)) <= 10 } ?? false
+        let hdgDisplay: String
+        let hdgSpoken: String
+        if departureHeading <= 0 || aligned {
+            hdgDisplay = "fly runway heading"; hdgSpoken = "fly runway heading"
+        } else {
+            hdgDisplay = "fly heading \(String(format: "%03d", departureHeading))"
+            hdgSpoken = "fly heading \(Phonetic.heading(departureHeading, icao: icao))"
+        }
+        let display = "\(cs.display), wind \(String(format: "%03d", windDir)) at \(windSpeed), runway \(runway), \(phrase), \(hdgDisplay), climb and maintain \(formatAltDisplay(initialAltitude))."
+        let spoken = "\(cs.spoken), \(Phonetic.wind(direction: windDir, speed: windSpeed, icao: icao)), runway \(Phonetic.runway(runway, icao: icao)), \(phrase), \(hdgSpoken), climb and maintain \(Phonetic.altitude(initialAltitude, icao: icao))."
+        return tx(.tower, display: display, spoken: spoken)
+    }
+
     // Departure — radar contact + climb.
     func radarContactClimb(cs: Callsign, altitude: Int) -> ATCTransmission {
         tx(.departure,
            display: "\(cs.display), radar contact, climb and maintain \(formatAltDisplay(altitude)).",
            spoken: "\(cs.spoken), radar contact, climb and maintain \(Phonetic.altitude(altitude, icao: icao)).")
+    }
+
+    // Departure — radar contact, climb to the TRACON ceiling, join the route.
+    func departureClimb(cs: Callsign, altitude: Int, firstFix: String) -> ATCTransmission {
+        let join = firstFix.isEmpty ? "resume own navigation" : "resume own navigation, direct \(firstFix)"
+        let joinSpoken = firstFix.isEmpty ? "resume own navigation"
+            : "resume own navigation, direct \(Phonetic.spellToken(firstFix, icao: icao))"
+        return tx(.departure,
+           display: "\(cs.display), radar contact, climb and maintain \(formatAltDisplay(altitude)), \(join).",
+           spoken: "\(cs.spoken), radar contact, climb and maintain \(Phonetic.altitude(altitude, icao: icao)), \(joinSpoken).")
     }
 
     // Center — climb.
@@ -281,6 +312,24 @@ struct PhraseologyEngine {
            spoken: "\(cs.spoken), contact \(facility.spokenName) on \(Phonetic.frequency(frequency, icao: icao)).")
     }
 
+    /// Handoff spoken by the facility you are leaving, instructing you to contact
+    /// the next one (e.g. Tower: "contact Departure on 124.3"). Attributed to the
+    /// `from` facility so the transcript shows who is releasing you.
+    func handoff(cs: Callsign, from: ATCFacility, to: ATCFacility, frequency: Double) -> ATCTransmission {
+        tx(from,
+           display: "\(cs.display), contact \(to.spokenName) on \(String(format: "%.3f", frequency)).",
+           spoken: "\(cs.spoken), contact \(to.spokenName) on \(Phonetic.frequency(frequency, icao: icao)).")
+    }
+
+    /// Arrival courtesy on reaching the gate.
+    func welcomeArrival(cs: Callsign, airport: String) -> ATCTransmission {
+        let city = spokenAirport(airport)
+        let display = airport.isEmpty ? "\(cs.display), welcome, monitor ground, good day."
+            : "\(cs.display), welcome to \(PhraseologyEngine.cityNames[airport.uppercased()] ?? airport), good day."
+        let spoken = "\(cs.spoken), welcome to \(city), good day."
+        return tx(.ground, display: display, spoken: spoken)
+    }
+
     func radarContact(cs: Callsign, facility: ATCFacility) -> ATCTransmission {
         tx(facility,
            display: "\(cs.display), \(facility.spokenName), radar contact.",
@@ -288,6 +337,19 @@ struct PhraseologyEngine {
     }
 
     // MARK: - Helpers
+
+    /// Magnetic heading (degrees) implied by a runway identifier, e.g. "17R" -> 170.
+    static func runwayHeading(_ runway: String) -> Int? {
+        let digits = runway.prefix { $0.isNumber }
+        guard let n = Int(digits), n >= 1, n <= 36 else { return nil }
+        return n * 10
+    }
+
+    /// Smallest absolute difference between two compass bearings (0–180°).
+    static func angularDiff(_ a: Double, _ b: Double) -> Double {
+        let d = abs((a - b).truncatingRemainder(dividingBy: 360))
+        return min(d, 360 - d)
+    }
 
     /// Display form of an altitude: "FL370" above transition, else "5,000".
     func formatAltDisplay(_ feet: Int) -> String {
