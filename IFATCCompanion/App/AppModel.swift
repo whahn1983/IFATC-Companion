@@ -88,6 +88,12 @@ final class AppModel: ObservableObject {
     /// suppressed so messages never play one after another without waiting.
     @Published private(set) var manualTuning = false
 
+    /// The facility the pilot has tuned to but not yet checked in with. Switching
+    /// frequency no longer auto-checks-in, so this keeps the header and the active
+    /// button highlight on the tuned controller until the next check-in or request
+    /// advances the conversation. Cleared once the state machine advances.
+    private var tunedFacility: ATCFacility?
+
     init() {
         let settings = AppSettings()
         self.settings = settings
@@ -224,6 +230,7 @@ final class AppModel: ObservableObject {
     func startMock() {
         connect.disconnect()
         manualTuning = false
+        tunedFacility = nil
         stateMachine.reset()
         hasDeparted = false
         arrivalAnnounced = false
@@ -245,6 +252,7 @@ final class AppModel: ObservableObject {
     func startLive() {
         mock.stop()
         manualTuning = false
+        tunedFacility = nil
         stateMachine.reset()
         hasDeparted = false
         arrivalAnnounced = false
@@ -329,7 +337,7 @@ final class AppModel: ObservableObject {
             }
             // Otherwise hold: the pilot-driven ground flow advances via the buttons.
             atcState = stateMachine.current
-            currentFacility = controller(for: stateMachine.current)
+            currentFacility = tunedFacility ?? controller(for: stateMachine.current)
             return
         }
 
@@ -340,7 +348,7 @@ final class AppModel: ObservableObject {
         // that is what makes the calls pile up "one after the next".
         if manualTuning {
             atcState = stateMachine.current
-            currentFacility = controller(for: stateMachine.current)
+            currentFacility = tunedFacility ?? controller(for: stateMachine.current)
             return
         }
 
@@ -396,6 +404,9 @@ final class AppModel: ObservableObject {
     private func advanceAndPost(to target: ATCState, context c: ATCContext,
                                 speak: Bool = true, announceHandoff: Bool = true) {
         let previous = stateMachine.current
+        // The conversation is advancing, so any pending manual tune has now been
+        // acted on — the controller working the new state speaks for itself.
+        tunedFacility = nil
         guard let tx = stateMachine.advance(to: target, context: c) else {
             atcState = stateMachine.current
             currentFacility = controller(for: stateMachine.current)
@@ -441,8 +452,8 @@ final class AppModel: ObservableObject {
 
     /// Facilities the pilot can tune to with a button, in the order they're worked
     /// across a normal flight. The same Ground/Tower button serves both the
-    /// departure and the arrival visit — `tuneTo` advances to whichever call lies
-    /// ahead of the current state.
+    /// departure and the arrival visit — checking in advances to whichever call
+    /// lies ahead of the current state for that facility.
     static let tunableFacilities: [ATCFacility] =
         [.clearance, .ground, .tower, .departure, .center, .approach]
 
@@ -483,33 +494,20 @@ final class AppModel: ObservableObject {
         return order.last { controller(for: $0) == facility }
     }
 
-    /// Manually tune the radio to a facility and contact it. Posts the pilot's
-    /// check-in on the new frequency, then the controller's next instruction for
-    /// the current phase. This is how the pilot drives the flight forward: every
-    /// frequency change is a deliberate button press, so the calls never auto-play
-    /// back-to-back without waiting.
+    /// Manually tune the radio to a facility. Switching frequency does **not**
+    /// check in or advance the conversation on its own: it only moves the radio to
+    /// the new controller. From here the pilot either taps Check In to call up the
+    /// controller (and get the next instruction) or makes a specific request — e.g.
+    /// requesting pushback after Clearance hands you to Ground. This is how the
+    /// pilot drives the flight forward without calls auto-playing back-to-back.
     func tuneTo(_ facility: ATCFacility) {
         guard !companionStandby else { return }
         manualTuning = true
-        guard let target = nextState(workedBy: facility, after: stateMachine.current),
-              target != stateMachine.current else {
-            // Already talking to this facility — just confirm the frequency.
-            currentFacility = facility
-            return
-        }
-        if !target.isManualGroundFlow { hasDeparted = true }
-        let c = buildContext(for: target)
-        // The pilot checks in on the freshly tuned frequency. Because the pilot
-        // initiated the switch, the controller does not precede its reply with a
-        // "contact …" hand-off (announceHandoff: false).
-        postPilot(pilotEngine.requestHandoff(context: c, facility: facility))
-        advanceAndPost(to: target, context: c, announceHandoff: false)
-        if target == .parked, !arrivalAnnounced {
-            announceArrival()
-            arrivalAnnounced = true
-        }
-        // Keep the mock telemetry display roughly in step with the tuned phase.
-        if settings.mockMode { mock.setPhase(mockPhase(for: target)) }
+        tunedFacility = facility
+        currentFacility = facility
+        // No transcript, no state change, and no mock-phase change: tuning only
+        // moves the radio. The mock display advances with the conversation when the
+        // pilot checks in or makes a request.
     }
 
     /// Final step of the arrival: the aircraft is parked at the gate. Posts the
@@ -951,10 +949,33 @@ final class AppModel: ObservableObject {
         post(engine.clearedApproach(cs: c.callsign, approach: flightPlan.approach, runway: c.runway), speak: true)
     }
 
+    /// Check in on the currently tuned frequency. Posts the pilot's call-up and the
+    /// controller's next instruction for the facility we're tuned to. This is the
+    /// deliberate "check in" the pilot makes after switching frequency (tuning no
+    /// longer checks in automatically).
     func requestHandoff() {
-        let c = buildContext(for: atcState)
+        guard !companionStandby else { return }
+        guard let target = nextState(workedBy: currentFacility, after: stateMachine.current),
+              target != stateMachine.current else {
+            // Nothing new ahead for this controller — a plain check-in / radar-contact
+            // exchange (e.g. a same-sector Center re-check-in).
+            let c = buildContext(for: atcState)
+            postPilot(pilotEngine.requestHandoff(context: c, facility: currentFacility))
+            post(engine.radarContact(cs: c.callsign, facility: currentFacility), speak: true)
+            return
+        }
+        if !target.isManualGroundFlow { hasDeparted = true }
+        let c = buildContext(for: target)
+        // The pilot checks in on the tuned frequency. Because the pilot initiated the
+        // switch, the controller does not precede its reply with a "contact …"
+        // hand-off (announceHandoff: false).
         postPilot(pilotEngine.requestHandoff(context: c, facility: currentFacility))
-        post(engine.radarContact(cs: c.callsign, facility: currentFacility), speak: true)
+        advanceAndPost(to: target, context: c, announceHandoff: false)
+        if target == .parked, !arrivalAnnounced {
+            announceArrival()
+            arrivalAnnounced = true
+        }
+        if settings.mockMode { mock.setPhase(mockPhase(for: target)) }
     }
 
     // MARK: - Departure ground flow (pilot-driven)
@@ -983,8 +1004,8 @@ final class AppModel: ObservableObject {
         groundFlow(pilotEngine.requestTaxi(context: buildContext(for: .groundTaxi)), to: .groundTaxi)
     }
 
-    /// Report ready for departure. Tower responds "line up and wait"; tuning the
-    /// Tower frequency (or the Takeoff button) then yields the takeoff clearance,
+    /// Report ready for departure. Tower responds "line up and wait"; the Takeoff
+    /// button (or tuning Tower and checking in) then yields the takeoff clearance,
     /// and the pilot drives every controller change from there with the frequency
     /// buttons.
     func reportReadyForDeparture() {
@@ -993,6 +1014,10 @@ final class AppModel: ObservableObject {
 
     func requestTakeoff() {
         groundFlow(pilotEngine.requestTakeoff(context: buildContext(for: .towerDeparture)), to: .towerDeparture)
+        // Cleared for takeoff — the pilot has departed, so switch the response
+        // buttons from the ground flow to the enroute set (which includes Check In
+        // for calling up Departure and the rest of the airborne controllers).
+        hasDeparted = true
     }
 
     // MARK: - Weather button actions
@@ -1119,6 +1144,7 @@ final class AppModel: ObservableObject {
     /// flight does not inherit the previous chat history.
     func clearFlight() {
         manualTuning = false
+        tunedFacility = nil
         speech.stop()
         transcript.removeAll()
         latestTransmission = nil
