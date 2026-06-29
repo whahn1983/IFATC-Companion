@@ -137,8 +137,11 @@ struct FlightView: View {
     private func orDash(_ s: String) -> String { s.isEmpty ? "—" : s }
 
     private var distanceToDest: String {
-        guard let pos = s.coordinate,
-              let dest = AirportDatabase.shared.coordinate(for: model.flightPlan.destination) else { return "—" }
+        guard let pos = s.coordinate else { return "—" }
+        // Prefer the destination airport coordinate; fall back to the last located
+        // flight-plan fix when the field isn't in the built-in airport database.
+        guard let dest = AirportDatabase.shared.coordinate(for: model.flightPlan.destination)
+                ?? model.flightPlan.lastWaypointCoordinate else { return "—" }
         return "\(Int(Geo.distanceNM(from: pos, to: dest).rounded())) NM"
     }
 

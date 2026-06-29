@@ -98,6 +98,31 @@ final class AppModel: ObservableObject {
     /// advances the conversation. Cleared once the state machine advances.
     private var tunedFacility: ATCFacility?
 
+    // MARK: - Readback gate
+    //
+    // Real controllers wait for the pilot to read an instruction back before
+    // issuing the next one. The automatic (telemetry-driven) flow mirrors that:
+    // after a controller call that expects a readback, the conversation holds —
+    // no further automatic call is issued — until the pilot reads back (any pilot
+    // transmission clears the gate). If the pilot is idle, the controller repeats
+    // the call and asks "how do you read?" every `readbackRepeatInterval` seconds.
+    // This is what stops calls from firing back-to-back near the runway.
+
+    /// True while waiting for the pilot to acknowledge the last automatic call.
+    @Published private(set) var awaitingReadback = false
+    /// The controller call to repeat if the pilot stays idle.
+    private var pendingReadbackTx: ATCTransmission?
+    /// Drives the idle re-prompt while `awaitingReadback`.
+    private var readbackTimer: Task<Void, Never>?
+    /// How many times the idle re-prompt has fired for the current call.
+    private var readbackPrompts = 0
+
+    /// Seconds of pilot silence before the controller repeats the call.
+    var readbackRepeatInterval: TimeInterval = 10
+    /// How many times to repeat before giving up (the gate stays closed so the
+    /// flow does not run away; the pilot can still act via the buttons/PTT).
+    var readbackMaxPrompts = 3
+
     init() {
         let settings = AppSettings()
         self.settings = settings
@@ -249,6 +274,7 @@ final class AppModel: ObservableObject {
         connect.disconnect()
         manualTuning = false
         tunedFacility = nil
+        clearReadbackGate()
         stateMachine.reset()
         hasDeparted = false
         arrivalAnnounced = false
@@ -271,6 +297,7 @@ final class AppModel: ObservableObject {
         mock.stop()
         manualTuning = false
         tunedFacility = nil
+        clearReadbackGate()
         stateMachine.reset()
         hasDeparted = false
         arrivalAnnounced = false
@@ -345,13 +372,17 @@ final class AppModel: ObservableObject {
         // automatically here is the takeoff clearance, once the aircraft is lined
         // up on the runway — Tower does not wait for a pilot prompt for that.
         if !hasDeparted {
-            if stateMachine.current == .lineUpWait, !settings.mockMode, !manualTuning,
-               isReadyForTakeoffClearance(state: state) {
+            if readbackGateClosed {
+                // Hold: the controller is waiting for the pilot to read back the
+                // last call (or to answer the "how do you read?" prompt) before
+                // issuing anything further.
+            } else if stateMachine.current == .lineUpWait, !settings.mockMode, !manualTuning,
+                      isReadyForTakeoffClearance(state: state) {
                 autoIssueTakeoffClearance()
-            } else if !mapped.isManualGroundFlow {
+            } else if !manualTuning, !mapped.isManualGroundFlow, isForward(mapped) {
                 // Telemetry already shows the takeoff roll (the pilot rolled without
                 // using the buttons) — advance so the flow is never stuck on ground.
-                advanceAndPost(to: mapped, context: buildContext(for: mapped))
+                advanceAndPost(to: mapped, context: buildContext(for: mapped), automatic: true)
             }
             // Otherwise hold: the pilot-driven ground flow advances via the buttons.
             atcState = stateMachine.current
@@ -370,11 +401,24 @@ final class AppModel: ObservableObject {
             return
         }
 
+        // Hold the automatic flow until the pilot has acknowledged the last call.
+        // Without this, telemetry polling re-issues calls every tick and they pile
+        // up "one after the next" near the runway.
+        if readbackGateClosed {
+            atcState = stateMachine.current
+            currentFacility = controller(for: stateMachine.current)
+            return
+        }
+
         // Otherwise controller callouts (hand-offs, climb/descent, approach,
         // landing, taxi-in) are issued automatically as the aircraft reaches each
-        // position. Pilot read-backs and check-ins stay manual.
+        // position. The flow only ever moves forward (never bounces back to an
+        // earlier state while the phase detector flickers). Pilot read-backs and
+        // check-ins stay manual.
         let target = adjustedAirborneTarget(mapped: mapped, state: state)
-        advanceAndPost(to: target, context: buildContext(for: target))
+        if isForward(target) {
+            advanceAndPost(to: target, context: buildContext(for: target), automatic: true)
+        }
 
         // One-time arrival courtesy once stopped at the gate.
         if stateMachine.current == .parked, !arrivalAnnounced {
@@ -420,7 +464,8 @@ final class AppModel: ObservableObject {
     /// Advance the state machine and post the resulting controller call, preceding
     /// it with a "contact …" handoff whenever the controlling facility changes.
     private func advanceAndPost(to target: ATCState, context c: ATCContext,
-                                speak: Bool = true, announceHandoff: Bool = true) {
+                                speak: Bool = true, announceHandoff: Bool = true,
+                                automatic: Bool = false) {
         let previous = stateMachine.current
         // The conversation is advancing, so any pending manual tune has now been
         // acted on — the controller working the new state speaks for itself.
@@ -448,6 +493,13 @@ final class AppModel: ObservableObject {
         updateAssignedAltitude(for: target, context: c)
         post(tx, speak: speak)
         fireUnicomForTransition(into: target)
+        // An automatic call that carries a read-back instruction closes the gate:
+        // the flow holds here until the pilot reads back (or the idle prompt loop
+        // runs its course). Pilot-driven advances never close the gate — the pilot
+        // is already driving the conversation.
+        if automatic, target.expectsReadback {
+            engageReadbackGate(tx)
+        }
         atcState = stateMachine.current
         currentFacility = controller(for: stateMachine.current)
     }
@@ -465,7 +517,84 @@ final class AppModel: ObservableObject {
 
     /// Tower automatically clears the aircraft for takeoff (no pilot prompt needed).
     private func autoIssueTakeoffClearance() {
-        advanceAndPost(to: .towerDeparture, context: buildContext(for: .towerDeparture))
+        advanceAndPost(to: .towerDeparture, context: buildContext(for: .towerDeparture),
+                       automatic: true)
+    }
+
+    // MARK: - Readback gate
+
+    /// Whether the automatic flow is currently holding for a pilot read-back. Only
+    /// engaged in live mode — the deterministic mock/demo and the unit tests drive
+    /// read-backs synchronously and never need the controller to wait.
+    private var readbackGateClosed: Bool { awaitingReadback && !settings.mockMode }
+
+    /// Index of a state in the canonical gate-to-gate flow order, used to keep the
+    /// automatic flow moving forward only (never bouncing back to an earlier call
+    /// while the phase detector flickers near the ground).
+    private func flowIndex(of state: ATCState) -> Int? {
+        Self.flowOrder.firstIndex(of: state)
+    }
+
+    /// Whether advancing to `target` would move the conversation forward (or stay
+    /// put). States outside the gate-to-gate order are treated as allowed.
+    private func isForward(_ target: ATCState) -> Bool {
+        guard let ti = flowIndex(of: target),
+              let ci = flowIndex(of: stateMachine.current) else { return true }
+        return ti >= ci
+    }
+
+    /// Close the gate after an automatic instruction so the next call waits for the
+    /// pilot's read-back, and arm the idle re-prompt loop.
+    private func engageReadbackGate(_ tx: ATCTransmission) {
+        guard !settings.mockMode else { return }
+        awaitingReadback = true
+        pendingReadbackTx = tx
+        readbackPrompts = 0
+        armReadbackTimer()
+    }
+
+    /// Schedule the next idle re-prompt. If the pilot stays silent the controller
+    /// repeats the call and asks "how do you read?", up to `readbackMaxPrompts`
+    /// times, after which the gate stays closed (the flow does not run away) until
+    /// the pilot acts.
+    private func armReadbackTimer() {
+        readbackTimer?.cancel()
+        guard awaitingReadback else { return }
+        readbackTimer = Task { @MainActor [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(nanoseconds: UInt64(self.readbackRepeatInterval * 1_000_000_000))
+            guard !Task.isCancelled, self.awaitingReadback,
+                  let tx = self.pendingReadbackTx,
+                  self.readbackPrompts < self.readbackMaxPrompts else { return }
+            self.readbackPrompts += 1
+            self.repeatPendingCall(tx)
+            self.armReadbackTimer()
+        }
+    }
+
+    /// Re-issue the pending controller call with a "how do you read?" tag.
+    private func repeatPendingCall(_ tx: ATCTransmission) {
+        let cs = engine.callsign(airline: flightPlan.airline,
+                                 flightNumber: flightPlan.flightNumber,
+                                 fallback: flightPlan.callsign)
+        let prefix = "\(cs.display), "
+        let display = tx.displayText.hasPrefix(prefix)
+            ? "\(tx.displayText) How do you read?"
+            : "\(tx.displayText) \(cs.display), how do you read?"
+        let spoken = "\(tx.spokenText) How do you read?"
+        post(ATCTransmission(sender: .atc, facility: tx.facility,
+                             displayText: display, spokenText: spoken), speak: true)
+    }
+
+    /// Open the gate once the pilot has responded (any pilot transmission counts as
+    /// an acknowledgement) so the automatic flow can resume.
+    private func clearReadbackGate() {
+        guard awaitingReadback else { return }
+        awaitingReadback = false
+        pendingReadbackTx = nil
+        readbackPrompts = 0
+        readbackTimer?.cancel()
+        readbackTimer = nil
     }
 
     // MARK: - Manual frequency tuning
@@ -649,9 +778,23 @@ final class AppModel: ObservableObject {
         let manual = plan.manualOverride
         let before = (plan.departure, plan.destination)
 
-        if (!manual || plan.departure.isEmpty), !live.departure.isEmpty { plan.departure = live.departure }
-        if (!manual || plan.destination.isEmpty), !live.destination.isEmpty { plan.destination = live.destination }
+        // For each field: take the live value when the pilot has not pinned it with
+        // a manual override, or when the field is still empty.
+        func fill(_ keep: inout String, _ value: String) {
+            guard !value.isEmpty else { return }
+            if !manual || keep.isEmpty { keep = value }
+        }
+
+        fill(&plan.departure, live.departure)
+        fill(&plan.destination, live.destination)
+        fill(&plan.sid, live.sid)
+        fill(&plan.star, live.star)
+        fill(&plan.approach, live.approach)
         if (!manual || plan.waypoints.isEmpty), !live.waypoints.isEmpty { plan.waypoints = live.waypoints }
+        // Cruise altitude (from the plan's TOC / highest planned level).
+        if (!manual || plan.cruiseAltitude <= 0), live.cruiseAltitude > 0 {
+            plan.cruiseAltitude = live.cruiseAltitude
+        }
         flightPlan = plan
 
         // Refresh weather only when the endpoints actually changed.
@@ -718,6 +861,9 @@ final class AppModel: ObservableObject {
     /// voice is heard for button/text-driven calls; push-to-talk input is never
     /// re-spoken because the user already said it.
     private func postPilot(_ tx: ATCTransmission) {
+        // Any pilot transmission (read-back, request, check-in, PTT) acknowledges
+        // the controller and releases the read-back gate so the flow can resume.
+        clearReadbackGate()
         post(tx, speak: shouldSpeakPilot)
     }
 
@@ -1171,6 +1317,7 @@ final class AppModel: ObservableObject {
     func clearFlight() {
         manualTuning = false
         tunedFacility = nil
+        clearReadbackGate()
         speech.stop()
         transcript.removeAll()
         latestTransmission = nil
