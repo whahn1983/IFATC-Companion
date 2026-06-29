@@ -129,15 +129,44 @@ final class IFConnectManager: ObservableObject {
 
     /// Read and parse the flight plan; emit `onFlightPlan` only when it changes.
     private func readFlightPlan() async {
-        guard let raw = await reader.readFlightPlanRaw(using: client) else { return }
-        guard raw != liveFlightPlanRaw else { return }
-        liveFlightPlanRaw = raw
-        guard let plan = IFFlightPlanParser.parse(raw) else {
-            diagnostics?.log(.state, "Flight plan string present but unparseable.")
+        let payloads = await reader.readFlightPlanPayloads(using: client)
+        guard !payloads.isEmpty else { return }
+
+        // Change-detection key spans every payload so an edit to any of them re-reads.
+        let key = [payloads.full, payloads.route, payloads.coordinates]
+            .compactMap { $0 }.joined(separator: "\u{1F}")
+        guard key != liveFlightPlanRaw else { return }
+        liveFlightPlanRaw = key
+
+        // Log the full raw payloads (verbose) so the exact IF format is visible — the
+        // shape of these states varies across IF versions, and the parser is built
+        // against whatever is observed here.
+        logRawFlightPlan(payloads)
+
+        guard let plan = IFFlightPlanParser.parse(full: payloads.full,
+                                                  route: payloads.route,
+                                                  coordinates: payloads.coordinates) else {
+            diagnostics?.log(.state, "Flight plan present but unparseable.")
             return
         }
-        diagnostics?.log(.state, "Flight plan from IF: \(plan.departure)→\(plan.destination), \(plan.waypoints.count) fixes.")
+        let located = plan.waypoints.filter { $0.coordinate != nil }.count
+        diagnostics?.log(.state, "Flight plan from IF: \(plan.departure)→\(plan.destination), "
+            + "\(plan.waypoints.count) fixes (\(located) located), "
+            + "SID \(plan.sid.isEmpty ? "—" : plan.sid), STAR \(plan.star.isEmpty ? "—" : plan.star), "
+            + "APP \(plan.approach.isEmpty ? "—" : plan.approach).")
         onFlightPlan?(plan)
+    }
+
+    /// Emit the raw flight-plan payloads to diagnostics (truncated) so the actual IF
+    /// wire format can be inspected when the parsed result looks wrong.
+    private func logRawFlightPlan(_ payloads: IFConnectStateReader.FlightPlanPayloads) {
+        func trimmed(_ s: String) -> String {
+            let max = 2000
+            return s.count > max ? String(s.prefix(max)) + "…[\(s.count) chars]" : s
+        }
+        if let full = payloads.full { diagnostics?.log(.state, "Raw flightplan: \(trimmed(full))") }
+        if let route = payloads.route { diagnostics?.log(.state, "Raw flightplan/route: \(trimmed(route))") }
+        if let coords = payloads.coordinates { diagnostics?.log(.state, "Raw flightplan/coordinates: \(trimmed(coords))") }
     }
 
     // MARK: - Discovery
