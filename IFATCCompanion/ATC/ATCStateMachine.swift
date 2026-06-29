@@ -80,6 +80,10 @@ struct ATCStateMachine {
 
     mutating func reset() { current = .notConnected }
 
+    /// Restore the machine to a previously saved state (after a disconnect, so the
+    /// conversation resumes where it left off instead of re-deriving from telemetry).
+    mutating func restore(to state: ATCState) { current = state }
+
     /// Intermediate altitude (ft MSL) Center assigns at top of descent — clearly
     /// below cruise (so "descend and maintain …" is never contradictory) and above
     /// the terminal/approach altitude that Approach later assigns.
