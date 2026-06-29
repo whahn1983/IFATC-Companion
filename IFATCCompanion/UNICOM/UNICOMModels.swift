@@ -82,7 +82,8 @@ enum UNICOMEvent: String, CaseIterable, Identifiable {
 
     /// The plain-language broadcast text. `ident` is the airport/traffic name.
     func broadcast(ident: String, runway: String) -> String {
-        let rwy = runway.isEmpty ? "the active" : "runway \(runway)"
+        // Never say "the active" — name the runway when known, else "the runway".
+        let rwy = runway.isEmpty ? "the runway" : "runway \(runway)"
         let at = ident.isEmpty ? "" : " \(ident)"
         switch self {
         case .taxiingToRunway: return "Traffic\(at), taxiing to \(rwy)."
@@ -95,7 +96,7 @@ enum UNICOMEvent: String, CaseIterable, Identifiable {
         case .enteringBase: return "Traffic\(at), turning base for \(rwy)."
         case .onFinal: return "Traffic\(at), on final for \(rwy)."
         case .clearOfRunway: return "Traffic\(at), clear of \(rwy)."
-        case .taxiingToParking: return "Traffic\(at), clear of the active, taxiing to parking."
+        case .taxiingToParking: return "Traffic\(at), clear of the runway, taxiing to parking."
         }
     }
 }

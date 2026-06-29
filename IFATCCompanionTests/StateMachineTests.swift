@@ -60,8 +60,9 @@ final class StateMachineTests: XCTestCase {
         XCTAssertEqual(ATCState.cruise.facility, .center)
         XCTAssertEqual(ATCState.approach.facility, .approach)
         XCTAssertEqual(ATCState.landing.facility, .tower)
-        XCTAssertEqual(ATCState.pushback.facility, .ground)
-        XCTAssertEqual(ATCState.engineStart.facility, .ground)
+        // Pushback and engine start are Ramp (simulated local/company), not Ground.
+        XCTAssertEqual(ATCState.pushback.facility, .ramp)
+        XCTAssertEqual(ATCState.engineStart.facility, .ramp)
         XCTAssertEqual(ATCState.lineUpWait.facility, .tower)
     }
 
@@ -70,7 +71,7 @@ final class StateMachineTests: XCTestCase {
         m.setConnected()
         let tx = m.advance(to: .pushback, context: TestSupport.context())
         XCTAssertEqual(m.current, .pushback)
-        XCTAssertEqual(tx?.facility, .ground)
+        XCTAssertEqual(tx?.facility, .ramp)
         XCTAssertTrue(tx?.displayText.contains("pushback approved") ?? false)
     }
 
@@ -79,7 +80,8 @@ final class StateMachineTests: XCTestCase {
         m.setConnected()
         let tx = m.advance(to: .engineStart, context: TestSupport.context())
         XCTAssertEqual(m.current, .engineStart)
-        XCTAssertTrue(tx?.displayText.contains("start up approved") ?? false)
+        XCTAssertEqual(tx?.facility, .ramp)
+        XCTAssertTrue(tx?.displayText.contains("start approved") ?? false)
     }
 
     func testLineUpAndWaitTransmission() {

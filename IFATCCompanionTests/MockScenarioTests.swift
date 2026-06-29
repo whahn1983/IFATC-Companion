@@ -91,7 +91,7 @@ final class MockScenarioTests: XCTestCase {
         // Departure controller calls.
         XCTAssertTrue(contains(model, "cleared to KMSP", sender: .atc), "clearance missing")
         XCTAssertTrue(contains(model, "pushback approved", sender: .atc))
-        XCTAssertTrue(contains(model, "start up approved", sender: .atc))
+        XCTAssertTrue(contains(model, "start approved", sender: .atc))
         XCTAssertTrue(contains(model, "taxi to runway", sender: .atc))
         XCTAssertTrue(contains(model, "line up and wait", sender: .atc))
         XCTAssertTrue(contains(model, "cleared for takeoff", sender: .atc))

@@ -22,6 +22,17 @@ struct ATCContext {
     var approachFrequency: Double
     var towerFrequency: Double
     var groundFrequency: Double
+    /// Ramp/apron frequency used for the simulated (non-FAA) ramp conversation.
+    var rampFrequency: Double = 131.0
+    /// Resolved ramp behavior for this airport (push approval, spots, directions).
+    /// Defaults to the generic airline ramp profile when no airport profile exists.
+    var rampProfile: RampProfile = .generic
+    /// Pushback tail/face direction ("west", "east", …) when known, else "".
+    var pushDirection: String = ""
+    /// Ramp spot name used for the Ramp→Ground handoff ("5", "spot 5"), else "".
+    var rampSpot: String = ""
+    /// Gate/stand identifier ("B44") when known, else "".
+    var gate: String = ""
     /// Initial assigned heading after departure (bearing to the first fix / route
     /// intercept). 0 when unknown — the takeoff clearance then says "runway heading".
     var departureHeading: Int = 0
@@ -43,9 +54,11 @@ struct ATCStateMachine {
 
     private(set) var current: ATCState = .notConnected
     private let engine: PhraseologyEngine
+    private let ramp: RampPhraseologyEngine
 
     init(engine: PhraseologyEngine) {
         self.engine = engine
+        self.ramp = RampPhraseologyEngine(engine: engine)
     }
 
     mutating func reset() { current = .notConnected }
@@ -100,9 +113,12 @@ struct ATCStateMachine {
                                     departureFreq: c.departureFrequency, squawk: c.squawk,
                                     sidProcedure: c.sidProcedure)
         case .pushback:
-            return engine.pushbackApproved(cs: c.callsign)
+            // Ramp (simulated local/company), not FAA ATC. Includes tail/face
+            // direction when known, else "advise ready to taxi".
+            return ramp.pushbackApproved(cs: c.callsign, direction: c.pushDirection,
+                                         profile: c.rampProfile)
         case .engineStart:
-            return engine.startupApproved(cs: c.callsign)
+            return ramp.startApproved(cs: c.callsign)
         case .groundTaxi, .pushbackTaxi:
             return engine.taxiToRunway(cs: c.callsign, runway: c.runway,
                                        via: c.taxiway, crossing: c.crossingRunway)
