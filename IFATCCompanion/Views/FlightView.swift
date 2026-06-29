@@ -48,7 +48,7 @@ struct FlightView: View {
                 DataRow(label: "Next Waypoint", value: nextWaypoint, systemImage: "point.topleft.down.curvedto.point.bottomright.up")
                 DataRow(label: "Flight Phase", value: model.phase.title, systemImage: "list.bullet")
                 DataRow(label: "Airport Proximity", value: proximity, systemImage: "mappin.and.ellipse")
-                DataRow(label: "Runway", value: model.flightPlan.runway.isEmpty ? "auto" : model.flightPlan.runway, systemImage: "road.lanes")
+                DataRow(label: "Runway", value: model.activeRunwayDisplay.isEmpty ? "auto" : model.activeRunwayDisplay, systemImage: "road.lanes")
             }
         }
     }

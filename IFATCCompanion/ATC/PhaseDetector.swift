@@ -46,6 +46,13 @@ struct PhaseDetector {
             if gs < 1 {
                 // Distinguish pre-departure vs parked-after-arrival using prior phase.
                 if [.descent, .approach, .landing, .taxiIn].contains(previous) {
+                    // Parked only once the parking brake is set (when the sim exposes
+                    // it); a full stop with the brake released is still taxiing in (e.g.
+                    // holding for traffic on the ramp), not parked at the gate.
+                    if state.parkingBrakeSet == false {
+                        debug.notes.append("Stopped on ground, brake released — still taxiing in")
+                        return (.taxiIn, debug)
+                    }
                     debug.notes.append("Stopped on ground after arrival")
                     return (.parked, debug)
                 }

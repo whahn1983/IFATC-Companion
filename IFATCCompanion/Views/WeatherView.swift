@@ -167,11 +167,18 @@ struct WeatherView: View {
 
     private var sigmetCard: some View {
         Card(title: "SIGMET / AIRMET", systemImage: "exclamationmark.triangle") {
-            if model.sigmets.isEmpty {
-                Text("No active advisories loaded.").foregroundStyle(.secondary)
+            if model.routeSigmets.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("No advisories along your route.").foregroundStyle(.secondary)
+                    if !model.sigmets.isEmpty {
+                        Text("\(model.sigmets.count) active elsewhere (off route).")
+                            .font(.caption).foregroundStyle(.tertiary)
+                    }
+                }
             } else {
                 VStack(alignment: .leading, spacing: 8) {
-                    ForEach(model.sigmets.prefix(5)) { s in
+                    Text("Along your route:").font(.caption).foregroundStyle(.secondary)
+                    ForEach(model.routeSigmets.prefix(5)) { s in
                         VStack(alignment: .leading, spacing: 2) {
                             Text(s.hazard ?? "Advisory").font(.subheadline.weight(.semibold))
                             if !s.raw.isEmpty {

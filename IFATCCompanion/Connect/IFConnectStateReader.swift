@@ -42,6 +42,7 @@ struct IFConnectStateReader {
         s.verticalSpeed = (await double(.verticalSpeed)).map { $0 * IFConnectStateReader.metresPerSecondToFeetPerMinute }
         s.onGround = await bool(.onGround)
         s.approachModeEngaged = await bool(.approachMode)
+        s.parkingBrakeSet = await bool(.parkingBrake)
         s.gForce = await double(.gForce)
         s.bankAngle = await double(.bankAngle)
         s.pitch = await double(.pitch)

@@ -55,6 +55,8 @@ enum IFFlightPlanParser {
                 if p.departure.isEmpty { p.departure = summary.departure }
                 if p.destination.isEmpty { p.destination = summary.destination }
                 if p.cruiseAltitude <= 0 { p.cruiseAltitude = summary.cruiseAltitude }
+                if p.departureRunway.isEmpty { p.departureRunway = summary.departureRunway }
+                if p.arrivalRunway.isEmpty { p.arrivalRunway = summary.arrivalRunway }
                 plan = p
             } else {
                 plan = summary
@@ -66,8 +68,16 @@ enum IFFlightPlanParser {
         // payload that already carries per-fix coordinates (the detailed-JSON case)
         // for a coordinate-less route string.
         let planHasCoordinates = plan?.waypoints.contains { $0.coordinate != nil } ?? false
-        if let route, let routePlan = parseRouteString(route), !planHasCoordinates {
-            if routePlan.waypoints.count > (plan?.waypoints.count ?? 0) {
+        if let route, let routePlan = parseRouteString(route) {
+            // The route string carries the departure/arrival runway tokens even when
+            // the detailed payload omits them, so borrow those regardless of whether
+            // the route's fix list is preferred below.
+            if var p = plan {
+                if p.departureRunway.isEmpty { p.departureRunway = routePlan.departureRunway }
+                if p.arrivalRunway.isEmpty { p.arrivalRunway = routePlan.arrivalRunway }
+                plan = p
+            }
+            if !planHasCoordinates, routePlan.waypoints.count > (plan?.waypoints.count ?? 0) {
                 if var p = plan {
                     p.waypoints = routePlan.waypoints
                     if p.departure.isEmpty { p.departure = routePlan.departure }
@@ -150,6 +160,9 @@ enum IFFlightPlanParser {
         // Recover a cruise altitude from any flight-level / altitude token.
         plan.cruiseAltitude = middle.compactMap(altitudeFromToken).max() ?? 0
 
+        // Recover the departure/arrival runways from runway tokens before filtering.
+        captureRunways(from: middle.map { Waypoint(name: $0) }, into: &plan)
+
         var seen = Set<String>()
         plan.waypoints = middle.compactMap { token -> Waypoint? in
             guard isFix(token), !isRunwayToken(token), !isPseudoWaypoint(token),
@@ -225,6 +238,11 @@ enum IFFlightPlanParser {
             fixes.removeLast()
         }
 
+        // Recover the departure/arrival runways from any runway tokens (e.g. a
+        // `RW22R` token after the field, or `22R` ahead of the destination) before
+        // they are dropped from the enroute fixes.
+        captureRunways(from: fixes, into: &plan)
+
         // Drop runway tokens / IF display markers so neither is shown as a fix.
         plan.waypoints = fixes.filter { !isRunwayToken($0.name) && !isPseudoWaypoint($0.name) }
         plan.cruiseAltitude = maxAltitude
@@ -293,11 +311,20 @@ enum IFFlightPlanParser {
         guard let dict = item as? [String: Any] else { return }
         let name = (string(dict, "identifier") ?? string(dict, "name") ?? "")
             .trimmingCharacters(in: .whitespaces).uppercased()
-        guard !name.isEmpty, !isPseudoWaypoint(name) else { return }
+        guard !name.isEmpty else { return }
 
         let coord = coordinate(in: dict)
         let alt = plannedAltitude(in: dict)
+        // Planned altitudes raise the recovered cruise level even for the
+        // non-navigational top-of-climb / top-of-descent display markers Infinite
+        // Flight inserts — those sit at the cruise level, so their altitude must
+        // count (otherwise the cruise reads as the highest *enroute fix* altitude,
+        // i.e. the level just *before* the TOC rather than the final cruise level).
         if let alt, alt > maxAltitude, alt < 60000 { maxAltitude = alt }
+
+        // The marker itself (DPT/TOC/TOD/DEST) contributed its altitude above but is
+        // never shown as a fix.
+        guard !isPseudoWaypoint(name) else { return }
 
         // De-dupe by name, but prefer the entry that carries a coordinate.
         if seen.contains(name) {
@@ -421,6 +448,36 @@ enum IFFlightPlanParser {
         guard !digits.isEmpty, let n = Int(digits), n >= 1, n <= 36 else { return false }
         let rest = s.dropFirst(digits.count)
         return rest.isEmpty || (rest.count == 1 && rest.allSatisfy { "LRC".contains($0) })
+    }
+
+    /// Normalise a runway token to its bare ident ("RW22R" → "22R", "22R" → "22R").
+    /// Returns nil when the token isn't a runway.
+    static func runwayIdent(from token: String) -> String? {
+        guard isRunwayToken(token) else { return nil }
+        var s = token.uppercased()
+        if s.hasPrefix("RWY") { s = String(s.dropFirst(3)) }
+        else if s.hasPrefix("RW") { s = String(s.dropFirst(2)) }
+        return s.isEmpty ? nil : s
+    }
+
+    /// Record the departure/arrival runways from runway tokens in an ordered fix
+    /// list. The departure runway sits near the start of the route (after the
+    /// field), the arrival runway near the end. With a single token, its position
+    /// decides which end it belongs to (first half → departure, else arrival).
+    private static func captureRunways(from fixes: [Waypoint], into plan: inout FlightPlan) {
+        let indices = fixes.indices.filter { isRunwayToken(fixes[$0].name) }
+        guard let first = indices.first, let last = indices.last else { return }
+        if first == last {
+            let ident = runwayIdent(from: fixes[first].name) ?? ""
+            if first <= fixes.count / 2 {
+                if plan.departureRunway.isEmpty { plan.departureRunway = ident }
+            } else if plan.arrivalRunway.isEmpty {
+                plan.arrivalRunway = ident
+            }
+        } else {
+            if plan.departureRunway.isEmpty { plan.departureRunway = runwayIdent(from: fixes[first].name) ?? "" }
+            if plan.arrivalRunway.isEmpty { plan.arrivalRunway = runwayIdent(from: fixes[last].name) ?? "" }
+        }
     }
 
     /// Recover an altitude in feet from a flight-level / altitude token:

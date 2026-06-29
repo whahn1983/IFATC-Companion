@@ -234,6 +234,56 @@ final class FlightPlanParserTests: XCTestCase {
         XCTAssertNil(IFFlightPlanParser.parse(full: nil, route: nil, coordinates: nil))
     }
 
+    /// The cruise altitude is the final cruise level even when only the TOC/TOD
+    /// display marker carries it — not the highest *enroute fix* altitude (which is
+    /// the climbing level reached just before the top of climb).
+    func testCruiseAltitudeComesFromTOCMarkerNotLastClimbFix() {
+        let json = """
+        { "flightPlanItems": [
+            { "identifier": "KTEB", "altitude": -1, "children": null,
+              "location": { "latitude": 40.85, "longitude": -74.06 } },
+            { "identifier": "SBJ", "altitude": 27800, "children": null,
+              "location": { "latitude": 40.58, "longitude": -74.73 } },
+            { "identifier": "TOC", "altitude": 28000, "children": null,
+              "location": { "latitude": 40.50, "longitude": -75.00 } },
+            { "identifier": "LRP", "altitude": 27800, "children": null,
+              "location": { "latitude": 40.12, "longitude": -76.29 } },
+            { "identifier": "KPHL", "altitude": -1, "children": null,
+              "location": { "latitude": 39.87, "longitude": -75.24 } }
+        ] }
+        """
+        let plan = IFFlightPlanParser.parse(json)
+        XCTAssertEqual(plan?.cruiseAltitude, 28000, "cruise should be the TOC level, not FL278")
+        // …and the TOC marker is still never shown as a waypoint.
+        XCTAssertFalse(plan?.waypoints.map(\.name).contains("TOC") ?? true)
+    }
+
+    /// The departure runway (`DPT RW22R`) and an arrival runway token are recovered
+    /// from the route and never shown as enroute fixes.
+    func testRouteStringRecoversDepartureAndArrivalRunways() {
+        let plan = IFFlightPlanParser.parse("KEWR RW22R MERIT NEION 01R KBOS")
+        XCTAssertEqual(plan?.departureRunway, "22R")
+        XCTAssertEqual(plan?.arrivalRunway, "01R")
+        XCTAssertEqual(plan?.waypoints.map(\.name), ["MERIT", "NEION"])
+    }
+
+    /// A lone departure runway token near the start is recorded as the departure
+    /// runway (not the arrival), and stripped from the fixes.
+    func testRouteStringRecoversDepartureRunwayOnly() {
+        let plan = IFFlightPlanParser.parse("KEWR RW22R MERIT NEION KBOS")
+        XCTAssertEqual(plan?.departureRunway, "22R")
+        XCTAssertTrue(plan?.arrivalRunway.isEmpty ?? false)
+        XCTAssertEqual(plan?.waypoints.map(\.name), ["MERIT", "NEION"])
+    }
+
+    func testRunwayIdentNormalisation() {
+        XCTAssertEqual(IFFlightPlanParser.runwayIdent(from: "RW22R"), "22R")
+        XCTAssertEqual(IFFlightPlanParser.runwayIdent(from: "RWY09"), "09")
+        XCTAssertEqual(IFFlightPlanParser.runwayIdent(from: "30L"), "30L")
+        XCTAssertNil(IFFlightPlanParser.runwayIdent(from: "MERIT"))
+        XCTAssertNil(IFFlightPlanParser.runwayIdent(from: "FL370"))
+    }
+
     func testPseudoWaypointDetection() {
         for marker in ["DPT", "TOC", "TOD", "T/C", "T/D", "DEP", "DEST"] {
             XCTAssertTrue(IFFlightPlanParser.isPseudoWaypoint(marker), "\(marker) should be pseudo")

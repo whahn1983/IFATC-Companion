@@ -63,6 +63,25 @@ final class AppModel: ObservableObject {
     /// start → taxi → ready) should be offered. True until the first departure.
     var isPreDeparture: Bool { !hasDeparted }
 
+    /// The runway in use for the current phase (departure or arrival end), resolved
+    /// from the flight plan / approach / wind. Empty only when nothing is known yet.
+    var activeRunwayDisplay: String { buildContext(for: atcState).runway }
+
+    /// Whether the simulated arrival Ramp (taxi-to-gate) flow applies right now: the
+    /// aircraft has departed and is back on the ground arriving, not yet parked.
+    var isArrivalRamp: Bool {
+        hasDeparted && atcState != .parked
+            && ([.landing, .taxiIn, .parked].contains(phase)
+                || [.runwayExit, .groundArrival].contains(atcState))
+    }
+
+    /// Whether the "Ramp" button should be live: pushback before departure, or the
+    /// taxi-to-gate hand-off on arrival — but never once parked.
+    var canContactRamp: Bool {
+        guard atcState != .parked else { return false }
+        return isPreDeparture || isArrivalRamp
+    }
+
     // Weather state.
     @Published var departureMETAR: METAR?
     @Published var destinationMETAR: METAR?
@@ -70,6 +89,9 @@ final class AppModel: ObservableObject {
     @Published var destinationTAF: TAF?
     @Published var pireps: [PIREP] = []
     @Published var sigmets: [SIGMET] = []
+    /// SIGMETs whose advisory area actually intersects the active route corridor —
+    /// the subset that feeds the ride assessment and the Weather tab's advisory card.
+    @Published var routeSigmets: [SIGMET] = []
     @Published var rideReportItems: [RideReportItem] = []
     @Published var rideAssessment: RideAssessment = .smooth
     @Published var weatherStatus: String = "Not loaded"
@@ -87,6 +109,12 @@ final class AppModel: ObservableObject {
 
     /// Guards the one-time arrival courtesy call at the gate.
     private var arrivalAnnounced = false
+
+    /// True between contacting arrival Ramp (taxi-to-gate cleared) and the aircraft
+    /// actually stopping at the gate with the parking brake set. While true, the
+    /// telemetry loop watches for the gate stop and only then announces the block-in
+    /// / "flight complete" — so the arrival never claims "parked" mid-taxi.
+    private var awaitingGateArrival = false
 
     /// True once the pilot starts changing controllers with the frequency-tune
     /// buttons. While set, the airborne conversation advances only when the pilot
@@ -280,6 +308,7 @@ final class AppModel: ObservableObject {
         stateMachine.reset()
         hasDeparted = false
         arrivalAnnounced = false
+        awaitingGateArrival = false
         atcState = .connectedIdle
         currentFacility = .clearance
         stateMachine.setConnected()
@@ -304,6 +333,7 @@ final class AppModel: ObservableObject {
         stateMachine.reset()
         hasDeparted = false
         arrivalAnnounced = false
+        awaitingGateArrival = false
         currentFacility = .clearance
         if settings.autoDiscover && settings.host.isEmpty {
             connect.startAutoDiscover { [weak self] device in
@@ -367,6 +397,16 @@ final class AppModel: ObservableObject {
         if companionStandby {
             atcState = mapped
             currentFacility = controller(for: mapped)
+            return
+        }
+
+        // After contacting arrival Ramp, hold the "flight complete" block-in until the
+        // aircraft is actually parked at the gate (stopped, parking brake set). This
+        // runs even while manually tuned, since the pilot drove the Ramp call by hand.
+        if awaitingGateArrival {
+            if isParkedAtGate(state) { completeGateArrival() }
+            atcState = stateMachine.current
+            currentFacility = controller(for: stateMachine.current)
             return
         }
 
@@ -675,25 +715,66 @@ final class AppModel: ObservableObject {
         // pilot checks in or makes a request.
     }
 
-    /// Final step of the arrival: the aircraft is parked at the gate. Posts the
-    /// arrival courtesy on Ground; no frequency of its own (the "Ramp" button).
+    /// The "Ramp" button. Context-aware: before departure it contacts Ramp for the
+    /// pushback (Ramp approves the push; Ground then handles the taxi). On arrival it
+    /// contacts Ramp for the taxi-in to the gate. It is never the arrival routine
+    /// during departure (which previously jumped straight to "parked, flight
+    /// complete").
+    func contactRamp() {
+        guard !companionStandby else { return }
+        if isArrivalRamp {
+            arriveAtGate()
+        } else if isPreDeparture,
+                  [.notConnected, .connectedIdle, .clearance, .pushback].contains(stateMachine.current) {
+            // Only at/around the pushback point — a late tap (after engine start/taxi)
+            // must not rewind the flow; the pilot uses Ground for the taxi from there.
+            requestPushback()
+        }
+    }
+
+    /// Arrival Ramp hand-off: the aircraft is clear of the runway and taxiing in, so
+    /// Ramp routes it to the gate. This does NOT announce the block-in — the arrival
+    /// is only declared complete once the aircraft actually stops at the gate with
+    /// the parking brake set (watched in `handle(state:)`).
     func arriveAtGate() {
         guard !companionStandby else { return }
+        guard !arrivalAnnounced else { return }
         manualTuning = true
         hasDeparted = true
-        let c = buildContext(for: .parked)
-        // Simulated arrival Ramp (local/company, non-FAA) entry conversation:
-        // Ground hands off to Ramp at the spot, the pilot checks in inbound, and
-        // Ramp gives a non-movement-area routing to the gate.
-        if !arrivalAnnounced, c.rampProfile.rampType != .none {
+        currentFacility = .ramp
+        let c = buildContext(for: .groundArrival, arrivalOverride: true)
+        // Simulated arrival Ramp (local/company, non-FAA): the pilot checks in
+        // inbound and Ramp gives a non-movement-area routing to the gate.
+        if c.rampProfile.rampType != .none {
             postPilot(rampEngine.arrivalInbound(cs: c.callsign, gate: c.gate))
             post(rampEngine.proceedToGate(cs: c.callsign, gate: c.gate,
                                           via: c.rampProfile.arrivalRampEntryPhrase.contains("inner")
                                                ? "the inner alley" : "the ramp"), speak: true)
         }
+        // Now monitor for the actual gate stop; the block-in fires there, not here.
+        awaitingGateArrival = true
+        atcState = .groundArrival
+        // In mock mode advance the scripted aircraft to the gate so the monitored
+        // block-in plays out (the brake is set in the parked mock state).
+        if settings.mockMode { mock.setPhase(.parked) }
+    }
+
+    /// Whether the aircraft is genuinely parked at the gate: stopped on the ground
+    /// with the parking brake set. Falls back to a full ground stop when the sim
+    /// does not expose the parking brake.
+    private func isParkedAtGate(_ s: AircraftState) -> Bool {
+        let stopped = (s.onGround ?? true) && (s.groundSpeed ?? 0) < 1
+        if let brake = s.parkingBrakeSet { return stopped && brake }
+        return stopped
+    }
+
+    /// Finish the monitored arrival once stopped at the gate: block-in on Ramp and
+    /// the "flight complete" advisory, then settle into the parked state.
+    private func completeGateArrival() {
+        awaitingGateArrival = false
+        let c = buildContext(for: .parked, arrivalOverride: true)
         advanceAndPost(to: .parked, context: c, announceHandoff: false)
         if !arrivalAnnounced { announceArrival(); arrivalAnnounced = true }
-        if settings.mockMode { mock.setPhase(.parked) }
     }
 
     /// Representative physical phase for an ATC state, so the mock telemetry display
@@ -829,6 +910,8 @@ final class AppModel: ObservableObject {
 
         fill(&plan.departure, live.departure)
         fill(&plan.destination, live.destination)
+        fill(&plan.departureRunway, live.departureRunway)
+        fill(&plan.arrivalRunway, live.arrivalRunway)
         fill(&plan.sid, live.sid)
         fill(&plan.star, live.star)
         fill(&plan.approach, live.approach)
@@ -922,11 +1005,14 @@ final class AppModel: ObservableObject {
 
     // MARK: - Context
 
-    private func buildContext(for state: ATCState) -> ATCContext {
+    private func buildContext(for state: ATCState, arrivalOverride: Bool? = nil) -> ATCContext {
         let cs = engine.callsign(airline: flightPlan.airline,
                                  flightNumber: flightPlan.flightNumber,
                                  fallback: flightPlan.callsign)
-        let arrival = [.descent, .approach, .final, .landing, .runwayExit, .groundArrival].contains(state)
+        // Requesting an approach / vectors is inherently an arrival action, so callers
+        // can force the arrival side even if the conversational state hasn't caught up.
+        let arrival = arrivalOverride
+            ?? [.descent, .approach, .final, .landing, .runwayExit, .groundArrival].contains(state)
         let metar = arrival ? destinationMETAR : departureMETAR
         let windDir = metar?.windDirection ?? 270
         let windSpeed = metar?.windSpeed ?? 8
@@ -1010,10 +1096,16 @@ final class AppModel: ObservableObject {
 
     private func resolvedRunway(windDir: Int, windSpeed: Int, arrival: Bool,
                                 approach: Procedure? = nil) -> String {
-        // A parsed approach's runway wins on arrival; otherwise an explicit
-        // flight-plan runway; otherwise pick the real active runway for the field
-        // from the live wind (ATIS-style); otherwise derive one from the wind.
-        if arrival, let rwy = approach?.runway, !rwy.isEmpty { return rwy }
+        // On arrival a parsed approach's runway wins, then the flight plan's arrival
+        // runway; on departure the flight plan's departure runway wins. Either way a
+        // manual override is honored next, then the real active runway for the field
+        // from the live wind (ATIS-style), and finally a wind-derived guess.
+        if arrival {
+            if let rwy = approach?.runway, !rwy.isEmpty { return rwy }
+            if !flightPlan.arrivalRunway.isEmpty { return flightPlan.arrivalRunway }
+        } else if !flightPlan.departureRunway.isEmpty {
+            return flightPlan.departureRunway
+        }
         if !flightPlan.runway.isEmpty { return flightPlan.runway }
         let icao = arrival ? flightPlan.destination : flightPlan.departure
         if let real = runways.activeRunway(for: icao, windDirection: windDir, windSpeed: windSpeed) {
@@ -1188,19 +1280,31 @@ final class AppModel: ObservableObject {
     }
 
     func requestVectors() {
-        let c = buildContext(for: atcState)
+        let c = buildContext(for: atcState, arrivalOverride: true)
         postPilot(pilotEngine.requestVectors(context: c))
         let hdg = Int(aircraftState.heading ?? 270)
+        // Name the approach as "<type> runway <rwy>" (e.g. "ILS runway 01R") rather
+        // than a display name that already embeds the runway, to avoid "… ILS RWY
+        // 01R runway 01R approach".
+        let rwy = c.approachProcedure?.runway ?? c.runway
+        let typeD = c.approachProcedure?.approachType?.display ?? (c.approachName.isEmpty ? "ILS" : c.approachName)
+        let typeS = c.approachProcedure?.approachType?.spoken ?? (c.approachName.isEmpty ? "I L S" : c.approachName)
         let tx = ATCTransmission(sender: .atc, facility: .approach,
-                                 displayText: "\(c.callsign.display), fly heading \(String(format: "%03d", hdg)), vectors for the \(c.approachName) runway \(c.runway) approach.",
-                                 spokenText: "\(c.callsign.spoken), fly heading \(Phonetic.heading(hdg)), vectors for the \(c.approachName) runway \(Phonetic.runway(c.runway)) approach.")
+                                 displayText: "\(c.callsign.display), fly heading \(String(format: "%03d", hdg)), vectors for the \(typeD) runway \(rwy) approach.",
+                                 spokenText: "\(c.callsign.spoken), fly heading \(Phonetic.heading(hdg)), vectors for the \(typeS) runway \(Phonetic.runway(rwy)) approach.")
         post(tx, speak: true)
     }
 
     func requestApproach() {
-        let c = buildContext(for: atcState)
+        let c = buildContext(for: atcState, arrivalOverride: true)
         postPilot(pilotEngine.requestApproach(context: c))
-        post(engine.clearedApproach(cs: c.callsign, approach: flightPlan.approach, runway: c.runway), speak: true)
+        // Prefer the procedure-aware clearance (names the runway once) when the
+        // approach parsed; otherwise fall back to the plain string form.
+        if let approach = c.approachProcedure {
+            post(engine.clearedApproach(cs: c.callsign, procedure: approach, runway: c.runway), speak: true)
+        } else {
+            post(engine.clearedApproach(cs: c.callsign, approach: flightPlan.approach, runway: c.runway), speak: true)
+        }
     }
 
     /// Check in on the currently tuned frequency. Posts the pilot's call-up and the
@@ -1363,6 +1467,7 @@ final class AppModel: ObservableObject {
         routeAnalyzer.config.altitudeBandFt = settings.altitudeBandFt
         guard let pos = aircraftState.coordinate ?? airports.coordinate(for: flightPlan.departure) else {
             rideReportItems = []
+            routeSigmets = []
             return
         }
         let end = airports.coordinate(for: flightPlan.destination)
@@ -1374,7 +1479,10 @@ final class AppModel: ObservableObject {
                                                         nearestFix: nearestFix)
         let arrivalPhase = [.descent, .approach, .landing, .taxiIn, .parked].contains(phase)
         let nearMETAR = arrivalPhase ? (destinationMETAR ?? departureMETAR) : (departureMETAR ?? destinationMETAR)
-        rideAssessment = turbulenceModel.assess(items: rideReportItems, sigmets: sigmets,
+        // Only SIGMETs whose area lies along the route may raise the ride index — a
+        // nationwide turbulence advisory far from the route must not read as "severe".
+        routeSigmets = routeAnalyzer.relevantSigmets(sigmets, position: pos, routeEnd: end)
+        rideAssessment = turbulenceModel.assess(items: rideReportItems, sigmets: routeSigmets,
                                                 metar: nearMETAR, altitudeFt: alt)
     }
 
@@ -1407,6 +1515,7 @@ final class AppModel: ObservableObject {
         assignedAltitude = 0
         hasDeparted = false
         arrivalAnnounced = false
+        awaitingGateArrival = false
         lastSpokenText = ""
         lastSpokenIntent = nil
         phase = .preflight

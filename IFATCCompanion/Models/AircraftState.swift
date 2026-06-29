@@ -19,6 +19,10 @@ struct AircraftState: Equatable {
     /// exposed. Used to detect the aircraft is established on the approach so the
     /// "cleared … approach" call can be issued before the Tower hand-off.
     var approachModeEngaged: Bool?
+    /// Parking brake state, read from Infinite Flight when exposed. Used to confirm
+    /// the aircraft is actually parked at the gate (brake set) before the arrival is
+    /// announced complete. `nil` when the sim/version doesn't expose it.
+    var parkingBrakeSet: Bool?
     var gForce: Double?
     var bankAngle: Double?
     var pitch: Double?
