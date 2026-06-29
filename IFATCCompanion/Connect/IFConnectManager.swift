@@ -23,6 +23,11 @@ final class IFConnectManager: ObservableObject {
 
     private weak var diagnostics: DiagnosticsStore?
     private var pollTask: Task<Void, Never>?
+    private var discoveryTimeoutTask: Task<Void, Never>?
+
+    /// How long to wait for an Infinite Flight discovery broadcast before giving up
+    /// and pointing the user at manual IP entry.
+    var discoveryTimeout: TimeInterval = 25
 
     /// Pushed live aircraft states (AppModel subscribes).
     var onState: ((AircraftState) -> Void)?
@@ -132,13 +137,29 @@ final class IFConnectManager: ObservableObject {
         connectionState = .discovering
         diagnostics?.log(.connect, "Searching for Infinite Flight on the local network…")
         discovery.start { [weak self] device in
-            self?.diagnostics?.log(.connect, "Discovered \(device.name) at \(device.address):\(device.port)")
-            self?.discovery.stop()
+            guard let self else { return }
+            self.discoveryTimeoutTask?.cancel()
+            self.discoveryTimeoutTask = nil
+            self.diagnostics?.log(.connect, "Discovered \(device.name) at \(device.address):\(device.port)")
+            self.discovery.stop()
             onFound(device)
+        }
+        discoveryTimeoutTask?.cancel()
+        discoveryTimeoutTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(nanoseconds: UInt64(self.discoveryTimeout * 1_000_000_000))
+            guard !Task.isCancelled, case .discovering = self.connectionState else { return }
+            self.discovery.stop()
+            let message = "No Infinite Flight found on the network. Check that Infinite Flight is running with the Connect API enabled and that both devices are on the same Wi-Fi, or enter the iPad's IP manually in Settings."
+            self.connectionState = .failed(message)
+            self.lastError = message
+            self.diagnostics?.log(.connect, "Auto-discovery timed out after \(Int(self.discoveryTimeout))s.")
         }
     }
 
     func stopAutoDiscover() {
+        discoveryTimeoutTask?.cancel()
+        discoveryTimeoutTask = nil
         discovery.stop()
         if case .discovering = connectionState { connectionState = .disconnected }
     }
