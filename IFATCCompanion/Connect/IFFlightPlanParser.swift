@@ -33,6 +33,81 @@ enum IFFlightPlanParser {
         return parseRouteString(trimmed)
     }
 
+    /// Build a plan from the several flight-plan states Infinite Flight exposes.
+    ///
+    /// `full` (`aircraft/0/flightplan`) is the primary source; on some IF versions it
+    /// is rich JSON (with per-fix coordinates and SID/STAR/approach groups), but on
+    /// others it collapses a long route to a handful of summary legs. When that
+    /// happens, the textual route (`flightplan/route`) carries every enroute fix, so
+    /// its longer fix list is preferred. Coordinates (`flightplan/coordinates`) are
+    /// attached when they line up 1-for-1 with the recovered fixes.
+    static func parse(full: String?, route: String?, coordinates: String?) -> FlightPlan? {
+        var plan = full.flatMap { parse($0) }
+
+        // Prefer the route string's fix list when it recovers more enroute fixes than
+        // the (possibly summarised) full payload did — but never trade away a richer
+        // payload that already carries per-fix coordinates (the detailed-JSON case)
+        // for a coordinate-less route string.
+        let planHasCoordinates = plan?.waypoints.contains { $0.coordinate != nil } ?? false
+        if let route, let routePlan = parseRouteString(route), !planHasCoordinates {
+            if routePlan.waypoints.count > (plan?.waypoints.count ?? 0) {
+                if var p = plan {
+                    p.waypoints = routePlan.waypoints
+                    if p.departure.isEmpty { p.departure = routePlan.departure }
+                    if p.destination.isEmpty { p.destination = routePlan.destination }
+                    if p.cruiseAltitude <= 0 { p.cruiseAltitude = routePlan.cruiseAltitude }
+                    plan = p
+                } else {
+                    plan = routePlan
+                }
+            }
+        }
+
+        // Attach coordinates to fixes that still lack them, but only when the parsed
+        // coordinate list lines up exactly with the recovered fixes — otherwise a
+        // mismatched list would scatter the route across the map.
+        if let coordinates, var p = plan, !p.waypoints.isEmpty {
+            let coords = parseCoordinateList(coordinates)
+            if coords.count == p.waypoints.count {
+                for i in p.waypoints.indices where p.waypoints[i].coordinate == nil {
+                    p.waypoints[i].latitude = coords[i].lat
+                    p.waypoints[i].longitude = coords[i].lon
+                }
+                plan = p
+            }
+        }
+        return plan
+    }
+
+    /// Parse a flat list of coordinate pairs from the `flightplan/coordinates` state.
+    /// Tolerant of separators: pulls every signed decimal number and pairs them as
+    /// (latitude, longitude). Returns only plausible on-globe pairs.
+    static func parseCoordinateList(_ raw: String) -> [(lat: Double, lon: Double)] {
+        // Pull every signed decimal number out of the payload, whatever separators
+        // (commas, semicolons, whitespace, brackets) IF uses between them.
+        var numbers: [Double] = []
+        var token = ""
+        func flush() { if let d = Double(token) { numbers.append(d) }; token = "" }
+        for ch in raw {
+            if ch == "-" || ch == "." || ch.isNumber {
+                if ch == "-" && !token.isEmpty { flush() }   // a '-' starts a new number
+                token.append(ch)
+            } else { flush() }
+        }
+        flush()
+
+        var pairs: [(lat: Double, lon: Double)] = []
+        var i = 0
+        while i + 1 < numbers.count {
+            let lat = numbers[i], lon = numbers[i + 1]
+            if abs(lat) <= 90, abs(lon) <= 180, lat != 0 || lon != 0 {
+                pairs.append((lat, lon))
+            }
+            i += 2
+        }
+        return pairs
+    }
+
     // MARK: - Route-string parsing
 
     private static func parseRouteString(_ trimmed: String) -> FlightPlan? {

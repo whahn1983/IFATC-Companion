@@ -57,12 +57,38 @@ struct IFConnectStateReader {
         return try? await client.readState(entry).stringValue
     }
 
+    /// The raw flight-plan strings Infinite Flight exposes. Any field may be absent
+    /// depending on the IF version / manifest.
+    struct FlightPlanPayloads {
+        /// `aircraft/0/flightplan` — the full plan (rich JSON on some versions, a
+        /// collapsed summary of the legs on others).
+        var full: String?
+        /// `aircraft/0/flightplan/route` — the textual route (every enroute fix).
+        var route: String?
+        /// `aircraft/0/flightplan/coordinates` — per-fix coordinates.
+        var coordinates: String?
+
+        var isEmpty: Bool { full == nil && route == nil && coordinates == nil }
+    }
+
     /// Read the raw flight-plan string (`aircraft/0/flightplan`), if exposed.
     func readFlightPlanRaw(using client: IFConnectClient) async -> String? {
-        guard let entry = store.entry(for: .flightPlan) else { return nil }
-        let raw = try? await client.readState(entry).stringValue
-        guard let raw, !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-        return raw
+        await readFlightPlanPayloads(using: client).full
+    }
+
+    /// Read every flight-plan-related state Infinite Flight exposes. The detailed
+    /// route/coordinate states are read alongside the summary so a sparse summary can
+    /// be enriched with the full fix list.
+    func readFlightPlanPayloads(using client: IFConnectClient) async -> FlightPlanPayloads {
+        func read(_ logical: IFStateMappingStore.Logical) async -> String? {
+            guard let entry = store.entry(for: logical) else { return nil }
+            let raw = try? await client.readState(entry).stringValue
+            guard let raw, !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            return raw
+        }
+        return FlightPlanPayloads(full: await read(.flightPlan),
+                                  route: await read(.flightPlanRoute),
+                                  coordinates: await read(.flightPlanCoordinates))
     }
 
     /// Read multiplayer / ATC-staffing context, if exposed. All signals optional.

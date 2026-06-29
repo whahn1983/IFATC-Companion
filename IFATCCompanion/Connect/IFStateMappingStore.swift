@@ -30,6 +30,14 @@ final class IFStateMappingStore {
         case callsign
         /// Full flight plan as a string (`aircraft/0/flightplan`), parsed best-effort.
         case flightPlan
+        /// The textual route (`aircraft/0/flightplan/route`). Across IF versions the
+        /// `flightplan` state often serves only a collapsed summary of the legs, while
+        /// the route string carries every enroute fix — so it is read as a richer
+        /// fallback when the summary is sparse.
+        case flightPlanRoute
+        /// Per-fix coordinates (`aircraft/0/flightplan/coordinates`), read so the
+        /// route can be drawn even when the summary carries no coordinates.
+        case flightPlanCoordinates
         // Multiplayer / ATC-staffing detection (all optional; coverage varies).
         case atcActive
         case atcFacilityName
@@ -61,6 +69,8 @@ final class IFStateMappingStore {
             case .nearestAirportICAO: return ["nearestairporticao", "nearestairport"]
             case .callsign: return ["callsign", "username", "displayname"]
             case .flightPlan: return ["flightplan", "flightplanstring", "fpl"]
+            case .flightPlanRoute: return ["flightplanroute", "planroute"]
+            case .flightPlanCoordinates: return ["flightplancoordinates", "plancoordinates"]
             case .atcActive: return ["isatcactive", "atcactive", "atcisactive", "controlleractive"]
             case .atcFacilityName: return ["activeatcfacilityname", "atcfacilityname", "controllerfacility", "atcfacilit", "atcname"]
             case .atcFacilityCount: return ["activeatcfacilitycount", "atcfacilitycount", "activeatccount", "atccount"]

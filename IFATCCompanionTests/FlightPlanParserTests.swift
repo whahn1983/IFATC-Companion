@@ -92,6 +92,59 @@ final class FlightPlanParserTests: XCTestCase {
         XCTAssertEqual(plan?.cruiseAltitude, 37000)
     }
 
+    // MARK: - Multi-state combining (full + route + coordinates)
+
+    /// When `aircraft/0/flightplan` collapses the route to a sparse summary, the
+    /// textual `flightplan/route` state's longer fix list is preferred — this is the
+    /// real-device case where the summary yielded only SBJ→LRP.
+    func testRouteStringEnrichesSparseSummary() {
+        let full = #"{ "Waypoints": ["KTEB", "DPT", "SBJ", "TOC", "LRP", "TOD", "KPHL"] }"#
+        let route = "KTEB SBJ WHITE ARD LRP MXE KPHL"
+        let plan = IFFlightPlanParser.parse(full: full, route: route, coordinates: nil)
+        XCTAssertEqual(plan?.departure, "KTEB")
+        XCTAssertEqual(plan?.destination, "KPHL")
+        XCTAssertEqual(plan?.waypoints.map(\.name), ["SBJ", "WHITE", "ARD", "LRP", "MXE"])
+    }
+
+    /// A richer `full` payload is not discarded just because a route state exists:
+    /// the route only wins when it recovers *more* fixes.
+    func testRicherFullPayloadIsNotReplacedByShorterRoute() {
+        let route = "KTEB SBJ KPHL"   // only one enroute fix
+        let plan = IFFlightPlanParser.parse(full: detailedJSON, route: route, coordinates: nil)
+        XCTAssertEqual(plan?.waypoints.map(\.name), ["WHITE", "SBJ", "ARD", "LRP", "MXE", "PESKS"])
+        XCTAssertEqual(plan?.sid, "RUUDY6")
+    }
+
+    /// Coordinates are attached to fixes when the parsed pair count matches.
+    func testCoordinatesAttachedWhenCountMatches() {
+        let full = #"{ "Waypoints": ["KTEB", "SBJ", "LRP", "KPHL"] }"#
+        let coords = "40.58, -74.73; 40.12, -76.29"   // two enroute fixes
+        let plan = IFFlightPlanParser.parse(full: full, route: nil, coordinates: coords)
+        XCTAssertEqual(plan?.waypoints.count, 2)
+        XCTAssertTrue(plan?.waypoints.allSatisfy { $0.coordinate != nil } ?? false)
+    }
+
+    /// A mismatched coordinate list is ignored rather than scattering the route.
+    func testMismatchedCoordinatesIgnored() {
+        let full = #"{ "Waypoints": ["KTEB", "SBJ", "LRP", "KPHL"] }"#
+        let coords = "40.58, -74.73"   // only one pair for two fixes
+        let plan = IFFlightPlanParser.parse(full: full, route: nil, coordinates: coords)
+        XCTAssertEqual(plan?.waypoints.count, 2)
+        XCTAssertTrue(plan?.waypoints.allSatisfy { $0.coordinate == nil } ?? false)
+    }
+
+    func testParseCoordinateList() {
+        let pairs = IFFlightPlanParser.parseCoordinateList("40.58, -74.73; 40.12, -76.29")
+        XCTAssertEqual(pairs.count, 2)
+        XCTAssertEqual(pairs[0].lat, 40.58, accuracy: 0.0001)
+        XCTAssertEqual(pairs[0].lon, -74.73, accuracy: 0.0001)
+        XCTAssertEqual(pairs[1].lon, -76.29, accuracy: 0.0001)
+    }
+
+    func testCombiningAllNilReturnsNil() {
+        XCTAssertNil(IFFlightPlanParser.parse(full: nil, route: nil, coordinates: nil))
+    }
+
     func testPseudoWaypointDetection() {
         for marker in ["DPT", "TOC", "TOD", "T/C", "T/D", "DEP", "DEST"] {
             XCTAssertTrue(IFFlightPlanParser.isPseudoWaypoint(marker), "\(marker) should be pseudo")
