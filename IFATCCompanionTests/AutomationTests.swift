@@ -64,7 +64,7 @@ final class AutomationTests: XCTestCase {
              {"name":"KKILR","identifier":"KKILR","altitude":11000,"location":{"Latitude":43.0,"Longitude":-93.5}}
           ]},
           {"name":"ILS 30L","children":[
-             {"name":"FAF30L","identifier":"FAF30L","location":{"Latitude":44.5,"Longitude":-93.3}}
+             {"name":"FAF30L","identifier":"FAF30L","altitude":3000,"location":{"Latitude":44.5,"Longitude":-93.3}}
           ]},
           {"name":"KMSP","identifier":"KMSP","location":{"Latitude":44.88,"Longitude":-93.22}}
         ]}
@@ -76,8 +76,21 @@ final class AutomationTests: XCTestCase {
         XCTAssertEqual(plan?.star, "KKILR1")
         XCTAssertEqual(plan?.approach, "ILS 30L")
         XCTAssertEqual(plan?.cruiseAltitude, 37000)
+        XCTAssertEqual(plan?.approachInterceptAltitude, 3000,
+                       "intercept altitude should be the first altitude in the approach section")
         XCTAssertTrue(plan?.waypoints.contains { $0.name == "WAGON" } ?? false)
         XCTAssertNotNil(plan?.waypoints.first?.coordinate, "JSON fixes should carry coordinates")
+    }
+
+    // MARK: - Live unit conversion
+
+    /// Infinite Flight reports speeds and vertical speed in m/s; the app expects
+    /// knots and feet-per-minute. (The bug showed ~half the real knots and never
+    /// detected descents.)
+    func testLiveSpeedAndVerticalSpeedUnitConversion() {
+        XCTAssertEqual(158.0 * IFConnectStateReader.metresPerSecondToKnots, 307, accuracy: 1.5)
+        XCTAssertEqual(128.0 * IFConnectStateReader.metresPerSecondToKnots, 249, accuracy: 1.5)
+        XCTAssertEqual(-9.0 * IFConnectStateReader.metresPerSecondToFeetPerMinute, -1772, accuracy: 5)
     }
 
     // MARK: - Runway line-up detection

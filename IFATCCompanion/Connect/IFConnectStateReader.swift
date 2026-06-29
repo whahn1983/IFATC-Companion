@@ -28,12 +28,18 @@ struct IFConnectStateReader {
         s.longitude = await double(.longitude)
         s.altitudeMSL = await double(.altitudeMSL)
         s.altitudeAGL = await double(.altitudeAGL)
-        s.groundSpeed = await double(.groundSpeed)
-        s.indicatedAirspeed = await double(.indicatedAirspeed)
-        s.trueAirspeed = await double(.trueAirspeed)
+        // Infinite Flight reports speeds in metres per second and vertical speed in
+        // m/s; the app's models (and the mock feed) use knots and feet-per-minute.
+        // Convert here so the Flight tab, phase detection (climb/descent thresholds)
+        // and line-up/roll detection all see the expected units. (Without this,
+        // groundspeed read ~half the real knots and descents were never detected,
+        // so the phase stayed "Cruise" on the way down.)
+        s.groundSpeed = (await double(.groundSpeed)).map { $0 * IFConnectStateReader.metresPerSecondToKnots }
+        s.indicatedAirspeed = (await double(.indicatedAirspeed)).map { $0 * IFConnectStateReader.metresPerSecondToKnots }
+        s.trueAirspeed = (await double(.trueAirspeed)).map { $0 * IFConnectStateReader.metresPerSecondToKnots }
         s.heading = (await double(.heading)).map(IFConnectStateReader.normalizeAngle)
         s.track = (await double(.track)).map(IFConnectStateReader.normalizeAngle)
-        s.verticalSpeed = await double(.verticalSpeed)
+        s.verticalSpeed = (await double(.verticalSpeed)).map { $0 * IFConnectStateReader.metresPerSecondToFeetPerMinute }
         s.onGround = await bool(.onGround)
         s.approachModeEngaged = await bool(.approachMode)
         s.gForce = await double(.gForce)
@@ -82,6 +88,11 @@ struct IFConnectStateReader {
                                online: await bool(.isOnline),
                                serverName: await string(.serverName))
     }
+
+    /// Metres-per-second → knots (Infinite Flight reports speeds in m/s).
+    static let metresPerSecondToKnots = 1.943_844
+    /// Metres-per-second → feet-per-minute (vertical speed).
+    static let metresPerSecondToFeetPerMinute = 196.850_4
 
     /// IF often reports heading/track in radians; normalize to 0–360 degrees.
     static func normalizeAngle(_ value: Double) -> Double {

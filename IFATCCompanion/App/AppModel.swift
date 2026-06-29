@@ -415,9 +415,18 @@ final class AppModel: ObservableObject {
         // position. The flow only ever moves forward (never bounces back to an
         // earlier state while the phase detector flickers). Pilot read-backs and
         // check-ins stay manual.
+        let previousState = stateMachine.current
         let target = adjustedAirborneTarget(mapped: mapped, state: state)
         if isForward(target) {
             advanceAndPost(to: target, context: buildContext(for: target), automatic: true)
+            // Once the approach is cleared and the aircraft is established, Approach
+            // hands the pilot to Tower (instruction first, then the hand-off — the
+            // reverse of the usual "contact … then instruction" order, so it is
+            // posted explicitly here rather than via the generic facility-change
+            // hand-off, which the .final → .landing step then suppresses).
+            if previousState != .final, stateMachine.current == .final {
+                announceApproachToTowerHandoff()
+            }
         }
 
         // One-time arrival courtesy once stopped at the gate.
@@ -485,8 +494,11 @@ final class AppModel: ObservableObject {
         // repeat it here. When the pilot tuned the frequency themselves, the
         // controller does not say "contact …" either.
         let firstContact = previous == .notConnected || previous == .connectedIdle
-        if announceHandoff, !firstContact, previous != .runwayExit, fromFacility != toFacility,
-           toFacility != .clearance, toFacility != .ramp, lastATCTransmission != nil {
+        // The Approach → Tower hand-off is issued explicitly when the approach is
+        // cleared (established), so don't repeat it when .final advances to .landing.
+        if announceHandoff, !firstContact, previous != .runwayExit, previous != .final,
+           fromFacility != toFacility, toFacility != .clearance, toFacility != .ramp,
+           lastATCTransmission != nil {
             post(engine.handoff(cs: c.callsign, from: fromFacility, to: toFacility,
                                 frequency: frequency(for: toFacility, context: c)), speak: speak)
         }
@@ -714,9 +726,22 @@ final class AppModel: ObservableObject {
             return .initialClimb
         }
 
+        // Top of descent: leaving cruise, Center issues the descend-via-STAR
+        // (or plain descend) first, before any Approach hand-off.
+        if [.cruise, .center, .topOfDescent].contains(stateMachine.current),
+           mapped == .descent || mapped == .approach {
+            return .descent
+        }
+
+        // Descending through the TRACON ceiling (FL180), or arriving in the
+        // terminal area, Center hands the aircraft to Approach.
+        if stateMachine.current == .descent, mapped == .descent || mapped == .approach {
+            return (mapped == .approach || alt < ceiling - 200) ? .approach : .descent
+        }
+
         // Approach clears the approach once the aircraft is established — autopilot
-        // approach mode (APPR) engaged or lined up on final — before the Tower
-        // hand-off. This must follow the "descend, expect approach" call (.approach).
+        // approach mode (APPR) engaged or lined up on final and wings level — before
+        // the Tower hand-off. This must follow the "descend, expect approach" call.
         if stateMachine.current == .approach, isEstablishedOnApproach(state, runway: runway) {
             return .final
         }
@@ -747,7 +772,12 @@ final class AppModel: ObservableObject {
     private func isEstablishedOnApproach(_ s: AircraftState, runway: String) -> Bool {
         guard !(s.onGround ?? false) else { return false }
         if s.approachModeEngaged == true { return true }
-        return lineupDetector.isOnFinalApproach(state: s, runway: runway)
+        guard lineupDetector.isOnFinalApproach(state: s, runway: runway) else { return false }
+        // Lined up with the runway and not still turning onto final (wings roughly
+        // level). Bank is reported in degrees; if a build reports radians the check
+        // simply never trips and the line-up test alone governs.
+        if let bank = s.bankAngle, abs(bank) > 6 { return false }
+        return true
     }
 
     /// Whether the aircraft is on short final (airborne, low, descending).
@@ -756,6 +786,14 @@ final class AppModel: ObservableObject {
         let agl = s.altitudeAGL ?? (s.altitudeMSL ?? 0)
         let vs = s.verticalSpeed ?? 0
         return agl < 1500 && vs < -100
+    }
+
+    /// After the approach is cleared (aircraft established), Approach hands the
+    /// pilot off to Tower for the landing clearance.
+    private func announceApproachToTowerHandoff() {
+        let c = buildContext(for: .final)
+        post(engine.handoff(cs: c.callsign, from: .approach, to: .tower,
+                            frequency: c.towerFrequency), speak: true)
     }
 
     /// Arrival block-in once stopped at the gate. Emits the simulated Ramp
@@ -794,6 +832,10 @@ final class AppModel: ObservableObject {
         // Cruise altitude (from the plan's TOC / highest planned level).
         if (!manual || plan.cruiseAltitude <= 0), live.cruiseAltitude > 0 {
             plan.cruiseAltitude = live.cruiseAltitude
+        }
+        // Approach intercept altitude (first altitude in the approach section).
+        if (!manual || plan.approachInterceptAltitude <= 0), live.approachInterceptAltitude > 0 {
+            plan.approachInterceptAltitude = live.approachInterceptAltitude
         }
         flightPlan = plan
 
@@ -839,7 +881,7 @@ final class AppModel: ObservableObject {
             assignedAltitude = c.traconCeiling > 0 ? c.traconCeiling : max(c.assignedAltitude, c.initialClimbAltitude)
         case .climb, .cruise: assignedAltitude = c.cruiseAltitude
         case .descent: assignedAltitude = ATCStateMachine.descentTargetAltitude(context: c)
-        case .approach: assignedAltitude = 3000
+        case .approach: assignedAltitude = c.approachInterceptAltitude > 0 ? c.approachInterceptAltitude : 3000
         default: break
         }
     }
@@ -951,6 +993,7 @@ final class AppModel: ObservableObject {
             departureHeading: ((depHeading % 360) + 360) % 360,
             firstFixName: firstWaypoint?.name ?? "",
             traconCeiling: currentTraconCeiling,
+            approachInterceptAltitude: flightPlan.approachInterceptAltitude,
             sidProcedure: sidProc,
             starProcedure: starProc,
             approachProcedure: approachProc)

@@ -45,6 +45,15 @@ final class ReadbackGateTests: XCTestCase {
         model.reportReadyForDeparture(); model.readBack()
     }
 
+    /// Feed a phase a few times, reading back whenever the gate closes, so the
+    /// automatic flow settles on the call(s) that phase produces.
+    private func feedUntilSettled(_ model: AppModel, _ phase: FlightPhase, ticks: Int = 4) {
+        for _ in 0..<ticks {
+            model.ingestStateForTesting(model.mock.state(for: phase))
+            if model.awaitingReadback { model.readBack() }
+        }
+    }
+
     func testAutomaticCallsHoldForReadbackAndDoNotPileUp() {
         let model = makeLiveModel()
         driveToLineUp(model)
@@ -89,5 +98,30 @@ final class ReadbackGateTests: XCTestCase {
         }
         XCTAssertTrue(contains(model, "contact Center", sender: .atc),
                       "Departure should hand off to Center through the climb")
+    }
+
+    /// The arrival produces, in order: Center's descend-via-STAR at top of descent,
+    /// the Center→Approach hand-off descending through the ceiling, the cleared
+    /// approach once established, and the Approach→Tower hand-off.
+    func testArrivalDescendViaStarApproachAndTowerHandoffs() {
+        let model = makeLiveModel()
+        model.flightPlan.star = "KKILR"
+        model.flightPlan.approach = "ILS 30L"
+
+        driveToLineUp(model)
+        model.ingestStateForTesting(model.mock.state(for: .takeoff)); model.readBack()
+        feedUntilSettled(model, .climb)
+        feedUntilSettled(model, .cruise)
+        feedUntilSettled(model, .descent)
+        feedUntilSettled(model, .approach)
+
+        XCTAssertTrue(contains(model, "descend via the KKILR arrival", sender: .atc),
+                      "top of descent should produce the descend-via-STAR call")
+        XCTAssertTrue(contains(model, "contact Approach", sender: .atc),
+                      "Center should hand off to Approach through the ceiling")
+        XCTAssertTrue(contains(model, "cleared ILS RWY 30L approach", sender: .atc),
+                      "Approach should clear the approach once established")
+        XCTAssertTrue(contains(model, "contact Tower", sender: .atc),
+                      "Approach should hand off to Tower once established")
     }
 }

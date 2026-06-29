@@ -29,6 +29,9 @@ struct FlightPlan: Equatable, Codable {
     var sid: String = ""
     var star: String = ""
     var approach: String = ""
+    /// Intercept/initial altitude (ft MSL) for the approach — the first altitude in
+    /// the approach section of the flight plan when known, else 0 (callers default).
+    var approachInterceptAltitude: Int = 0
     var waypoints: [Waypoint] = []
 
     /// Source of truth flag — when true, fields were entered manually and should

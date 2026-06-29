@@ -104,8 +104,15 @@ enum IFFlightPlanParser {
                 // after is the STAR. The departure airport doesn't count as enroute.
                 let hadEnrouteFix = fixes.contains { !isICAO($0.name) }
                 classifyProcedure(name: name, into: &plan, hasFixesBefore: hadEnrouteFix)
-                for child in children {
+                let isApproach = isApproachName(name)
+                for (i, child) in children.enumerated() {
                     appendFix(child, to: &fixes, maxAltitude: &maxAltitude, seen: &seen)
+                    // The intercept altitude is the first altitude in the approach
+                    // section of the flight plan.
+                    if isApproach, i == 0, let dict = child as? [String: Any],
+                       let alt = plannedAltitude(in: dict) {
+                        plan.approachInterceptAltitude = alt
+                    }
                 }
             } else {
                 appendFix(item, to: &fixes, maxAltitude: &maxAltitude, seen: &seen)
@@ -180,14 +187,18 @@ enum IFFlightPlanParser {
                               altitude: alt.map(Double.init)))
     }
 
+    /// Whether a procedure group name denotes an instrument/visual approach.
+    private static func isApproachName(_ name: String) -> Bool {
+        let upper = name.uppercased()
+        return ["ILS", "RNAV", "RNP", "VOR", "GPS", "LOC", "NDB", "VISUAL", "APP"]
+            .contains { upper.contains($0) }
+    }
+
     /// Record a SID/STAR/approach name onto the plan from a procedure grouping.
     private static func classifyProcedure(name: String, into plan: inout FlightPlan,
                                           hasFixesBefore: Bool) {
         guard !name.isEmpty else { return }
-        let upper = name.uppercased()
-        let isApproach = ["ILS", "RNAV", "RNP", "VOR", "GPS", "LOC", "NDB", "VISUAL", "APP"]
-            .contains { upper.contains($0) }
-        if isApproach {
+        if isApproachName(name) {
             if plan.approach.isEmpty { plan.approach = name }
         } else if !hasFixesBefore {
             // First procedure, near the departure → SID.
