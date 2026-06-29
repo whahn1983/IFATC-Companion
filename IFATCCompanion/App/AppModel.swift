@@ -81,14 +81,11 @@ final class AppModel: ObservableObject {
     /// Guards the one-time arrival courtesy call at the gate.
     private var arrivalAnnounced = false
 
-    /// Drives the position-triggered controller calls in mock mode. After the
-    /// pilot reports ready for departure, this plays out the automatic callouts
-    /// (takeoff clearance → hand-offs → climb/descent → approach → taxi-in) on a
-    /// realistic cadence, standing in for the live position telemetry.
-    private var mockAutopilotTask: Task<Void, Never>?
-
-    /// Pause between automatic controller callouts in mock mode (seconds).
-    private static let mockAutoPauseSeconds: Double = 4
+    /// True once the pilot starts changing controllers with the frequency-tune
+    /// buttons. While set, the airborne conversation advances only when the pilot
+    /// tunes a frequency — automatic, telemetry-driven controller calls are
+    /// suppressed so messages never play one after another without waiting.
+    @Published private(set) var manualTuning = false
 
     init() {
         let settings = AppSettings()
@@ -223,8 +220,7 @@ final class AppModel: ObservableObject {
 
     func startMock() {
         connect.disconnect()
-        mockAutopilotTask?.cancel()
-        mockAutopilotTask = nil
+        manualTuning = false
         stateMachine.reset()
         hasDeparted = false
         arrivalAnnounced = false
@@ -245,8 +241,7 @@ final class AppModel: ObservableObject {
 
     func startLive() {
         mock.stop()
-        mockAutopilotTask?.cancel()
-        mockAutopilotTask = nil
+        manualTuning = false
         stateMachine.reset()
         hasDeparted = false
         arrivalAnnounced = false
@@ -321,7 +316,7 @@ final class AppModel: ObservableObject {
         // automatically here is the takeoff clearance, once the aircraft is lined
         // up on the runway — Tower does not wait for a pilot prompt for that.
         if !hasDeparted {
-            if stateMachine.current == .lineUpWait, !settings.mockMode,
+            if stateMachine.current == .lineUpWait, !settings.mockMode, !manualTuning,
                isReadyForTakeoffClearance(state: state) {
                 autoIssueTakeoffClearance()
             } else if !mapped.isManualGroundFlow {
@@ -335,10 +330,20 @@ final class AppModel: ObservableObject {
             return
         }
 
-        // --- Airborne / arrival (automatic, telemetry-driven controller calls) ---
-        // Controller callouts (hand-offs, climb/descent, approach, landing, taxi-in)
-        // are issued automatically as the aircraft reaches each position. Pilot
-        // read-backs and check-ins stay manual (the response buttons).
+        // --- Airborne / arrival ---
+        // When the pilot is changing controllers manually with the frequency
+        // buttons, the conversation advances only on a button press. Keep the
+        // position/phase display fresh, but do not auto-issue controller calls —
+        // that is what makes the calls pile up "one after the next".
+        if manualTuning {
+            atcState = stateMachine.current
+            currentFacility = controller(for: stateMachine.current)
+            return
+        }
+
+        // Otherwise controller callouts (hand-offs, climb/descent, approach,
+        // landing, taxi-in) are issued automatically as the aircraft reaches each
+        // position. Pilot read-backs and check-ins stay manual.
         let target = adjustedAirborneTarget(mapped: mapped, state: state)
         advanceAndPost(to: target, context: buildContext(for: target))
 
@@ -383,7 +388,8 @@ final class AppModel: ObservableObject {
 
     /// Advance the state machine and post the resulting controller call, preceding
     /// it with a "contact …" handoff whenever the controlling facility changes.
-    private func advanceAndPost(to target: ATCState, context c: ATCContext, speak: Bool = true) {
+    private func advanceAndPost(to target: ATCState, context c: ATCContext,
+                                speak: Bool = true, announceHandoff: Bool = true) {
         let previous = stateMachine.current
         guard let tx = stateMachine.advance(to: target, context: c) else {
             atcState = stateMachine.current
@@ -395,9 +401,10 @@ final class AppModel: ObservableObject {
         // Announce a handoff only between two established controllers (not the very
         // first contact, and not Clearance which is the initial call-up). The
         // runway-exit call already tells the pilot to contact Ground, so suppress
-        // the duplicate hand-off when leaving that state.
+        // the duplicate hand-off when leaving that state. When the pilot tuned the
+        // frequency themselves, the controller does not say "contact …" either.
         let firstContact = previous == .notConnected || previous == .connectedIdle
-        if !firstContact, previous != .runwayExit, fromFacility != toFacility,
+        if announceHandoff, !firstContact, previous != .runwayExit, fromFacility != toFacility,
            toFacility != .clearance, lastATCTransmission != nil {
             post(engine.handoff(cs: c.callsign, from: fromFacility, to: toFacility,
                                 frequency: frequency(for: toFacility, context: c)), speak: speak)
@@ -425,64 +432,108 @@ final class AppModel: ObservableObject {
         advanceAndPost(to: .towerDeparture, context: buildContext(for: .towerDeparture))
     }
 
-    /// Drive the position-triggered controller calls in mock mode. Called once the
-    /// pilot reports ready for departure: it stands in for the missing live
-    /// telemetry by playing the automatic callouts (takeoff clearance through
-    /// arrival) one at a time on a realistic pause. The pilot still reads back and
-    /// checks in manually with the response buttons between calls.
-    ///
-    /// Each callout waits for the previous transmission to finish being spoken
-    /// before pacing the next one. Without that gate the speech synthesizer simply
-    /// queues every call and plays them back-to-back — so the calls appear to fire
-    /// "all at once" with no pause for the pilot to read back.
-    private func startMockAutopilot() {
-        guard settings.mockMode else { return }
-        mockAutopilotTask?.cancel()
-        // The autopilot now owns mock emissions, so stop the free-running feed to
-        // avoid re-emitting a phase and oscillating between adjacent ATC states.
-        mock.stop()
-        let pause = UInt64(Self.mockAutoPauseSeconds * 1_000_000_000)
-        // One emission per controller callout, departure through arrival. The
-        // approach and landing phases are emitted twice because each walks two
-        // states (expect → cleared approach; cleared to land → exit runway).
-        let script: [FlightPhase] = [
-            .takeoff,        // cleared for takeoff (after the runway "pause")
-            .initialClimb,   // contact Departure + departure climb
-            .climb,          // contact Center + climb to cruise
-            .cruise,         // radar contact
-            .descent,        // descend via the arrival
-            .approach,       // expect approach
-            .approach,       // cleared approach
-            .landing,        // cleared to land
-            .landing,        // exit the runway, contact Ground
-            .taxiIn,         // taxi to parking
-            .parked          // arrival courtesy
-        ]
-        mockAutopilotTask = Task { [weak self] in
-            for nextPhase in script {
-                guard let self, !Task.isCancelled, self.settings.mockMode else { return }
-                // Let the previous controller call finish being spoken so the next
-                // one doesn't talk over it / pile up in the speech queue.
-                await self.waitForSpeechToFinish()
-                // A realistic beat for the pilot to read back the last instruction.
-                try? await Task.sleep(nanoseconds: pause)
-                guard !Task.isCancelled, self.settings.mockMode else { return }
-                // If the pilot began a read-back during that beat, let it finish
-                // before the controller speaks again.
-                await self.waitForSpeechToFinish()
-                guard !Task.isCancelled, self.settings.mockMode else { return }
-                self.mock.setPhase(nextPhase)
-            }
-        }
+    // MARK: - Manual frequency tuning
+
+    /// Facilities the pilot can tune to with a button, in the order they're worked
+    /// across a normal flight. The same Ground/Tower button serves both the
+    /// departure and the arrival visit — `tuneTo` advances to whichever call lies
+    /// ahead of the current state.
+    static let tunableFacilities: [ATCFacility] =
+        [.clearance, .ground, .tower, .departure, .center, .approach]
+
+    /// Canonical gate-to-gate order of ATC states, used to pick the next call a
+    /// manually-tuned facility should issue.
+    private static let flowOrder: [ATCState] = [
+        .clearance, .pushback, .engineStart, .groundTaxi, .lineUpWait,
+        .towerDeparture, .initialClimb, .departure, .climb, .cruise, .descent,
+        .approach, .final, .landing, .runwayExit, .groundArrival, .parked
+    ]
+
+    /// The frequency (MHz) a facility is reached on, for display on its button.
+    func frequency(for facility: ATCFacility) -> Double {
+        frequency(for: facility, context: buildContext(for: stateMachine.current))
     }
 
-    /// Suspend until the speech synthesizer is idle (or the task is cancelled), so
-    /// the automatic mock callouts never talk over the previous transmission.
-    /// Returns immediately when voice is disabled (nothing is ever speaking).
-    private func waitForSpeechToFinish() async {
-        while speech.isSpeaking {
-            if Task.isCancelled { return }
-            try? await Task.sleep(nanoseconds: 200_000_000)
+    /// Formatted frequency for a facility's tune button, e.g. "118.300".
+    func frequencyText(for facility: ATCFacility) -> String {
+        String(format: "%.3f", frequency(for: facility))
+    }
+
+    /// Whether the given facility still has a call ahead in the flight, so its
+    /// button is live (e.g. Departure is dimmed once enroute with Center).
+    func canTune(_ facility: ATCFacility) -> Bool {
+        guard let next = nextState(workedBy: facility, after: stateMachine.current) else { return false }
+        return next != stateMachine.current
+    }
+
+    /// The next state worked by `facility`, searching forward from the current
+    /// state. When nothing lies ahead, returns the last state this facility works
+    /// (e.g. Center for a further descent) so a re-tap still issues a sensible call.
+    private func nextState(workedBy facility: ATCFacility, after current: ATCState) -> ATCState? {
+        let order = Self.flowOrder
+        let start = order.firstIndex(of: current).map { $0 + 1 } ?? 0
+        if let ahead = order[start...].first(where: { controller(for: $0) == facility }) {
+            return ahead
+        }
+        return order.last { controller(for: $0) == facility }
+    }
+
+    /// Manually tune the radio to a facility and contact it. Posts the pilot's
+    /// check-in on the new frequency, then the controller's next instruction for
+    /// the current phase. This is how the pilot drives the flight forward: every
+    /// frequency change is a deliberate button press, so the calls never auto-play
+    /// back-to-back without waiting.
+    func tuneTo(_ facility: ATCFacility) {
+        guard !companionStandby else { return }
+        manualTuning = true
+        guard let target = nextState(workedBy: facility, after: stateMachine.current),
+              target != stateMachine.current else {
+            // Already talking to this facility — just confirm the frequency.
+            currentFacility = facility
+            return
+        }
+        if !target.isManualGroundFlow { hasDeparted = true }
+        let c = buildContext(for: target)
+        // The pilot checks in on the freshly tuned frequency. Because the pilot
+        // initiated the switch, the controller does not precede its reply with a
+        // "contact …" hand-off (announceHandoff: false).
+        postPilot(pilotEngine.requestHandoff(context: c, facility: facility))
+        advanceAndPost(to: target, context: c, announceHandoff: false)
+        if target == .parked, !arrivalAnnounced {
+            announceArrival()
+            arrivalAnnounced = true
+        }
+        // Keep the mock telemetry display roughly in step with the tuned phase.
+        if settings.mockMode { mock.setPhase(mockPhase(for: target)) }
+    }
+
+    /// Final step of the arrival: the aircraft is parked at the gate. Posts the
+    /// arrival courtesy on Ground; no frequency of its own (the "Ramp" button).
+    func arriveAtGate() {
+        guard !companionStandby else { return }
+        manualTuning = true
+        hasDeparted = true
+        advanceAndPost(to: .parked, context: buildContext(for: .parked), announceHandoff: false)
+        if !arrivalAnnounced { announceArrival(); arrivalAnnounced = true }
+        if settings.mockMode { mock.setPhase(.parked) }
+    }
+
+    /// Representative physical phase for an ATC state, so the mock telemetry display
+    /// (altitude, position, on-ground) stays believable while tuning manually.
+    private func mockPhase(for state: ATCState) -> FlightPhase {
+        switch state {
+        case .clearance, .pushback, .engineStart: return .preflight
+        case .pushbackTaxi, .groundTaxi, .runwayCrossing, .holdingShort, .lineUpWait: return .taxiOut
+        case .towerDeparture: return .takeoff
+        case .initialClimb, .departure: return .initialClimb
+        case .climb: return .climb
+        case .center, .cruise: return .cruise
+        case .topOfDescent, .descent: return .descent
+        case .approach, .final: return .approach
+        case .landing, .runwayExit: return .landing
+        case .groundArrival: return .taxiIn
+        case .parked: return .parked
+        case .notConnected, .connectedIdle, .abnormal: return phase
         }
     }
 
@@ -898,13 +949,12 @@ final class AppModel: ObservableObject {
         groundFlow(pilotEngine.requestTaxi(context: buildContext(for: .groundTaxi)), to: .groundTaxi)
     }
 
-    /// Report ready for departure. Tower responds "line up and wait"; a second
-    /// tap (or `requestTakeoff`) yields the takeoff clearance.
+    /// Report ready for departure. Tower responds "line up and wait"; tuning the
+    /// Tower frequency (or the Takeoff button) then yields the takeoff clearance,
+    /// and the pilot drives every controller change from there with the frequency
+    /// buttons.
     func reportReadyForDeparture() {
         groundFlow(pilotEngine.readyForDeparture(context: buildContext(for: .lineUpWait)), to: .lineUpWait)
-        // In mock mode there is no live telemetry to detect the line-up, so kick off
-        // the automatic position-triggered callouts (takeoff clearance onward).
-        if settings.mockMode { startMockAutopilot() }
     }
 
     func requestTakeoff() {
@@ -1034,8 +1084,7 @@ final class AppModel: ObservableObject {
     /// plan, then restarts the active feed. Use this between flights so the new
     /// flight does not inherit the previous chat history.
     func clearFlight() {
-        mockAutopilotTask?.cancel()
-        mockAutopilotTask = nil
+        manualTuning = false
         speech.stop()
         transcript.removeAll()
         latestTransmission = nil

@@ -52,8 +52,12 @@ deterministic keyword matching.
 - ✅ **Automatic, position-triggered controller calls** — the takeoff clearance
   fires once lined up (`RunwayLineupDetector`); once airborne, facility hand-offs,
   Departure-to-Center at a configurable TRACON ceiling (FL180),
-  descent/approach/cleared-to-land and taxi-in advance from telemetry. In Mock Mode
-  these play on a short pause (`startMockAutopilot`) after the pilot reports ready.
+  descent/approach/cleared-to-land and taxi-in advance from telemetry.
+- ✅ **Manual frequency tuning** — a **Tune Frequency** card (Clearance, Ground,
+  Tower, Departure, Center, Approach, Ramp) lets the pilot change controllers with
+  a button (`tuneTo`/`arriveAtGate`). The first manual tune sets `manualTuning`,
+  which suppresses the automatic telemetry-driven calls so they no longer play one
+  after the next — the pilot drives every frequency change from then on.
 - ✅ **Clear Flight** — a button on the ATC tab (`clearFlight()`) wipes the
   conversation and ATC/phase state to start a new flight, keeping settings and the
   flight plan.

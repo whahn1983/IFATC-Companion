@@ -103,6 +103,47 @@ struct ActionButton: View {
     }
 }
 
+/// A frequency-tune button: facility name plus the frequency it's reached on,
+/// highlighted while it's the controller currently being worked. Dimmed once the
+/// facility has no further call in the flight.
+struct FrequencyButton: View {
+    var title: String
+    var systemImage: String
+    var frequency: String
+    var active: Bool
+    var enabled: Bool
+    var action: () -> Void
+
+    private var label: some View {
+        VStack(spacing: 4) {
+            Image(systemName: systemImage).font(.title3)
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            Text(frequency)
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(active ? Color.white.opacity(0.9) : .secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        }
+        .frame(maxWidth: .infinity, minHeight: 72)
+        .padding(.vertical, 6)
+    }
+
+    var body: some View {
+        Group {
+            if active {
+                Button(action: action) { label }.buttonStyle(.borderedProminent)
+            } else {
+                Button(action: action) { label }.buttonStyle(.bordered)
+            }
+        }
+        .tint(.accentColor)
+        .disabled(!enabled)
+    }
+}
+
 extension View {
     /// Convenience to apply the standard screen background.
     func screenBackground() -> some View {
