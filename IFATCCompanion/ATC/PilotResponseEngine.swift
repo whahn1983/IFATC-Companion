@@ -21,6 +21,16 @@ struct PilotResponseEngine {
             let display = "Cleared to \(c.plan.destinationName), climb via SID except maintain \(engine.formatAltDisplay(c.initialClimbAltitude)), squawk \(c.squawk), \(cs.display)."
             let spoken = "Cleared to \(engine.spokenAirport(c.plan.destination)), climb via SID except maintain \(Phonetic.altitude(c.initialClimbAltitude, icao: icao)), \(Phonetic.squawk(c.squawk, icao: icao)), \(cs.spoken)."
             return pilot(display, spoken, facility: .clearance)
+        case .pushback:
+            let phrase = icao ? "Push back approved" : "Pushback approved"
+            return pilot("\(phrase), \(cs.display).", "\(phrase), \(cs.spoken).", facility: .ground)
+        case .engineStart:
+            let phrase = icao ? "Start-up approved" : "Start up approved"
+            return pilot("\(phrase), \(cs.display).", "\(phrase), \(cs.spoken).", facility: .ground)
+        case .lineUpWait:
+            return pilot("Runway \(c.runway), line up and wait, \(cs.display).",
+                         "Runway \(Phonetic.runway(c.runway, icao: icao)), line up and wait, \(cs.spoken).",
+                         facility: .tower)
         case .groundTaxi, .pushbackTaxi:
             var display = "Taxi to runway \(c.runway) via \(c.taxiway)"
             var spoken = "Taxi to runway \(Phonetic.runway(c.runway, icao: icao)) via \(Phonetic.spellToken(c.taxiway, icao: icao))"
@@ -92,6 +102,48 @@ struct PilotResponseEngine {
     }
 
     // MARK: - Pilot requests (pilot-initiated transmissions)
+
+    // Departure ground flow — pilot-initiated requests, in order.
+
+    func requestClearance(context c: ATCContext) -> ATCTransmission {
+        let dest = c.plan.destination.isEmpty ? "destination" : c.plan.destinationName
+        let destSpoken = engine.spokenAirport(c.plan.destination)
+        return pilot("Clearance, \(c.callsign.display), request IFR clearance to \(dest).",
+                     "Clearance, \(c.callsign.spoken), request IFR clearance to \(destSpoken).",
+                     facility: .clearance)
+    }
+
+    func requestPushback(context c: ATCContext) -> ATCTransmission {
+        pilot("Ground, \(c.callsign.display), request pushback.",
+              "Ground, \(c.callsign.spoken), request pushback.",
+              facility: .ground)
+    }
+
+    func requestEngineStart(context c: ATCContext) -> ATCTransmission {
+        // ICAO "request start-up"; FAA "request engine start".
+        let phrase = icao ? "request start-up" : "request engine start"
+        return pilot("Ground, \(c.callsign.display), \(phrase).",
+                     "Ground, \(c.callsign.spoken), \(phrase).",
+                     facility: .ground)
+    }
+
+    func requestTaxi(context c: ATCContext) -> ATCTransmission {
+        pilot("Ground, \(c.callsign.display), request taxi.",
+              "Ground, \(c.callsign.spoken), request taxi.",
+              facility: .ground)
+    }
+
+    func readyForDeparture(context c: ATCContext) -> ATCTransmission {
+        pilot("Tower, \(c.callsign.display), holding short runway \(c.runway), ready for departure.",
+              "Tower, \(c.callsign.spoken), holding short runway \(Phonetic.runway(c.runway, icao: icao)), ready for departure.",
+              facility: .tower)
+    }
+
+    func requestTakeoff(context c: ATCContext) -> ATCTransmission {
+        pilot("\(c.callsign.display), ready for departure.",
+              "\(c.callsign.spoken), ready for departure.",
+              facility: .tower)
+    }
 
     func requestHigher(context c: ATCContext, target: Int) -> ATCTransmission {
         pilot("\(c.callsign.display), request \(engine.formatAltDisplay(target)).",

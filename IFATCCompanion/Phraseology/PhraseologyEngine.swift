@@ -157,6 +157,23 @@ struct PhraseologyEngine {
            spoken: "\(cs.spoken), cleared \(procedure.approachType?.spoken ?? "approach") runway \(Phonetic.runway(rwy, icao: icao)) approach.")
     }
 
+    // Ground — pushback approval.
+    func pushbackApproved(cs: Callsign) -> ATCTransmission {
+        // ICAO writes "push back"; FAA writes "pushback".
+        let phrase = icao ? "push back approved" : "pushback approved"
+        return tx(.ground,
+           display: "\(cs.display), \(phrase).",
+           spoken: "\(cs.spoken), \(phrase).")
+    }
+
+    // Ground — engine start-up approval (ICAO "start-up", FAA "start up").
+    func startupApproved(cs: Callsign) -> ATCTransmission {
+        let phrase = icao ? "start-up approved" : "start up approved"
+        return tx(.ground,
+           display: "\(cs.display), \(phrase).",
+           spoken: "\(cs.spoken), \(phrase).")
+    }
+
     // Ground — taxi.
     func taxiToRunway(cs: Callsign, runway: String, via: String, crossing: String?) -> ATCTransmission {
         let crossDisplay = (crossing.map { $0.isEmpty ? "" : ", cross runway \($0)" }) ?? ""

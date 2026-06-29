@@ -70,6 +70,12 @@ final class AppSettings: ObservableObject {
     @Published var voiceDeparture: String { didSet { save(voiceDeparture, .voiceDeparture) } }
     @Published var voiceCenter: String { didSet { save(voiceCenter, .voiceCenter) } }
     @Published var voiceApproach: String { didSet { save(voiceApproach, .voiceApproach) } }
+    /// Voice used for the pilot's own transmissions (readbacks/requests).
+    @Published var voicePilot: String { didSet { save(voicePilot, .voicePilot) } }
+    /// Speak the pilot's readbacks/requests aloud when they are triggered by a
+    /// button/text tap. Push-to-talk input is never re-spoken (the user already
+    /// said it).
+    @Published var speakPilot: Bool { didSet { save(speakPilot, .speakPilot) } }
 
     // Phraseology
     @Published var phraseologyMode: PhraseologyMode { didSet { save(phraseologyMode.rawValue, .phraseologyMode) } }
@@ -117,6 +123,8 @@ final class AppSettings: ObservableObject {
         voiceDeparture = defaults.string(forKey: Key.voiceDeparture.rawValue) ?? ""
         voiceCenter = defaults.string(forKey: Key.voiceCenter.rawValue) ?? ""
         voiceApproach = defaults.string(forKey: Key.voiceApproach.rawValue) ?? ""
+        voicePilot = defaults.string(forKey: Key.voicePilot.rawValue) ?? ""
+        speakPilot = defaults.object(forKey: Key.speakPilot.rawValue) as? Bool ?? true
 
         phraseologyMode = PhraseologyMode(rawValue: defaults.string(forKey: Key.phraseologyMode.rawValue) ?? "") ?? .faa
         digitStyle = CallsignDigitStyle(rawValue: defaults.string(forKey: Key.digitStyle.rawValue) ?? "") ?? .grouped
@@ -153,6 +161,7 @@ final class AppSettings: ObservableObject {
         voiceGround = other.voiceGround; voiceTower = other.voiceTower
         voiceDeparture = other.voiceDeparture; voiceCenter = other.voiceCenter
         voiceApproach = other.voiceApproach
+        voicePilot = other.voicePilot; speakPilot = other.speakPilot
         phraseologyMode = other.phraseologyMode; digitStyle = other.digitStyle
         unicomModeRaw = other.unicomModeRaw
         routeCorridorNM = other.routeCorridorNM; altitudeBandFt = other.altitudeBandFt
@@ -169,6 +178,7 @@ final class AppSettings: ObservableObject {
         case cruiseAltitude, runway, sid, star, approach
         case voiceEnabled, defaultVoiceID, speechRate, speechPitch, respectSilentSwitch
         case voiceGround, voiceTower, voiceDeparture, voiceCenter, voiceApproach
+        case voicePilot, speakPilot
         case phraseologyMode, digitStyle
         case unicomMode
         case routeCorridorNM, altitudeBandFt, weatherBaseURL

@@ -7,6 +7,12 @@ enum PilotIntent: String, CaseIterable, Identifiable {
     case sayAgain
     case unable
     case wilco
+    case requestClearance
+    case requestPushback
+    case requestEngineStart
+    case requestTaxi
+    case readyForDeparture
+    case requestTakeoff
     case requestHigher
     case requestLower
     case requestVectors
@@ -24,6 +30,12 @@ enum PilotIntent: String, CaseIterable, Identifiable {
         case .sayAgain: return "Say Again"
         case .unable: return "Unable"
         case .wilco: return "Wilco"
+        case .requestClearance: return "Request Clearance"
+        case .requestPushback: return "Request Pushback"
+        case .requestEngineStart: return "Request Engine Start"
+        case .requestTaxi: return "Request Taxi"
+        case .readyForDeparture: return "Ready for Departure"
+        case .requestTakeoff: return "Request Takeoff"
         case .requestHigher: return "Request Higher"
         case .requestLower: return "Request Lower"
         case .requestVectors: return "Request Vectors"
@@ -53,6 +65,15 @@ struct PilotIntentParser {
 
         if contains("say again", "repeat that", "repeat last") { return .sayAgain }
         if contains("unable") { return .unable }
+
+        // Departure ground flow (checked before the readback catch-all, which also
+        // matches "taxi"/"runway").
+        if contains("request pushback", "request push back", "ready for push", "pushback", "push back") { return .requestPushback }
+        if contains("request start", "request engine start", "engine start", "start up", "startup", "ready to start") { return .requestEngineStart }
+        if contains("request clearance", "ifr clearance", "request ifr") { return .requestClearance }
+        if contains("request taxi", "ready to taxi", "ready for taxi") { return .requestTaxi }
+        if contains("request takeoff", "request take off", "request departure") { return .requestTakeoff }
+        if contains("ready for departure", "ready for takeoff", "ready for take off", "holding short", "line up and wait", "lining up") { return .readyForDeparture }
         if contains("ride report", "ride reports", "turbulence report", "any chop", "ride along") { return .rideReport }
         if contains("destination weather", "field conditions", "weather at", "atis") { return .destinationWeather }
         if contains("vectors", "vector us", "vector me") { return .requestVectors }

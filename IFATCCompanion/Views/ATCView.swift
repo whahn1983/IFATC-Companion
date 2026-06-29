@@ -175,20 +175,52 @@ struct ATCView: View {
     private var responseButtons: some View {
         Card(title: "Responses", systemImage: "hand.tap") {
             VStack(spacing: 10) {
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3), spacing: 10) {
-                    ActionButton(title: "Read Back", systemImage: "checkmark.circle", tint: .green) { model.readBack() }
-                    ActionButton(title: "Say Again", systemImage: "arrow.uturn.left") { model.sayAgain() }
-                    ActionButton(title: "Unable", systemImage: "xmark.octagon", tint: .red) { model.unable() }
-                    ActionButton(title: "Request Higher", systemImage: "arrow.up") { model.requestHigher() }
-                    ActionButton(title: "Request Lower", systemImage: "arrow.down") { model.requestLower() }
-                    ActionButton(title: "Vectors", systemImage: "arrow.triangle.turn.up.right.diamond") { model.requestVectors() }
-                    ActionButton(title: "Approach", systemImage: "airplane.arrival") { model.requestApproach() }
-                    ActionButton(title: "Ride Report", systemImage: "wind") { model.requestRideReport() }
-                    ActionButton(title: "Dest Wx", systemImage: "cloud.sun") { model.requestDestinationWeather() }
-                    ActionButton(title: "Check In", systemImage: "person.wave.2") { model.requestHandoff() }
+                if model.isPreDeparture {
+                    departureGroundGrid
+                } else {
+                    enrouteGrid
                 }
+                acknowledgementGrid
                 pttPlaceholder
             }
+        }
+    }
+
+    private var gridColumns: [GridItem] {
+        Array(repeating: GridItem(.flexible(), spacing: 10), count: 3)
+    }
+
+    /// Pilot-driven pre-departure flow, in order, so no phase is skipped.
+    private var departureGroundGrid: some View {
+        LazyVGrid(columns: gridColumns, spacing: 10) {
+            ActionButton(title: "Clearance", systemImage: "doc.text") { model.requestClearance() }
+            ActionButton(title: "Pushback", systemImage: "arrow.left.to.line") { model.requestPushback() }
+            ActionButton(title: "Engine Start", systemImage: "powerplug") { model.requestEngineStart() }
+            ActionButton(title: "Taxi", systemImage: "car") { model.requestTaxi() }
+            ActionButton(title: "Ready", systemImage: "flag.checkered") { model.reportReadyForDeparture() }
+            ActionButton(title: "Takeoff", systemImage: "airplane.departure", tint: .green) { model.requestTakeoff() }
+        }
+    }
+
+    /// Enroute / arrival requests.
+    private var enrouteGrid: some View {
+        LazyVGrid(columns: gridColumns, spacing: 10) {
+            ActionButton(title: "Request Higher", systemImage: "arrow.up") { model.requestHigher() }
+            ActionButton(title: "Request Lower", systemImage: "arrow.down") { model.requestLower() }
+            ActionButton(title: "Vectors", systemImage: "arrow.triangle.turn.up.right.diamond") { model.requestVectors() }
+            ActionButton(title: "Approach", systemImage: "airplane.arrival") { model.requestApproach() }
+            ActionButton(title: "Ride Report", systemImage: "wind") { model.requestRideReport() }
+            ActionButton(title: "Dest Wx", systemImage: "cloud.sun") { model.requestDestinationWeather() }
+            ActionButton(title: "Check In", systemImage: "person.wave.2") { model.requestHandoff() }
+        }
+    }
+
+    /// Always-available acknowledgements.
+    private var acknowledgementGrid: some View {
+        LazyVGrid(columns: gridColumns, spacing: 10) {
+            ActionButton(title: "Read Back", systemImage: "checkmark.circle", tint: .green) { model.readBack() }
+            ActionButton(title: "Say Again", systemImage: "arrow.uturn.left") { model.sayAgain() }
+            ActionButton(title: "Unable", systemImage: "xmark.octagon", tint: .red) { model.unable() }
         }
     }
 

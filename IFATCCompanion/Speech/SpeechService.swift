@@ -40,13 +40,17 @@ final class SpeechService: NSObject, ObservableObject {
         guard !transmission.spokenText.isEmpty else { return }
         configureAudioSessionIfNeeded()
 
+        let isPilot = transmission.sender == .pilot
         let utterance = AVSpeechUtterance(string: transmission.spokenText)
-        utterance.voice = voice(for: transmission.facility)
+        utterance.voice = isPilot ? pilotVoice() : voice(for: transmission.facility)
         // Map our 0...1 setting onto AVSpeechUtterance's rate range.
         let rate = Float(settings.speechRate)
         utterance.rate = min(max(rate, AVSpeechUtteranceMinimumSpeechRate),
                              AVSpeechUtteranceMaximumSpeechRate)
-        utterance.pitchMultiplier = Float(min(max(settings.speechPitch, 0.5), 2.0))
+        // Give the pilot a subtly distinct pitch so own-ship calls are easy to
+        // tell apart from the controller even when they share a system voice.
+        let basePitch = Float(min(max(settings.speechPitch, 0.5), 2.0))
+        utterance.pitchMultiplier = isPilot ? min(max(basePitch * 0.92, 0.5), 2.0) : basePitch
         utterance.preUtteranceDelay = 0.05
         utterance.postUtteranceDelay = 0.1
 
@@ -80,6 +84,17 @@ final class SpeechService: NSObject, ObservableObject {
         case .clearance, .unicom: id = settings.defaultVoiceID
         }
         if !id.isEmpty, let v = AVSpeechSynthesisVoice(identifier: id) { return v }
+        if !settings.defaultVoiceID.isEmpty,
+           let v = AVSpeechSynthesisVoice(identifier: settings.defaultVoiceID) { return v }
+        return AVSpeechSynthesisVoice(language: "en-US")
+    }
+
+    /// Voice for the pilot's own transmissions. Falls back to a different system
+    /// voice than the default controller voice so the two are distinguishable.
+    private func pilotVoice() -> AVSpeechSynthesisVoice? {
+        guard let settings else { return nil }
+        if !settings.voicePilot.isEmpty,
+           let v = AVSpeechSynthesisVoice(identifier: settings.voicePilot) { return v }
         if !settings.defaultVoiceID.isEmpty,
            let v = AVSpeechSynthesisVoice(identifier: settings.defaultVoiceID) { return v }
         return AVSpeechSynthesisVoice(language: "en-US")

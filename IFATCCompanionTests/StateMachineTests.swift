@@ -60,5 +60,45 @@ final class StateMachineTests: XCTestCase {
         XCTAssertEqual(ATCState.cruise.facility, .center)
         XCTAssertEqual(ATCState.approach.facility, .approach)
         XCTAssertEqual(ATCState.landing.facility, .tower)
+        XCTAssertEqual(ATCState.pushback.facility, .ground)
+        XCTAssertEqual(ATCState.engineStart.facility, .ground)
+        XCTAssertEqual(ATCState.lineUpWait.facility, .tower)
+    }
+
+    func testPushbackTransmission() {
+        var m = makeMachine()
+        m.setConnected()
+        let tx = m.advance(to: .pushback, context: TestSupport.context())
+        XCTAssertEqual(m.current, .pushback)
+        XCTAssertEqual(tx?.facility, .ground)
+        XCTAssertTrue(tx?.displayText.contains("pushback approved") ?? false)
+    }
+
+    func testEngineStartTransmission() {
+        var m = makeMachine()
+        m.setConnected()
+        let tx = m.advance(to: .engineStart, context: TestSupport.context())
+        XCTAssertEqual(m.current, .engineStart)
+        XCTAssertTrue(tx?.displayText.contains("start up approved") ?? false)
+    }
+
+    func testLineUpAndWaitTransmission() {
+        var m = makeMachine()
+        m.setConnected()
+        let tx = m.advance(to: .lineUpWait, context: TestSupport.context(runway: "17R"))
+        XCTAssertEqual(m.current, .lineUpWait)
+        XCTAssertTrue(tx?.displayText.contains("line up and wait") ?? false)
+        XCTAssertTrue(tx?.spokenText.contains("one seven right") ?? false)
+    }
+
+    func testDepartureGroundFlowIsOrdered() {
+        // The pre-departure ground states are recognised as the manual flow so
+        // telemetry cannot skip them.
+        for s in [ATCState.clearance, .pushback, .engineStart, .groundTaxi, .lineUpWait] {
+            XCTAssertTrue(s.isManualGroundFlow, "\(s) should be part of the manual ground flow")
+        }
+        for s in [ATCState.towerDeparture, .climb, .cruise, .approach, .groundArrival] {
+            XCTAssertFalse(s.isManualGroundFlow, "\(s) should not be part of the manual ground flow")
+        }
     }
 }

@@ -51,6 +51,10 @@ final class AppModel: ObservableObject {
     /// Whether the companion should defer to a human controller right now.
     var companionStandby: Bool { liveATC.shouldStandBy }
 
+    /// Whether the pre-departure ground actions (clearance → pushback → engine
+    /// start → taxi → ready) should be offered. True until the first departure.
+    var isPreDeparture: Bool { !hasDeparted }
+
     // Weather state.
     @Published var departureMETAR: METAR?
     @Published var destinationMETAR: METAR?
@@ -65,6 +69,11 @@ final class AppModel: ObservableObject {
     private var lastATCTransmission: ATCTransmission?
     private var cancellables = Set<AnyCancellable>()
     private var started = false
+
+    /// Once airborne, automatic telemetry-driven ATC resumes. Before the first
+    /// departure the pre-departure ground flow (clearance → pushback → engine
+    /// start → taxi → ready) is pilot-driven so no phase is skipped.
+    private var hasDeparted = false
 
     init() {
         let settings = AppSettings()
@@ -197,6 +206,7 @@ final class AppModel: ObservableObject {
     func startMock() {
         connect.disconnect()
         stateMachine.reset()
+        hasDeparted = false
         atcState = .connectedIdle
         stateMachine.setConnected()
         applyLiveATC(simulateStaffedATC
@@ -215,6 +225,7 @@ final class AppModel: ObservableObject {
     func startLive() {
         mock.stop()
         stateMachine.reset()
+        hasDeparted = false
         if settings.autoDiscover && settings.host.isEmpty {
             connect.startAutoDiscover { [weak self] device in
                 guard let self else { return }
@@ -260,6 +271,8 @@ final class AppModel: ObservableObject {
         phase = result.phase
         phaseDebug = result.debug
 
+        if !phase.isGround { hasDeparted = true }
+
         let target = stateMachine.mappedState(for: phase)
         let context = buildContext(for: target)
         unicom.connected = settings.mockMode || connect.connectionState.isConnected
@@ -269,6 +282,17 @@ final class AppModel: ObservableObject {
         if companionStandby {
             atcState = target
             currentFacility = target.facility
+            return
+        }
+
+        // Pre-departure ground flow is pilot-driven: clearance, pushback, engine
+        // start, taxi, ready and line-up are requested via the response buttons so
+        // telemetry never skips (or rewinds) those phases. Hold the current state
+        // until the aircraft is airborne, after which automatic ATC resumes and
+        // catches up to the takeoff/departure call.
+        if !hasDeparted, target.isManualGroundFlow {
+            atcState = stateMachine.current
+            currentFacility = stateMachine.current.facility
             return
         }
 
@@ -333,8 +357,22 @@ final class AppModel: ObservableObject {
             lastATCTransmission = tx
         }
         diagnostics.log(.atc, "[\(tx.sender.rawValue.uppercased())] \(tx.displayText)")
-        if speak && tx.sender != .pilot { speech.speak(tx) }
+        if speak { speech.speak(tx) }
     }
+
+    /// Post a pilot transmission, speaking it aloud when appropriate. The pilot
+    /// voice is heard for button/text-driven calls; push-to-talk input is never
+    /// re-spoken because the user already said it.
+    private func postPilot(_ tx: ATCTransmission) {
+        post(tx, speak: shouldSpeakPilot)
+    }
+
+    /// Whether the pilot's next transmission should be spoken aloud.
+    private var shouldSpeakPilot: Bool { settings.speakPilot && !pilotInputViaVoice }
+
+    /// True while handling a push-to-talk utterance, so the resulting pilot
+    /// transmission is not spoken back over the user.
+    private var pilotInputViaVoice = false
 
     // MARK: - Context
 
@@ -445,7 +483,10 @@ final class AppModel: ObservableObject {
         lastSpokenText = text
         lastSpokenIntent = intent
         diagnostics.log(.atc, "PTT heard: \"\(text)\" -> \(intent.title)")
+        // The user already spoke this; don't re-speak the pilot transmission.
+        pilotInputViaVoice = true
         perform(intent)
+        pilotInputViaVoice = false
         return intent
     }
 
@@ -456,6 +497,12 @@ final class AppModel: ObservableObject {
         case .sayAgain: sayAgain()
         case .unable: unable()
         case .wilco: wilco()
+        case .requestClearance: requestClearance()
+        case .requestPushback: requestPushback()
+        case .requestEngineStart: requestEngineStart()
+        case .requestTaxi: requestTaxi()
+        case .readyForDeparture: reportReadyForDeparture()
+        case .requestTakeoff: requestTakeoff()
         case .requestHigher: requestHigher()
         case .requestLower: requestLower()
         case .requestVectors: requestVectors()
@@ -471,17 +518,17 @@ final class AppModel: ObservableObject {
 
     func readBack() {
         let c = buildContext(for: atcState)
-        post(pilotEngine.readback(for: atcState, context: c), speak: false)
+        postPilot(pilotEngine.readback(for: atcState, context: c))
     }
 
     func wilco() {
         let c = buildContext(for: atcState)
-        post(pilotEngine.wilco(context: c, facility: currentFacility), speak: false)
+        postPilot(pilotEngine.wilco(context: c, facility: currentFacility))
     }
 
     func sayAgain() {
         let c = buildContext(for: atcState)
-        post(pilotEngine.sayAgain(context: c, facility: currentFacility), speak: false)
+        postPilot(pilotEngine.sayAgain(context: c, facility: currentFacility))
         if let last = lastATCTransmission {
             let repeated = ATCTransmission(sender: .atc, facility: last.facility,
                                            displayText: last.displayText, spokenText: last.spokenText)
@@ -491,7 +538,7 @@ final class AppModel: ObservableObject {
 
     func unable() {
         let c = buildContext(for: atcState)
-        post(pilotEngine.unable(context: c, facility: currentFacility), speak: false)
+        postPilot(pilotEngine.unable(context: c, facility: currentFacility))
         // Deterministic alternate controller response.
         let alt = engine.formatAltDisplay(max(assignedAltitude, c.initialClimbAltitude))
         let tx = ATCTransmission(sender: .atc, facility: currentFacility,
@@ -503,7 +550,7 @@ final class AppModel: ObservableObject {
     func requestHigher() {
         let c = buildContext(for: atcState)
         let target = nextAltitude(from: max(assignedAltitude, aircraftAltInt()), up: true)
-        post(pilotEngine.requestHigher(context: c, target: target), speak: false)
+        postPilot(pilotEngine.requestHigher(context: c, target: target))
         let blocked = rideReportItems.contains { $0.severity >= .moderate && ($0.altitudeBand?.contains(target) ?? false) }
         if blocked {
             post(deny(c, reason: "unable higher, traffic and reported turbulence at that level"), speak: true)
@@ -516,14 +563,14 @@ final class AppModel: ObservableObject {
     func requestLower() {
         let c = buildContext(for: atcState)
         let target = nextAltitude(from: max(assignedAltitude, aircraftAltInt()), up: false)
-        post(pilotEngine.requestLower(context: c, target: target), speak: false)
+        postPilot(pilotEngine.requestLower(context: c, target: target))
         post(engine.descendPilotsDiscretion(cs: c.callsign, altitude: target), speak: true)
         assignedAltitude = target
     }
 
     func requestVectors() {
         let c = buildContext(for: atcState)
-        post(pilotEngine.requestVectors(context: c), speak: false)
+        postPilot(pilotEngine.requestVectors(context: c))
         let hdg = Int(aircraftState.heading ?? 270)
         let tx = ATCTransmission(sender: .atc, facility: .approach,
                                  displayText: "\(c.callsign.display), fly heading \(String(format: "%03d", hdg)), vectors for the \(c.approachName) runway \(c.runway) approach.",
@@ -533,21 +580,64 @@ final class AppModel: ObservableObject {
 
     func requestApproach() {
         let c = buildContext(for: atcState)
-        post(pilotEngine.requestApproach(context: c), speak: false)
+        postPilot(pilotEngine.requestApproach(context: c))
         post(engine.clearedApproach(cs: c.callsign, approach: flightPlan.approach, runway: c.runway), speak: true)
     }
 
     func requestHandoff() {
         let c = buildContext(for: atcState)
-        post(pilotEngine.requestHandoff(context: c, facility: currentFacility), speak: false)
+        postPilot(pilotEngine.requestHandoff(context: c, facility: currentFacility))
         post(engine.radarContact(cs: c.callsign, facility: currentFacility), speak: true)
+    }
+
+    // MARK: - Departure ground flow (pilot-driven)
+
+    /// Post the pilot's ground request, advance the state machine to `state`, and
+    /// post the controller's reply. Keeps the pre-departure sequence in order so no
+    /// phase (pushback, engine start, taxi, …) is skipped.
+    private func groundFlow(_ pilotRequest: ATCTransmission, to state: ATCState) {
+        postPilot(pilotRequest)
+        let c = buildContext(for: state)
+        if let tx = stateMachine.advance(to: state, context: c) {
+            updateAssignedAltitude(for: state, context: c)
+            post(tx, speak: true)
+            fireUnicomForTransition(into: state)
+        }
+        atcState = stateMachine.current
+        currentFacility = stateMachine.current.facility
+    }
+
+    func requestClearance() {
+        groundFlow(pilotEngine.requestClearance(context: buildContext(for: .clearance)), to: .clearance)
+    }
+
+    func requestPushback() {
+        groundFlow(pilotEngine.requestPushback(context: buildContext(for: .pushback)), to: .pushback)
+    }
+
+    func requestEngineStart() {
+        groundFlow(pilotEngine.requestEngineStart(context: buildContext(for: .engineStart)), to: .engineStart)
+    }
+
+    func requestTaxi() {
+        groundFlow(pilotEngine.requestTaxi(context: buildContext(for: .groundTaxi)), to: .groundTaxi)
+    }
+
+    /// Report ready for departure. Tower responds "line up and wait"; a second
+    /// tap (or `requestTakeoff`) yields the takeoff clearance.
+    func reportReadyForDeparture() {
+        groundFlow(pilotEngine.readyForDeparture(context: buildContext(for: .lineUpWait)), to: .lineUpWait)
+    }
+
+    func requestTakeoff() {
+        groundFlow(pilotEngine.requestTakeoff(context: buildContext(for: .towerDeparture)), to: .towerDeparture)
     }
 
     // MARK: - Weather button actions
 
     func requestRideReport() {
         let c = buildContext(for: atcState)
-        post(pilotEngine.requestRideReports(context: c), speak: false)
+        postPilot(pilotEngine.requestRideReports(context: c))
         Task {
             await refreshWeather()
             recomputeRideItems()
@@ -558,7 +648,7 @@ final class AppModel: ObservableObject {
     func requestDestinationWeather() {
         let c = buildContext(for: atcState)
         let dest = flightPlan.destination
-        post(pilotEngine.requestWeather(context: c, airport: dest.isEmpty ? "destination" : dest), speak: false)
+        postPilot(pilotEngine.requestWeather(context: c, airport: dest.isEmpty ? "destination" : dest))
         Task {
             await refreshWeather()
             post(rideEngine.destinationWeather(metar: destinationMETAR, callsign: c.callsign, icao: dest), speak: true)
@@ -569,7 +659,7 @@ final class AppModel: ObservableObject {
         let c = buildContext(for: atcState)
         recomputeRideItems()
         let target = nextAltitude(from: max(assignedAltitude, aircraftAltInt()), up: false)
-        post(pilotEngine.requestLower(context: c, target: target), speak: false)
+        postPilot(pilotEngine.requestLower(context: c, target: target))
         let tx = ATCTransmission(sender: .atc, facility: .center,
                                  displayText: "\(c.callsign.display), descend and maintain \(engine.formatAltDisplay(target)) for a smoother ride, report conditions.",
                                  spokenText: "\(c.callsign.spoken), descend and maintain \(Phonetic.altitude(target)) for a smoother ride, report conditions.")

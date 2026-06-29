@@ -17,11 +17,12 @@ Key feature highlights:
 - Deterministic, template-based phraseology engine ("niner", "flight level three seven zero", etc.) — no generative AI, fully reproducible.
 - **Selectable FAA and ICAO phraseology packs** (digit words, "decimal" vs "point", QNH/hPa vs inHg) plus **user-created phraseology profiles** (custom call templates and airline call sets, shareable as JSON).
 - **Push-to-talk** with on-device speech recognition and deterministic intent parsing.
+- **Full gate-to-gate departure flow** — the pre-departure ground sequence is pilot-driven so no phase is skipped: request clearance → pushback → engine start → taxi → ready/line-up → takeoff. Once airborne, automatic telemetry-driven ATC resumes.
 - **Procedure-aware** instructions: SID/STAR/approach name parsing with a built-in fix library.
 - **Modeled taxi routing** with taxiways, runway crossings, and ramp routes.
 - **Multiplayer / human-ATC staffing detection** so the companion steps aside for live controllers.
 - Automatic flight-phase detection (parked, taxi, takeoff, climb, cruise, descent, approach, landing, etc.).
-- Offline text-to-speech via `AVSpeechSynthesizer`, with per-facility voices.
+- Offline text-to-speech via `AVSpeechSynthesizer`, with **per-facility controller voices and a separate pilot voice** — your readbacks and requests are spoken aloud when you use the buttons (push-to-talk input is never repeated).
 - Optional UNICOM automation: Off, Preview-then-send, or Auto-send.
 - Free aviation weather from NOAA (no API keys), a composite turbulence/ride-quality model, and a MapKit route overlay.
 - Mock Mode for a complete demo in the iOS Simulator with no Infinite Flight present.
