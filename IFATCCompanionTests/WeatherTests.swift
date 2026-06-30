@@ -81,4 +81,16 @@ final class WeatherTests: XCTestCase {
         XCTAssertTrue(tx.spokenText.contains("wind three two zero at one two"))
         XCTAssertTrue(tx.displayText.contains("Minneapolis"))
     }
+
+    /// The pilot acknowledges an informational reply (ride report / destination
+    /// weather) with a courtesy "Roger", addressed to the working controller.
+    func testPilotRogerAcknowledgement() {
+        let engine = PhraseologyEngine(digitStyle: .individual)
+        let pilot = PilotResponseEngine(engine: engine)
+        let tx = pilot.roger(context: TestSupport.context(), facility: .center)
+        XCTAssertEqual(tx.sender, .pilot)
+        XCTAssertEqual(tx.facility, .center)
+        XCTAssertTrue(tx.displayText.contains("Roger"))
+        XCTAssertTrue(tx.displayText.contains("United 598"))
+    }
 }

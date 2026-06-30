@@ -118,6 +118,15 @@ struct PilotResponseEngine {
         pilot("Wilco, \(c.callsign.display).", "Wilco, \(c.callsign.spoken).", facility: facility)
     }
 
+    /// A courtesy acknowledgement for an informational reply that carries no
+    /// instruction to comply with — a ride report or a destination weather read-out.
+    /// "Roger" (received), not "Wilco" (will comply).
+    func roger(context c: ATCContext, facility: ATCFacility) -> ATCTransmission {
+        pilot("Roger, thank you, \(c.callsign.display).",
+              "Roger, thank you, \(c.callsign.spoken).",
+              facility: facility)
+    }
+
     /// Pilot says "say again".
     func sayAgain(context c: ATCContext, facility: ATCFacility) -> ATCTransmission {
         pilot("Say again for \(c.callsign.display).",
