@@ -52,12 +52,6 @@ struct IFConnectStateReader {
         return s
     }
 
-    /// Read just the live callsign, if exposed.
-    func readCallsign(using client: IFConnectClient) async -> String? {
-        guard let entry = store.entry(for: .callsign) else { return nil }
-        return try? await client.readState(entry).stringValue
-    }
-
     /// The raw flight-plan strings Infinite Flight exposes. Any field may be absent
     /// depending on the IF version / manifest.
     struct FlightPlanPayloads {

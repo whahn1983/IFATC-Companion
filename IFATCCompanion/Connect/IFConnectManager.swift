@@ -9,7 +9,6 @@ final class IFConnectManager: ObservableObject {
 
     @Published private(set) var connectionState: IFConnectConnectionState = .disconnected
     @Published private(set) var manifestEntries: [IFManifestEntry] = []
-    @Published private(set) var liveCallsign: String?
     @Published private(set) var liveATC: LiveATCStatus = .none
     @Published private(set) var lastError: String?
 
@@ -33,9 +32,6 @@ final class IFConnectManager: ObservableObject {
     var onState: ((AircraftState) -> Void)?
     /// Pushed parsed flight plan whenever the live plan changes (AppModel subscribes).
     var onFlightPlan: ((FlightPlan) -> Void)?
-    /// Pushed the live callsign read from Infinite Flight whenever it changes, so the
-    /// companion can adopt it automatically instead of requiring a manual override.
-    var onCallsign: ((String) -> Void)?
 
     /// Last raw flight-plan string read from Infinite Flight (for diagnostics).
     @Published private(set) var liveFlightPlanRaw: String?
@@ -70,11 +66,6 @@ final class IFConnectManager: ObservableObject {
                     diagnostics?.log(.manifest, "Unresolved (use manual override if needed): \(names)")
                 }
                 connectionState = .connected
-                liveCallsign = await reader.readCallsign(using: client)
-                if let cs = liveCallsign, !cs.isEmpty {
-                    diagnostics?.log(.state, "Live callsign: \(cs)")
-                    onCallsign?(cs)
-                }
                 await readFlightPlan()
                 startPolling()
             } catch {
@@ -116,11 +107,6 @@ final class IFConnectManager: ObservableObject {
                 tick += 1
                 if tick % self.flightPlanReadEveryTicks == 0 {
                     await self.readFlightPlan()
-                    if let cs = await self.reader.readCallsign(using: self.client),
-                       !cs.isEmpty, cs != self.liveCallsign {
-                        self.liveCallsign = cs
-                        self.onCallsign?(cs)
-                    }
                 }
                 try? await Task.sleep(nanoseconds: UInt64(self.pollInterval * 1_000_000_000))
             }

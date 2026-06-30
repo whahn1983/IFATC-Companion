@@ -10,6 +10,7 @@ struct ATCView: View {
     @EnvironmentObject var recognizer: SpeechRecognitionService
 
     @State private var showClearFlightConfirm = false
+    @FocusState private var callsignFocused: Bool
 
     var body: some View {
         NavigationStack {
@@ -75,7 +76,7 @@ struct ATCView: View {
                     StatusPill(text: model.currentFacility.title, level: .neutral, systemImage: model.currentFacility.symbol)
                 }
                 HStack {
-                    headerStat(title: "Callsign", value: callsignDisplay, image: "airplane")
+                    callsignField
                     Divider().frame(height: 34)
                     headerStat(title: "Airport", value: nearestAirport, image: "mappin.and.ellipse")
                 }
@@ -96,11 +97,40 @@ struct ATCView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var callsignDisplay: String {
-        if !settings.callsign.isEmpty { return settings.callsign }
+    /// Editable callsign entry, surfaced on the main page. Infinite Flight's Connect
+    /// API exposes no callsign for the user's own aircraft, so it is entered here
+    /// rather than buried in the Flight tab's overrides. Applies on submit / when
+    /// editing ends so the ATC phraseology picks it up.
+    private var callsignField: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Label("Callsign", systemImage: "airplane").font(.caption).foregroundStyle(.secondary)
+            TextField(callsignPlaceholder, text: $settings.callsign)
+                .font(.headline)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .textInputAutocapitalization(.characters)
+                .autocorrectionDisabled()
+                .submitLabel(.done)
+                .focused($callsignFocused)
+                .onSubmit { applyCallsign() }
+                .onChange(of: callsignFocused) { _, focused in
+                    if !focused { model.applyManualCallsign() }
+                }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Placeholder shows a callsign resolved from the Airline/Flight # overrides (if
+    /// any) so the field isn't blank when the pilot used those fields instead.
+    private var callsignPlaceholder: String {
         let cs = model.flightPlan
         if !cs.airline.isEmpty && !cs.flightNumber.isEmpty { return "\(cs.airline) \(cs.flightNumber)" }
-        return connect.liveCallsign ?? "—"
+        return "Set callsign"
+    }
+
+    private func applyCallsign() {
+        callsignFocused = false
+        model.applyManualCallsign()
     }
 
     private var nearestAirport: String {
