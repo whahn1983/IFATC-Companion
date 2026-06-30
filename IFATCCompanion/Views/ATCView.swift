@@ -209,10 +209,13 @@ struct ATCView: View {
                     if model.canContactRamp {
                         FrequencyButton(title: "Ramp",
                                         systemImage: "parkingsign",
-                                        frequency: model.isArrivalRamp ? "To Gate" : "Pushback",
+                                        frequency: model.frequencyText(for: .ramp),
                                         active: model.currentFacility == .ramp,
                                         enabled: true) {
-                            model.contactRamp()
+                            // Tuning only moves the radio — like every other frequency
+                            // button. The actual call (pushback / taxi-to-gate) is made
+                            // afterwards from the Responses card.
+                            model.tuneTo(.ramp)
                         }
                     }
                 }
@@ -261,7 +264,7 @@ struct ATCView: View {
     /// available for the tuned controller and phase.
     private var orderedActions: [PilotAction] {
         [.clearance, .pushback, .engineStart, .taxi, .ready, .takeoff,
-         .checkIn, .requestHigher, .requestLower, .vectors, .approach,
+         .toGate, .checkIn, .requestHigher, .requestLower, .vectors, .approach,
          .rideReport, .destWx]
     }
 
@@ -295,6 +298,8 @@ struct ATCView: View {
             ActionButton(title: "Dest Wx", systemImage: "cloud.sun") { model.requestDestinationWeather() }
         case .checkIn:
             ActionButton(title: "Check In", systemImage: "person.wave.2") { model.requestHandoff() }
+        case .toGate:
+            ActionButton(title: "To Gate", systemImage: "parkingsign") { model.contactRamp() }
         }
     }
 

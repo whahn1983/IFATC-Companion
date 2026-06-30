@@ -11,6 +11,7 @@ import UIKit
 enum PilotAction: CaseIterable {
     case clearance, pushback, engineStart, taxi, ready, takeoff
     case requestHigher, requestLower, vectors, approach, rideReport, destWx, checkIn
+    case toGate
 }
 
 /// Central coordinator. Owns all services, holds the published app state the UI
@@ -112,8 +113,12 @@ final class AppModel: ObservableObject {
                     || stateMachine.current == .connectedIdle
                 return beforeClearance ? [.clearance] : [.pushback]
             case .ramp:
-                // Ramp works engine start and the push; a taxi request hands off to
-                // Ground (handled in requestTaxi).
+                // Tuning to Ramp does not transmit, so the push must be requested
+                // here. Before the push: offer Pushback. After it: engine start, then
+                // a taxi request hands off to Ground (handled in requestTaxi).
+                if [.notConnected, .connectedIdle, .clearance].contains(stateMachine.current) {
+                    return [.pushback]
+                }
                 return [.engineStart, .taxi]
             case .ground:
                 // On Ground for the taxi. "Ready for departure" only makes sense once
@@ -139,9 +144,13 @@ final class AppModel: ObservableObject {
             return [.requestHigher, .requestLower, .rideReport, .destWx, .checkIn]
         case .approach:
             return [.checkIn, .vectors, .approach, .requestLower, .destWx]
-        case .tower, .ground, .ramp, .clearance:
-            // Tower (landing), Ground (taxi-in) and arrival Ramp progress with a
-            // check-in / the Ramp button; no enroute requests apply.
+        case .ramp:
+            // Arrival Ramp: tuning in does not transmit, so the taxi-to-gate call is
+            // made here with To Gate.
+            return [.toGate]
+        case .tower, .ground, .clearance:
+            // Tower (landing) and Ground (taxi-in) progress with a check-in; no
+            // enroute requests apply.
             return [.checkIn]
         }
     }
@@ -998,11 +1007,13 @@ final class AppModel: ObservableObject {
         persistSession()
     }
 
-    /// The "Ramp" button. Context-aware: before departure it contacts Ramp for the
-    /// pushback (Ramp approves the push; Ground then handles the taxi). On arrival it
-    /// contacts Ramp for the taxi-in to the gate. It is never the arrival routine
-    /// during departure (which previously jumped straight to "parked, flight
-    /// complete").
+    /// Make the Ramp call once tuned to the Ramp frequency. Context-aware: before
+    /// departure it contacts Ramp for the pushback (Ramp approves the push; Ground
+    /// then handles the taxi). On arrival it contacts Ramp for the taxi-in to the
+    /// gate. Reached from the "To Gate" response button on arrival (pre-departure the
+    /// pilot uses the Pushback button); tuning to Ramp itself never transmits. It is
+    /// never the arrival routine during departure (which previously jumped straight to
+    /// "parked, flight complete").
     func contactRamp() {
         guard !companionStandby else { return }
         if isArrivalRamp {
