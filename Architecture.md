@@ -14,7 +14,7 @@ AppModel (ObservableObject coordinator)
    │   owns and wires services
    ▼
 Services (connection, ATC state machine, phraseology, pilot responses,
-          UNICOM, weather, speech, settings, mock)
+          weather, speech, settings, mock)
    │
    ▼
 Infinite Flight Connect API v2 (TCP)   ·   NOAA weather   ·   AVSpeechSynthesizer
@@ -41,7 +41,7 @@ This is the boundary between the app and Infinite Flight, deliberately isolated 
 - **IFConnectManager** — high-level connection manager. Owns connection lifecycle, host/port configuration, auto-discovery, reconnection, and exposes connection status. Falls back to manual overrides / Mock Mode when no connection is available.
 - **IFDiscoveryService** — auto-discovery of the Infinite Flight device. Runs two paths in parallel and reports whichever resolves first: (1) a Bonjour `NWBrowser` for `_infiniteflight._tcp` (the safe, entitlement-free path — needs only Local Network permission and the `NSBonjourServices` Info.plist entry), and (2) a BSD/POSIX UDP socket listening for IF's discovery broadcast on port 15000, re-emitting a permission ping every couple of seconds so reception flows once Local Network permission is granted. Receiving raw UDP broadcast on iOS 14+ also requires the `com.apple.developer.networking.multicast` entitlement (Apple-approved), so Bonjour is preferred; manual IP entry remains the always-available fallback.
 - **IFConnectClient** — the Infinite Flight Connect API v2 client, implemented over `Network.framework` TCP. Handles the wire protocol and raw state/command exchange.
-- **IFConnectManifestService** — state manifest discovery. Reads the Connect API's manifest of available state fields and commands so the app knows what data and which UNICOM commands are available in the current Infinite Flight session.
+- **IFConnectManifestService** — state manifest discovery. Reads the Connect API's manifest of available state fields and commands so the app knows what data is available in the current Infinite Flight session.
 
 - **LiveATCDetector / LiveATCStatus** — derives multiplayer and human-ATC-staffing context from manifest-mapped states (best-effort, signature-based). When a human controller is detected, `AppModel` puts the companion into standby and stops generating controller calls.
 
@@ -84,10 +84,6 @@ This is the boundary between the app and Infinite Flight, deliberately isolated 
 
 - **PilotResponseEngine** — generates pilot-side phraseology, primarily readbacks of ATC instructions. Triggered by user button taps in the ATC tab; its output both populates the transcript and advances the `ATCStateMachine`.
 
-## UNICOM
-
-- **UNICOMAutomationService** — optional automation layer for sending Infinite Flight UNICOM actions. It performs availability detection via the Connect manifest and supports three modes: **Off**, **Preview-then-send**, and **Auto-send**. UNICOM actions announce only the pilot's own intentions. When a command is unsupported by the current Connect API, the service degrades gracefully and skips it without error.
-
 ## Weather
 
 - **AviationWeatherService** — fetches free public NOAA Aviation Weather Center data (aviationweather.gov), no API keys: METAR, TAF, PIREP, SIGMET. Results are cached.
@@ -103,7 +99,7 @@ This is the boundary between the app and Infinite Flight, deliberately isolated 
 
 ## Settings
 
-- **AppSettings** — user preferences backed by `AppStorage` / `UserDefaults`: host/IP and port, auto-discovery, keep-screen-awake, voice selection, UNICOM automation mode, phraseology and unit preferences. No accounts or remote configuration. **Keep screen awake** (default on) disables the iOS idle timer while the app is open so the device never sleeps and drops the Infinite Flight Connect link.
+- **AppSettings** — user preferences backed by `AppStorage` / `UserDefaults`: host/IP and port, auto-discovery, keep-screen-awake, voice selection, phraseology and unit preferences. No accounts or remote configuration. **Keep screen awake** (default on) disables the iOS idle timer while the app is open so the device never sleeps and drops the Infinite Flight Connect link.
 
 ## Diagnostics
 
@@ -129,8 +125,6 @@ User-initiated (upstream) flow:
 
 ```
 User button tap  ─►  PilotResponseEngine  ─►  ATCStateMachine advance
-                                                     │
-                                                     └─►  (optional) UNICOMAutomationService send
 ```
 
 Weather flows independently: `AviationWeatherService` → parsers → `WeatherRouteAnalyzer` / `RideReportEngine` → Weather tab.
@@ -146,7 +140,6 @@ IFATCCompanion/
 ├── Connect/          # IFConnectManager, IFConnectClient, IFConnectManifestService, LiveATCDetector
 ├── ATC/              # PhaseDetector, ATCStateMachine, PilotResponseEngine, ProcedureLibrary, TaxiRoutePlanner, PilotIntentParser
 ├── Phraseology/      # Phonetic, PhraseologyEngine, PhraseologyProfile (+Store)
-├── UNICOM/           # UNICOMAutomationService
 ├── Weather/          # AviationWeatherService, parsers, WeatherRouteAnalyzer, RideReportEngine, TurbulenceModel
 ├── Speech/           # SpeechService, SpeechRecognitionService
 ├── Settings/         # AppSettings

@@ -15,7 +15,6 @@ struct DiagnosticsView: View {
                     liveATCCard
                     phaseCard
                     weatherStatusCard
-                    unicomCard
                     manifestCard
                     rawCard
                     logCard
@@ -105,29 +104,6 @@ struct DiagnosticsView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(diagnostics.weatherEndpointStatus).font(.subheadline)
                 Text(model.weatherStatus).font(.caption).foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private var unicomCard: some View {
-        Card(title: "UNICOM Command Availability", systemImage: "checklist") {
-            if diagnostics.unicomAvailability.isEmpty {
-                Text("Connect to Infinite Flight to validate UNICOM commands.")
-                    .font(.caption).foregroundStyle(.secondary)
-            } else {
-                VStack(spacing: 6) {
-                    ForEach(diagnostics.unicomAvailability) { a in
-                        HStack {
-                            Image(systemName: a.isAvailable ? "checkmark.circle.fill" : "xmark.circle")
-                                .foregroundStyle(a.isAvailable ? .green : .secondary)
-                            Text(a.event.title)
-                            Spacer()
-                            Text(a.detail ?? "unavailable").font(.caption).foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-                        .font(.subheadline)
-                    }
-                }
             }
         }
     }

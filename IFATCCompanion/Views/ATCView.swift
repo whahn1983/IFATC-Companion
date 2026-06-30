@@ -5,7 +5,6 @@ struct ATCView: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var settings: AppSettings
     @EnvironmentObject var connect: IFConnectManager
-    @EnvironmentObject var unicom: UNICOMAutomationService
     @EnvironmentObject var speech: SpeechService
     @EnvironmentObject var recognizer: SpeechRecognitionService
 
@@ -20,7 +19,6 @@ struct ATCView: View {
                     if model.liveATC.humanControllerActive { standbyBanner }
                     currentTransmissionCard
                     frequencyCard
-                    unicomCard
                     responseButtons
                     transcriptCard
                 }
@@ -184,36 +182,6 @@ struct ATCView: View {
                 Text("Awaiting first transmission…")
                     .font(.title3)
                     .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    // MARK: - UNICOM
-
-    private var unicomCard: some View {
-        Card(title: "UNICOM", systemImage: "antenna.radiowaves.left.and.right") {
-            VStack(alignment: .leading, spacing: 10) {
-                Text(unicom.statusText)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                if let pending = unicom.pending {
-                    Text(pending.message).font(.body.weight(.medium))
-                    if !pending.isAvailable {
-                        Text("Infinite Flight has no Connect send command for this call — tap it in Infinite Flight's UNICOM menu.")
-                            .font(.caption).foregroundStyle(.orange)
-                    }
-                    HStack {
-                        Button {
-                            unicom.sendPending()
-                        } label: { Label("Send", systemImage: "paperplane.fill") }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(!pending.isAvailable)
-                        Button(role: .cancel) { unicom.skipPending() } label: { Label("Skip", systemImage: "xmark") }
-                            .buttonStyle(.bordered)
-                    }
-                }
-                Text("UNICOM announces your own intentions only. This is not staffed ATC.")
-                    .font(.caption2).foregroundStyle(.tertiary)
             }
         }
     }

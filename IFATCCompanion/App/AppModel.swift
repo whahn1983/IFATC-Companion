@@ -24,7 +24,6 @@ final class AppModel: ObservableObject {
     let speech: SpeechService
     let connect: IFConnectManager
     let mock: MockSimulatorFeed
-    let unicom: UNICOMAutomationService
     let phraseologyProfiles: PhraseologyProfileStore
     let speechRecognizer: SpeechRecognitionService
 
@@ -140,7 +139,7 @@ final class AppModel: ObservableObject {
             return [.requestHigher, .requestLower, .rideReport, .destWx, .checkIn]
         case .approach:
             return [.checkIn, .vectors, .approach, .requestLower, .destWx]
-        case .tower, .ground, .ramp, .clearance, .unicom:
+        case .tower, .ground, .ramp, .clearance:
             // Tower (landing), Ground (taxi-in) and arrival Ramp progress with a
             // check-in / the Ramp button; no enroute requests apply.
             return [.checkIn]
@@ -270,7 +269,6 @@ final class AppModel: ObservableObject {
         self.speech = SpeechService()
         self.connect = IFConnectManager()
         self.mock = MockSimulatorFeed()
-        self.unicom = UNICOMAutomationService()
         let profiles = PhraseologyProfileStore()
         self.phraseologyProfiles = profiles
         self.speechRecognizer = SpeechRecognitionService()
@@ -307,8 +305,6 @@ final class AppModel: ObservableObject {
         applyKeepScreenAwake()
         speech.configure(settings: settings)
         connect.configure(diagnostics: diagnostics)
-        unicom.configure(connect: connect, diagnostics: diagnostics)
-        unicom.mode = currentUnicomMode
         Task { await weatherService.configure(baseURL: settings.weatherBaseURL, diagnostics: diagnostics) }
 
         // Route state from whichever feed is active.
@@ -359,10 +355,6 @@ final class AppModel: ObservableObject {
             .sink { [weak self] _ in self?.applyEngineConfig() }
             .store(in: &cancellables)
 
-        settings.$unicomModeRaw
-            .sink { [weak self] _ in self?.unicom.mode = self?.currentUnicomMode ?? .preview }
-            .store(in: &cancellables)
-
         settings.$debugLogging
             .sink { [weak self] on in self?.diagnostics.verbose = on }
             .store(in: &cancellables)
@@ -401,10 +393,6 @@ final class AppModel: ObservableObject {
                 ? "Human ATC detected — companion standing by."
                 : "Human ATC cleared — companion resuming.")
         }
-    }
-
-    var currentUnicomMode: UNICOMMode {
-        UNICOMMode(rawValue: settings.unicomModeRaw) ?? .preview
     }
 
     // MARK: - Source selection
@@ -472,10 +460,9 @@ final class AppModel: ObservableObject {
     }
 
     private func afterConnect() {
-        // Refresh UNICOM availability once the manifest is in, and load weather.
+        // Load weather once the connection is established.
         Task {
             try? await Task.sleep(nanoseconds: 1_500_000_000)
-            self.unicom.refreshAvailability()
             await self.refreshWeather()
         }
     }
@@ -554,10 +541,9 @@ final class AppModel: ObservableObject {
         if !phase.isGround { hasDeparted = true }
 
         let mapped = stateMachine.mappedState(for: phase)
-        unicom.connected = settings.mockMode || connect.connectionState.isConnected
 
         // Defer to a human controller: track state for display, but do not generate
-        // or speak controller calls, and do not fire UNICOM.
+        // or speak controller calls.
         if companionStandby {
             atcState = mapped
             currentFacility = controller(for: mapped)
@@ -685,7 +671,7 @@ final class AppModel: ObservableObject {
     private func frequency(for facility: ATCFacility, context c: ATCContext) -> Double {
         switch facility {
         case .ramp: return c.rampFrequency
-        case .clearance, .ground, .unicom: return c.groundFrequency
+        case .clearance, .ground: return c.groundFrequency
         case .tower: return c.towerFrequency
         case .departure: return c.departureFrequency
         case .center: return c.centerFrequency
@@ -731,7 +717,6 @@ final class AppModel: ObservableObject {
         }
         updateAssignedAltitude(for: target, context: c)
         post(tx, speak: speak)
-        fireUnicomForTransition(into: target)
         // An automatic call that carries a read-back instruction closes the gate:
         // the flow holds here until the pilot reads back (or the idle prompt loop
         // runs its course). Pilot-driven advances never close the gate — the pilot
@@ -1260,34 +1245,6 @@ final class AppModel: ObservableObject {
         if before != (plan.departure, plan.destination) {
             Task { await refreshWeather() }
         }
-    }
-
-    // MARK: - UNICOM triggering
-
-    private func fireUnicomForTransition(into state: ATCState) {
-        guard let event = unicomEvent(for: state) else { return }
-        let c = buildContext(for: state)
-        unicom.handle(event: event, ident: unicomIdent(for: state), runway: c.runway)
-    }
-
-    private func unicomEvent(for state: ATCState) -> UNICOMEvent? {
-        switch state {
-        case .groundTaxi, .pushbackTaxi: return .taxiingToRunway
-        case .towerDeparture: return .takingRunway
-        case .initialClimb, .departure: return .departingRunway
-        case .approach: return .inbound
-        case .final: return .onFinal
-        case .landing: return .onFinal
-        case .runwayExit, .groundArrival: return .clearOfRunway
-        case .parked: return .taxiingToParking
-        default: return nil
-        }
-    }
-
-    private func unicomIdent(for state: ATCState) -> String {
-        let arrival = [.descent, .approach, .final, .landing, .runwayExit, .groundArrival, .parked].contains(state)
-        if let near = aircraftState.nearestAirport, !near.isEmpty { return near }
-        return arrival ? flightPlan.destination : flightPlan.departure
     }
 
     private func updateAssignedAltitude(for state: ATCState, context c: ATCContext) {

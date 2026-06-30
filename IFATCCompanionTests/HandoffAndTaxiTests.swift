@@ -67,7 +67,6 @@ final class HandoffAndTaxiTests: XCTestCase {
         let model = AppModel()
         model.settings.voiceEnabled = false
         model.settings.mockMode = false
-        model.unicom.mode = .off
         var plan = FlightPlan()
         plan.airline = "United"; plan.flightNumber = "598"
         plan.departure = "KIAH"; plan.destination = "KMSP"

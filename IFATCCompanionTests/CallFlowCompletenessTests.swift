@@ -54,16 +54,4 @@ final class CallFlowCompletenessTests: XCTestCase {
         XCTAssertEqual(ATCState.engineStart.facility, .ramp)
         XCTAssertEqual(ATCState.groundTaxi.facility, .ground)
     }
-
-    /// Every UNICOM event maps to an intent/status broadcast — never a clearance.
-    func testUNICOMEventsAreIntentOnly() {
-        let validator = PhraseologyValidator()
-        for event in UNICOMEvent.allCases {
-            let msg = event.broadcast(ident: "Houston", runway: "17R").lowercased()
-            XCTAssertFalse(msg.contains("cleared to land"), "\(event) sent a landing clearance")
-            XCTAssertFalse(msg.contains("cleared for takeoff"), "\(event) sent a takeoff clearance")
-            XCTAssertFalse(msg.contains("pushback approved"), "\(event) sent ramp approval")
-            XCTAssertTrue(validator.isClean(msg))
-        }
-    }
 }

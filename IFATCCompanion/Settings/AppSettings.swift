@@ -95,9 +95,6 @@ final class AppSettings: ObservableObject {
     /// Flight level at which Departure hands off to Center (TRACON ceiling), e.g. 180.
     @Published var traconCeilingFL: Int { didSet { save(traconCeilingFL, .traconCeilingFL) } }
 
-    // UNICOM
-    @Published var unicomModeRaw: String { didSet { save(unicomModeRaw, .unicomMode) } }
-
     // Weather
     @Published var routeCorridorNM: Double { didSet { save(routeCorridorNM, .routeCorridorNM) } }
     @Published var altitudeBandFt: Double { didSet { save(altitudeBandFt, .altitudeBandFt) } }
@@ -151,8 +148,6 @@ final class AppSettings: ObservableObject {
         initialClimbAltitudeFt = defaults.object(forKey: Key.initialClimbAltitudeFt.rawValue) as? Int ?? 5000
         traconCeilingFL = defaults.object(forKey: Key.traconCeilingFL.rawValue) as? Int ?? 180
 
-        unicomModeRaw = defaults.string(forKey: Key.unicomMode.rawValue) ?? "preview"
-
         routeCorridorNM = defaults.object(forKey: Key.routeCorridorNM.rawValue) as? Double ?? 100
         altitudeBandFt = defaults.object(forKey: Key.altitudeBandFt.rawValue) as? Double ?? 5000
         weatherBaseURL = defaults.string(forKey: Key.weatherBaseURL.rawValue) ?? "https://aviationweather.gov/api/data"
@@ -189,7 +184,6 @@ final class AppSettings: ObservableObject {
         phraseologyMode = other.phraseologyMode; digitStyle = other.digitStyle
         initialClimbAltitudeFt = other.initialClimbAltitudeFt
         traconCeilingFL = other.traconCeilingFL
-        unicomModeRaw = other.unicomModeRaw
         routeCorridorNM = other.routeCorridorNM; altitudeBandFt = other.altitudeBandFt
         weatherBaseURL = other.weatherBaseURL
         debugLogging = other.debugLogging; mockMode = other.mockMode
@@ -207,7 +201,6 @@ final class AppSettings: ObservableObject {
         case voicePilot, speakPilot
         case phraseologyMode, digitStyle
         case initialClimbAltitudeFt, traconCeilingFL
-        case unicomMode
         case routeCorridorNM, altitudeBandFt, weatherBaseURL
         case debugLogging, mockMode
     }

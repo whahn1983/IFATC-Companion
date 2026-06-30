@@ -9,7 +9,6 @@ enum ATCFacility: String, CaseIterable, Codable, Identifiable {
     case departure
     case center
     case approach
-    case unicom
 
     var id: String { rawValue }
 
@@ -18,7 +17,7 @@ enum ATCFacility: String, CaseIterable, Codable, Identifiable {
     var isFAAATC: Bool {
         switch self {
         case .clearance, .ground, .tower, .departure, .center, .approach: return true
-        case .ramp, .unicom: return false
+        case .ramp: return false
         }
     }
 
@@ -31,7 +30,6 @@ enum ATCFacility: String, CaseIterable, Codable, Identifiable {
         case .departure: return "Departure"
         case .center: return "Center"
         case .approach: return "Approach"
-        case .unicom: return "UNICOM"
         }
     }
 
@@ -45,7 +43,6 @@ enum ATCFacility: String, CaseIterable, Codable, Identifiable {
         case .departure: return "Departure"
         case .center: return "Center"
         case .approach: return "Approach"
-        case .unicom: return "UNICOM"
         }
     }
 
@@ -59,7 +56,6 @@ enum ATCFacility: String, CaseIterable, Codable, Identifiable {
         case .departure: return "airplane.departure"
         case .center: return "globe.americas"
         case .approach: return "airplane.arrival"
-        case .unicom: return "antenna.radiowaves.left.and.right"
         }
     }
 }

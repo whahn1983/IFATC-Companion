@@ -19,7 +19,6 @@ struct SettingsView: View {
                 pilotVoiceSection
                 phraseologySection
                 automationSection
-                unicomSection
                 weatherSection
                 etiquetteSection
                 advancedSection
@@ -163,20 +162,6 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - UNICOM
-
-    private var unicomSection: some View {
-        Section("UNICOM Automation") {
-            Picker("Mode", selection: Binding(
-                get: { model.currentUnicomMode },
-                set: { settings.unicomModeRaw = $0.rawValue })) {
-                ForEach(UNICOMMode.allCases) { Text($0.title).tag($0) }
-            }
-            Text("Preview-then-send shows each broadcast for confirmation. Auto-send only sends routine, trusted events.")
-                .font(.caption).foregroundStyle(.secondary)
-        }
-    }
-
     // MARK: - Weather
 
     private var weatherSection: some View {
@@ -206,7 +191,7 @@ struct SettingsView: View {
     private var etiquetteSection: some View {
         Section("Multiplayer Etiquette") {
             Label {
-                Text("IFATC Companion is **not** staffed ATC and must not impersonate live controllers. UNICOM actions announce your own pilot intentions only. Always yield to real controllers when a frequency is staffed.")
+                Text("IFATC Companion is **not** staffed ATC and must not impersonate live controllers. Always yield to real controllers when a frequency is staffed.")
                     .font(.footnote)
             } icon: {
                 Image(systemName: "exclamationmark.shield").foregroundStyle(.orange)
