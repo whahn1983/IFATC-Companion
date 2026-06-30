@@ -152,7 +152,7 @@ struct SubscriptionView: View {
             .padding(.vertical, 4)
         }
         .buttonStyle(.borderedProminent)
-        .tint(plan == .annual ? .green : .accentColor)
+        .tint(.accentColor)
         .disabled(product == nil || isPurchasing || entitlements.hasLiveAccess)
     }
 
