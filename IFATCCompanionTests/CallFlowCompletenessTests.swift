@@ -10,9 +10,12 @@ final class CallFlowCompletenessTests: XCTestCase {
     private func engine() -> PhraseologyEngine { PhraseologyEngine(digitStyle: .individual, mode: .faa) }
 
     /// Substantive states that must always produce a controller transmission.
+    /// `.cruise` is intentionally excluded: Center establishes radar contact and
+    /// clears the climb to cruise at the TRACON-ceiling check-in, so reaching the
+    /// cruise level itself is silent (no redundant second "radar contact").
     private let substantive: [ATCState] = [
         .clearance, .pushback, .engineStart, .groundTaxi, .lineUpWait,
-        .towerDeparture, .initialClimb, .departure, .climb, .cruise,
+        .towerDeparture, .initialClimb, .departure, .climb,
         .descent, .approach, .final, .landing, .runwayExit, .groundArrival
     ]
 

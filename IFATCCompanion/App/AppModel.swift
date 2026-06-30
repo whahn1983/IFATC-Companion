@@ -107,11 +107,13 @@ final class AppModel: ObservableObject {
         if isPreDeparture {
             switch currentFacility {
             case .clearance:
-                // Offer the IFR clearance until it's issued; afterwards the next step
-                // is the pushback (Ramp / Ground).
+                // Offer the IFR clearance until it's issued. The push is NOT offered
+                // here — the clearance ends by telling the pilot to contact Ramp (or
+                // Ground) for the pushback, so the Pushback button appears only after
+                // they tune that frequency, never under Clearance.
                 let beforeClearance = stateMachine.current == .notConnected
                     || stateMachine.current == .connectedIdle
-                return beforeClearance ? [.clearance] : [.pushback]
+                return beforeClearance ? [.clearance] : []
             case .ramp:
                 // Tuning to Ramp does not transmit, so the push must be requested
                 // here. Before the push: offer Pushback. After it: engine start, then
@@ -123,7 +125,13 @@ final class AppModel: ObservableObject {
             case .ground:
                 // On Ground only the taxi is requested. "Ready for departure" is a
                 // Tower call (it addresses Tower while holding short), so it is offered
-                // only once the pilot has tuned Tower — never on Ground.
+                // only once the pilot has tuned Tower — never on Ground. The exception
+                // is a no-ramp airport, where the push happens on Ground: offer it
+                // there (and only before it has been done).
+                let prePush = [.notConnected, .connectedIdle, .clearance].contains(stateMachine.current)
+                if prePush, buildContext(for: stateMachine.current).pushbackFacility == .ground {
+                    return [.pushback, .taxi]
+                }
                 return [.taxi]
             case .tower:
                 return [.ready, .takeoff]
@@ -238,6 +246,13 @@ final class AppModel: ObservableObject {
     /// does not clear the takeoff the instant the nose swings onto the centerline.
     var takeoffClearanceDelay: TimeInterval = 5
     private var takeoffClearanceTimer: Task<Void, Never>?
+
+    /// Aircraft altitude (ft MSL) captured when the takeoff clearance is issued, so
+    /// the Tower→Departure hand-off can be held until the aircraft has actually
+    /// climbed out (~2,000 ft above the field) even when Infinite Flight does not
+    /// expose AGL. Without this the departure call could fire the instant after the
+    /// takeoff clearance — "one right after the other" on the runway.
+    private var liftoffAltitudeMSL: Double = 0
 
     /// True once the arrival "monitor ramp to the gate" call has been issued, so the
     /// staged arrival (proceed-to-gate → monitor → flight complete) never collapses
@@ -723,6 +738,9 @@ final class AppModel: ObservableObject {
             post(engine.handoff(cs: c.callsign, from: fromFacility, to: toFacility,
                                 frequency: frequency(for: toFacility, context: c)), speak: speak)
         }
+        // Capture the field altitude at takeoff so the climb-out hand-off can be
+        // held until the aircraft is well above the runway (see adjustedAirborneTarget).
+        if target == .towerDeparture { liftoffAltitudeMSL = aircraftState.altitudeMSL ?? 0 }
         updateAssignedAltitude(for: target, context: c)
         post(tx, speak: speak)
         // An automatic call that carries a read-back instruction closes the gate:
@@ -1114,11 +1132,13 @@ final class AppModel: ObservableObject {
 
         // Hold Tower → Departure until the aircraft is through ~2,000 ft AGL. Handing
         // off the instant the wheels leave the ground clears the pilot "direct" to the
-        // first filed fix while it's still the runway-end waypoint just ahead — so wait
-        // for the climb to carry past it before Departure issues the direct-to.
-        if stateMachine.current == .towerDeparture, mapped == .initialClimb || mapped == .climb,
-           let agl = state.altitudeAGL, agl < 2000 {
-            return .towerDeparture
+        // first filed fix while it's still the runway-end waypoint just ahead, and
+        // stacks the departure call right on top of the takeoff clearance — so wait for
+        // the climb to carry past it first. When Infinite Flight does not expose AGL,
+        // fall back to the altitude gained since the takeoff clearance was issued.
+        if stateMachine.current == .towerDeparture, mapped == .initialClimb || mapped == .climb {
+            let agl = state.altitudeAGL ?? max(0, (state.altitudeMSL ?? 0) - liftoffAltitudeMSL)
+            if agl < 2000 { return .towerDeparture }
         }
 
         // Departure keeps the climb until passing the TRACON ceiling, then Center.
@@ -1453,7 +1473,18 @@ final class AppModel: ObservableObject {
         } else {
             directFix = firstWaypoint
         }
-        let intercept = firstLocated?.coordinate ?? airports.coordinate(for: flightPlan.destination)
+        // Initial departure heading intercepts the first fix off the runway: the
+        // SID's first published fix when a SID is filed, otherwise the first filed
+        // waypoint after the runway. The SID fix is matched to a located flight-plan
+        // waypoint so it carries a coordinate; falls back to the first located
+        // waypoint, then the destination bearing, when no fix can be located.
+        let sidFirstFix: Waypoint? = sidProc?.fixes.lazy.compactMap { name in
+            flightPlan.waypoints.first {
+                $0.coordinate != nil && $0.name.caseInsensitiveCompare(name) == .orderedSame
+            }
+        }.first
+        let intercept = (sidFirstFix ?? firstLocated)?.coordinate
+            ?? airports.coordinate(for: flightPlan.destination)
         let depHeading: Int
         if let depCoord, let intercept {
             depHeading = Int(Geo.bearing(from: depCoord, to: intercept).rounded())
@@ -1889,21 +1920,27 @@ final class AppModel: ObservableObject {
 
     func requestRideReport() {
         let c = buildContext(for: atcState)
+        let facility = currentFacility
         postPilot(pilotEngine.requestRideReports(context: c))
         Task {
             await refreshWeather()
             recomputeRideItems()
             post(rideEngine.rideReport(assessment: rideAssessment, items: rideReportItems, callsign: c.callsign), speak: true)
+            // Acknowledge the report — an informational reply, so a courtesy "Roger".
+            postPilot(pilotEngine.roger(context: c, facility: facility))
         }
     }
 
     func requestDestinationWeather() {
         let c = buildContext(for: atcState)
+        let facility = currentFacility
         let dest = flightPlan.destination
         postPilot(pilotEngine.requestWeather(context: c, airport: dest.isEmpty ? "destination" : dest))
         Task {
             await refreshWeather()
             post(rideEngine.destinationWeather(metar: destinationMETAR, callsign: c.callsign, icao: dest), speak: true)
+            // Acknowledge the weather read-out with a courtesy "Roger".
+            postPilot(pilotEngine.roger(context: c, facility: facility))
         }
     }
 

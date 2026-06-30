@@ -170,9 +170,6 @@ struct ATCStateMachine {
             // Center's first call after the Departure hand-off: radar contact, then
             // the clearance up to the cruising altitude.
             return engine.centerRadarContactClimb(cs: c.callsign, altitude: c.cruiseAltitude)
-        case .cruise:
-            // On reaching cruise, a brief center check-in/radar contact.
-            return engine.radarContact(cs: c.callsign, facility: .center)
         case .descent:
             // A filed STAR yields "descend via the <STAR> arrival"; otherwise a plain
             // "descend and maintain <alt>". The target is an intermediate altitude
@@ -208,6 +205,11 @@ struct ATCStateMachine {
             return engine.exitRunwayContactGround(cs: c.callsign, frequency: c.groundFrequency)
         case .groundArrival:
             return engine.taxiToParking(cs: c.callsign, gate: c.gate, via: c.parkingTaxiway)
+        case .cruise:
+            // No call on reaching cruise: Center already established radar contact and
+            // cleared the climb to the cruising altitude during the climb (at the
+            // TRACON-ceiling check-in), so a second "radar contact" here is redundant.
+            return nil
         case .notConnected, .connectedIdle, .holdingShort, .runwayCrossing,
              .topOfDescent, .parked, .abnormal, .center:
             return nil

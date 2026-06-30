@@ -98,6 +98,20 @@ final class RampFlowTests: XCTestCase {
         XCTAssertTrue(has(model, "taxi to runway"), "Ground should issue the taxi clearance")
     }
 
+    /// After the IFR clearance, Pushback is NOT offered while still on Clearance — the
+    /// pilot must tune the Ramp frequency first, where the Pushback button then appears.
+    func testPushbackOfferedOnlyAfterTuningRamp() {
+        let model = makeModel()
+        model.requestClearance(); model.readBack()
+        XCTAssertEqual(model.currentFacility, .clearance)
+        XCTAssertFalse(model.availableActions.contains(.pushback),
+                       "Pushback must not show under Clearance")
+
+        model.tuneTo(.ramp)
+        XCTAssertTrue(model.availableActions.contains(.pushback),
+                      "Pushback should appear once tuned to Ramp")
+    }
+
     /// The pushback request uses the departure gate, never the arrival gate.
     func testPushbackUsesDepartureGateNotArrivalGate() {
         let model = makeModel()

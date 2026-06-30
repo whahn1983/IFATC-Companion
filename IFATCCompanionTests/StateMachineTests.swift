@@ -102,6 +102,17 @@ final class StateMachineTests: XCTestCase {
         XCTAssertTrue(tx?.displayText.contains("pushback approved") ?? false)
     }
 
+    func testReachingCruiseProducesNoExtraRadarContact() {
+        // Center already established radar contact and cleared the climb to cruise at
+        // the TRACON-ceiling check-in, so reaching the cruise level itself is silent —
+        // no second "radar contact" call. The state still advances.
+        var m = makeMachine()
+        m.setConnected()
+        let tx = m.advance(to: .cruise, context: TestSupport.context(cruise: 37000))
+        XCTAssertEqual(m.current, .cruise)
+        XCTAssertNil(tx, "reaching cruise should not emit a controller call")
+    }
+
     func testEngineStartTransmission() {
         var m = makeMachine()
         m.setConnected()
