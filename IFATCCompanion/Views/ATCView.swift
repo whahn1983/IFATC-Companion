@@ -7,14 +7,17 @@ struct ATCView: View {
     @EnvironmentObject var connect: IFConnectManager
     @EnvironmentObject var speech: SpeechService
     @EnvironmentObject var recognizer: SpeechRecognitionService
+    @EnvironmentObject var entitlements: EntitlementManager
 
     @State private var showClearFlightConfirm = false
+    @State private var showSubscription = false
     @FocusState private var callsignFocused: Bool
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 14) {
+                    if !entitlements.hasLiveAccess { subscribeBanner }
                     statusHeader
                     if model.liveATC.humanControllerActive { standbyBanner }
                     currentTransmissionCard
@@ -49,7 +52,42 @@ struct ATCView: View {
             } message: {
                 Text("Resets the conversation and starts a new flight from the gate. Your settings and flight plan are kept.")
             }
+            .sheet(isPresented: $showSubscription) {
+                SubscriptionView().environmentObject(entitlements)
+            }
         }
+    }
+
+    // MARK: - Subscribe banner
+
+    /// Compact upsell shown at the top of the ATC view only while the user has no
+    /// active subscription. Tapping it opens the subscription screen. Hidden
+    /// entirely once Live Connected Mode is unlocked.
+    private var subscribeBanner: some View {
+        Button {
+            showSubscription = true
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "lock.fill")
+                Text("Live Mode locked — Subscribe")
+                    .font(.subheadline.weight(.semibold))
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right").font(.caption)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.accentColor.opacity(0.18))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color.accentColor.opacity(0.5), lineWidth: 1)
+            )
+            .foregroundStyle(Color.accentColor)
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: - Header

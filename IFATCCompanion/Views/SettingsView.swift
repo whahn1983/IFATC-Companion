@@ -6,13 +6,16 @@ struct SettingsView: View {
     @EnvironmentObject var settings: AppSettings
     @EnvironmentObject var connect: IFConnectManager
     @EnvironmentObject var profiles: PhraseologyProfileStore
+    @EnvironmentObject var entitlements: EntitlementManager
     @State private var showResetConfirm = false
+    @State private var showSubscription = false
 
     private let voices = SpeechService.availableVoices()
 
     var body: some View {
         NavigationStack {
             Form {
+                subscriptionSection
                 connectionSection
                 voiceSection
                 facilityVoiceSection
@@ -25,16 +28,59 @@ struct SettingsView: View {
             }
             .navigationTitle("Settings")
             .scrollContentBackground(.visible)
+            .sheet(isPresented: $showSubscription) {
+                SubscriptionView().environmentObject(entitlements)
+            }
+        }
+    }
+
+    // MARK: - Subscription
+
+    private var subscriptionSection: some View {
+        Section {
+            Button {
+                showSubscription = true
+            } label: {
+                HStack {
+                    Label("Manage Subscription", systemImage: "crown")
+                    Spacer()
+                    Text(entitlements.statusText)
+                        .font(.caption)
+                        .foregroundStyle(entitlements.hasLiveAccess ? Color.green : .secondary)
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .tint(.primary)
+            Button {
+                Task { await entitlements.restorePurchases() }
+            } label: {
+                Label("Restore Purchases", systemImage: "arrow.clockwise")
+            }
+        } header: {
+            Text("Subscription")
+        } footer: {
+            Text(entitlements.hasLiveAccess
+                 ? "Live Connected Mode is active. Manage or cancel anytime in your Apple Account settings."
+                 : "Mock Mode is free forever. Subscribe to unlock Live Connected Mode.")
         }
     }
 
     // MARK: - Connection
+
+    private var liveLocked: Bool { !entitlements.hasLiveAccess }
 
     private var connectionSection: some View {
         Section("Infinite Flight Connection") {
             Toggle("Mock Mode (no Infinite Flight needed)", isOn: Binding(
                 get: { settings.mockMode },
                 set: { model.toggleMockMode($0) }))
+                .disabled(liveLocked)
+            if liveLocked {
+                Text("Live Connected Mode requires an active subscription.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             HStack {
                 Text("Host / IP")
                 Spacer()
@@ -45,6 +91,7 @@ struct SettingsView: View {
                     .keyboardType(.numbersAndPunctuation)
                     .frame(maxWidth: 180)
             }
+            .disabled(liveLocked)
             HStack {
                 Text("Port")
                 Spacer()
@@ -53,13 +100,15 @@ struct SettingsView: View {
                     .keyboardType(.numberPad)
                     .frame(maxWidth: 100)
             }
+            .disabled(liveLocked)
             Toggle("Auto-discover on local network", isOn: $settings.autoDiscover)
+                .disabled(liveLocked)
             Toggle("Keep screen awake", isOn: $settings.keepScreenAwake)
             if settings.keepScreenAwake {
                 Text("Prevents the screen from locking, which would drop the Infinite Flight connection.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            if !settings.mockMode {
+            if !settings.mockMode && entitlements.hasLiveAccess {
                 Button {
                     model.reconnect()
                 } label: {
