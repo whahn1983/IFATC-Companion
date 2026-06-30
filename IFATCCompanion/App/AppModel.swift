@@ -5,6 +5,14 @@ import CoreLocation
 import UIKit
 #endif
 
+/// A pilot response-button action. Used to surface only the buttons that make
+/// sense for the controller the pilot is currently tuned to and the phase of
+/// flight, instead of showing every button all the time.
+enum PilotAction: CaseIterable {
+    case clearance, pushback, engineStart, taxi, ready, takeoff
+    case requestHigher, requestLower, vectors, approach, rideReport, destWx, checkIn
+}
+
 /// Central coordinator. Owns all services, holds the published app state the UI
 /// renders, and turns live/mock aircraft state into deterministic ATC dialogue.
 @MainActor
@@ -80,6 +88,73 @@ final class AppModel: ObservableObject {
     var canContactRamp: Bool {
         guard atcState != .parked else { return false }
         return isPreDeparture || isArrivalRamp
+    }
+
+    // MARK: - Response-button visibility
+    //
+    // The response buttons are tied to the controller the pilot is currently tuned
+    // to (`currentFacility`) and gated by the phase of flight, so only the calls
+    // that make sense right now are shown — e.g. Clearance at the gate, push/start
+    // on Ramp, taxi on Ground, takeoff on Tower, and the enroute/arrival requests on
+    // their respective controllers. This drives the ATC view's button grid.
+
+    /// The response-button actions to surface right now, keyed off the tuned facility
+    /// and the flight phase.
+    var availableActions: Set<PilotAction> {
+        // Defer entirely to a human controller when one is staffing the position.
+        if companionStandby { return [] }
+
+        if isPreDeparture {
+            switch currentFacility {
+            case .clearance:
+                // Offer the IFR clearance until it's issued; afterwards the next step
+                // is the pushback (Ramp / Ground).
+                let beforeClearance = stateMachine.current == .notConnected
+                    || stateMachine.current == .connectedIdle
+                return beforeClearance ? [.clearance] : [.pushback]
+            case .ramp:
+                // Ramp works engine start and the push; a taxi request hands off to
+                // Ground (handled in requestTaxi).
+                return [.engineStart, .taxi]
+            case .ground:
+                // On Ground for the taxi. "Ready for departure" only makes sense once
+                // the taxi clearance has actually been issued — until then (e.g. right
+                // after the Ramp hand-off) only Taxi is offered so the flow can't skip
+                // the taxi clearance.
+                return stateMachine.current == .groundTaxi ? [.taxi, .ready] : [.taxi]
+            case .tower:
+                return [.ready, .takeoff]
+            default:
+                return [.clearance]
+            }
+        }
+
+        // Flight finished at the gate — nothing left to request.
+        if stateMachine.current == .parked { return [] }
+
+        // Airborne / arrival — tie the requests to the controller currently tuned.
+        switch currentFacility {
+        case .departure:
+            return [.checkIn, .requestHigher, .requestLower]
+        case .center:
+            return [.requestHigher, .requestLower, .rideReport, .destWx, .checkIn]
+        case .approach:
+            return [.checkIn, .vectors, .approach, .requestLower, .destWx]
+        case .tower, .ground, .ramp, .clearance, .unicom:
+            // Tower (landing), Ground (taxi-in) and arrival Ramp progress with a
+            // check-in / the Ramp button; no enroute requests apply.
+            return [.checkIn]
+        }
+    }
+
+    /// The frequency-tune buttons worth showing right now: the controller currently
+    /// working the flight plus the next distinct controller ahead, so the pilot can
+    /// tune ahead for the upcoming hand-off without every facility cluttering the
+    /// page (e.g. Tower doesn't appear until the taxi is underway).
+    var relevantFacilities: Set<ATCFacility> {
+        var set: Set<ATCFacility> = [currentFacility]
+        if let next = nextDistinctFacility(after: stateMachine.current) { set.insert(next) }
+        return set
     }
 
     // Weather state.
@@ -907,6 +982,20 @@ final class AppModel: ObservableObject {
         return order.last { controller(for: $0) == facility }
     }
 
+    /// The next controller (different from the one currently tuned) the flight will
+    /// be handed to, searching forward through the gate-to-gate order from `current`.
+    /// Nil when no later state is worked by a different facility. Used to decide which
+    /// frequency buttons are worth surfacing now.
+    private func nextDistinctFacility(after current: ATCState) -> ATCFacility? {
+        let order = Self.flowOrder
+        guard let idx = order.firstIndex(of: current) else { return nil }
+        for state in order[(idx + 1)...] {
+            let facility = controller(for: state)
+            if facility != currentFacility { return facility }
+        }
+        return nil
+    }
+
     /// Manually tune the radio to a facility. Switching frequency does **not**
     /// check in or advance the conversation on its own: it only moves the radio to
     /// the new controller. From here the pilot either taps Check In to call up the
@@ -1096,7 +1185,7 @@ final class AppModel: ObservableObject {
     /// (local/company, non-FAA) block-in call followed by a System "flight
     /// complete" advisory.
     private func announceArrival() {
-        let c = buildContext(for: .parked)
+        let c = buildContext(for: .parked, arrivalOverride: true)
         let display = "\(c.callsign.display) parked\(c.gate.isEmpty ? "" : " at \(c.gate)"). Flight complete."
         let spoken = "\(c.callsign.spoken) parked. Flight complete."
         post(ATCTransmission(sender: .system, facility: .ramp, displayText: display, spokenText: spoken), speak: false)
@@ -1412,7 +1501,7 @@ final class AppModel: ObservableObject {
             rampProfile: rampProfile,
             pushDirection: pushDirection,
             rampSpot: rampSpot,
-            gate: flightPlan.gate,
+            gate: arrival ? flightPlan.arrivalGate : flightPlan.departureGate,
             departureHeading: ((depHeading % 360) + 360) % 360,
             firstFixName: directFix?.name ?? "",
             traconCeiling: currentTraconCeiling,
@@ -1474,7 +1563,8 @@ final class AppModel: ObservableObject {
         plan.sid = settings.sid
         plan.star = settings.star
         plan.approach = settings.approach
-        plan.gate = settings.gate
+        plan.departureGate = settings.departureGate
+        plan.arrivalGate = settings.arrivalGate
         plan.manualOverride = !settings.departure.isEmpty || !settings.destination.isEmpty
         if settings.mockMode { plan.waypoints = mock.route.waypoints }
         flightPlan = plan
@@ -1501,7 +1591,8 @@ final class AppModel: ObservableObject {
         settings.sid = ""
         settings.star = ""
         settings.approach = ""
-        settings.gate = ""
+        settings.departureGate = ""
+        settings.arrivalGate = ""
         // Re-sync drops manualOverride (both endpoints are now empty) so Connect data
         // is no longer pinned back by the override flag.
         syncFlightPlanFromSettings()
@@ -1704,7 +1795,39 @@ final class AppModel: ObservableObject {
     }
 
     func requestTaxi() {
+        // While still on the departure Ramp (pushed back / engines started), Ramp
+        // does not issue the taxi clearance — it only hands the pilot to Ground.
+        // The pilot then requests taxi again on Ground for the actual clearance.
+        if onDepartureRampPreTaxi {
+            handOffDepartureRampToGround()
+            return
+        }
         groundFlow(pilotEngine.requestTaxi(context: buildContext(for: .groundTaxi)), to: .groundTaxi)
+    }
+
+    /// True when the pilot is still on the departure Ramp frequency (after pushback /
+    /// engine start) and Ramp has not yet handed them to Ground. While true, a taxi
+    /// request makes Ramp hand off to Ground only; Ground issues the taxi clearance
+    /// once the pilot re-requests taxi there. No-ramp airports (pilot already on
+    /// Ground for the push) taxi in a single step.
+    private var onDepartureRampPreTaxi: Bool {
+        guard !hasDeparted, currentFacility == .ramp,
+              [.pushback, .engineStart].contains(stateMachine.current) else { return false }
+        return buildContext(for: .pushback).rampProfile.rampType != .none
+    }
+
+    /// Ramp hands the pilot to Ground for taxi. Posts the pilot's "ready to taxi" and
+    /// Ramp's "contact Ground" — but does NOT advance the flow or issue a taxi
+    /// clearance. Marks Ground as the tuned facility so the next taxi request (and the
+    /// response buttons) are on Ground, where the actual taxi clearance is given.
+    private func handOffDepartureRampToGround() {
+        let c = buildContext(for: .engineStart)
+        postPilot(rampEngine.pushComplete(cs: c.callsign))
+        post(rampEngine.contactGround(cs: c.callsign, groundFrequency: c.groundFrequency,
+                                      spot: c.rampSpot), speak: true)
+        tunedFacility = .ground
+        currentFacility = .ground
+        persistSession()
     }
 
     /// Report ready for departure. Tower responds "line up and wait"; the Takeoff

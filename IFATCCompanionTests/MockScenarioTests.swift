@@ -52,7 +52,8 @@ final class MockScenarioTests: XCTestCase {
         model.requestClearance();        model.readBack()
         model.requestPushback();         model.readBack()
         model.requestEngineStart();      model.readBack()
-        model.requestTaxi();             model.readBack()
+        model.requestTaxi();             model.readBack()   // Ramp hands off to Ground
+        model.requestTaxi();             model.readBack()   // Ground issues the taxi clearance
         model.reportReadyForDeparture(); model.readBack()   // line up and wait
 
         // Automatic, position-triggered controller calls (pilot reads back / checks

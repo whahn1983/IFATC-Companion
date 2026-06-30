@@ -71,7 +71,7 @@ final class HandoffAndTaxiTests: XCTestCase {
         var plan = FlightPlan()
         plan.airline = "United"; plan.flightNumber = "598"
         plan.departure = "KIAH"; plan.destination = "KMSP"
-        plan.gate = "B44"
+        plan.arrivalGate = "B44"
         plan.waypoints = model.mock.route.waypoints
         model.flightPlan = plan
 

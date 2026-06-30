@@ -229,7 +229,7 @@ struct ATCView: View {
         Card(title: "Tune Frequency", systemImage: "dial.medium") {
             VStack(alignment: .leading, spacing: 10) {
                 LazyVGrid(columns: gridColumns, spacing: 10) {
-                    ForEach(AppModel.tunableFacilities) { facility in
+                    ForEach(tunableFacilities) { facility in
                         FrequencyButton(title: facility.title,
                                         systemImage: facility.symbol,
                                         frequency: model.frequencyText(for: facility),
@@ -238,18 +238,26 @@ struct ATCView: View {
                             model.tuneTo(facility)
                         }
                     }
-                    FrequencyButton(title: "Ramp",
-                                    systemImage: "parkingsign",
-                                    frequency: model.isArrivalRamp ? "To Gate" : "Pushback",
-                                    active: model.currentFacility == .ramp,
-                                    enabled: model.canContactRamp) {
-                        model.contactRamp()
+                    if model.canContactRamp {
+                        FrequencyButton(title: "Ramp",
+                                        systemImage: "parkingsign",
+                                        frequency: model.isArrivalRamp ? "To Gate" : "Pushback",
+                                        active: model.currentFacility == .ramp,
+                                        enabled: true) {
+                            model.contactRamp()
+                        }
                     }
                 }
-                Text("Tap a controller to change frequency. Then tap Check In to call them, or make a request. You drive every frequency change.")
+                Text("Only the controllers you need now are shown. Tap one to change frequency, then tap Check In to call them or make a request. You drive every frequency change.")
                     .font(.caption2).foregroundStyle(.tertiary)
             }
         }
+    }
+
+    /// The frequency buttons worth showing right now — the current controller plus
+    /// the next one ahead — so the page isn't cluttered with every facility.
+    private var tunableFacilities: [ATCFacility] {
+        AppModel.tunableFacilities.filter { model.relevantFacilities.contains($0) }
     }
 
     // MARK: - Response buttons
@@ -257,10 +265,18 @@ struct ATCView: View {
     private var responseButtons: some View {
         Card(title: "Responses", systemImage: "hand.tap") {
             VStack(spacing: 10) {
-                if model.isPreDeparture {
-                    departureGroundGrid
+                let actions = orderedActions.filter { model.availableActions.contains($0) }
+                if actions.isEmpty {
+                    Text(model.liveATC.humanControllerActive
+                         ? "Follow the live controller."
+                         : "No requests right now — read back or wait for the next call.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
-                    enrouteGrid
+                    LazyVGrid(columns: gridColumns, spacing: 10) {
+                        ForEach(actions, id: \.self) { actionButton(for: $0) }
+                    }
                 }
                 acknowledgementGrid
                 pttPlaceholder
@@ -272,27 +288,44 @@ struct ATCView: View {
         Array(repeating: GridItem(.flexible(), spacing: 10), count: 3)
     }
 
-    /// Pilot-driven pre-departure flow, in order, so no phase is skipped.
-    private var departureGroundGrid: some View {
-        LazyVGrid(columns: gridColumns, spacing: 10) {
-            ActionButton(title: "Clearance", systemImage: "doc.text") { model.requestClearance() }
-            ActionButton(title: "Pushback", systemImage: "arrow.left.to.line") { model.requestPushback() }
-            ActionButton(title: "Engine Start", systemImage: "powerplug") { model.requestEngineStart() }
-            ActionButton(title: "Taxi", systemImage: "car") { model.requestTaxi() }
-            ActionButton(title: "Ready", systemImage: "flag.checkered") { model.reportReadyForDeparture() }
-            ActionButton(title: "Takeoff", systemImage: "airplane.departure", tint: .green) { model.requestTakeoff() }
-        }
+    /// Canonical display order for the response buttons (gate-to-gate, then the
+    /// enroute/arrival requests). The grid renders whichever of these are currently
+    /// available for the tuned controller and phase.
+    private var orderedActions: [PilotAction] {
+        [.clearance, .pushback, .engineStart, .taxi, .ready, .takeoff,
+         .checkIn, .requestHigher, .requestLower, .vectors, .approach,
+         .rideReport, .destWx]
     }
 
-    /// Enroute / arrival requests.
-    private var enrouteGrid: some View {
-        LazyVGrid(columns: gridColumns, spacing: 10) {
+    /// Map a pilot action to its labelled button wired to the model.
+    @ViewBuilder
+    private func actionButton(for action: PilotAction) -> some View {
+        switch action {
+        case .clearance:
+            ActionButton(title: "Clearance", systemImage: "doc.text") { model.requestClearance() }
+        case .pushback:
+            ActionButton(title: "Pushback", systemImage: "arrow.left.to.line") { model.requestPushback() }
+        case .engineStart:
+            ActionButton(title: "Engine Start", systemImage: "powerplug") { model.requestEngineStart() }
+        case .taxi:
+            ActionButton(title: "Taxi", systemImage: "car") { model.requestTaxi() }
+        case .ready:
+            ActionButton(title: "Ready", systemImage: "flag.checkered") { model.reportReadyForDeparture() }
+        case .takeoff:
+            ActionButton(title: "Takeoff", systemImage: "airplane.departure", tint: .green) { model.requestTakeoff() }
+        case .requestHigher:
             ActionButton(title: "Request Higher", systemImage: "arrow.up") { model.requestHigher() }
+        case .requestLower:
             ActionButton(title: "Request Lower", systemImage: "arrow.down") { model.requestLower() }
+        case .vectors:
             ActionButton(title: "Vectors", systemImage: "arrow.triangle.turn.up.right.diamond") { model.requestVectors() }
+        case .approach:
             ActionButton(title: "Approach", systemImage: "airplane.arrival") { model.requestApproach() }
+        case .rideReport:
             ActionButton(title: "Ride Report", systemImage: "wind") { model.requestRideReport() }
+        case .destWx:
             ActionButton(title: "Dest Wx", systemImage: "cloud.sun") { model.requestDestinationWeather() }
+        case .checkIn:
             ActionButton(title: "Check In", systemImage: "person.wave.2") { model.requestHandoff() }
         }
     }
