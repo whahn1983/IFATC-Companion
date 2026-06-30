@@ -36,9 +36,12 @@ struct FlightPlan: Equatable, Codable {
     var sid: String = ""
     var star: String = ""
     var approach: String = ""
+    /// Departure gate / stand identifier (e.g. "C12"). Manual-override only —
+    /// Infinite Flight does not expose it. Used by the pushback request at the gate.
+    var departureGate: String = ""
     /// Arrival gate / stand identifier (e.g. "B44"). Manual-override only — Infinite
     /// Flight does not expose it. Used by the arrival Ramp taxi-to-gate instruction.
-    var gate: String = ""
+    var arrivalGate: String = ""
     /// Intercept/initial altitude (ft MSL) for the approach — the first altitude in
     /// the approach section of the flight plan when known, else 0 (callers default).
     var approachInterceptAltitude: Int = 0

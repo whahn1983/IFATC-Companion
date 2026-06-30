@@ -79,6 +79,41 @@ final class RampFlowTests: XCTestCase {
         XCTAssertTrue(has(model, "Flight complete"), "parked at the gate should complete the flight")
     }
 
+    /// Requesting taxi while still on the Ramp hands the pilot to Ground only — it
+    /// must not issue the taxi clearance. The pilot then requests taxi again on
+    /// Ground for the actual clearance.
+    func testTaxiOnRampHandsOffToGroundBeforeClearing() {
+        let model = makeModel()
+        model.requestClearance();   model.readBack()
+        model.requestPushback();    model.readBack()
+        model.requestEngineStart(); model.readBack()
+        XCTAssertEqual(model.currentFacility, .ramp)
+
+        model.requestTaxi()
+        XCTAssertTrue(has(model, "contact Ground"), "Ramp should hand the pilot to Ground")
+        XCTAssertFalse(has(model, "taxi to runway"), "Ramp must not issue the taxi clearance")
+        XCTAssertEqual(model.currentFacility, .ground, "the pilot is now on Ground")
+
+        model.readBack()
+        model.requestTaxi()
+        XCTAssertTrue(has(model, "taxi to runway"), "Ground should issue the taxi clearance")
+    }
+
+    /// The pushback request uses the departure gate, never the arrival gate.
+    func testPushbackUsesDepartureGateNotArrivalGate() {
+        let model = makeModel()
+        model.flightPlan.departureGate = "C12"
+        model.flightPlan.arrivalGate = "B44"
+        model.requestClearance(); model.readBack()
+        model.requestPushback()
+
+        XCTAssertTrue(model.transcript.contains {
+            $0.sender == .pilot && $0.displayText.contains("C12")
+        }, "pushback should name the departure gate")
+        XCTAssertFalse(model.transcript.contains { $0.displayText.contains("B44") },
+                       "pushback must not name the arrival gate")
+    }
+
     /// The Ramp button is offered before departure and on arrival, but not once parked.
     func testCanContactRampGating() {
         let model = makeModel(mock: false)
