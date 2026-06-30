@@ -27,6 +27,10 @@ final class AppModel: ObservableObject {
     let mock: MockSimulatorFeed
     let phraseologyProfiles: PhraseologyProfileStore
     let speechRecognizer: SpeechRecognitionService
+    /// Owns the StoreKit subscription state. Live Connected Mode is available
+    /// only while `entitlements.hasLiveAccess` is true; otherwise the app is
+    /// locked to Mock Mode.
+    let entitlements: EntitlementManager
 
     private let weatherService: AviationWeatherService
 
@@ -295,6 +299,7 @@ final class AppModel: ObservableObject {
         let profiles = PhraseologyProfileStore()
         self.phraseologyProfiles = profiles
         self.speechRecognizer = SpeechRecognitionService()
+        self.entitlements = EntitlementManager()
         self.weatherService = AviationWeatherService(baseURL: settings.weatherBaseURL)
 
         var engine = PhraseologyEngine(digitStyle: settings.digitStyle, mode: settings.phraseologyMode)
@@ -341,7 +346,15 @@ final class AppModel: ObservableObject {
         speechRecognizer.onResult = { [weak self] text in self?.handleSpokenInput(text) }
 
         observeSettings()
+        observeEntitlements()
         syncFlightPlanFromSettings()
+
+        // Without an active subscription the app is locked to Mock Mode. Settle
+        // the mode before starting a feed so a lapsed subscriber never resumes in
+        // Live Connected Mode. The async entitlement refresh below re-checks once
+        // StoreKit responds and re-locks if needed.
+        if !entitlements.hasLiveAccess { settings.mockMode = true }
+
         diagnostics.log(.app, "IFATC Companion ready. Mock mode: \(settings.mockMode).")
 
         if settings.mockMode {
@@ -349,6 +362,27 @@ final class AppModel: ObservableObject {
         } else {
             startLive()
         }
+
+        // Bring up StoreKit: listen for transaction updates, then load products
+        // and re-evaluate entitlements. The observer below enforces the lock.
+        Task {
+            await entitlements.startListeningForTransactions()
+            await entitlements.refresh()
+        }
+    }
+
+    /// Enforce the Mock-Mode lock from the subscription state: whenever Live
+    /// access is lost (expired, revoked, never purchased) force Mock Mode on.
+    private func observeEntitlements() {
+        entitlements.$hasLiveAccess
+            .sink { [weak self] hasAccess in
+                guard let self else { return }
+                if !hasAccess && !self.settings.mockMode {
+                    self.diagnostics.log(.app, "Live subscription not active — locking to Mock Mode.")
+                    self.toggleMockMode(true)
+                }
+            }
+            .store(in: &cancellables)
     }
 
     /// Disable the iOS idle timer so the screen stays on while the app is open.
@@ -491,6 +525,13 @@ final class AppModel: ObservableObject {
     }
 
     func toggleMockMode(_ on: Bool) {
+        // Live Connected Mode requires an active subscription. Without one, keep
+        // the app pinned to Mock Mode regardless of the requested value.
+        guard on || entitlements.hasLiveAccess else {
+            settings.mockMode = true
+            if !mock.running { startMock() }
+            return
+        }
         settings.mockMode = on
         if on { startMock() } else { startLive() }
     }

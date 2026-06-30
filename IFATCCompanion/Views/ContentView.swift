@@ -28,5 +28,6 @@ struct ContentView: View {
         .environmentObject(model.mock)
         .environmentObject(model.phraseologyProfiles)
         .environmentObject(model.speechRecognizer)
+        .environmentObject(model.entitlements)
         .preferredColorScheme(.dark)
 }

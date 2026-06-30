@@ -1,0 +1,95 @@
+{
+  "appPolicies" : {
+    "eula" : "",
+    "policies" : [
+      {
+        "locale" : "en_US",
+        "policyText" : "",
+        "policyURL" : ""
+      }
+    ]
+  },
+  "identifier" : "A1B2C3D4",
+  "nonRenewingSubscriptions" : [
+
+  ],
+  "products" : [
+
+  ],
+  "settings" : {
+    "_applicationInternalID" : "",
+    "_developerTeamID" : "JFTUN6NUAB",
+    "_failTransactionsEnabled" : false,
+    "_lastSynchronizedDate" : 0,
+    "_locale" : "en_US",
+    "_storefront" : "USA",
+    "_storeKitErrors" : [
+
+    ]
+  },
+  "subscriptionGroups" : [
+    {
+      "id" : "21490001",
+      "localizations" : [
+
+      ],
+      "name" : "Live Connected Mode",
+      "subscriptions" : [
+        {
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
+          "displayPrice" : "2.99",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "21490011",
+          "introductoryOffer" : null,
+          "localizations" : [
+            {
+              "description" : "Use IFATC Companion on iPhone while flying Infinite Flight on iPad.",
+              "displayName" : "Live Connected Monthly",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "com.h3consultingpartners.ifatccompanion.live.monthly",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Live Connected Monthly",
+          "subscriptionGroupID" : "21490001",
+          "type" : "RecurringSubscription"
+        },
+        {
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
+          "displayPrice" : "24.99",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "21490012",
+          "introductoryOffer" : null,
+          "localizations" : [
+            {
+              "description" : "Use IFATC Companion on iPhone while flying Infinite Flight on iPad. Best value.",
+              "displayName" : "Live Connected Annual",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "com.h3consultingpartners.ifatccompanion.live.annual",
+          "recurringSubscriptionPeriod" : "P1Y",
+          "referenceName" : "Live Connected Annual",
+          "subscriptionGroupID" : "21490001",
+          "type" : "RecurringSubscription"
+        }
+      ]
+    }
+  ],
+  "version" : {
+    "major" : 4,
+    "minor" : 0
+  }
+}
