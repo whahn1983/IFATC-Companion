@@ -12,7 +12,6 @@ final class SpeechService: NSObject, ObservableObject {
 
     private let synthesizer = AVSpeechSynthesizer()
     private weak var settings: AppSettings?
-    private var sessionConfigured = false
 
     override init() {
         super.init()
@@ -38,7 +37,11 @@ final class SpeechService: NSObject, ObservableObject {
     func speak(_ transmission: ATCTransmission) {
         guard let settings, settings.voiceEnabled else { return }
         guard !transmission.spokenText.isEmpty else { return }
-        configureAudioSessionIfNeeded()
+        // Re-assert our playback session every time. Push-to-talk capture and system
+        // sounds reconfigure the shared audio session (record category, ducking),
+        // which otherwise leaves the synthesizer playing back at a reduced volume —
+        // this keeps the spoken volume consistent across those interruptions.
+        activatePlaybackSession()
 
         let isPilot = transmission.sender == .pilot
         let utterance = AVSpeechUtterance(string: transmission.spokenText)
@@ -51,6 +54,8 @@ final class SpeechService: NSObject, ObservableObject {
         // tell apart from the controller even when they share a system voice.
         let basePitch = Float(min(max(settings.speechPitch, 0.5), 2.0))
         utterance.pitchMultiplier = isPilot ? min(max(basePitch * 0.92, 0.5), 2.0) : basePitch
+        // Hold the spoken volume at the user's setting so it never drifts quiet.
+        utterance.volume = Float(min(max(settings.voiceVolume, 0), 1))
         utterance.preUtteranceDelay = 0.05
         utterance.postUtteranceDelay = 0.1
 
@@ -105,9 +110,10 @@ final class SpeechService: NSObject, ObservableObject {
 
     // MARK: - Audio session
 
-    private func configureAudioSessionIfNeeded() {
-        guard !sessionConfigured else { return }
-        sessionConfigured = true
+    /// Put the shared audio session back into the spoken-playback configuration and
+    /// activate it. Called before every utterance so a prior push-to-talk recording
+    /// session or a system sound can't leave playback ducked/quiet.
+    private func activatePlaybackSession() {
         #if canImport(UIKit)
         let session = AVAudioSession.sharedInstance()
         do {
@@ -118,7 +124,6 @@ final class SpeechService: NSObject, ObservableObject {
             try session.setActive(true)
         } catch {
             // Non-fatal: speech may still work; surface nothing to the user.
-            sessionConfigured = false
         }
         #endif
     }

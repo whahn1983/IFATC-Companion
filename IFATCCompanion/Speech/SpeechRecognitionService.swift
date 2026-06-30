@@ -123,5 +123,10 @@ final class SpeechRecognitionService: NSObject, ObservableObject {
         request = nil
         task = nil
         isListening = false
+        // Release the record session and let others (our playback session) resume, so
+        // the spoken voice doesn't come back quiet after a push-to-talk capture.
+        #if canImport(UIKit)
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        #endif
     }
 }

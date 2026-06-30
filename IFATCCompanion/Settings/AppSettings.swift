@@ -72,6 +72,10 @@ final class AppSettings: ObservableObject {
     @Published var defaultVoiceID: String { didSet { save(defaultVoiceID, .defaultVoiceID) } }
     @Published var speechRate: Double { didSet { save(speechRate, .speechRate) } }
     @Published var speechPitch: Double { didSet { save(speechPitch, .speechPitch) } }
+    /// Voice playback volume (0…1) applied to every spoken transmission. Kept
+    /// independent of the device volume so it stays consistent across PTT/system
+    /// audio interruptions.
+    @Published var voiceVolume: Double { didSet { save(voiceVolume, .voiceVolume) } }
     @Published var respectSilentSwitch: Bool { didSet { save(respectSilentSwitch, .respectSilentSwitch) } }
     @Published var voiceGround: String { didSet { save(voiceGround, .voiceGround) } }
     @Published var voiceTower: String { didSet { save(voiceTower, .voiceTower) } }
@@ -133,6 +137,7 @@ final class AppSettings: ObservableObject {
         defaultVoiceID = defaults.string(forKey: Key.defaultVoiceID.rawValue) ?? ""
         speechRate = defaults.object(forKey: Key.speechRate.rawValue) as? Double ?? 0.5
         speechPitch = defaults.object(forKey: Key.speechPitch.rawValue) as? Double ?? 1.0
+        voiceVolume = defaults.object(forKey: Key.voiceVolume.rawValue) as? Double ?? 1.0
         respectSilentSwitch = defaults.object(forKey: Key.respectSilentSwitch.rawValue) as? Bool ?? false
         voiceGround = defaults.string(forKey: Key.voiceGround.rawValue) ?? ""
         voiceTower = defaults.string(forKey: Key.voiceTower.rawValue) ?? ""
@@ -176,6 +181,7 @@ final class AppSettings: ObservableObject {
         departureGate = other.departureGate; arrivalGate = other.arrivalGate
         voiceEnabled = other.voiceEnabled; defaultVoiceID = other.defaultVoiceID
         speechRate = other.speechRate; speechPitch = other.speechPitch
+        voiceVolume = other.voiceVolume
         respectSilentSwitch = other.respectSilentSwitch
         voiceGround = other.voiceGround; voiceTower = other.voiceTower
         voiceDeparture = other.voiceDeparture; voiceCenter = other.voiceCenter
@@ -196,7 +202,7 @@ final class AppSettings: ObservableObject {
         case host, port, autoDiscover, keepScreenAwake
         case callsign, airline, flightNumber, departure, destination, alternate
         case cruiseAltitude, runway, sid, star, approach, departureGate, arrivalGate
-        case voiceEnabled, defaultVoiceID, speechRate, speechPitch, respectSilentSwitch
+        case voiceEnabled, defaultVoiceID, speechRate, speechPitch, voiceVolume, respectSilentSwitch
         case voiceGround, voiceTower, voiceDeparture, voiceCenter, voiceApproach
         case voicePilot, speakPilot
         case phraseologyMode, digitStyle

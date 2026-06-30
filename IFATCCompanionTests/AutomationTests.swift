@@ -184,6 +184,25 @@ final class AutomationTests: XCTestCase {
         XCTAssertTrue(tx.displayText.contains("124.300"))
     }
 
+    /// A frequency hand-off carries a read-back ("contacting <next> on <freq>") that
+    /// names the facility to auto-tune to once the pilot reads it back.
+    func testHandoffCarriesContactingReadbackThatTunesAhead() {
+        let e = engine()
+        let cs = e.callsign(airline: "United", flightNumber: "598", fallback: "")
+        let tx = e.handoff(cs: cs, from: .tower, to: .departure, frequency: 124.3)
+        XCTAssertEqual(tx.readback?.tuneTo, .departure)
+        XCTAssertTrue(tx.readback?.displayText.contains("Contacting Departure on 124.300") ?? false,
+                      "read-back should echo the frequency hand-off: \(tx.readback?.displayText ?? "nil")")
+    }
+
+    /// Arrival taxi names the assigned gate when one is known, else "parking".
+    func testTaxiToParkingNamesArrivalGate() {
+        let e = engine()
+        let cs = e.callsign(airline: "United", flightNumber: "598", fallback: "")
+        XCTAssertTrue(e.taxiToParking(cs: cs, gate: "B44", via: "A").displayText.contains("taxi to gate B44"))
+        XCTAssertTrue(e.taxiToParking(cs: cs, gate: "", via: "A").displayText.contains("taxi to parking"))
+    }
+
     // MARK: - State machine wiring
 
     func testTowerDepartureUsesDepartureHeadingWhenProvided() {

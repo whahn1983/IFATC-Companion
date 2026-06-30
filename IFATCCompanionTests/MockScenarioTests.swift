@@ -145,8 +145,10 @@ final class MockScenarioTests: XCTestCase {
         // Substantive arrival instructions are read back too.
         XCTAssertTrue(contains(model, "Descend via the KKILR arrival", sender: .pilot),
                       "missing STAR readback")
-        XCTAssertTrue(contains(model, "Cleared the ILS runway 30L", sender: .pilot),
-                      "missing approach-clearance readback")
+        // "Cleared the ILS … contact Tower" is a double call: the read-back applies to
+        // the last message only — the frequency hand-off ("contacting Tower").
+        XCTAssertTrue(contains(model, "Contacting Tower", sender: .pilot),
+                      "missing frequency hand-off readback")
         XCTAssertTrue(contains(model, "Exiting the runway, contact Ground", sender: .pilot),
                       "missing runway-exit readback")
 

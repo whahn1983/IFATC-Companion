@@ -344,28 +344,46 @@ struct PhraseologyEngine {
            spoken: "\(cs.spoken), exit the runway when able, contact Ground on \(Phonetic.frequency(frequency, icao: icao)) once on the taxiway.")
     }
 
-    // Ground arrival — taxi to parking.
-    func taxiToParking(cs: Callsign, via: String) -> ATCTransmission {
+    // Ground arrival — taxi to the gate (named when known, else "parking").
+    func taxiToParking(cs: Callsign, gate: String, via: String) -> ATCTransmission {
+        let gateTrim = gate.trimmingCharacters(in: .whitespaces)
+        let destDisplay = gateTrim.isEmpty ? "parking" : "gate \(gateTrim)"
+        let destSpoken = gateTrim.isEmpty ? "parking" : "gate \(Phonetic.spellToken(gateTrim, icao: icao))"
         let viaText = via.isEmpty ? "available taxiways" : via
+        let viaSpoken = via.isEmpty ? "available taxiways" : Phonetic.spellToken(via, icao: icao)
         return tx(.ground,
-           display: "\(cs.display), taxi to parking via \(viaText).",
-           spoken: "\(cs.spoken), taxi to parking via \(via.isEmpty ? "available taxiways" : Phonetic.spellToken(via, icao: icao)).")
+           display: "\(cs.display), taxi to \(destDisplay) via \(viaText).",
+           spoken: "\(cs.spoken), taxi to \(destSpoken) via \(viaSpoken).")
     }
 
     // Generic handoff.
     func handoff(cs: Callsign, to facility: ATCFacility, frequency: Double) -> ATCTransmission {
-        tx(facility,
+        var t = tx(facility,
            display: "\(cs.display), contact \(facility.spokenName) on \(String(format: "%.3f", frequency)).",
            spoken: "\(cs.spoken), contact \(facility.spokenName) on \(Phonetic.frequency(frequency, icao: icao)).")
+        t.readback = handoffReadback(cs: cs, to: facility, frequency: frequency)
+        return t
     }
 
     /// Handoff spoken by the facility you are leaving, instructing you to contact
     /// the next one (e.g. Tower: "contact Departure on 124.3"). Attributed to the
     /// `from` facility so the transcript shows who is releasing you.
     func handoff(cs: Callsign, from: ATCFacility, to: ATCFacility, frequency: Double) -> ATCTransmission {
-        tx(from,
+        var t = tx(from,
            display: "\(cs.display), contact \(to.spokenName) on \(String(format: "%.3f", frequency)).",
            spoken: "\(cs.spoken), contact \(to.spokenName) on \(Phonetic.frequency(frequency, icao: icao)).")
+        t.readback = handoffReadback(cs: cs, to: to, frequency: frequency)
+        return t
+    }
+
+    /// Pilot read-back for a frequency hand-off: "contacting <next> on <freq>",
+    /// carrying the facility to tune to once read back.
+    private func handoffReadback(cs: Callsign, to: ATCFacility, frequency: Double) -> ATCTransmission.Readback {
+        ATCTransmission.Readback(
+            displayText: "Contacting \(to.spokenName) on \(String(format: "%.3f", frequency)), \(cs.display).",
+            spokenText: "Contacting \(to.spokenName) on \(Phonetic.frequency(frequency, icao: icao)), \(cs.spoken).",
+            facility: to,
+            tuneTo: to)
     }
 
     /// Append a pushback hand-off to an IFR clearance so Clearance Delivery tells

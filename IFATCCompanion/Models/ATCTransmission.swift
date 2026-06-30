@@ -8,6 +8,20 @@ struct ATCTransmission: Identifiable, Equatable, Codable {
         case system
     }
 
+    /// The pilot read-back that matches *this* controller call, composed when the
+    /// call is built (the companion knows exactly what it said). Lets the Read Back
+    /// button echo the actual last message — including frequency hand-offs and
+    /// vectors — instead of re-deriving a read-back from the conversational state.
+    struct Readback: Equatable, Codable {
+        var displayText: String
+        var spokenText: String
+        /// Facility the read-back is addressed to / spoken on.
+        var facility: ATCFacility
+        /// When the call is a frequency hand-off, the facility to auto-tune to once
+        /// the pilot has read it back ("contacting Tower on 118.3" → switch to Tower).
+        var tuneTo: ATCFacility?
+    }
+
     var id = UUID()
     var sender: Sender
     var facility: ATCFacility
@@ -16,20 +30,30 @@ struct ATCTransmission: Identifiable, Equatable, Codable {
     /// Phonetic text passed to the speech synthesizer ("niner", "flight level…").
     var spokenText: String
     var timestamp: Date
+    /// Optional precomposed pilot read-back for this controller call.
+    var readback: Readback?
 
     init(sender: Sender,
          facility: ATCFacility,
          displayText: String,
          spokenText: String? = nil,
-         timestamp: Date = Date()) {
+         timestamp: Date = Date(),
+         readback: Readback? = nil) {
         self.sender = sender
         self.facility = facility
         self.displayText = displayText
         self.spokenText = spokenText ?? displayText
         self.timestamp = timestamp
+        self.readback = readback
     }
 
     static func == (lhs: ATCTransmission, rhs: ATCTransmission) -> Bool {
         lhs.id == rhs.id
+    }
+
+    /// View a composed pilot transmission's text as a `Readback` payload that can be
+    /// attached to the controller call it answers.
+    func asReadback(facility: ATCFacility, tuneTo: ATCFacility? = nil) -> Readback {
+        Readback(displayText: displayText, spokenText: spokenText, facility: facility, tuneTo: tuneTo)
     }
 }

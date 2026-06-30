@@ -121,11 +121,10 @@ final class AppModel: ObservableObject {
                 }
                 return [.engineStart, .taxi]
             case .ground:
-                // On Ground for the taxi. "Ready for departure" only makes sense once
-                // the taxi clearance has actually been issued — until then (e.g. right
-                // after the Ramp hand-off) only Taxi is offered so the flow can't skip
-                // the taxi clearance.
-                return stateMachine.current == .groundTaxi ? [.taxi, .ready] : [.taxi]
+                // On Ground only the taxi is requested. "Ready for departure" is a
+                // Tower call (it addresses Tower while holding short), so it is offered
+                // only once the pilot has tuned Tower — never on Ground.
+                return [.taxi]
             case .tower:
                 return [.ready, .takeoff]
             default:
@@ -919,6 +918,18 @@ final class AppModel: ObservableObject {
                              displayText: display, spokenText: spoken), speak: true)
     }
 
+    /// Re-point a closed read-back gate at a freshly posted hand-off so the pilot's
+    /// read-back echoes "contacting <next>" (the genuine last message) — and cancel
+    /// the idle re-prompt, since a courtesy hand-off must never trigger a "how do you
+    /// read?" the way a missed instruction does. Used when an instruction is
+    /// immediately followed by a hand-off (e.g. "cleared the ILS … contact Tower").
+    private func softenReadbackGate(to tx: ATCTransmission) {
+        guard awaitingReadback else { return }
+        pendingReadbackTx = tx
+        readbackTimer?.cancel()
+        readbackTimer = nil
+    }
+
     /// Open the gate once the pilot has responded (any pilot transmission counts as
     /// an acknowledgement) so the automatic flow can resume.
     private func clearReadbackGate() {
@@ -1101,6 +1112,15 @@ final class AppModel: ObservableObject {
         let onGround = state.onGround ?? false
         let runway = buildContext(for: stateMachine.current).runway
 
+        // Hold Tower → Departure until the aircraft is through ~2,000 ft AGL. Handing
+        // off the instant the wheels leave the ground clears the pilot "direct" to the
+        // first filed fix while it's still the runway-end waypoint just ahead — so wait
+        // for the climb to carry past it before Departure issues the direct-to.
+        if stateMachine.current == .towerDeparture, mapped == .initialClimb || mapped == .climb,
+           let agl = state.altitudeAGL, agl < 2000 {
+            return .towerDeparture
+        }
+
         // Departure keeps the climb until passing the TRACON ceiling, then Center.
         if mapped == .climb, alt < ceiling - 200,
            [.towerDeparture, .initialClimb, .departure].contains(stateMachine.current) {
@@ -1173,8 +1193,13 @@ final class AppModel: ObservableObject {
     /// pilot off to Tower for the landing clearance.
     private func announceApproachToTowerHandoff() {
         let c = buildContext(for: .final)
-        post(engine.handoff(cs: c.callsign, from: .approach, to: .tower,
-                            frequency: c.towerFrequency), speak: true)
+        let tx = engine.handoff(cs: c.callsign, from: .approach, to: .tower,
+                                frequency: c.towerFrequency)
+        post(tx, speak: true)
+        // This hand-off follows the cleared-approach call that just closed the gate.
+        // Re-aim the gate at the hand-off so the pilot reads back "contacting Tower"
+        // (the last message) and the controller does not nag "how do you read?".
+        softenReadbackGate(to: tx)
     }
 
     /// Arrival block-in once stopped at the gate. Emits the simulated Ramp
@@ -1629,6 +1654,26 @@ final class AppModel: ObservableObject {
     // MARK: - Pilot button actions
 
     func readBack() {
+        // Prefer the read-back the controller composed for its *last* call (frequency
+        // hand-offs, vectors, altitude changes) so the Read Back button always echoes
+        // the message actually on the radio — not a read-back re-derived from the
+        // conversational state, which lags behind double calls like "cleared the ILS,
+        // contact Tower".
+        if let rb = lastATCTransmission?.readback {
+            postPilot(ATCTransmission(sender: .pilot, facility: rb.facility,
+                                      displayText: rb.displayText, spokenText: rb.spokenText))
+            // A frequency hand-off: only after reading it back do we move the radio to
+            // the next controller (switching the active frequency button).
+            if let tune = rb.tuneTo {
+                tunedFacility = tune
+                currentFacility = tune
+                // While the pilot is tuning by hand, hold the new controller's
+                // instruction until they check in on the freq they just acknowledged.
+                if manualTuning { pendingCheckInFacility = tune }
+                persistSession()
+            }
+            return
+        }
         let c = buildContext(for: atcState)
         postPilot(pilotEngine.readback(for: atcState, context: c))
     }
@@ -1643,7 +1688,8 @@ final class AppModel: ObservableObject {
         postPilot(pilotEngine.sayAgain(context: c, facility: currentFacility))
         if let last = lastATCTransmission {
             let repeated = ATCTransmission(sender: .atc, facility: last.facility,
-                                           displayText: last.displayText, spokenText: last.spokenText)
+                                           displayText: last.displayText, spokenText: last.spokenText,
+                                           readback: last.readback)
             post(repeated, speak: true)
         }
     }
@@ -1668,7 +1714,9 @@ final class AppModel: ObservableObject {
             post(deny(c, reason: "unable higher, traffic and reported turbulence at that level"), speak: true)
         } else {
             assignedAltitude = target
-            post(engine.climbMaintain(cs: c.callsign, altitude: target), speak: true)
+            var tx = engine.climbMaintain(cs: c.callsign, altitude: target)
+            tx.readback = altitudeReadback("Climb", altitude: target, callsign: c.callsign, facility: currentFacility)
+            post(tx, speak: true)
         }
     }
 
@@ -1676,8 +1724,22 @@ final class AppModel: ObservableObject {
         let c = buildContext(for: atcState)
         let target = nextAltitude(from: max(assignedAltitude, aircraftAltInt()), up: false)
         postPilot(pilotEngine.requestLower(context: c, target: target))
-        post(engine.descendPilotsDiscretion(cs: c.callsign, altitude: target), speak: true)
+        var tx = engine.descendPilotsDiscretion(cs: c.callsign, altitude: target)
+        tx.readback = altitudeReadback("Descend", altitude: target, callsign: c.callsign, facility: currentFacility)
+        post(tx, speak: true)
         assignedAltitude = target
+    }
+
+    /// A pilot read-back of an assigned altitude, attached to a controller call so the
+    /// Read Back button echoes "<verb> and maintain <alt>" instead of a read-back
+    /// re-derived from the (now stale) conversational state.
+    private func altitudeReadback(_ verb: String, altitude: Int,
+                                  callsign cs: PhraseologyEngine.Callsign,
+                                  facility: ATCFacility) -> ATCTransmission.Readback {
+        ATCTransmission.Readback(
+            displayText: "\(verb) and maintain \(engine.formatAltDisplay(altitude)), \(cs.display).",
+            spokenText: "\(verb) and maintain \(Phonetic.altitude(altitude)), \(cs.spoken).",
+            facility: facility)
     }
 
     func requestVectors() {
@@ -1690,9 +1752,14 @@ final class AppModel: ObservableObject {
         let rwy = c.approachProcedure?.runway ?? c.runway
         let typeD = c.approachProcedure?.approachType?.display ?? (c.approachName.isEmpty ? "ILS" : c.approachName)
         let typeS = c.approachProcedure?.approachType?.spoken ?? (c.approachName.isEmpty ? "I L S" : c.approachName)
-        let tx = ATCTransmission(sender: .atc, facility: .approach,
+        var tx = ATCTransmission(sender: .atc, facility: .approach,
                                  displayText: "\(c.callsign.display), fly heading \(String(format: "%03d", hdg)), vectors for the \(typeD) runway \(rwy) approach.",
                                  spokenText: "\(c.callsign.spoken), fly heading \(Phonetic.heading(hdg)), vectors for the \(typeS) runway \(Phonetic.runway(rwy)) approach.")
+        // Read back the heading (the safety-critical element), not a state-derived call.
+        tx.readback = ATCTransmission.Readback(
+            displayText: "Heading \(String(format: "%03d", hdg)), \(c.callsign.display).",
+            spokenText: "Heading \(Phonetic.heading(hdg)), \(c.callsign.spoken).",
+            facility: .approach)
         post(tx, speak: true)
     }
 
@@ -1700,12 +1767,16 @@ final class AppModel: ObservableObject {
         let c = buildContext(for: atcState, arrivalOverride: true)
         postPilot(pilotEngine.requestApproach(context: c))
         // Prefer the procedure-aware clearance (names the runway once) when the
-        // approach parsed; otherwise fall back to the plain string form.
+        // approach parsed; otherwise fall back to the plain string form. Either way,
+        // carry the matching read-back so Read Back echoes the approach clearance.
+        var tx: ATCTransmission
         if let approach = c.approachProcedure {
-            post(engine.clearedApproach(cs: c.callsign, procedure: approach, runway: c.runway), speak: true)
+            tx = engine.clearedApproach(cs: c.callsign, procedure: approach, runway: c.runway)
         } else {
-            post(engine.clearedApproach(cs: c.callsign, approach: flightPlan.approach, runway: c.runway), speak: true)
+            tx = engine.clearedApproach(cs: c.callsign, approach: flightPlan.approach, runway: c.runway)
         }
+        tx.readback = pilotEngine.readback(for: .final, context: c).asReadback(facility: .approach)
+        post(tx, speak: true)
     }
 
     /// Check in on the currently tuned frequency. Posts the pilot's call-up and the

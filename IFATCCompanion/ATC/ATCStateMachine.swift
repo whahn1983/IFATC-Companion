@@ -207,7 +207,7 @@ struct ATCStateMachine {
             // Tower instructs the aircraft to clear the runway and switch to Ground.
             return engine.exitRunwayContactGround(cs: c.callsign, frequency: c.groundFrequency)
         case .groundArrival:
-            return engine.taxiToParking(cs: c.callsign, via: c.parkingTaxiway)
+            return engine.taxiToParking(cs: c.callsign, gate: c.gate, via: c.parkingTaxiway)
         case .notConnected, .connectedIdle, .holdingShort, .runwayCrossing,
              .topOfDescent, .parked, .abnormal, .center:
             return nil

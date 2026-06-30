@@ -102,8 +102,11 @@ struct PilotResponseEngine {
                          "Exiting the runway, contact Ground, \(cs.spoken).",
                          facility: .tower)
         case .groundArrival:
-            return pilot("Taxi to parking via \(c.parkingTaxiway), \(cs.display).",
-                         "Taxi to parking via \(Phonetic.spellToken(c.parkingTaxiway, icao: icao)), \(cs.spoken).",
+            let gate = c.gate.trimmingCharacters(in: .whitespaces)
+            let destD = gate.isEmpty ? "parking" : "gate \(gate)"
+            let destS = gate.isEmpty ? "parking" : "gate \(Phonetic.spellToken(gate, icao: icao))"
+            return pilot("Taxi to \(destD) via \(c.parkingTaxiway), \(cs.display).",
+                         "Taxi to \(destS) via \(Phonetic.spellToken(c.parkingTaxiway, icao: icao)), \(cs.spoken).",
                          facility: .ground)
         default:
             return pilot("\(cs.display).", "\(cs.spoken).", facility: state.facility)

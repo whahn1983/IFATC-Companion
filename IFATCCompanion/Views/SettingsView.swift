@@ -77,6 +77,10 @@ struct SettingsView: View {
             Toggle("Voice enabled", isOn: $settings.voiceEnabled)
             voicePicker("Default voice", selection: $settings.defaultVoiceID)
             VStack(alignment: .leading) {
+                Text("Volume: \(Int(settings.voiceVolume * 100))%")
+                Slider(value: $settings.voiceVolume, in: 0...1)
+            }
+            VStack(alignment: .leading) {
                 Text("Speech rate: \(String(format: "%.2f", settings.speechRate))")
                 Slider(value: $settings.speechRate,
                        in: Double(AVSpeechUtteranceMinimumSpeechRate)...Double(AVSpeechUtteranceMaximumSpeechRate))
