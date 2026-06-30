@@ -29,7 +29,6 @@ final class IFStateMappingStore {
         case aircraftName
         case liveryName
         case nearestAirportICAO
-        case callsign
         /// Full flight plan as a string (`aircraft/0/flightplan`), parsed best-effort.
         case flightPlan
         /// The detailed flight-plan document (`aircraft/0/flightplan/full_info`). This
@@ -76,7 +75,6 @@ final class IFStateMappingStore {
             case .aircraftName: return ["aircraftname", "aircraftstate.name", "name"]
             case .liveryName: return ["liveryname", "livery"]
             case .nearestAirportICAO: return ["nearestairporticao", "nearestairport"]
-            case .callsign: return ["callsign", "username", "displayname"]
             case .flightPlan: return ["flightplan", "flightplanstring", "fpl"]
             case .flightPlanFullInfo: return ["flightplanfullinfo", "fullinfo", "flightplandetailed", "flightplaninfo"]
             case .flightPlanRoute: return ["flightplanroute", "planroute"]

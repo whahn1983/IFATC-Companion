@@ -243,9 +243,6 @@ final class AppModel: ObservableObject {
         // Read the flight plan from Infinite Flight when it changes.
         connect.onFlightPlan = { [weak self] plan in self?.mergeLiveFlightPlan(plan) }
 
-        // Adopt the live callsign from Infinite Flight (unless one is set manually).
-        connect.onCallsign = { [weak self] cs in self?.applyLiveCallsign(cs) }
-
         // Route recognized push-to-talk speech to the deterministic intent handler.
         speechRecognizer.onResult = { [weak self] text in self?.handleSpokenInput(text) }
 
@@ -1107,32 +1104,35 @@ final class AppModel: ObservableObject {
 
     // MARK: - Live flight plan
 
-    /// Adopt the callsign Infinite Flight reports for the user's aircraft, so the
-    /// companion uses it without a manual override. A manually-entered callsign,
-    /// airline, or flight number always wins (the pilot pinned those on purpose).
-    private func applyLiveCallsign(_ cs: String) {
-        let trimmed = cs.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty,
-              settings.callsign.isEmpty, settings.airline.isEmpty, settings.flightNumber.isEmpty
-        else { return }
+    /// Apply the manually-entered callsign to the active flight plan without
+    /// rebuilding it from settings (so a live-read route is preserved). Infinite
+    /// Flight's Connect API exposes no callsign for the user's own aircraft, so the
+    /// pilot sets it here and it becomes the source of truth.
+    func applyManualCallsign() {
+        let trimmed = settings.callsign.trimmingCharacters(in: .whitespacesAndNewlines)
+        flightPlan.callsign = trimmed
 
-        // Resolve an airline prefix (e.g. "UA598" / "UAL598" -> United 598) so the
-        // companion uses the proper telephony name instead of spelling it out.
-        if let parsed = AirlineDatabase.parse(trimmed) {
-            guard flightPlan.airline != parsed.telephony
-                    || flightPlan.flightNumber != parsed.flightNumber else { return }
-            flightPlan.airline = parsed.telephony
-            flightPlan.flightNumber = parsed.flightNumber
-            flightPlan.callsign = ""
-            diagnostics.log(.app, "Adopted live callsign \(trimmed) as \(parsed.telephony) \(parsed.flightNumber).")
+        // An empty field clears only the callsign — leave any airline/flight number
+        // already supplied by the mock feed, a live read, or the Airline/Flight #
+        // overrides untouched, so blurring an empty field never wipes them.
+        guard !trimmed.isEmpty else {
+            diagnostics.log(.app, "Callsign cleared.")
             return
         }
-
-        guard flightPlan.callsign != trimmed else { return }
-        flightPlan.airline = ""
-        flightPlan.flightNumber = ""
-        flightPlan.callsign = trimmed
-        diagnostics.log(.app, "Adopted live callsign from Infinite Flight: \(trimmed).")
+        // Derive an airline/flight number from the callsign only when the pilot has
+        // not pinned those separately. Resolve an airline prefix (e.g. "UA598" /
+        // "UAL598" -> United 598) so the companion uses the proper telephony name
+        // instead of spelling it out.
+        guard settings.airline.isEmpty, settings.flightNumber.isEmpty else { return }
+        if let parsed = AirlineDatabase.parse(trimmed) {
+            flightPlan.airline = parsed.telephony
+            flightPlan.flightNumber = parsed.flightNumber
+            diagnostics.log(.app, "Callsign \(trimmed) resolved to \(parsed.telephony) \(parsed.flightNumber).")
+        } else {
+            flightPlan.airline = ""
+            flightPlan.flightNumber = ""
+            diagnostics.log(.app, "Callsign set to \(trimmed).")
+        }
     }
 
     /// Merge a flight plan read from Infinite Flight into the active plan. Manual
