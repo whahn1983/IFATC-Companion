@@ -89,12 +89,10 @@ final class IFStateMappingStore {
     }
 
     private(set) var resolved: [Logical: IFManifestEntry] = [:]
-    private(set) var allEntries: [IFManifestEntry] = []
 
     /// Resolve all logical keys against a freshly parsed manifest.
     /// Matching is exact-suffix first, then substring, honoring signature priority.
     func resolve(from entries: [IFManifestEntry]) {
-        allEntries = entries
         resolved.removeAll()
         for logical in Logical.allCases {
             if let match = bestMatch(for: logical.signatures, in: entries) {
@@ -120,14 +118,6 @@ final class IFStateMappingStore {
             if let contains = entries.first(where: { $0.matchKey.contains(sig) }) {
                 return contains
             }
-        }
-        return nil
-    }
-
-    /// Resolve a command id by keyword (used by UNICOM/command sending).
-    func command(matchingAnyOf keywords: [String]) -> IFManifestEntry? {
-        for kw in keywords {
-            if let m = allEntries.first(where: { $0.matchKey.contains(kw) }) { return m }
         }
         return nil
     }

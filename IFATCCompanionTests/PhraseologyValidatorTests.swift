@@ -2,7 +2,7 @@ import XCTest
 @testable import IFATCCompanion
 
 /// Banned/outdated phrase detection, and a sweep asserting that every generated
-/// controller, ramp, pilot, and UNICOM string is free of blocked phraseology.
+/// controller, ramp, and pilot string is free of blocked phraseology.
 final class PhraseologyValidatorTests: XCTestCase {
 
     private let validator = PhraseologyValidator()
@@ -70,23 +70,6 @@ final class PhraseologyValidatorTests: XCTestCase {
             let tx = pilot.readback(for: state, context: ctx)
             XCTAssertTrue(validator.isClean(tx.displayText), "blocked phrase in pilot \(state): \(tx.displayText)")
             XCTAssertTrue(validator.isClean(tx.spokenText), "blocked phrase in pilot \(state) spoken: \(tx.spokenText)")
-        }
-    }
-
-    func testUNICOMBroadcastsAreClean() {
-        for event in UNICOMEvent.allCases {
-            for runway in ["", "17R", "30L"] {
-                let msg = event.broadcast(ident: "Minneapolis", runway: runway)
-                XCTAssertTrue(validator.isClean(msg), "blocked phrase in UNICOM \(event): \(msg)")
-            }
-        }
-    }
-
-    /// UNICOM never says "the active" (banned), even with an unknown runway.
-    func testUNICOMNeverSaysActive() {
-        for event in UNICOMEvent.allCases {
-            let msg = PhraseologyValidator.normalize(event.broadcast(ident: "", runway: ""))
-            XCTAssertFalse(msg.contains("the active"), "\(event) used 'the active': \(msg)")
         }
     }
 }

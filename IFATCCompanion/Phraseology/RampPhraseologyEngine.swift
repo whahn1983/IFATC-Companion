@@ -169,7 +169,7 @@ struct RampPhraseologyEngine {
     // MARK: - Ground Crew / Interphone (non-radio, private text-only)
 
     /// The headset interphone exchange during pushback. These are crew comms, not
-    /// radio, and never go to UNICOM. Returned as `.system` transmissions.
+    /// radio, and never go out over the air. Returned as `.system` transmissions.
     func interphoneBrakesQuery() -> ATCTransmission {
         system("Ground crew: Brakes set?", "Ground crew. Brakes set?")
     }

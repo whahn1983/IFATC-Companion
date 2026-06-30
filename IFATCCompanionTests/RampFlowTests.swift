@@ -13,7 +13,6 @@ final class RampFlowTests: XCTestCase {
         model.settings.mockMode = mock
         model.settings.initialClimbAltitudeFt = 5000
         model.settings.traconCeilingFL = 180
-        model.unicom.mode = .off
 
         var plan = FlightPlan()
         plan.airline = "United"

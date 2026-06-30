@@ -159,5 +159,4 @@ frequency. Defaults (deterministic; overridable later):
 - TRACON/Center hand-off altitudes vary by facility in the real world; FL180 is a
   reasonable, configurable default rather than a fixed rule.
 - When a **human controller** is detected on the frequency, the companion stands
-  by and stops generating calls (it never impersonates live ATC). UNICOM actions
-  announce the pilot's own intentions only.
+  by and stops generating calls (it never impersonates live ATC).

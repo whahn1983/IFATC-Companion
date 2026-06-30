@@ -7,8 +7,7 @@ including the **Ramp** conversations before and after Ground.
 > **IFATC Companion is simulated, private ATC for you only.** It is never staffed
 > (human) ATC for other multiplayer users. **Ramp/apron/company-ramp** calls are
 > *simulated local/non-FAA procedures* and vary by airport and operator — they are
-> not FAA air traffic control. UNICOM automation broadcasts your own
-> intentions/status only and never carries ATC clearances or ramp approvals.
+> not FAA air traffic control.
 
 Authority: FAA JO 7110.65, FAA AIM, FAA Pilot/Controller Glossary, FAA Chart
 Supplement. Items the app cannot validate confidently are marked **needs review**
@@ -212,25 +211,6 @@ System:         United 598 parked at Bravo 44. Flight complete.
 ```
 
 Taxi-to-gate does **not** authorize a runway crossing unless explicitly stated.
-
----
-
-## UNICOM mappings (intent/status only)
-
-| Private instruction | Public UNICOM broadcast |
-|---|---|
-| Taxi instruction | "Taxiing to runway X" |
-| Runway crossing | "Crossing runway X" |
-| Line up and wait / taking runway | "Taking runway X for departure" |
-| Takeoff clearance | "Departing runway X" |
-| Inbound / approach | "Inbound [airport]" |
-| Final | "On final runway X" |
-| Clear of runway | "Clear of runway X" |
-| Taxi to parking | "Clear of the runway, taxiing to parking" |
-| Push approved (Ramp) | **— no UNICOM —** (ramp approval is never broadcast) |
-
-Never broadcast "cleared for takeoff", "cleared to land", or "push approved" on
-UNICOM. Unknown runway reads "the runway", never "the active".
 
 ---
 

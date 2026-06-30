@@ -14,7 +14,6 @@ final class ReconnectStateTests: XCTestCase {
         model.settings.mockMode = false
         model.settings.initialClimbAltitudeFt = 5000
         model.settings.traconCeilingFL = 180
-        model.unicom.mode = .off
 
         var plan = FlightPlan()
         plan.airline = "United"

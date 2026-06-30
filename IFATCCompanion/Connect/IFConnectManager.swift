@@ -17,7 +17,6 @@ final class IFConnectManager: ObservableObject {
     private let client = IFConnectClient()
     private let manifestService = IFConnectManifestService()
     private lazy var reader = IFConnectStateReader(store: mappingStore)
-    private let commandSender = IFConnectCommandSender()
     private let discovery = IFDiscoveryService()
 
     private weak var diagnostics: DiagnosticsStore?
@@ -206,22 +205,4 @@ final class IFConnectManager: ObservableObject {
         if case .discovering = connectionState { connectionState = .disconnected }
     }
 
-    // MARK: - Commands
-
-    /// Resolve and send a UNICOM/command by keywords. Returns the resolved entry
-    /// and whether the send succeeded.
-    func sendCommand(keywords: [String]) async -> (resolved: IFManifestEntry?, sent: Bool) {
-        guard let entry = mappingStore.command(matchingAnyOf: keywords) else {
-            diagnostics?.log(.command, "No command found for keywords: \(keywords.joined(separator: ", "))")
-            return (nil, false)
-        }
-        let ok = await commandSender.send(commandID: entry.id, using: client)
-        diagnostics?.log(.command, "Command \(entry.name) [\(entry.id)] \(ok ? "sent" : "failed").")
-        return (entry, ok)
-    }
-
-    /// Check whether a command exists for the given keywords (no send).
-    func commandAvailable(keywords: [String]) -> IFManifestEntry? {
-        mappingStore.command(matchingAnyOf: keywords)
-    }
 }

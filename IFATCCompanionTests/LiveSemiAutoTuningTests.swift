@@ -16,7 +16,6 @@ final class LiveSemiAutoTuningTests: XCTestCase {
         model.settings.mockMode = false            // live mode → semi-automatic flow
         model.settings.initialClimbAltitudeFt = 5000
         model.settings.traconCeilingFL = 180
-        model.unicom.mode = .off
 
         var plan = FlightPlan()
         plan.airline = "United"

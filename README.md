@@ -1,6 +1,6 @@
 # IFATC Companion
 
-IFATC Companion is a deterministic, local-only air traffic control (ATC) companion for the flight simulator [Infinite Flight](https://infiniteflight.com). You fly Infinite Flight on an iPad; this iPhone app runs on the same Wi-Fi network, connects to Infinite Flight via the local **Infinite Flight Connect API v2**, reads your aircraft state and flight data, and produces realistic ATC-style conversation when no staffed (human) ATC is available. It can optionally send Infinite Flight UNICOM actions when the Connect API supports them. There is no backend, no AI/LLM, no accounts, and no internet dependency beyond free public aviation weather.
+IFATC Companion is a deterministic, local-only air traffic control (ATC) companion for the flight simulator [Infinite Flight](https://infiniteflight.com). You fly Infinite Flight on an iPad; this iPhone app runs on the same Wi-Fi network, connects to Infinite Flight via the local **Infinite Flight Connect API v2**, reads your aircraft state and flight data, and produces realistic ATC-style conversation when no staffed (human) ATC is available. There is no backend, no AI/LLM, no accounts, and no internet dependency beyond free public aviation weather.
 
 ## What it does
 
@@ -9,7 +9,7 @@ IFATC Companion provides simulated, procedural ATC and pilot phraseology driven 
 - **ATC** — Live ATC-style conversation transcript driven by an internal state machine. Generates approach, tower, ground, departure, and en-route style calls plus pilot readbacks, all spoken aloud with text-to-speech. **Push-to-talk** lets you speak readbacks and requests (on-device recognition). When a human controller is detected on a multiplayer server, the companion **stands by** and defers to the live controller.
 - **Flight** — Current aircraft state and flight plan: position, altitude, heading, speed, vertical speed, flight phase, and route.
 - **Weather** — METAR, TAF, PIREP, and SIGMET briefings from NOAA, with a route weather analysis, a composite ride-quality model, and a **ForeFlight-style route/weather map overlay**.
-- **Settings** — Connection (Host/IP + Port), voices, UNICOM automation mode, phraseology and unit preferences.
+- **Settings** — Connection (Host/IP + Port), voices, phraseology and unit preferences.
 - **Diagnostics** — Connection status, Connect API manifest discovery, Mock Mode toggle, and troubleshooting information.
 
 Key feature highlights:
@@ -25,7 +25,6 @@ Key feature highlights:
 - **Multiplayer / human-ATC staffing detection** so the companion steps aside for live controllers.
 - Automatic flight-phase detection (parked, taxi, takeoff, climb, cruise, descent, approach, landing, etc.).
 - Offline text-to-speech via `AVSpeechSynthesizer`, with **per-facility controller voices and a separate pilot voice** — your readbacks and requests are spoken aloud when you use the buttons (push-to-talk input is never repeated).
-- Optional UNICOM automation: Off, Preview-then-send, or Auto-send.
 - Free aviation weather from NOAA (no API keys), a composite turbulence/ride-quality model, and a MapKit route overlay.
 - Mock Mode for a complete demo in the iOS Simulator with no Infinite Flight present.
 
@@ -69,7 +68,6 @@ Once connected, the app reads live aircraft state and your flight plan automatic
 
 - It does **not** impersonate live controllers and must never be presented as official or human ATC.
 - When ATC is staffed by a real controller, follow that controller — not this app.
-- UNICOM actions sent by this app announce **only the pilot's own intentions** (your own position/intentions calls). They do not issue instructions to other pilots and do not act as a controller.
 
 Use it responsibly and in keeping with Infinite Flight community standards.
 
@@ -104,9 +102,6 @@ and the audit of corrections in [`docs/PhraseologyAudit.md`](docs/PhraseologyAud
   Taxi instructions use "taxi/hold short/cross/continue/give way"; takeoff and
   landing clearances always include the runway; "line up and wait" replaces
   "position and hold".
-- **UNICOM is intent/status only.** It broadcasts your own intentions (taxiing,
-  crossing, taking/departing runway, inbound, final, clear, parking) and **never**
-  carries ATC clearances or ramp approvals.
 - **Clearance modes (planned).** Commercial flights may receive a PDC/CPDLC-style
   text clearance instead of a full voice readback; the catalog/docs define both, and
   a Voice/PDC/Auto setting is the next step (current runtime is voice clearance).
@@ -125,10 +120,6 @@ and the audit of corrections in [`docs/PhraseologyAudit.md`](docs/PhraseologyAud
 - SID/STAR/approach names are parsed and referenced, enriched from a small built-in fix library; published charts are not ingested in full.
 - Multiplayer / human-ATC staffing detection is best-effort and signature-based against the Connect manifest; exact field coverage varies by Infinite Flight version.
 - Push-to-talk uses on-device speech recognition; accuracy depends on the device and microphone, and intent mapping is keyword-based.
-
-### UNICOM automation limitations
-
-The Infinite Flight Connect API may not expose every UNICOM command, and command availability varies by app version and context. The UNICOM automation layer performs availability detection and **degrades gracefully**: unsupported commands are simply not sent, and the app continues to operate in Preview or Off behavior without errors.
 
 ### Weather data limitations
 

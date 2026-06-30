@@ -11,7 +11,6 @@ final class DiagnosticsStore: ObservableObject {
         case manifest = "MANIFEST"
         case state = "STATE"
         case command = "COMMAND"
-        case unicom = "UNICOM"
         case weather = "WEATHER"
         case atc = "ATC"
         case app = "APP"
@@ -26,7 +25,6 @@ final class DiagnosticsStore: ObservableObject {
 
     @Published private(set) var entries: [Entry] = []
     @Published var discoveredStates: [IFManifestEntry] = []
-    @Published var unicomAvailability: [UNICOMCommandAvailability] = []
     @Published var weatherEndpointStatus: String = "Not checked"
     @Published var lastRawMessage: String = ""
 
@@ -74,11 +72,6 @@ final class DiagnosticsStore: ObservableObject {
         lines.append("== Discovered manifest states (\(discoveredStates.count)) ==")
         for s in discoveredStates.prefix(200) {
             lines.append("  [\(s.id)] \(s.type.shortName) \(s.name)")
-        }
-        lines.append("")
-        lines.append("== UNICOM command availability ==")
-        for a in unicomAvailability {
-            lines.append("  \(a.event.title): \(a.isAvailable ? "AVAILABLE" : "unavailable")\(a.detail.map { " — \($0)" } ?? "")")
         }
         lines.append("")
         lines.append("== Last raw message (sanitized) ==")

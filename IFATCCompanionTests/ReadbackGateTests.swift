@@ -16,7 +16,6 @@ final class ReadbackGateTests: XCTestCase {
         model.settings.mockMode = false            // live mode → gate active
         model.settings.initialClimbAltitudeFt = 5000
         model.settings.traconCeilingFL = 180
-        model.unicom.mode = .off
 
         var plan = FlightPlan()
         plan.airline = "United"

@@ -81,10 +81,10 @@ final class SpeechService: NSObject, ObservableObject {
         case .departure: id = settings.voiceDeparture
         case .center: id = settings.voiceCenter
         case .approach: id = settings.voiceApproach
-        // Ramp shares the Ground voice (both work the surface); Clearance/UNICOM
-        // use the default controller voice.
+        // Ramp shares the Ground voice (both work the surface); Clearance uses the
+        // default controller voice.
         case .ramp: id = settings.voiceGround
-        case .clearance, .unicom: id = settings.defaultVoiceID
+        case .clearance: id = settings.defaultVoiceID
         }
         if !id.isEmpty, let v = AVSpeechSynthesisVoice(identifier: id) { return v }
         if !settings.defaultVoiceID.isEmpty,
