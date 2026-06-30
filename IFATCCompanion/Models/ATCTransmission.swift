@@ -8,7 +8,7 @@ struct ATCTransmission: Identifiable, Equatable, Codable {
         case system
     }
 
-    let id = UUID()
+    var id = UUID()
     var sender: Sender
     var facility: ATCFacility
     /// Human-readable text shown in the transcript (normal digits).
