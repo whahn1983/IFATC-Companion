@@ -1520,7 +1520,7 @@ final class AppModel: ObservableObject {
         // waypoint so it carries a coordinate; falls back to the first located
         // waypoint, then the destination bearing, when no fix can be located.
         let sidFirstFix: Waypoint? = sidProc?.fixes.lazy.compactMap { name in
-            flightPlan.waypoints.first {
+            self.flightPlan.waypoints.first {
                 $0.coordinate != nil && $0.name.caseInsensitiveCompare(name) == .orderedSame
             }
         }.first
