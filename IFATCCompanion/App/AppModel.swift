@@ -1312,6 +1312,15 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Push the departure/arrival gate fields (edited on the ATC card or in the
+    /// Flight overrides) into the active plan. Infinite Flight never supplies gates,
+    /// so this simply mirrors the settings values — like `applyManualCallsign`, it
+    /// avoids a full re-sync so nothing else in the plan is disturbed.
+    func applyManualGates() {
+        flightPlan.departureGate = settings.departureGate.trimmingCharacters(in: .whitespacesAndNewlines)
+        flightPlan.arrivalGate = settings.arrivalGate.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// Merge a flight plan read from Infinite Flight into the active plan. Manual
     /// overrides win; otherwise empty fields are filled from the live plan.
     private func mergeLiveFlightPlan(_ live: FlightPlan) {
