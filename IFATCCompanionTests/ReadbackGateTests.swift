@@ -81,6 +81,50 @@ final class ReadbackGateTests: XCTestCase {
                              "flow should resume after the pilot reads back")
     }
 
+    /// The automatic takeoff clearance holds the read-back gate (so the Departure
+    /// hand-off can't stack on it) but must NOT arm the idle "how do you read?" nag —
+    /// a controller does not radio-check a pilot it just cleared for takeoff, and the
+    /// nag was firing before the pilot could read the clearance back.
+    func testTakeoffClearanceHoldsGateWithoutNagging() async {
+        let model = makeLiveModel()
+        model.readbackRepeatInterval = 0.05   // any armed nag would fire almost at once
+        driveToLineUp(model)
+
+        model.ingestStateForTesting(model.mock.state(for: .takeoff))
+        XCTAssertTrue(contains(model, "cleared for takeoff", sender: .atc))
+        XCTAssertTrue(model.awaitingReadback, "the clearance still holds the gate")
+
+        // Give any armed idle-prompt timer well past its interval to fire.
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertFalse(contains(model, "how do you read"),
+                       "the takeoff clearance must not trigger the idle radio-check nag")
+        XCTAssertFalse(contains(model, "How do you read"),
+                       "the takeoff clearance must not trigger the idle radio-check nag")
+        XCTAssertTrue(model.awaitingReadback, "the gate stays closed until the pilot reads back")
+    }
+
+    /// An unanswered *enroute* call still nags "how do you read?" — the suppression is
+    /// specific to the takeoff clearance, so the radio-check safety net is intact
+    /// everywhere else.
+    func testUnansweredEnrouteCallStillNags() async {
+        let model = makeLiveModel()
+        model.readbackRepeatInterval = 0.05
+        driveToLineUp(model)
+        model.ingestStateForTesting(model.mock.state(for: .takeoff))
+        model.readBack()   // read back the takeoff clearance, opening the gate
+
+        // Work the climb until an automatic call closes the gate again.
+        for _ in 0..<6 {
+            model.ingestStateForTesting(model.mock.state(for: .climb))
+            if model.awaitingReadback { break }
+        }
+        XCTAssertTrue(model.awaitingReadback, "an enroute climb call should hold for a read-back")
+
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertTrue(contains(model, "how do you read") || contains(model, "How do you read"),
+                      "an unanswered enroute call should still nag")
+    }
+
     /// The Departure → Center hand-off is announced as the climb passes the TRACON
     /// ceiling (FL180 by default).
     func testDepartureHandsOffToCenterThroughTheClimb() {

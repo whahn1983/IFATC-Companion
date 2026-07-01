@@ -98,6 +98,26 @@ final class RampFlowTests: XCTestCase {
         XCTAssertTrue(has(model, "taxi to runway"), "Ground should issue the taxi clearance")
     }
 
+    /// Reading back the Ramp→Ground hand-off must echo the Ground frequency /
+    /// movement-area boundary — not a stale "start approved" derived from the
+    /// engine-start state the conversation is still sitting on.
+    func testRampToGroundHandoffReadbackEchoesGroundFrequency() {
+        let model = makeModel()
+        model.requestClearance();   model.readBack()
+        model.requestPushback();    model.readBack()
+        model.requestEngineStart(); model.readBack()
+
+        model.requestTaxi()   // Ramp hands the pilot to Ground
+        model.readBack()      // read back the hand-off
+
+        let lastPilot = model.transcript.last { $0.sender == .pilot }
+        XCTAssertNotNil(lastPilot)
+        XCTAssertTrue(lastPilot?.displayText.contains("121.800") ?? false,
+                      "read-back should echo the Ground frequency: \(lastPilot?.displayText ?? "nil")")
+        XCTAssertFalse(lastPilot?.displayText.lowercased().contains("start approved") ?? true,
+                       "read-back must not echo the stale start-approved call")
+    }
+
     /// After the IFR clearance, Pushback is NOT offered while still on Clearance — the
     /// pilot must tune the Ramp frequency first, where the Pushback button then appears.
     func testPushbackOfferedOnlyAfterTuningRamp() {
