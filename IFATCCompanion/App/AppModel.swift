@@ -787,9 +787,13 @@ final class AppModel: ObservableObject {
         // An automatic call that carries a read-back instruction closes the gate:
         // the flow holds here until the pilot reads back (or the idle prompt loop
         // runs its course). Pilot-driven advances never close the gate — the pilot
-        // is already driving the conversation.
+        // is already driving the conversation. The takeoff clearance holds the gate
+        // too (so the Departure hand-off can't stack on it), but must NOT arm the
+        // idle "how do you read?" nag — a controller does not radio-check a pilot it
+        // just cleared for takeoff, and the nag was firing before the pilot could
+        // even read the clearance back.
         if automatic, target.expectsReadback {
-            engageReadbackGate(tx)
+            engageReadbackGate(tx, promptIfIdle: target != .towerDeparture)
         }
         atcState = stateMachine.current
         currentFacility = controller(for: stateMachine.current)
@@ -935,13 +939,15 @@ final class AppModel: ObservableObject {
     }
 
     /// Close the gate after an automatic instruction so the next call waits for the
-    /// pilot's read-back, and arm the idle re-prompt loop.
-    private func engageReadbackGate(_ tx: ATCTransmission) {
+    /// pilot's read-back. When `promptIfIdle` is true the idle re-prompt loop is armed
+    /// so an unanswered call is repeated with "how do you read?"; the takeoff
+    /// clearance passes false so it holds the gate silently (no runway radio-check).
+    private func engageReadbackGate(_ tx: ATCTransmission, promptIfIdle: Bool = true) {
         guard !settings.mockMode else { return }
         awaitingReadback = true
         pendingReadbackTx = tx
         readbackPrompts = 0
-        armReadbackTimer()
+        if promptIfIdle { armReadbackTimer() }
     }
 
     /// Schedule the next idle re-prompt. If the pilot stays silent the controller

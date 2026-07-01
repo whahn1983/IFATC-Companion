@@ -100,12 +100,26 @@ struct RampPhraseologyEngine {
         let s = spot(spotName)
         let freqD = String(format: "%.3f", groundFrequency)
         let freqS = Phonetic.frequency(groundFrequency, icao: icao)
+        // Compose the matching pilot read-back so the Read Back button echoes the
+        // hand-off (the Ground frequency / movement-area boundary) rather than a
+        // read-back re-derived from the stale conversational state (which lags at
+        // engine-start and would read back "start approved").
         if s.display.isEmpty {
-            return ramp("\(cs.display), proceed to the movement-area boundary, contact Ground \(freqD).",
-                        "\(cs.spoken), proceed to the movement-area boundary, contact Ground \(freqS).")
+            var tx = ramp("\(cs.display), proceed to the movement-area boundary, contact Ground \(freqD).",
+                          "\(cs.spoken), proceed to the movement-area boundary, contact Ground \(freqS).")
+            tx.readback = ATCTransmission.Readback(
+                displayText: "Proceed to the movement-area boundary, contact Ground \(freqD), \(cs.display).",
+                spokenText: "Proceed to the movement-area boundary, contact Ground \(freqS), \(cs.spoken).",
+                facility: .ramp)
+            return tx
         }
-        return ramp("\(cs.display), contact Ground \(freqD) at \(s.display).",
-                    "\(cs.spoken), contact Ground \(freqS) at \(s.spoken).")
+        var tx = ramp("\(cs.display), contact Ground \(freqD) at \(s.display).",
+                      "\(cs.spoken), contact Ground \(freqS) at \(s.spoken).")
+        tx.readback = ATCTransmission.Readback(
+            displayText: "Contact Ground \(freqD) at \(s.display), \(cs.display).",
+            spokenText: "Contact Ground \(freqS) at \(s.spoken), \(cs.spoken).",
+            facility: .ramp)
+        return tx
     }
 
     // MARK: - Arrival ramp (controller side)
