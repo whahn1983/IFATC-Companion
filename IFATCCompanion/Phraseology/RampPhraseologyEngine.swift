@@ -130,8 +130,16 @@ struct RampPhraseologyEngine {
         let g = gate.trimmingCharacters(in: .whitespaces)
         let dest = g.isEmpty ? "the gate" : "gate \(g)"
         let destSpoken = g.isEmpty ? "the gate" : "gate \(Phonetic.spellToken(g, icao: icao))"
-        return ramp("\(cs.display), proceed to \(dest) via \(alley).",
-                    "\(cs.spoken), proceed to \(destSpoken) via \(alley).")
+        // Compose the matching read-back so the Read Back button echoes the ramp
+        // routing instead of a read-back re-derived from the stale `.groundArrival`
+        // state (which would read back the earlier Ground "taxi to gate via …").
+        var tx = ramp("\(cs.display), proceed to \(dest) via \(alley).",
+                      "\(cs.spoken), proceed to \(destSpoken) via \(alley).")
+        tx.readback = ATCTransmission.Readback(
+            displayText: "Proceed to \(dest) via \(alley), \(cs.display).",
+            spokenText: "Proceed to \(destSpoken) via \(alley), \(cs.spoken).",
+            facility: .ramp)
+        return tx
     }
 
     /// Gate occupied — hold short of the alley until it opens.
@@ -145,8 +153,13 @@ struct RampPhraseologyEngine {
 
     /// Final block-in — monitor ramp to the gate (marshaller/VDGS takes over).
     func monitorRampToGate(cs: PhraseologyEngine.Callsign) -> ATCTransmission {
-        ramp("\(cs.display), monitor ramp to the gate.",
-             "\(cs.spoken), monitor ramp to the gate.")
+        var tx = ramp("\(cs.display), monitor ramp to the gate.",
+                      "\(cs.spoken), monitor ramp to the gate.")
+        tx.readback = ATCTransmission.Readback(
+            displayText: "Monitor ramp to the gate, \(cs.display).",
+            spokenText: "Monitor ramp to the gate, \(cs.spoken).",
+            facility: .ramp)
+        return tx
     }
 
     // MARK: - Pilot side (ramp readbacks / requests)

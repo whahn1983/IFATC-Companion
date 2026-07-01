@@ -12,6 +12,8 @@ struct ATCView: View {
     @State private var showClearFlightConfirm = false
     @State private var showSubscription = false
     @FocusState private var callsignFocused: Bool
+    @FocusState private var departureGateFocused: Bool
+    @FocusState private var arrivalGateFocused: Bool
 
     var body: some View {
         NavigationStack {
@@ -117,6 +119,15 @@ struct ATCView: View {
                     headerStat(title: "Airport", value: nearestAirport, image: "mappin.and.ellipse")
                 }
                 HStack {
+                    gateField(title: "Dep Gate", systemImage: "figure.walk.departure",
+                              text: $settings.departureGate, placeholder: "C12",
+                              focused: $departureGateFocused)
+                    Divider().frame(height: 34)
+                    gateField(title: "Arr Gate", systemImage: "figure.walk.arrival",
+                              text: $settings.arrivalGate, placeholder: "B44",
+                              focused: $arrivalGateFocused)
+                }
+                HStack {
                     headerStat(title: "Phase", value: model.phase.title, image: "flag.checkered")
                     Divider().frame(height: 34)
                     headerStat(title: "Assigned", value: assignedAltText, image: "arrow.up.arrow.down")
@@ -151,6 +162,31 @@ struct ATCView: View {
                 .onSubmit { applyCallsign() }
                 .onChange(of: callsignFocused) { _, focused in
                     if !focused { model.applyManualCallsign() }
+                }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Editable departure/arrival gate entry, surfaced on the main page so the pilot
+    /// can set the gate without diving into the Flight tab's manual overrides.
+    /// Infinite Flight exposes no gate/stand, so these are pilot-entered; they feed
+    /// the pushback request and the arrival Ramp taxi-to-gate instruction. Applies on
+    /// submit / when editing ends so the phraseology picks the change up immediately.
+    private func gateField(title: String, systemImage: String, text: Binding<String>,
+                           placeholder: String, focused: FocusState<Bool>.Binding) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Label(title, systemImage: systemImage).font(.caption).foregroundStyle(.secondary)
+            TextField(placeholder, text: text)
+                .font(.headline)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .textInputAutocapitalization(.characters)
+                .autocorrectionDisabled()
+                .submitLabel(.done)
+                .focused(focused)
+                .onSubmit { focused.wrappedValue = false; model.applyManualGates() }
+                .onChange(of: focused.wrappedValue) { _, isFocused in
+                    if !isFocused { model.applyManualGates() }
                 }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

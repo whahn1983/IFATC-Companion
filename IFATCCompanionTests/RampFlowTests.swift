@@ -78,6 +78,40 @@ final class RampFlowTests: XCTestCase {
         XCTAssertTrue(has(model, "Flight complete"), "parked at the gate should complete the flight")
     }
 
+    /// Reading back on the arrival Ramp must echo the ramp routing ("proceed to gate
+    /// … via the ramp"), not a stale Ground "taxi to gate via …" re-derived from the
+    /// `.groundArrival` state the conversation is still sitting on.
+    func testArrivalRampReadbackEchoesGateRoutingNotGroundTaxi() {
+        let model = makeModel(mock: false)
+        model.flightPlan.arrivalGate = "C10"
+
+        flyToArrivalGround(model)
+        XCTAssertTrue(model.isArrivalRamp)
+
+        model.contactRamp()   // Ramp routes to the gate ("proceed to gate C10 via …")
+        model.readBack()      // read back the ramp routing
+
+        let lastPilot = model.transcript.last { $0.sender == .pilot }
+        XCTAssertNotNil(lastPilot)
+        XCTAssertTrue(lastPilot?.displayText.lowercased().contains("proceed to gate c10") ?? false,
+                      "read-back should echo the ramp gate routing: \(lastPilot?.displayText ?? "nil")")
+        XCTAssertFalse(lastPilot?.displayText.lowercased().contains("taxi to gate") ?? true,
+                       "read-back must not echo the stale Ground taxi instruction")
+
+        // Slowing toward the stand → "monitor ramp to the gate"; its read-back must
+        // echo that call, still never the Ground taxi.
+        var slowing = model.mock.state(for: .taxiIn)
+        slowing.groundSpeed = 3
+        model.ingestStateForTesting(slowing)
+        XCTAssertTrue(has(model, "monitor ramp to the gate"))
+        model.readBack()
+        let afterMonitor = model.transcript.last { $0.sender == .pilot }
+        XCTAssertTrue(afterMonitor?.displayText.lowercased().contains("monitor ramp to the gate") ?? false,
+                      "read-back should echo monitor-ramp: \(afterMonitor?.displayText ?? "nil")")
+        XCTAssertFalse(afterMonitor?.displayText.lowercased().contains("taxi to gate") ?? true,
+                       "read-back must not echo the stale Ground taxi instruction")
+    }
+
     /// Requesting taxi while still on the Ramp hands the pilot to Ground only — it
     /// must not issue the taxi clearance. The pilot then requests taxi again on
     /// Ground for the actual clearance.
