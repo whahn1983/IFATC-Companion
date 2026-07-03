@@ -59,6 +59,41 @@ final class WeatherRouteSigmetTests: XCTestCase {
                        "an off-route turbulence SIGMET must not drive the ride to severe")
     }
 
+    func testDegenerateGeometrySigmetIsDropped() {
+        // A convective advisory whose "area" is only two points can't be drawn as a
+        // polygon on the map — and so must not silently drive the ride index either.
+        let line = [origin, dest]
+        let kept = analyzer.relevantSigmets([sigmet(line, hazard: "CONVECTIVE")],
+                                            position: origin, routeEnd: dest)
+        XCTAssertTrue(kept.isEmpty, "a <3-point advisory has no drawable area")
+    }
+
+    func testOnRouteSigmetHasDrawableArea() {
+        let onRoute = sigmet(box(CLLocationCoordinate2D(latitude: 37.4, longitude: -94.3)),
+                             hazard: "CONVECTIVE")
+        let kept = analyzer.relevantSigmets([onRoute], position: origin, routeEnd: dest)
+        XCTAssertEqual(kept.count, 1)
+        XCTAssertNotNil(kept.first?.drawableArea, "a kept advisory must be placeable on the map")
+    }
+
+    func testSigmetSeverityMapping() {
+        XCTAssertEqual(sigmet([], hazard: "CONVECTIVE").turbulenceSeverity, .severe)
+        XCTAssertEqual(sigmet([], hazard: "TURB").turbulenceSeverity, .moderate)
+        let severeTurb = SIGMET(raw: "SEV TURB", hazard: "TURB", severity: "SEV", area: [])
+        XCTAssertEqual(severeTurb.turbulenceSeverity, .severe,
+                       "a severe-turbulence SIGMET must color and score as severe, not moderate")
+        XCTAssertEqual(sigmet([], hazard: "ICE").turbulenceSeverity, .light)
+    }
+
+    func testSevereTurbSigmetDrivesSevereRide() {
+        let model = TurbulenceModel()
+        let onRoute = box(CLLocationCoordinate2D(latitude: 37.4, longitude: -94.3))
+        let severeTurb = SIGMET(raw: "SEV TURB", hazard: "TURB", severity: "SEV", area: onRoute)
+        let kept = analyzer.relevantSigmets([severeTurb], position: origin, routeEnd: dest)
+        let assessment = model.assess(items: [], sigmets: kept, metar: nil, altitudeFt: 35000)
+        XCTAssertEqual(assessment.severity, .severe)
+    }
+
     func testPointInPolygon() {
         let square = box(CLLocationCoordinate2D(latitude: 40, longitude: -90), half: 1.0)
         XCTAssertTrue(WeatherRouteAnalyzer.pointInPolygon(

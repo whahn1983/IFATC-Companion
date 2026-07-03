@@ -81,19 +81,29 @@ struct TurbulenceModel {
     }
 
     private func sigmetContribution(_ sigmets: [SIGMET]) -> (value: Double, label: String)? {
+        // Take the single most significant advisory. The ride-index floor is
+        // derived from the same `turbulenceSeverity` used to color the advisory on
+        // the map, so a "severe" ride index always corresponds to a red area on the
+        // route (and vice versa).
         var value = 0.0
         var label: String?
         for sigmet in sigmets {
-            let hazard = (sigmet.hazard ?? sigmet.raw).uppercased()
-            if hazard.contains("CONV") || hazard.contains("TS") {
-                value = max(value, 0.8); label = "convective SIGMET"
-            } else if hazard.contains("TURB") {
-                value = max(value, 0.6); label = "turbulence SIGMET"
-            } else if hazard.contains("ICE") || hazard.contains("MTW") {
-                value = max(value, 0.45); label = "SIGMET advisory"
-            }
+            let floor = rideIndexFloor(for: sigmet.turbulenceSeverity)
+            if floor > value { value = floor; label = sigmet.hazardLabel }
         }
         return label.map { (value, $0) }
+    }
+
+    /// The composite ride-index floor a SIGMET of the given severity contributes.
+    /// Chosen so `severity(for:)` maps each floor back onto the same severity.
+    private func rideIndexFloor(for severity: TurbulenceSeverity) -> Double {
+        switch severity {
+        case .smooth: return 0.0
+        case .lightChop: return 0.25
+        case .light: return 0.45
+        case .moderate: return 0.6
+        case .severe: return 0.8
+        }
     }
 
     private func windShearContribution(_ metar: METAR?) -> (value: Double, label: String)? {

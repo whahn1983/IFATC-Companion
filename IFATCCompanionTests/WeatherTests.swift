@@ -48,6 +48,31 @@ final class WeatherTests: XCTestCase {
         XCTAssertGreaterThan(items.first?.distanceAheadNM ?? 0, 0)
     }
 
+    /// A PIREP at cruise altitude is relevant when evaluated against the planned
+    /// cruise level, but not when evaluated against a much lower climb altitude —
+    /// this is why the ride model keys route reports off the flight-plan cruise
+    /// altitude (within tolerance) rather than the live altitude while climbing.
+    func testReportsFilteredAgainstCruiseAltitudeWithinTolerance() {
+        var analyzer = WeatherRouteAnalyzer()
+        analyzer.config.corridorNM = 100
+        analyzer.config.altitudeBandFt = 5000
+
+        let position = CLLocationCoordinate2D(latitude: 40, longitude: -95)
+        let end = CLLocationCoordinate2D(latitude: 44, longitude: -93)
+        let atCruise = PIREP(raw: "cruise", coordinate: CLLocationCoordinate2D(latitude: 42, longitude: -94),
+                             altitudeFt: 35000, turbulence: .moderate, icing: nil, time: nil, aircraftType: nil)
+
+        // Referenced against the planned cruise level → kept (within ±5000).
+        let atCruiseRef = analyzer.relevantReports(pireps: [atCruise], position: position,
+                                                   routeEnd: end, altitudeFt: 35000)
+        XCTAssertEqual(atCruiseRef.count, 1)
+
+        // Referenced against a 12,000 ft climb altitude → dropped (outside ±5000).
+        let atClimbRef = analyzer.relevantReports(pireps: [atCruise], position: position,
+                                                  routeEnd: end, altitudeFt: 12000)
+        XCTAssertTrue(atClimbRef.isEmpty)
+    }
+
     func testEmptyPirepsProducesNoItems() {
         let analyzer = WeatherRouteAnalyzer()
         let items = analyzer.relevantReports(pireps: [],
