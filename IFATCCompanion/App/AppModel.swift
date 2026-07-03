@@ -1929,6 +1929,13 @@ final class AppModel: ObservableObject {
     /// controller's next instruction for the facility we're tuned to. This is the
     /// deliberate "check in" the pilot makes after switching frequency (tuning no
     /// longer checks in automatically).
+    /// Live aircraft altitude rounded to the nearest 100 ft for a check-in report,
+    /// or nil when no usable altitude telemetry is available (e.g. manual practice).
+    private func checkInAltitude() -> Int? {
+        guard let msl = aircraftState.altitudeMSL, msl > 0 else { return nil }
+        return Int((msl / 100).rounded()) * 100
+    }
+
     func requestHandoff() {
         guard !companionStandby else { return }
         // Checking in satisfies any pending hand-off the controller prompted: the new
@@ -1939,7 +1946,10 @@ final class AppModel: ObservableObject {
             // Nothing new ahead for this controller — a plain check-in / radar-contact
             // exchange (e.g. a same-sector Center re-check-in).
             let c = buildContext(for: atcState)
-            postPilot(pilotEngine.requestHandoff(context: c, facility: currentFacility))
+            postPilot(pilotEngine.requestHandoff(context: c, facility: currentFacility,
+                                                 currentAltitude: checkInAltitude(),
+                                                 targetAltitude: assignedAltitude,
+                                                 onGround: aircraftState.onGround ?? false))
             post(engine.radarContact(cs: c.callsign, facility: currentFacility), speak: true)
             return
         }
@@ -1947,8 +1957,13 @@ final class AppModel: ObservableObject {
         let c = buildContext(for: target)
         // The pilot checks in on the tuned frequency. Because the pilot initiated the
         // switch, the controller does not precede its reply with a "contact …"
-        // hand-off (announceHandoff: false).
-        postPilot(pilotEngine.requestHandoff(context: c, facility: currentFacility))
+        // hand-off (announceHandoff: false). The pilot reports altitude relative to
+        // the currently assigned altitude (still the previous controller's assignment
+        // here — advanceAndPost updates it afterwards).
+        postPilot(pilotEngine.requestHandoff(context: c, facility: currentFacility,
+                                             currentAltitude: checkInAltitude(),
+                                             targetAltitude: assignedAltitude,
+                                             onGround: aircraftState.onGround ?? false))
         advanceAndPost(to: target, context: c, announceHandoff: false)
         if target == .parked, !arrivalAnnounced {
             announceArrival()

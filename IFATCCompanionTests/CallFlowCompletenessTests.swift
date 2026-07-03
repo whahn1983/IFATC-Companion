@@ -57,4 +57,52 @@ final class CallFlowCompletenessTests: XCTestCase {
         XCTAssertEqual(ATCState.engineStart.facility, .ramp)
         XCTAssertEqual(ATCState.groundTaxi.facility, .ground)
     }
+
+    // MARK: - Check-in phrasing
+
+    /// Airborne and level: the pilot reports "with you at <altitude>".
+    func testCheckInLevelReportsCurrentAltitude() {
+        let pilot = PilotResponseEngine(engine: engine())
+        let ctx = TestSupport.context()
+        let tx = pilot.requestHandoff(context: ctx, facility: .center,
+                                      currentAltitude: 37000, targetAltitude: 37000, onGround: false)
+        XCTAssertTrue(tx.displayText.contains("with you at FL370"), tx.displayText)
+        XCTAssertFalse(tx.displayText.contains(" for "), "level check-in should not name a target: \(tx.displayText)")
+    }
+
+    /// Climbing: the pilot reports "with you at <current> for <target>".
+    func testCheckInClimbingReportsCurrentAndTarget() {
+        let pilot = PilotResponseEngine(engine: engine())
+        let ctx = TestSupport.context()
+        let tx = pilot.requestHandoff(context: ctx, facility: .departure,
+                                      currentAltitude: 8000, targetAltitude: 18000, onGround: false)
+        XCTAssertTrue(tx.displayText.contains("with you at 8,000 for FL180"), tx.displayText)
+    }
+
+    /// Descending: the pilot reports the current altitude and the lower target.
+    func testCheckInDescendingReportsCurrentAndTarget() {
+        let pilot = PilotResponseEngine(engine: engine())
+        let ctx = TestSupport.context()
+        let tx = pilot.requestHandoff(context: ctx, facility: .approach,
+                                      currentAltitude: 12000, targetAltitude: 4000, onGround: false)
+        XCTAssertTrue(tx.displayText.contains("with you at 12,000 for 4,000"), tx.displayText)
+    }
+
+    /// On the ground (Ramp/Ground) or with no altitude telemetry: plain "checking in".
+    func testCheckInOnGroundOrUnknownAltitudeSaysCheckingIn() {
+        let pilot = PilotResponseEngine(engine: engine())
+        let ctx = TestSupport.context()
+        // Ground facility, even if an altitude is somehow supplied.
+        let ground = pilot.requestHandoff(context: ctx, facility: .ground,
+                                          currentAltitude: 5000, targetAltitude: 10000, onGround: false)
+        XCTAssertTrue(ground.displayText.contains("checking in"), ground.displayText)
+        // Airborne facility but no telemetry available.
+        let noAlt = pilot.requestHandoff(context: ctx, facility: .center,
+                                         currentAltitude: nil, targetAltitude: 37000, onGround: false)
+        XCTAssertTrue(noAlt.displayText.contains("checking in"), noAlt.displayText)
+        // On the ground overrides altitude reporting.
+        let onGround = pilot.requestHandoff(context: ctx, facility: .tower,
+                                            currentAltitude: 200, targetAltitude: 5000, onGround: true)
+        XCTAssertTrue(onGround.displayText.contains("checking in"), onGround.displayText)
+    }
 }
