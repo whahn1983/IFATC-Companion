@@ -382,17 +382,29 @@ final class AppModel: ObservableObject {
     /// subscribed user to Live once that check confirms their access.
     private func observeEntitlements() {
         entitlements.$hasLiveAccess
-            .sink { [weak self] hasAccess in
-                guard let self else { return }
-                if !hasAccess && !self.settings.mockMode {
-                    self.diagnostics.log(.app, "Live subscription not active — locking to Mock Mode.")
-                    self.toggleMockMode(true)
-                } else if hasAccess && self.settings.mockMode {
-                    self.diagnostics.log(.app, "Live subscription active — switching to Live Connected Mode.")
-                    self.toggleMockMode(false)
-                }
-            }
+            .sink { [weak self] hasAccess in self?.applyEntitlement(hasLiveAccess: hasAccess) }
             .store(in: &cancellables)
+    }
+
+    /// React to a change in Live-access entitlement, switching the active mode to
+    /// match. Driven by the `hasLiveAccess` value the publisher hands us — **not**
+    /// by re-reading `entitlements.hasLiveAccess` (nor via `toggleMockMode`, whose
+    /// guard does). `@Published` emits from `willSet`, so while this runs the
+    /// property still returns the *previous* value; routing the "access gained"
+    /// case through `toggleMockMode(false)` would let its guard read that stale
+    /// `false`, refuse the switch, and bounce a just-confirmed subscriber straight
+    /// back into Mock Mode — leaving the mock toggle stuck on after the entitlement
+    /// check passes.
+    func applyEntitlement(hasLiveAccess: Bool) {
+        if !hasLiveAccess && !settings.mockMode {
+            diagnostics.log(.app, "Live subscription not active — locking to Mock Mode.")
+            settings.mockMode = true
+            startMock()
+        } else if hasLiveAccess && settings.mockMode {
+            diagnostics.log(.app, "Live subscription active — switching to Live Connected Mode.")
+            settings.mockMode = false
+            startLive()
+        }
     }
 
     /// Disable the iOS idle timer so the screen stays on while the app is open.
