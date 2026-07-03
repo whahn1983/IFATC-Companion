@@ -14,8 +14,39 @@ struct LiveATCStatus: Equatable {
 
     static let none = LiveATCStatus()
 
-    /// Whether the companion should stand by (defer to a human controller).
+    /// Whether a human controller is staffing *some* relevant frequency. This is a
+    /// presence signal for the UI/diagnostics — it does not, on its own, mean the
+    /// companion should stand by. The per-frequency decision is `shouldStandBy(tunedTo:)`.
     var shouldStandBy: Bool { humanControllerActive }
+
+    /// The FAA facility a human controller is working, resolved from
+    /// `activeFacility` when it maps to a gate-to-gate position. Nil when no
+    /// controller is active or the reported name can't be matched (e.g. UNICOM/ATIS,
+    /// or an IF version that exposes only a facility count).
+    var staffedFacility: ATCFacility? {
+        humanControllerActive ? ATCFacility.matching(name: activeFacility) : nil
+    }
+
+    /// Whether the companion should stand aside for a human controller **given the
+    /// facility the pilot is tuned to right now**. The guard is per-frequency: it
+    /// applies only while the pilot is on the staffed controller's frequency. Tuning
+    /// off it — to another sector the human isn't working, or to no frequency — lifts
+    /// the guard so the companion resumes covering that sector. For example, with only
+    /// Ground and Tower manned, the pilot can still get Clearance Delivery before the
+    /// push, and after departing and leaving Tower the companion picks up Departure,
+    /// then Center.
+    ///
+    /// - Ramp is never FAA ATC, so it can't be human-staffed — the companion always
+    ///   handles the pushback / taxi-to-gate there.
+    /// - When a controller is active but the facility can't be identified (only a
+    ///   count/flag is exposed, with no usable name), the guard falls back to standing
+    ///   by, since we can't safely tell whether the tuned frequency is the staffed one.
+    func shouldStandBy(tunedTo facility: ATCFacility?) -> Bool {
+        guard humanControllerActive else { return false }
+        if facility == .ramp { return false }
+        if let staffed = staffedFacility { return facility == staffed }
+        return true
+    }
 
     /// Short human-readable summary for the UI.
     var summary: String {

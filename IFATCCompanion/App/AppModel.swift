@@ -68,8 +68,11 @@ final class AppModel: ObservableObject {
     /// Mock-mode demo toggle to exercise the "step aside" behavior in the Simulator.
     @Published var simulateStaffedATC: Bool = false
 
-    /// Whether the companion should defer to a human controller right now.
-    var companionStandby: Bool { liveATC.shouldStandBy }
+    /// Whether the companion should defer to a human controller right now. The guard
+    /// is per-frequency: it applies only while the pilot is tuned to the facility a
+    /// human is actually staffing. Switching to a frequency no human is working (or off
+    /// frequency entirely) lifts it, so the companion resumes covering that sector.
+    var companionStandby: Bool { liveATC.shouldStandBy(tunedTo: currentFacility) }
 
     /// Whether the pre-departure ground actions (clearance → pushback → engine
     /// start → taxi → ready) should be offered. True until the first departure.
@@ -441,14 +444,20 @@ final class AppModel: ObservableObject {
             .store(in: &cancellables)
     }
 
-    /// Apply a new live-ATC status and log standby transitions.
+    /// Apply a new live-ATC status and log human-ATC presence transitions. Whether
+    /// the companion actually stands by is decided per-frequency in `companionStandby`
+    /// (it only defers while tuned to the staffed facility), so this logs detection of
+    /// a human controller rather than the standby state itself.
     private func applyLiveATC(_ status: LiveATCStatus) {
-        let wasStandby = liveATC.shouldStandBy
+        let wasActive = liveATC.humanControllerActive
         liveATC = status
-        if status.shouldStandBy != wasStandby {
-            diagnostics.log(.atc, status.shouldStandBy
-                ? "Human ATC detected — companion standing by."
-                : "Human ATC cleared — companion resuming.")
+        if status.humanControllerActive != wasActive {
+            if status.humanControllerActive {
+                let f = status.staffedFacility.map { " on \($0.title)" } ?? ""
+                diagnostics.log(.atc, "Human ATC detected\(f) — companion defers on that frequency.")
+            } else {
+                diagnostics.log(.atc, "Human ATC cleared — companion resuming all sectors.")
+            }
         }
     }
 
@@ -606,11 +615,14 @@ final class AppModel: ObservableObject {
 
         let mapped = stateMachine.mappedState(for: phase)
 
-        // Defer to a human controller: track state for display, but do not generate
-        // or speak controller calls.
+        // Defer to a human controller on the tuned frequency: track state for
+        // display, but do not generate or speak controller calls. Honor a manual
+        // tune so the guard stays pinned to the frequency the pilot is actually on
+        // (rather than snapping to the phase-derived controller, which would fight
+        // the per-frequency guard as the pilot tunes on and off the staffed sector).
         if companionStandby {
             atcState = mapped
-            currentFacility = controller(for: mapped)
+            currentFacility = tunedFacility ?? controller(for: mapped)
             return
         }
 
@@ -1073,7 +1085,9 @@ final class AppModel: ObservableObject {
     /// requesting pushback after Clearance hands you to Ground. This is how the
     /// pilot drives the flight forward without calls auto-playing back-to-back.
     func tuneTo(_ facility: ATCFacility) {
-        guard !companionStandby else { return }
+        // Tuning is always allowed — even while standing by for a human controller.
+        // Moving the radio is how the pilot leaves a staffed frequency to lift the
+        // guard (and how they tune onto one to re-engage it); it never transmits.
         manualTuning = true
         tunedFacility = facility
         currentFacility = facility

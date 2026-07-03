@@ -21,7 +21,7 @@ struct ATCView: View {
                 VStack(spacing: 14) {
                     if !entitlements.hasLiveAccess { subscribeBanner }
                     statusHeader
-                    if model.liveATC.humanControllerActive { standbyBanner }
+                    if model.companionStandby { standbyBanner }
                     currentTransmissionCard
                     frequencyCard
                     responseButtons
@@ -312,7 +312,7 @@ struct ATCView: View {
             VStack(spacing: 10) {
                 let actions = orderedActions.filter { model.availableActions.contains($0) }
                 if actions.isEmpty {
-                    Text(model.liveATC.humanControllerActive
+                    Text(model.companionStandby
                          ? "Follow the live controller."
                          : "No requests right now — read back or wait for the next call.")
                         .font(.caption)
