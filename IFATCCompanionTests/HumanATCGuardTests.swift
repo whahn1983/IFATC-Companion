@@ -78,16 +78,42 @@ final class HumanATCGuardTests: XCTestCase {
         }
     }
 
-    func testUnidentifiableFacilityFallsBackToStandby() {
-        // Some IF versions expose only a facility count (no usable name). We can't tell
-        // which frequency is staffed, so the guard conservatively applies everywhere.
+    func testUnidentifiableFacilityDoesNotStandBy() {
+        // Some IF versions expose only a facility count (no usable name). We can't
+        // confirm which frequency is staffed, so the companion does NOT gate — the
+        // pilot keeps the companion rather than being locked out of a frequency that
+        // may well be uncontrolled.
         let countOnly = LiveATCStatus(multiplayerOnline: true, serverName: "Expert",
                                       humanControllerActive: true, activeFacility: nil)
         XCTAssertNil(countOnly.staffedFacility)
-        XCTAssertTrue(countOnly.shouldStandBy(tunedTo: .clearance))
-        XCTAssertTrue(countOnly.shouldStandBy(tunedTo: .center))
-        // Ramp is still never guarded, even in the unidentifiable case.
-        XCTAssertFalse(countOnly.shouldStandBy(tunedTo: .ramp))
+        for facility in ATCFacility.allCases {
+            XCTAssertFalse(countOnly.shouldStandBy(tunedTo: facility))
+        }
+        XCTAssertFalse(countOnly.shouldStandBy(tunedTo: nil))
+    }
+
+    func testUnrecognisedFacilityNameDoesNotStandBy() {
+        // A human controller reported under a name that doesn't map to a gate-to-gate
+        // position (e.g. a controller's initials) can't be tied to the tuned frequency,
+        // so the companion keeps working every sector instead of gating blindly.
+        let odd = staffed("JAR")
+        XCTAssertNil(odd.staffedFacility)
+        for facility in ATCFacility.allCases {
+            XCTAssertFalse(odd.shouldStandBy(tunedTo: facility))
+        }
+    }
+
+    func testAtisIsNeverGuarded() {
+        // ATIS is an automated broadcast, not a human controller: it is not detected as
+        // human ATC and never gates the app, whatever the pilot is tuned to.
+        let detector = LiveATCDetector()
+        let atis = detector.status(atcActive: false, facilityName: "ATIS", facilityCount: 0,
+                                   online: true, serverName: "Expert")
+        XCTAssertFalse(atis.humanControllerActive)
+        XCTAssertNil(atis.staffedFacility)
+        for facility in ATCFacility.allCases {
+            XCTAssertFalse(atis.shouldStandBy(tunedTo: facility))
+        }
     }
 }
 

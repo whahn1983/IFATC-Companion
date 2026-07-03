@@ -28,24 +28,28 @@ struct LiveATCStatus: Equatable {
     }
 
     /// Whether the companion should stand aside for a human controller **given the
-    /// facility the pilot is tuned to right now**. The guard is per-frequency: it
-    /// applies only while the pilot is on the staffed controller's frequency. Tuning
-    /// off it — to another sector the human isn't working, or to no frequency — lifts
-    /// the guard so the companion resumes covering that sector. For example, with only
-    /// Ground and Tower manned, the pilot can still get Clearance Delivery before the
-    /// push, and after departing and leaving Tower the companion picks up Departure,
-    /// then Center.
+    /// facility the pilot is tuned to right now**. The guard is per-frequency: the
+    /// companion only defers while the pilot is actually tuned to the frequency a
+    /// human is confirmed to be working. It reads the currently tuned frequency and
+    /// gates *only* when that frequency is human-controlled — anything else keeps the
+    /// companion covering the sector. For example, with only Tower manned, the pilot
+    /// still gets Clearance Delivery, Ground, Departure and Center from the companion,
+    /// and only Tower defers.
     ///
+    /// The guard never engages unless the staffed facility can be positively
+    /// identified and matches the tuned one:
     /// - Ramp is never FAA ATC, so it can't be human-staffed — the companion always
     ///   handles the pushback / taxi-to-gate there.
-    /// - When a controller is active but the facility can't be identified (only a
-    ///   count/flag is exposed, with no usable name), the guard falls back to standing
-    ///   by, since we can't safely tell whether the tuned frequency is the staffed one.
+    /// - ATIS is an automated broadcast, not a human controller, so it is excluded (a
+    ///   frequency reported as ATIS never triggers the guard).
+    /// - When a controller is active but the staffed facility can't be identified
+    ///   (only a count/flag is exposed, or an unrecognised name), the companion does
+    ///   **not** gate — we can't confirm the tuned frequency is the human's, so the
+    ///   pilot keeps the companion rather than being locked out of an uncontrolled
+    ///   frequency.
     func shouldStandBy(tunedTo facility: ATCFacility?) -> Bool {
-        guard humanControllerActive else { return false }
-        if facility == .ramp { return false }
-        if let staffed = staffedFacility { return facility == staffed }
-        return true
+        guard let staffed = staffedFacility else { return false }
+        return facility == staffed
     }
 
     /// Short human-readable summary for the UI.
@@ -83,8 +87,12 @@ struct LiveATCDetector {
         status.multiplayerOnline = (online ?? false) || (status.serverName != nil)
 
         let cleanedFacility = facilityName?.trimmingCharacters(in: .whitespaces).nonEmpty
-        // A UNICOM "facility" is not a human controller.
-        let facilityIsHuman = cleanedFacility.map { !$0.uppercased().contains("UNICOM") } ?? false
+        // UNICOM and ATIS are not human controllers — UNICOM is an unstaffed advisory
+        // frequency and ATIS is an automated broadcast, so neither should gate the app.
+        let facilityIsHuman = cleanedFacility.map {
+            let name = $0.uppercased()
+            return !name.contains("UNICOM") && !name.contains("ATIS")
+        } ?? false
 
         let humanByFlag = atcActive ?? false
         let humanByCount = (facilityCount ?? 0) > 0
