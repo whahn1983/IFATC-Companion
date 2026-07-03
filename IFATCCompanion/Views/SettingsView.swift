@@ -24,6 +24,7 @@ struct SettingsView: View {
                 phraseologySection
                 automationSection
                 weatherSection
+                weatherDataSection
                 etiquetteSection
                 advancedSection
             }
@@ -257,6 +258,35 @@ struct SettingsView: View {
                     .textInputAutocapitalization(.never)
                     .font(.caption)
             }
+        }
+    }
+
+    // MARK: - Weather Data (radar + simulated deviation)
+
+    private var weatherDataSection: some View {
+        Section {
+            Picker("NOAA Radar Overlay", selection: Binding(
+                get: { settings.noaaRadarOverlay },
+                set: { settings.noaaRadarOverlay = $0; model.recomputeWeatherHazards() })) {
+                ForEach(NOAARadarOverlayMode.allCases) { Text($0.title).tag($0) }
+            }
+            VStack(alignment: .leading) {
+                Text("Radar opacity: \(Int((settings.radarOpacity * 100).rounded()))%")
+                Slider(value: $settings.radarOpacity, in: 0.1...1.0)
+            }
+            Picker("Weather deviation alerts", selection: $settings.weatherDeviationAlerts) {
+                ForEach(WeatherDeviationAlertMode.allCases) { Text($0.title).tag($0) }
+            }
+            Toggle("Show data-source labels", isOn: $settings.showWeatherDataSourceLabels)
+            Toggle("Show coverage warnings", isOn: $settings.showWeatherCoverageWarnings)
+            Label {
+                Text("Radar precipitation uses the free NOAA/NWS source and is available only in NOAA-covered regions. Simulation only — not for real-world aviation. No paid weather subscription, API key, or account required.")
+                    .font(.footnote)
+            } icon: {
+                Image(systemName: "cloud.rain").foregroundStyle(.blue)
+            }
+        } header: {
+            Text("Weather Data")
         }
     }
 

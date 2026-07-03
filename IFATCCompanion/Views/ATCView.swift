@@ -22,8 +22,10 @@ struct ATCView: View {
                     if !entitlements.hasLiveAccess { subscribeBanner }
                     statusHeader
                     if model.companionStandby { standbyBanner }
+                    if model.weatherBannerVisible { weatherBanner }
                     currentTransmissionCard
                     frequencyCard
+                    if model.weatherDeviationCardVisible { weatherDeviationCard }
                     responseButtons
                     transcriptCard
                 }
@@ -211,6 +213,89 @@ struct ATCView: View {
 
     private var assignedAltText: String {
         model.assignedAltitude > 0 ? PhraseologyEngine().formatAltDisplay(model.assignedAltitude) : "—"
+    }
+
+    // MARK: - Weather deviation
+
+    /// "Weather ahead — ask Center" banner. Tapping asks Center for the simulated
+    /// weather advisory. Shown only when a route-weather conflict exists.
+    private var weatherBanner: some View {
+        Button {
+            model.askCenterAboutWeather()
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "cloud.bolt.rain.fill")
+                Text(model.weatherBannerText)
+                    .font(.subheadline.weight(.semibold))
+                Spacer(minLength: 0)
+                Text("Ask Center").font(.caption.weight(.semibold))
+                Image(systemName: "chevron.right").font(.caption)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.orange.opacity(0.18)))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color.orange.opacity(0.6), lineWidth: 1))
+            .foregroundStyle(.orange)
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// The simulated weather-deviation request/approval buttons, shown while a
+    /// deviation interaction is in progress.
+    private var weatherDeviationCard: some View {
+        Card(title: "Weather Deviation (Simulated)", systemImage: "cloud.bolt.rain") {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(weatherStatusLine)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                LazyVGrid(columns: gridColumns, spacing: 10) {
+                    ForEach(model.weatherActions, id: \.self) { weatherActionButton(for: $0) }
+                }
+                Text("Radar-aware ATC simulation — training and entertainment only.")
+                    .font(.caption2).foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    private var weatherStatusLine: String {
+        if let c = model.activeWeatherConflict {
+            return "\(c.severity.displayLabel) precipitation, \(Int(c.distanceAheadNM.rounded())) NM ahead. Say intentions."
+        }
+        switch model.weatherDeviationState {
+        case .deviationApproved, .vectoringAroundWeather, .deviatingAroundWeather:
+            return "Deviating for weather — report clear of weather when able."
+        default:
+            return "Say intentions."
+        }
+    }
+
+    @ViewBuilder
+    private func weatherActionButton(for action: WeatherDeviationAction) -> some View {
+        switch action {
+        case .askCenter:
+            ActionButton(title: "Ask Center", systemImage: "cloud") { model.askCenterAboutWeather() }
+        case .requestRightDeviation:
+            ActionButton(title: "Right Dev", systemImage: "arrow.turn.up.right") { model.requestWeatherDeviation(.right) }
+        case .requestLeftDeviation:
+            ActionButton(title: "Left Dev", systemImage: "arrow.turn.up.left") { model.requestWeatherDeviation(.left) }
+        case .requestVector:
+            ActionButton(title: "Vectors", systemImage: "arrow.triangle.turn.up.right.diamond") { model.requestVectorAroundWeather() }
+        case .requestHigher:
+            ActionButton(title: "Higher Wx", systemImage: "arrow.up") { model.requestHigherForWeather() }
+        case .requestLower:
+            ActionButton(title: "Lower Wx", systemImage: "arrow.down") { model.requestLowerForWeather() }
+        case .clearOfWeather:
+            ActionButton(title: "Clear of Wx", systemImage: "checkmark.seal", tint: .green) { model.reportClearOfWeather() }
+        case .continueOnCourse:
+            ActionButton(title: "Continue", systemImage: "arrow.forward") { model.continueThroughWeather() }
+        case .sayAgain:
+            ActionButton(title: "Say Again", systemImage: "arrow.uturn.left") { model.sayAgainWeather() }
+        }
     }
 
     // MARK: - Human ATC standby

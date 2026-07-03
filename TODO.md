@@ -88,3 +88,17 @@ Natural follow-ups, if desired later:
   more Infinite Flight versions (detection is signature-based and best-effort).
 - Broaden ICAO regional variations and add metric (QFE/meters) options.
 - Render SIGMET/AIRMET area polygons on the route overlay.
+
+## Weather: NOAA radar precipitation & simulated weather deviation
+
+- ✅ **NOAA/NWS radar precipitation overlay** on the route map (NOAA-covered
+  regions only), route-weather conflict detection, and a deterministic simulated
+  ATC weather-deviation flow (advisory → deviation/vectors → rejoin →
+  clear-of-weather). Simulation/training/entertainment only. Free NOAA/NWS data
+  only — no paid API, key, or user subscription. See `docs/Weather.md`.
+- 🔎 **Discovery (future-only, do not implement without verification):**
+  investigate whether a *truly free / open, commercial-use-compatible* global
+  radar precipitation source exists (free, no paid tier, no user subscription, no
+  API-key billing, commercial use + redistribution allowed, compatible
+  attribution, no SLA/payment dependency). If it cannot be verified against **all**
+  of those, leave global radar unsupported — radar stays NOAA-covered-regions only.

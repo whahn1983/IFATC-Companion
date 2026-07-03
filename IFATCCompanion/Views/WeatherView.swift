@@ -2,6 +2,7 @@ import SwiftUI
 
 struct WeatherView: View {
     @EnvironmentObject var model: AppModel
+    @EnvironmentObject var settings: AppSettings
     @State private var refreshing = false
 
     var body: some View {
@@ -10,6 +11,7 @@ struct WeatherView: View {
                 VStack(spacing: 14) {
                     actionsCard
                     routeOverlayCard
+                    radarCard
                     statusCard
                     metarCard(title: "Departure METAR", metar: model.departureMETAR, icao: model.flightPlan.departure)
                     metarCard(title: "Destination METAR", metar: model.destinationMETAR, icao: model.flightPlan.destination)
@@ -20,6 +22,7 @@ struct WeatherView: View {
                     overallRideCard
                     rideReportsCard
                     sigmetCard
+                    disclaimerCard
                 }
                 .padding(16)
             }
@@ -58,7 +61,7 @@ struct WeatherView: View {
                     legendDot(.red, "Severe")
                 }
                 .font(.caption2).foregroundStyle(.secondary)
-                Text("Dots are pilot reports; shaded areas are SIGMET/AIRMET advisories along your route.")
+                Text("Dots are pilot reports; shaded areas are SIGMET/AIRMET advisories and NOAA/NWS radar precipitation where available. The purple outline and mint path show a simulated weather-deviation conflict and recommended reroute.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
         }
@@ -68,6 +71,90 @@ struct WeatherView: View {
         HStack(spacing: 4) {
             Circle().fill(color).frame(width: 8, height: 8)
             Text(label)
+        }
+    }
+
+    // MARK: - Radar precipitation
+
+    /// NOAA/NWS radar precipitation overlay controls, coverage/source labels,
+    /// opacity, legend, and attribution. Simulation-only, NOAA-covered regions.
+    private var radarCard: some View {
+        Card(title: "Radar Precipitation", systemImage: "cloud.rain") {
+            VStack(alignment: .leading, spacing: 10) {
+                Toggle("Radar Precipitation Overlay", isOn: Binding(
+                    get: { settings.noaaRadarOverlay == .autoWhereAvailable },
+                    set: { settings.noaaRadarOverlay = $0 ? .autoWhereAvailable : .off
+                           model.recomputeWeatherHazards() }))
+
+                if settings.showWeatherDataSourceLabels {
+                    DataRow(label: "Source", value: "NOAA/NWS radar precipitation")
+                }
+                DataRow(label: "Last updated", value: lastRadarUpdated)
+
+                if model.radarOverlay.coverageAvailable {
+                    Label("Available in NOAA-covered radar regions", systemImage: "checkmark.seal")
+                        .font(.caption).foregroundStyle(.green)
+                } else if settings.showWeatherCoverageWarnings {
+                    Label(model.radarOverlay.unavailableMessage, systemImage: "exclamationmark.triangle")
+                        .font(.caption).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("Opacity").font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Text("\(Int((settings.radarOpacity * 100).rounded()))%")
+                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    }
+                    Slider(value: $settings.radarOpacity, in: 0.1...1.0)
+                        .onChange(of: settings.radarOpacity) { _, _ in model.recomputeWeatherHazards() }
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Legend").font(.caption).foregroundStyle(.secondary)
+                    HStack(spacing: 12) {
+                        legendDot(.green, "Light")
+                        legendDot(.yellow, "Moderate")
+                        legendDot(.orange, "Heavy")
+                        legendDot(.red, "Extreme")
+                    }
+                    .font(.caption2).foregroundStyle(.secondary)
+                    Text("precipitation")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                }
+
+                if settings.showWeatherDataSourceLabels, let attribution = model.radarOverlay.attributionText {
+                    Text(attribution).font(.caption2).foregroundStyle(.tertiary)
+                }
+            }
+        }
+    }
+
+    private var lastRadarUpdated: String {
+        guard model.radarOverlay.coverageAvailable, let date = model.radarOverlay.lastUpdated else {
+            return "—"
+        }
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        return f.string(from: date)
+    }
+
+    // MARK: - Disclaimers
+
+    private var disclaimerCard: some View {
+        Card(title: "About This Data", systemImage: "info.circle") {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Radar, precipitation, and deviation logic are for simulation only and must not be used for real-world aviation.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("Radar precipitation is available only where the app's free NOAA/NWS data source provides coverage.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("Training and entertainment use only. No paid weather subscription, API key, or account is required.")
+                    .font(.caption2).foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 

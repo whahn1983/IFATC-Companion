@@ -21,6 +21,41 @@ enum PhraseologyMode: String, CaseIterable, Identifiable {
     }
 }
 
+/// How the simulated weather-deviation alerts behave. Purely a UI/prompting
+/// preference — it never changes the underlying data sources.
+enum WeatherDeviationAlertMode: String, CaseIterable, Identifiable {
+    case off
+    case advisoryOnly
+    case advisoryPlusDeviation
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .off: return "Off"
+        case .advisoryOnly: return "Advisory only"
+        case .advisoryPlusDeviation: return "Advisory + suggested deviation"
+        }
+    }
+    /// Whether any weather advisory/banner should be surfaced at all.
+    var alertsEnabled: Bool { self != .off }
+    /// Whether a suggested deviation (degrees/side) should accompany the advisory.
+    var suggestsDeviation: Bool { self == .advisoryPlusDeviation }
+}
+
+/// The NOAA radar overlay preference: shown automatically where NOAA provides
+/// coverage, or off. No third option — this app never selects a global/commercial
+/// radar provider.
+enum NOAARadarOverlayMode: String, CaseIterable, Identifiable {
+    case autoWhereAvailable
+    case off
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .autoWhereAvailable: return "Auto where available"
+        case .off: return "Off"
+        }
+    }
+}
+
 /// How airline flight numbers are spoken (e.g. "twelve thirty four" vs "one two three four").
 enum CallsignDigitStyle: String, CaseIterable, Identifiable {
     case grouped     // 1234 -> "twelve thirty four"
@@ -104,6 +139,18 @@ final class AppSettings: ObservableObject {
     @Published var altitudeBandFt: Double { didSet { save(altitudeBandFt, .altitudeBandFt) } }
     @Published var weatherBaseURL: String { didSet { save(weatherBaseURL, .weatherBaseURL) } }
 
+    // Weather data (NOAA radar precipitation + simulated deviation)
+    /// NOAA radar overlay preference (auto where available, or off).
+    @Published var noaaRadarOverlay: NOAARadarOverlayMode { didSet { save(noaaRadarOverlay.rawValue, .noaaRadarOverlay) } }
+    /// Radar overlay opacity (0…1), default 0.55.
+    @Published var radarOpacity: Double { didSet { save(radarOpacity, .radarOpacity) } }
+    /// Simulated weather-deviation alert level.
+    @Published var weatherDeviationAlerts: WeatherDeviationAlertMode { didSet { save(weatherDeviationAlerts.rawValue, .weatherDeviationAlerts) } }
+    /// Show data-source labels (e.g. "Radar precipitation data: NOAA/NWS").
+    @Published var showWeatherDataSourceLabels: Bool { didSet { save(showWeatherDataSourceLabels, .showWeatherDataSourceLabels) } }
+    /// Show coverage/unavailable warnings.
+    @Published var showWeatherCoverageWarnings: Bool { didSet { save(showWeatherCoverageWarnings, .showWeatherCoverageWarnings) } }
+
     // Diagnostics / dev
     @Published var debugLogging: Bool { didSet { save(debugLogging, .debugLogging) } }
     @Published var mockMode: Bool { didSet { save(mockMode, .mockMode) } }
@@ -157,6 +204,12 @@ final class AppSettings: ObservableObject {
         altitudeBandFt = defaults.object(forKey: Key.altitudeBandFt.rawValue) as? Double ?? 5000
         weatherBaseURL = defaults.string(forKey: Key.weatherBaseURL.rawValue) ?? "https://aviationweather.gov/api/data"
 
+        noaaRadarOverlay = NOAARadarOverlayMode(rawValue: defaults.string(forKey: Key.noaaRadarOverlay.rawValue) ?? "") ?? .autoWhereAvailable
+        radarOpacity = defaults.object(forKey: Key.radarOpacity.rawValue) as? Double ?? 0.55
+        weatherDeviationAlerts = WeatherDeviationAlertMode(rawValue: defaults.string(forKey: Key.weatherDeviationAlerts.rawValue) ?? "") ?? .advisoryPlusDeviation
+        showWeatherDataSourceLabels = defaults.object(forKey: Key.showWeatherDataSourceLabels.rawValue) as? Bool ?? true
+        showWeatherCoverageWarnings = defaults.object(forKey: Key.showWeatherCoverageWarnings.rawValue) as? Bool ?? true
+
         debugLogging = defaults.object(forKey: Key.debugLogging.rawValue) as? Bool ?? true
         mockMode = defaults.object(forKey: Key.mockMode.rawValue) as? Bool ?? true
 
@@ -192,6 +245,10 @@ final class AppSettings: ObservableObject {
         traconCeilingFL = other.traconCeilingFL
         routeCorridorNM = other.routeCorridorNM; altitudeBandFt = other.altitudeBandFt
         weatherBaseURL = other.weatherBaseURL
+        noaaRadarOverlay = other.noaaRadarOverlay; radarOpacity = other.radarOpacity
+        weatherDeviationAlerts = other.weatherDeviationAlerts
+        showWeatherDataSourceLabels = other.showWeatherDataSourceLabels
+        showWeatherCoverageWarnings = other.showWeatherCoverageWarnings
         debugLogging = other.debugLogging; mockMode = other.mockMode
         isLoading = false
     }
@@ -208,6 +265,8 @@ final class AppSettings: ObservableObject {
         case phraseologyMode, digitStyle
         case initialClimbAltitudeFt, traconCeilingFL
         case routeCorridorNM, altitudeBandFt, weatherBaseURL
+        case noaaRadarOverlay, radarOpacity, weatherDeviationAlerts
+        case showWeatherDataSourceLabels, showWeatherCoverageWarnings
         case debugLogging, mockMode
     }
 

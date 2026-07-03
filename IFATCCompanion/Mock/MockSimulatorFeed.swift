@@ -171,6 +171,31 @@ final class MockSimulatorFeed: ObservableObject {
         ]
     }
 
+    /// A deterministic mock precipitation cell that crosses the filed route about
+    /// 40 NM ahead of the cruise position, so the weather-deviation demo has a
+    /// conflict to work. Heavy precipitation, moving east at 20 knots. Symmetric
+    /// about the course line so it reads as "twelve o'clock" and either side is a
+    /// valid bypass.
+    func sampleRadarCells() -> [RadarCell] {
+        let course = Geo.bearing(from: route.depCoord, to: route.destCoord)
+        func along(_ fraction: Double) -> CLLocationCoordinate2D {
+            CLLocationCoordinate2D(
+                latitude: route.depCoord.latitude + (route.destCoord.latitude - route.depCoord.latitude) * fraction,
+                longitude: route.depCoord.longitude + (route.destCoord.longitude - route.depCoord.longitude) * fraction)
+        }
+        let cruisePoint = along(0.50)
+        let center = Geo.destination(from: cruisePoint, bearingDegrees: course, distanceNM: 40)
+        let half = 0.55
+        let polygon = [
+            CLLocationCoordinate2D(latitude: center.latitude - half, longitude: center.longitude - half),
+            CLLocationCoordinate2D(latitude: center.latitude - half, longitude: center.longitude + half),
+            CLLocationCoordinate2D(latitude: center.latitude + half, longitude: center.longitude + half),
+            CLLocationCoordinate2D(latitude: center.latitude + half, longitude: center.longitude - half)
+        ]
+        return [RadarCell(polygon: polygon, intensity: .heavy,
+                          movementDirectionDegrees: 90, movementSpeedKnots: 20)]
+    }
+
     // MARK: - Routes
 
     nonisolated static func defaultRoute() -> Route {
