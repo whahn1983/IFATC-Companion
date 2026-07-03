@@ -92,6 +92,10 @@ struct IFConnectStateReader {
     }
 
     /// Read multiplayer / ATC-staffing context, if exposed. All signals optional.
+    /// The tuned COM1 frequency name is the location-aware standby signal — it names the
+    /// frequency the pilot is actually on, so the companion defers only when the pilot
+    /// has tuned a staffed human controller (not when a human is merely controlling some
+    /// other airport in the session).
     func readATCStatus(using client: IFConnectClient) async -> LiveATCStatus {
         func bool(_ logical: IFStateMappingStore.Logical) async -> Bool? {
             guard let entry = store.entry(for: logical) else { return nil }
@@ -102,6 +106,10 @@ struct IFConnectStateReader {
             guard let d = try? await client.readState(entry).doubleValue else { return nil }
             return Int(d)
         }
+        func double(_ logical: IFStateMappingStore.Logical) async -> Double? {
+            guard let entry = store.entry(for: logical) else { return nil }
+            return try? await client.readState(entry).doubleValue
+        }
         func string(_ logical: IFStateMappingStore.Logical) async -> String? {
             guard let entry = store.entry(for: logical) else { return nil }
             return try? await client.readState(entry).stringValue
@@ -109,10 +117,12 @@ struct IFConnectStateReader {
 
         let detector = LiveATCDetector()
         return detector.status(atcActive: await bool(.atcActive),
-                               facilityName: await string(.atcFacilityName),
+                               controllerName: await string(.atcFacilityName),
                                facilityCount: await int(.atcFacilityCount),
                                online: await bool(.isOnline),
-                               serverName: await string(.serverName))
+                               serverName: await string(.serverName),
+                               tunedFrequencyName: await string(.tunedComName),
+                               tunedFrequencyMHz: await double(.tunedComFrequency))
     }
 
     /// Metres-per-second → knots (Infinite Flight reports speeds in m/s).

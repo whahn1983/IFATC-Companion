@@ -64,6 +64,7 @@ final class IFConnectManager: ObservableObject {
                     let names = mappingStore.unresolvedKeys.map { $0.rawValue }.joined(separator: ", ")
                     diagnostics?.log(.manifest, "Unresolved (use manual override if needed): \(names)")
                 }
+                logATCRelatedStates(entries)
                 connectionState = .connected
                 await readFlightPlan()
                 startPolling()
@@ -165,6 +166,35 @@ final class IFConnectManager: ObservableObject {
         if let full = payloads.full { diagnostics?.log(.state, "Raw flightplan: \(trimmed(full))") }
         if let route = payloads.route { diagnostics?.log(.state, "Raw flightplan/route: \(trimmed(route))") }
         if let coords = payloads.coordinates { diagnostics?.log(.state, "Raw flightplan/coordinates: \(trimmed(coords))") }
+    }
+
+    /// Log every manifest state whose path looks ATC/COM/multiplayer-related, plus which
+    /// logical staffing keys they resolved to. The set of states Infinite Flight exposes
+    /// for ATC only appears when connected to a session with a controller and varies by
+    /// version, so surfacing the exact paths here is how the tuned-frequency and
+    /// staffing signatures are verified and refined against a real session.
+    private func logATCRelatedStates(_ entries: [IFManifestEntry]) {
+        let needles = ["atc", "controller", "unicom", "comm", "com1", "com2",
+                       "frequency", "facilit", "online", "server", "multiplayer"]
+        let related = entries.filter { entry in
+            let key = entry.matchKey
+            return needles.contains { key.contains($0) }
+        }
+        guard !related.isEmpty else {
+            diagnostics?.log(.manifest, "No ATC/COM-related states found in manifest.")
+            return
+        }
+        let list = related.map { "\($0.name) [\($0.type.shortName)]" }.joined(separator: ", ")
+        diagnostics?.log(.manifest, "ATC/COM-related states (\(related.count)): \(list)")
+
+        let resolvedATC: [IFStateMappingStore.Logical] =
+            [.atcActive, .atcFacilityName, .atcFacilityCount, .isOnline, .serverName,
+             .tunedComName, .tunedComFrequency]
+        for key in resolvedATC {
+            if let entry = mappingStore.entry(for: key) {
+                diagnostics?.log(.manifest, "  \(key.rawValue) → \(entry.name)")
+            }
+        }
     }
 
     // MARK: - Discovery

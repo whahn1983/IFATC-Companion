@@ -224,7 +224,7 @@ struct ATCView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Human ATC Active")
                         .font(.headline)
-                    Text("\(model.liveATC.summary) Follow the live controller.")
+                    Text(model.liveATC.summary)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
