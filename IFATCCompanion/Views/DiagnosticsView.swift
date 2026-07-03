@@ -113,8 +113,8 @@ struct DiagnosticsView: View {
         let d = model.weatherDiagnostics
         return Card(title: "Weather Diagnostics", systemImage: "cloud.rain") {
             VStack(alignment: .leading, spacing: 6) {
-                DataRow(label: "Radar source", value: d.radarSource)
-                DataRow(label: "NOAA radar coverage", value: d.coverageText)
+                DataRow(label: "Precip source", value: d.radarSource)
+                DataRow(label: "Overlay coverage", value: d.coverageText)
                 DataRow(label: "Last radar update", value: timeText(d.lastRadarUpdate))
                 DataRow(label: "Last aviation wx update", value: timeText(d.lastAviationUpdate))
                 DataRow(label: "Hazards detected", value: "\(d.hazardCount)")

@@ -280,7 +280,7 @@ struct SettingsView: View {
             Toggle("Show data-source labels", isOn: $settings.showWeatherDataSourceLabels)
             Toggle("Show coverage warnings", isOn: $settings.showWeatherCoverageWarnings)
             Label {
-                Text("Radar precipitation uses the free NOAA/NWS source and is available only in NOAA-covered regions. Simulation only — not for real-world aviation. No paid weather subscription, API key, or account required.")
+                Text("Precipitation overlay uses free sources: NOAA/NWS radar (U.S.), EUMETNET OPERA radar (Europe), then a NASA global satellite estimate elsewhere (not radar). No global radar coverage is implied. Simulation only — not for real-world aviation. No paid subscription, API key, or account required.")
                     .font(.footnote)
             } icon: {
                 Image(systemName: "cloud.rain").foregroundStyle(.blue)

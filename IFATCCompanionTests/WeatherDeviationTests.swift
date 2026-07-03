@@ -270,12 +270,18 @@ final class WeatherDeviationTests: XCTestCase {
 
     // MARK: - Provider architecture
 
-    func testOnlyNOAAAndMockProvidersPresent() {
-        let noaa = NOAARadarPrecipitationProvider()
-        XCTAssertEqual(noaa.id, "noaa-nws-radar")
-        XCTAssertTrue(noaa.supportsTrueRadar)
-        let mock = MockRadarPrecipitationProvider()
-        XCTAssertFalse(mock.supportsTrueRadar, "the mock provider must not advertise true radar")
+    func testApprovedFreeProvidersOnly() {
+        // The shipped providers are the approved free/keyless sources: NOAA radar,
+        // EUMETNET OPERA radar, NASA GIBS satellite estimate, and the mock stand-in.
+        XCTAssertEqual(NOAARadarPrecipitationProvider().id, "noaa-nws-radar")
+        XCTAssertTrue(NOAARadarPrecipitationProvider().supportsTrueRadar)
+        XCTAssertEqual(EUMETNETOPERARadarProvider().id, "eumetnet-opera-radar")
+        XCTAssertTrue(EUMETNETOPERARadarProvider().supportsTrueRadar)
+        XCTAssertEqual(NASAGIBSPrecipitationProvider().id, "nasa-gibs-imerg")
+        XCTAssertFalse(NASAGIBSPrecipitationProvider().supportsTrueRadar,
+                       "NASA IMERG is a satellite estimate, not radar")
+        XCTAssertFalse(MockRadarPrecipitationProvider().supportsTrueRadar,
+                       "the mock provider must not advertise true radar")
     }
 
     func testNOAAExportURLIsWellFormedAndKeyless() {

@@ -57,14 +57,23 @@ struct RadarCell: Identifiable {
 struct RadarOverlayModel {
     /// Whether the user's setting enables the overlay (Auto where available).
     var isEnabled: Bool = false
-    /// Whether the approved NOAA source actually covers the current region.
+    /// Whether a provider (NOAA / OPERA / NASA) actually covers the current region.
     var coverageAvailable: Bool = false
     var opacity: Double = 0.55
     var lastUpdated: Date?
+    /// The active provider's display name (e.g. "NOAA/NWS radar precipitation").
     var sourceDescription: String = "NOAA/NWS radar precipitation"
     var attributionText: String? = "Radar precipitation data: NOAA/NWS"
     var coverageLabel: String = "Available in NOAA-covered radar regions"
-    var unavailableMessage: String = "Radar precipitation is not available for this region."
+    var unavailableMessage: String = "Precipitation overlay unavailable for this region."
+    /// Radar vs satellite estimate — drives the user-facing layer label so a
+    /// satellite estimate is never presented as radar.
+    var layerType: PrecipitationLayerType = .radar
+    /// The user-facing layer label ("Radar precipitation" / "Satellite
+    /// precipitation estimate").
+    var layerLabel: String = "Radar precipitation"
+    /// Whether the active layer is a (lower-confidence) satellite estimate.
+    var isSatelliteEstimate: Bool { layerType == .satelliteEstimate }
     var frames: [RadarFrame] = []
     /// Deterministic precipitation cells for Mock Mode / tests. Empty in live
     /// mode (live precipitation is drawn from the NOAA image overlay instead).

@@ -61,7 +61,7 @@ struct WeatherView: View {
                     legendDot(.red, "Severe")
                 }
                 .font(.caption2).foregroundStyle(.secondary)
-                Text("Dots are pilot reports; shaded areas are SIGMET/AIRMET advisories and NOAA/NWS radar precipitation where available. The purple outline and mint path show a simulated weather-deviation conflict and recommended reroute.")
+                Text("Dots are pilot reports; shaded areas are SIGMET/AIRMET advisories and the precipitation overlay where available (NOAA/OPERA radar or NASA satellite estimate). The purple outline and mint path show a simulated weather-deviation conflict and recommended reroute.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
         }
@@ -76,24 +76,35 @@ struct WeatherView: View {
 
     // MARK: - Radar precipitation
 
-    /// NOAA/NWS radar precipitation overlay controls, coverage/source labels,
-    /// opacity, legend, and attribution. Simulation-only, NOAA-covered regions.
+    /// Precipitation overlay controls (NOAA radar → OPERA radar → NASA satellite
+    /// estimate), coverage/source labels, opacity, legend, and attribution.
+    /// Simulation-only. A satellite estimate is never presented as radar.
     private var radarCard: some View {
-        Card(title: "Radar Precipitation", systemImage: "cloud.rain") {
+        Card(title: "Precipitation Overlay", systemImage: "cloud.rain") {
             VStack(alignment: .leading, spacing: 10) {
-                Toggle("Radar Precipitation Overlay", isOn: Binding(
+                Toggle("Precipitation Overlay", isOn: Binding(
                     get: { settings.noaaRadarOverlay == .autoWhereAvailable },
                     set: { settings.noaaRadarOverlay = $0 ? .autoWhereAvailable : .off
                            model.recomputeWeatherHazards() }))
 
-                if settings.showWeatherDataSourceLabels {
-                    DataRow(label: "Source", value: "NOAA/NWS radar precipitation")
+                if model.radarOverlay.coverageAvailable {
+                    DataRow(label: "Layer", value: model.radarOverlay.layerLabel)
+                }
+                if settings.showWeatherDataSourceLabels, model.radarOverlay.coverageAvailable {
+                    DataRow(label: "Source", value: model.radarOverlay.sourceDescription)
                 }
                 DataRow(label: "Last updated", value: lastRadarUpdated)
 
                 if model.radarOverlay.coverageAvailable {
-                    Label("Available in NOAA-covered radar regions", systemImage: "checkmark.seal")
+                    Label(model.radarOverlay.coverageLabel, systemImage: "checkmark.seal")
                         .font(.caption).foregroundStyle(.green)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if model.radarOverlay.isSatelliteEstimate {
+                        Label("Satellite precipitation estimate — lower confidence than radar. Not radar.",
+                              systemImage: "info.circle")
+                            .font(.caption2).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 } else if settings.showWeatherCoverageWarnings {
                     Label(model.radarOverlay.unavailableMessage, systemImage: "exclamationmark.triangle")
                         .font(.caption).foregroundStyle(.orange)
@@ -148,7 +159,7 @@ struct WeatherView: View {
                 Text("Radar, precipitation, and deviation logic are for simulation only and must not be used for real-world aviation.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                Text("Radar precipitation is available only where the app's free NOAA/NWS data source provides coverage.")
+                Text("Radar precipitation is available only where the app's free NOAA/NWS (U.S.) and EUMETNET OPERA (Europe) data sources provide coverage. Elsewhere the app shows a NASA global satellite precipitation estimate — which is not radar. No global radar coverage is implied.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Text("Training and entertainment use only. No paid weather subscription, API key, or account is required.")

@@ -63,8 +63,8 @@ final class AppModel: ObservableObject {
     private var routeAnalyzer = WeatherRouteAnalyzer()
     private var turbulenceModel = TurbulenceModel()
     private var rideEngine: RideReportEngine
-    /// NOAA radar precipitation (or mock stand-in) provider coordinator.
-    private let radarService = NOAARadarPrecipitationService()
+    /// Precipitation overlay provider selector (NOAA → OPERA → NASA, or mock).
+    private let precipService = PrecipitationOverlayService()
     /// Pure route-weather conflict detector.
     private var conflictDetector = RouteWeatherConflictDetector()
     /// Simulated weather-deviation flow coordinator (rebuilt with the engine).
@@ -392,7 +392,7 @@ final class AppModel: ObservableObject {
         speech.configure(settings: settings)
         connect.configure(diagnostics: diagnostics)
         Task { await weatherService.configure(baseURL: settings.weatherBaseURL, diagnostics: diagnostics) }
-        radarService.configure(diagnostics: diagnostics)
+        precipService.configure(diagnostics: diagnostics)
         applyRadarProvider()
 
         // Route state from whichever feed is active.
@@ -2245,14 +2245,10 @@ final class AppModel: ObservableObject {
     // NOAA provides coverage; outside coverage the overlay reports unavailable and
     // only existing aviation advisories (SIGMET etc.) drive the deviation flow.
 
-    /// Point the radar service at the mock stand-in (Mock Mode) or the NOAA
-    /// provider (Live). Only these two providers are ever used.
+    /// Use the mock precipitation provider in Mock Mode, or the live NOAA → OPERA →
+    /// NASA selection otherwise.
     private func applyRadarProvider() {
-        if settings.mockMode {
-            radarService.useProvider(MockRadarPrecipitationProvider())
-        } else {
-            radarService.useProvider(NOAARadarPrecipitationProvider())
-        }
+        precipService.useMockProvider(settings.mockMode)
     }
 
     /// Reset the weather-deviation interaction (between flights / on mode change).
@@ -2265,37 +2261,39 @@ final class AppModel: ObservableObject {
         mockWeatherAdvisoryIssued = false
     }
 
-    /// The NOAA radar image URL for the map's visible region, or nil when the
-    /// overlay is off / uncovered / in Mock Mode (which draws vector cells).
+    /// The precipitation overlay image URL for the map's visible region, or nil when
+    /// the overlay is off / uncovered / in Mock Mode (which draws vector cells).
     func radarImageURL(region: MKCoordinateRegion, size: CGSize) -> URL? {
         guard !settings.mockMode, radarOverlay.shouldDisplay else { return nil }
-        return radarService.exportImageURL(region: region, size: size)
+        return precipService.imageURL(for: region, size: size)
     }
 
-    /// Whether the given coordinates fall inside NOAA radar coverage (Mock Mode is
-    /// always "covered" so the offline demo works).
-    private func radarCoverageAvailable(for positions: [CLLocationCoordinate2D]) -> Bool {
-        if settings.mockMode { return true }
-        return positions.contains { NOAARadarPrecipitationProvider.covers(coordinate: $0) }
-    }
-
-    /// Rebuild the radar overlay descriptive state, the normalized hazard list, and
-    /// the active route-weather conflict. Pure/cheap; safe to call every tick.
+    /// Rebuild the precipitation overlay descriptive state, the normalized hazard
+    /// list, and the active route-weather conflict. Selects a provider in
+    /// NOAA → OPERA → NASA order. Pure/cheap; safe to call every tick.
     func recomputeWeatherHazards() {
         let positions = [aircraftState.coordinate,
                          airports.coordinate(for: flightPlan.departure),
                          airports.coordinate(for: flightPlan.destination)].compactMap { $0 }
-        let coverage = radarCoverageAvailable(for: positions)
-        radarOverlay.isEnabled = settings.noaaRadarOverlay == .autoWhereAvailable
+        let enabled = settings.noaaRadarOverlay == .autoWhereAvailable
+        let provider = enabled ? precipService.selectedProvider(for: positions) : nil
+        let coverage = enabled && provider != nil
+
+        radarOverlay.isEnabled = enabled
         radarOverlay.coverageAvailable = coverage
         radarOverlay.opacity = settings.radarOpacity
-        radarOverlay.sourceDescription = radarService.sourceDescription
-        radarOverlay.attributionText = radarService.attributionText
+        if let provider {
+            radarOverlay.sourceDescription = provider.displayName
+            radarOverlay.attributionText = provider.attributionText
+            radarOverlay.coverageLabel = provider.coverageDescription
+            radarOverlay.layerType = provider.layerType
+            radarOverlay.layerLabel = provider.uiLayerLabel
+        }
         if coverage { radarOverlay.lastUpdated = Date() }
         weatherDeviation.radarCoverageAvailable = coverage
-        weatherDeviation.radarSourceDescription = radarService.sourceDescription
+        weatherDeviation.radarSourceDescription = provider?.displayName ?? radarOverlay.sourceDescription
 
-        let hazards = buildWeatherHazards()
+        let hazards = buildWeatherHazards(provider: provider)
         weatherHazards = hazards
 
         guard let pos = aircraftState.coordinate ?? airports.coordinate(for: flightPlan.departure),
@@ -2329,23 +2327,26 @@ final class AppModel: ObservableObject {
         updateWeatherDiagnostics(conflict: conflict)
     }
 
-    /// Normalize the current weather into hazards for the conflict detector. Radar
-    /// precipitation is included only where the overlay is enabled and NOAA covers
-    /// the region; SIGMETs along the route are always included (SIGMET data can be
-    /// global). Live NOAA raster→cell sampling is a documented future task
-    /// (`Docs/Weather.md`); today radar-derived cells come from Mock Mode.
-    private func buildWeatherHazards() -> [WeatherHazard] {
+    /// Normalize the current weather into hazards for the conflict detector.
+    /// Precipitation cells are included only where the overlay is enabled and a
+    /// provider covers the region; SIGMETs along the route are always included
+    /// (SIGMET data can be global). Live raster→cell sampling for the image
+    /// providers is a documented future task (`docs/Weather.md`); today the
+    /// precipitation cells come from Mock Mode.
+    private func buildWeatherHazards(provider: RadarPrecipitationProvider?) -> [WeatherHazard] {
         var hazards: [WeatherHazard] = []
 
         if radarOverlay.isEnabled, radarOverlay.coverageAvailable {
+            let providerConfidence = provider?.confidence ?? .high
+            let providerLabel = provider?.uiLayerLabel ?? "Radar precipitation"
             for cell in radarOverlay.mockCells {
                 hazards.append(WeatherHazard(
-                    source: .noaaRadar, providerID: radarService.providerID,
+                    source: .noaaRadar, providerID: provider?.id,
                     phenomenon: .precipitation, intensity: cell.intensity,
-                    geometry: .polygon(cell.polygon), confidence: .high,
+                    geometry: .polygon(cell.polygon), confidence: providerConfidence,
                     movementDirectionDegrees: cell.movementDirectionDegrees,
                     movementSpeedKnots: cell.movementSpeedKnots,
-                    notes: "NOAA/NWS radar precipitation"))
+                    notes: providerLabel))
             }
         }
 
@@ -2386,7 +2387,10 @@ final class AppModel: ObservableObject {
 
     private func updateWeatherDiagnostics(conflict: RouteWeatherConflict?) {
         var d = WeatherProviderDiagnostics()
-        d.radarSource = "NOAA/NWS"
+        // Show the active provider + layer type ("radar" vs "satellite estimate").
+        d.radarSource = radarOverlay.coverageAvailable
+            ? "\(radarOverlay.sourceDescription) (\(radarOverlay.layerLabel))"
+            : "None"
         d.radarCoverageAvailable = radarOverlay.coverageAvailable
         d.lastRadarUpdate = radarOverlay.lastUpdated
         d.lastAviationUpdate = lastAviationWeatherUpdate
@@ -2398,7 +2402,7 @@ final class AppModel: ObservableObject {
         }
         d.selectedRejoinFix = conflict?.rejoinFix?.name ?? weatherDeviation.rejoinFix
         d.lastDeviationState = weatherDeviation.state
-        d.providerError = radarService.lastError
+        d.providerError = precipService.lastError
         d.coverageMessage = radarOverlay.coverageAvailable ? nil : radarOverlay.unavailableMessage
         weatherDiagnostics = d
     }

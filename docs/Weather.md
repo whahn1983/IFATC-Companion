@@ -27,35 +27,68 @@ unchanged and continue to work exactly as before.
 
 ## Data sources (free / open / commercial-use compatible)
 
-This feature uses **only** free, keyless NOAA/NWS sources. It requires **no paid
-weather subscription, no API key, no billing account, and no additional user
+This feature uses **only** free, keyless sources. It requires **no paid weather
+subscription, no API key, no billing account, and no additional user
 subscription** — for the user or for the app publisher.
 
-1. **NOAA/NWS radar base reflectivity / MRMS** (public ArcGIS ImageServer) — the
-   radar precipitation overlay. This is the **only approved v1 radar source**.
-   Labeled clearly as *NOAA/NWS radar precipitation*. No NOAA/NWS logos or branding
-   implying endorsement are used; attribution is a plain text label
-   ("Radar precipitation data: NOAA/NWS").
-2. **NOAA Aviation Weather Center Data API** — the existing METAR/TAF/PIREP/SIGMET
-   source, unchanged.
+**Precipitation overlay providers** (selected by region, see below):
 
-No other providers are included. In particular the app does **not** integrate
-RainViewer, Meteoblue, Meteomatics, OpenWeather, Tomorrow.io, The Weather Company,
-AccuWeather, ForeFlight, Garmin, Windy (paid API), or any other commercial /
-paid / non-commercial-only / trial / evaluation-limited provider. The radar
-provider architecture ships exactly two conformers:
-`NOAARadarPrecipitationProvider` and, for Mock Mode and tests,
-`MockRadarPrecipitationProvider`.
+1. **NOAA/NWS radar base reflectivity / MRMS** (public ArcGIS ImageServer) — U.S.
+   and NOAA-covered radar regions. **True radar.** Labeled *"Radar precipitation"*;
+   source *NOAA/NWS radar precipitation*. No NOAA/NWS logos or endorsement implied;
+   attribution is a plain text label ("Radar precipitation data: NOAA/NWS").
+2. **EUMETNET OPERA (ODC/ORD) radar composite** — Europe, where OPERA data is
+   available. **True radar.** Labeled *"Radar precipitation"*; source *EUMETNET
+   OPERA radar precipitation*. Honors **CC BY 4.0** attribution ("Radar
+   precipitation data: EUMETNET OPERA (CC BY 4.0)"). Prefers OPERA composite
+   products in order — **maximum reflectivity → instantaneous rain rate → 1-hour
+   accumulation** — and cloud-optimized GeoTIFF over ODIM HDF5 for easier iOS
+   rendering. Coverage is best-effort: **not every European country necessarily has
+   usable ORD coverage**, and rendering **fails gracefully** where it does not.
+   Check product metadata for any license/source exceptions before display.
+3. **NASA GPM IMERG via NASA GIBS** — global fallback outside NOAA and OPERA
+   coverage. This is a **satellite precipitation estimate — NOT radar** — always
+   labeled *"Satellite precipitation estimate"* and treated as **lower confidence**
+   than NOAA/OPERA radar. Includes the required acknowledgement: *"Imagery/data
+   provided by NASA Global Imagery Browse Services (GIBS), part of NASA Earth
+   Science Data and Information System, and NASA GPM IMERG where applicable."*
+
+**Aviation advisory data:** the **NOAA Aviation Weather Center Data API** —
+existing METAR/TAF/PIREP/SIGMET source, unchanged.
+
+No paid/unclear providers are included. The app does **not** integrate RainViewer,
+Meteoblue, Meteomatics, OpenWeather, Tomorrow.io, The Weather Company, AccuWeather,
+ForeFlight, Garmin, Windy (paid API), or any other commercial / paid /
+non-commercial-only / trial / evaluation-limited provider. The precipitation
+provider architecture ships exactly these conformers:
+`NOAARadarPrecipitationProvider`, `EUMETNETOPERARadarProvider`,
+`NASAGIBSPrecipitationProvider`, and `MockRadarPrecipitationProvider` (Mock
+Mode/tests).
+
+## Provider selection order
+
+`PrecipitationOverlayService` selects one provider for the current route/region:
+
+1. Inside **NOAA** radar coverage → NOAA/NWS radar precipitation.
+2. Else inside **EUMETNET OPERA** (Europe) coverage → OPERA radar precipitation.
+3. Else → **NASA** global satellite precipitation *estimate* (not radar).
+4. If none covers the region → no overlay: *"Precipitation overlay unavailable for
+   this region."*
+
+UI labels: NOAA and OPERA both show *"Radar precipitation"*; NASA shows
+*"Satellite precipitation estimate"*. The app **never** shows "global radar".
 
 ## Coverage limitations (read this)
 
-- **Radar precipitation is available only where the free NOAA/NWS source provides
-  coverage** — the contiguous U.S. and NOAA-covered regions (Alaska, Hawaii,
-  Puerto Rico). Outside those the overlay is hidden/disabled and the app shows:
-  *"Radar precipitation is not available for this region."* Forecast, model, or
-  satellite precipitation is **never** substituted and displayed as radar.
+- **True radar precipitation** is available only where the free **NOAA/NWS** (U.S.)
+  or **EUMETNET OPERA** (Europe) sources provide coverage. Outside those, the
+  overlay is a **NASA satellite precipitation estimate** (lower confidence, not
+  radar), and above ~±60° latitude even that is unavailable — the app then shows
+  *"Precipitation overlay unavailable for this region."* Forecast/model
+  precipitation is **never** displayed as radar, and a satellite estimate is never
+  labeled radar.
 - **The app does not claim global radar coverage.** There is no global true-radar
-  provider in v1 (see the discovery task below).
+  provider (see the discovery task below); NASA IMERG is a satellite *estimate*.
 - **Global non-radar aviation weather may still be available** through the existing
   METAR/TAF/SIGMET sources, which can work outside the U.S. depending on the
   upstream data.

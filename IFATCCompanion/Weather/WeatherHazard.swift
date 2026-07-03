@@ -144,6 +144,24 @@ struct RadarBoundingBox: Equatable {
         c.latitude >= minLatitude && c.latitude <= maxLatitude
             && c.longitude >= minLongitude && c.longitude <= maxLongitude
     }
+
+    /// Whether this box overlaps another (axis-aligned).
+    func overlaps(_ other: RadarBoundingBox) -> Bool {
+        minLatitude <= other.maxLatitude && maxLatitude >= other.minLatitude
+            && minLongitude <= other.maxLongitude && maxLongitude >= other.minLongitude
+    }
+
+    /// The bbox in Web Mercator (EPSG:3857) meters as "xmin,ymin,xmax,ymax", for
+    /// WMS providers that render in 3857 (aligns with MapKit's projection).
+    var mercatorBBoxString: String {
+        func x(_ lon: Double) -> Double { lon * 20037508.342789244 / 180 }
+        func y(_ lat: Double) -> Double {
+            let clamped = min(85.05112878, max(-85.05112878, lat))
+            let rad = clamped * .pi / 180
+            return log(tan(.pi / 4 + rad / 2)) * 6378137.0
+        }
+        return "\(x(minLongitude)),\(y(minLatitude)),\(x(maxLongitude)),\(y(maxLatitude))"
+    }
 }
 
 /// The shape a hazard occupies. Kept as an enum so point reports (PIREPs),
