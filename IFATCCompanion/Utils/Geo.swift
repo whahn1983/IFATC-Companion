@@ -49,6 +49,37 @@ enum Geo {
         return xt * earthRadiusNM
     }
 
+    /// Whether the two planar segments p1–p2 and p3–p4 intersect, treating
+    /// latitude/longitude as a flat plane. Adequate at the scale of a SIGMET area
+    /// and consistent with `WeatherRouteAnalyzer.pointInPolygon`, which uses the
+    /// same planar approximation. Uses the standard orientation test and handles
+    /// the collinear-overlap edge case.
+    static func segmentsIntersect(_ p1: CLLocationCoordinate2D, _ p2: CLLocationCoordinate2D,
+                                  _ p3: CLLocationCoordinate2D, _ p4: CLLocationCoordinate2D) -> Bool {
+        // Sign of the cross product (b-a)×(c-a): 0 collinear, 1 CCW, 2 CW.
+        func orientation(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D, _ c: CLLocationCoordinate2D) -> Int {
+            let val = (b.longitude - a.longitude) * (c.latitude - a.latitude)
+                    - (b.latitude - a.latitude) * (c.longitude - a.longitude)
+            if abs(val) < 1e-12 { return 0 }
+            return val > 0 ? 1 : 2
+        }
+        // Whether collinear point c lies within the bounding box of segment a–b.
+        func onSegment(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D, _ c: CLLocationCoordinate2D) -> Bool {
+            min(a.longitude, b.longitude) <= c.longitude && c.longitude <= max(a.longitude, b.longitude)
+                && min(a.latitude, b.latitude) <= c.latitude && c.latitude <= max(a.latitude, b.latitude)
+        }
+        let o1 = orientation(p1, p2, p3)
+        let o2 = orientation(p1, p2, p4)
+        let o3 = orientation(p3, p4, p1)
+        let o4 = orientation(p3, p4, p2)
+        if o1 != o2 && o3 != o4 { return true }
+        if o1 == 0 && onSegment(p1, p2, p3) { return true }
+        if o2 == 0 && onSegment(p1, p2, p4) { return true }
+        if o3 == 0 && onSegment(p3, p4, p1) { return true }
+        if o4 == 0 && onSegment(p3, p4, p2) { return true }
+        return false
+    }
+
     /// Convert a compass bearing into a coarse clock/cardinal description.
     static func cardinal(_ bearing: Double) -> String {
         let dirs = ["north", "north-east", "east", "south-east",

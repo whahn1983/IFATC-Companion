@@ -32,6 +32,24 @@ final class WeatherRouteSigmetTests: XCTestCase {
         XCTAssertEqual(kept.count, 1)
     }
 
+    func testNearButNotThroughSigmetIsDropped() {
+        // A box east of the KIAH→KMSP corridor: close enough that the old proximity
+        // buffer kept it, but the route never actually enters the area. A SIGMET
+        // covers a wide region, so only a genuine pass-through makes it applicable.
+        let nearRoute = sigmet(box(CLLocationCoordinate2D(latitude: 37.4, longitude: -92.5)))
+        let kept = analyzer.relevantSigmets([nearRoute], position: origin, routeEnd: dest)
+        XCTAssertTrue(kept.isEmpty, "a SIGMET the route passes near but not through is not applicable")
+    }
+
+    func testRouteCrossingSigmetWithVerticesOffRouteIsKept() {
+        // A wide box the route passes straight through, whose corners are all far
+        // from the route line — an edge-crossing test catches it, a vertex-proximity
+        // test would not.
+        let wide = box(CLLocationCoordinate2D(latitude: 37.4, longitude: -94.3), half: 3.0)
+        let kept = analyzer.relevantSigmets([sigmet(wide)], position: origin, routeEnd: dest)
+        XCTAssertEqual(kept.count, 1, "the route crosses the area, so it is applicable")
+    }
+
     func testOffRouteSigmetIsDropped() {
         // Box over the US west coast — far from the KIAH→KMSP corridor.
         let offRoute = sigmet(box(CLLocationCoordinate2D(latitude: 37.0, longitude: -120.0)))
