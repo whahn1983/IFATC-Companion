@@ -37,6 +37,13 @@ struct RouteMapView: View {
         model.pireps.filter { ($0.coordinate?.isValid ?? false) && ($0.turbulence ?? .smooth) > .smooth }
     }
 
+    /// Route-relevant SIGMET/AIRMET advisories that have a drawable area. These are
+    /// the same advisories that raise the composite ride index, so the map and the
+    /// ride assessment always agree.
+    private var routeSigmetAreas: [SIGMET] {
+        model.routeSigmets.filter { $0.turbulenceSeverity > .smooth && $0.drawableArea != nil }
+    }
+
     private var hasContent: Bool {
         routeCoordinates.count >= 2 || model.aircraftState.coordinate != nil
     }
@@ -85,6 +92,13 @@ struct RouteMapView: View {
 
     private var map: some View {
         Map(position: $position) {
+            // Advisory areas first, so route line, PIREPs and markers draw on top.
+            ForEach(routeSigmetAreas) { sigmet in
+                MapPolygon(coordinates: sigmet.drawableArea ?? [])
+                    .foregroundStyle(sigmetColor(sigmet).opacity(0.20))
+                    .stroke(sigmetColor(sigmet), lineWidth: 2)
+            }
+
             if routeCoordinates.count >= 2 {
                 MapPolyline(coordinates: routeCoordinates)
                     .stroke(.cyan, style: StrokeStyle(lineWidth: 3, lineCap: .round, dash: [7, 4]))
@@ -135,5 +149,10 @@ struct RouteMapView: View {
         case .moderate: return .orange
         case .severe: return .red
         }
+    }
+
+    /// Color for a SIGMET area, matching the severity that raises the ride index.
+    private func sigmetColor(_ sigmet: SIGMET) -> Color {
+        color(for: sigmet.turbulenceSeverity)
     }
 }

@@ -77,8 +77,9 @@ struct WeatherRouteAnalyzer {
                          position: CLLocationCoordinate2D,
                          routeEnd: CLLocationCoordinate2D?) -> [SIGMET] {
         sigmets.filter { sigmet in
-            let area = sigmet.area.filter { $0.isValid }
-            guard !area.isEmpty else { return false }
+            // Require a drawable polygon (≥3 valid vertices): an advisory that can't
+            // be placed on the map must not silently drive the ride index either.
+            guard let area = sigmet.drawableArea else { return false }
             return polygonIntersectsRoute(area, position: position, routeEnd: routeEnd)
         }
     }

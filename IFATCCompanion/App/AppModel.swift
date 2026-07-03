@@ -2086,18 +2086,26 @@ final class AppModel: ObservableObject {
         }
         let end = airports.coordinate(for: flightPlan.destination)
             ?? flightPlan.nextWaypoint(from: pos)?.coordinate
-        let alt = aircraftState.altitudeMSL ?? Double(flightPlan.cruiseAltitude)
+        let liveAlt = aircraftState.altitudeMSL ?? Double(flightPlan.cruiseAltitude)
+        // Ride reports describe the cruise portion of the route ahead, so evaluate a
+        // PIREP's altitude relevance against the planned cruise level (within the
+        // ±tolerance band) rather than the live altitude — otherwise en-route
+        // turbulence at cruise is filtered out while the aircraft is still climbing.
+        // Fall back to the live altitude before a cruise level is set.
+        let referenceAlt = flightPlan.cruiseAltitude > 0 ? Double(flightPlan.cruiseAltitude) : liveAlt
         let nearestFix = flightPlan.nextWaypoint(from: pos)?.name
         rideReportItems = routeAnalyzer.relevantReports(pireps: pireps, position: pos,
-                                                        routeEnd: end, altitudeFt: alt,
+                                                        routeEnd: end, altitudeFt: referenceAlt,
                                                         nearestFix: nearestFix)
         let arrivalPhase = [.descent, .approach, .landing, .taxiIn, .parked].contains(phase)
         let nearMETAR = arrivalPhase ? (destinationMETAR ?? departureMETAR) : (departureMETAR ?? destinationMETAR)
         // Only SIGMETs whose area lies along the route may raise the ride index — a
         // nationwide turbulence advisory far from the route must not read as "severe".
         routeSigmets = routeAnalyzer.relevantSigmets(sigmets, position: pos, routeEnd: end)
+        // Wind shear is a low-level, surface-driven effect, so it keys off the live
+        // altitude; the PIREP altitude band above keys off the cruise reference.
         rideAssessment = turbulenceModel.assess(items: rideReportItems, sigmets: routeSigmets,
-                                                metar: nearMETAR, altitudeFt: alt)
+                                                metar: nearMETAR, altitudeFt: liveAlt)
     }
 
     // MARK: - Diagnostics helpers

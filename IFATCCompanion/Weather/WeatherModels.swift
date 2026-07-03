@@ -104,6 +104,56 @@ struct SIGMET: Equatable, Identifiable {
     static func == (lhs: SIGMET, rhs: SIGMET) -> Bool { lhs.id == rhs.id }
 }
 
+extension SIGMET {
+    /// Coarse hazard classification derived from the advisory's hazard field
+    /// (falling back to the raw text when the structured field is absent).
+    enum Category { case convective, turbulence, icingOrMountainWave, other }
+
+    var category: Category {
+        let text = (hazard ?? raw).uppercased()
+        if text.contains("CONV") || text.contains("TS") { return .convective }
+        if text.contains("TURB") { return .turbulence }
+        if text.contains("ICE") || text.contains("MTW") { return .icingOrMountainWave }
+        return .other
+    }
+
+    /// The turbulence severity this advisory implies. This is the single source of
+    /// truth used both to raise the composite ride index and to color the advisory
+    /// area on the route map, so the two never disagree.
+    var turbulenceSeverity: TurbulenceSeverity {
+        switch category {
+        case .convective:
+            return .severe
+        case .turbulence:
+            let sev = (severity ?? "").uppercased()
+            return (sev.contains("SEV") || sev.contains("EXTRM") || sev.contains("EXTREME")) ? .severe : .moderate
+        case .icingOrMountainWave:
+            return .light
+        case .other:
+            // IFR / volcanic-ash / other advisories don't imply a rough ride, so
+            // they neither raise the ride index nor paint the turbulence overlay.
+            return .smooth
+        }
+    }
+
+    /// A short human label for the hazard, used in ride-report factors.
+    var hazardLabel: String {
+        switch category {
+        case .convective: return "convective SIGMET"
+        case .turbulence: return "turbulence SIGMET"
+        case .icingOrMountainWave, .other: return "SIGMET advisory"
+        }
+    }
+
+    /// The valid polygon vertices when this advisory has a drawable area (≥3
+    /// points). Advisories without a real polygon can't be placed on the map and
+    /// must not silently drive the ride index either.
+    var drawableArea: [CLLocationCoordinate2D]? {
+        let points = area.filter { $0.isValid }
+        return points.count >= 3 ? points : nil
+    }
+}
+
 /// A ride report relevant to the current route, produced by `RideReportEngine`.
 struct RideReportItem: Identifiable {
     let id = UUID()

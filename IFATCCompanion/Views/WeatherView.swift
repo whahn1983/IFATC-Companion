@@ -58,6 +58,8 @@ struct WeatherView: View {
                     legendDot(.red, "Severe")
                 }
                 .font(.caption2).foregroundStyle(.secondary)
+                Text("Dots are pilot reports; shaded areas are SIGMET/AIRMET advisories along your route.")
+                    .font(.caption2).foregroundStyle(.secondary)
             }
         }
     }
