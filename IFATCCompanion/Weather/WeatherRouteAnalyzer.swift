@@ -68,11 +68,14 @@ struct WeatherRouteAnalyzer {
         return items.sorted { ($0.distanceAheadNM ?? .greatestFiniteMagnitude) < ($1.distanceAheadNM ?? .greatestFiniteMagnitude) }
     }
 
-    /// Filter SIGMET/AIRMET advisories to those whose area actually intersects the
-    /// route corridor (the path from `position` toward `routeEnd`). Advisories with
-    /// no usable geometry are excluded — they can't be placed on the route, and the
-    /// nationwide AIR/SIGMET feed otherwise makes a distant turbulence advisory look
-    /// like it's on every flight. Pure and deterministic.
+    /// Filter SIGMET/AIRMET advisories to those the route actually passes through.
+    /// Unlike a PIREP — a point report we buffer by the route corridor — a SIGMET
+    /// covers a wide area, so it is only applicable when the route line genuinely
+    /// crosses (or starts/ends inside) its polygon; being merely *near* the area
+    /// does not count. Advisories with no usable geometry are excluded — they can't
+    /// be placed on the route, and the nationwide AIR/SIGMET feed otherwise makes a
+    /// distant turbulence advisory look like it's on every flight. Pure and
+    /// deterministic.
     func relevantSigmets(_ sigmets: [SIGMET],
                          position: CLLocationCoordinate2D,
                          routeEnd: CLLocationCoordinate2D?) -> [SIGMET] {
@@ -80,34 +83,27 @@ struct WeatherRouteAnalyzer {
             // Require a drawable polygon (≥3 valid vertices): an advisory that can't
             // be placed on the map must not silently drive the ride index either.
             guard let area = sigmet.drawableArea else { return false }
-            return polygonIntersectsRoute(area, position: position, routeEnd: routeEnd)
+            return routePassesThroughPolygon(area, position: position, routeEnd: routeEnd)
         }
     }
 
-    /// Whether an advisory polygon comes within the corridor of the route (or
-    /// contains an endpoint of it).
-    private func polygonIntersectsRoute(_ polygon: [CLLocationCoordinate2D],
-                                        position: CLLocationCoordinate2D,
-                                        routeEnd: CLLocationCoordinate2D?) -> Bool {
-        let corridor = config.corridorNM
+    /// Whether the route actually passes through the advisory polygon: either an
+    /// endpoint lies inside the area, or the route line crosses one of its edges.
+    /// With no destination yet, only the current position being inside the area
+    /// counts — a lone point isn't a route, so proximity alone is not applicability.
+    private func routePassesThroughPolygon(_ polygon: [CLLocationCoordinate2D],
+                                           position: CLLocationCoordinate2D,
+                                           routeEnd: CLLocationCoordinate2D?) -> Bool {
         if Self.pointInPolygon(position, polygon) { return true }
-        if let routeEnd, Self.pointInPolygon(routeEnd, polygon) { return true }
+        guard let routeEnd else { return false }
+        if Self.pointInPolygon(routeEnd, polygon) { return true }
 
-        guard let routeEnd else {
-            // No route line yet: relevant if any vertex is within the corridor radius.
-            return polygon.contains { Geo.distanceNM(from: position, to: $0) <= corridor }
-        }
-        let routeLen = Geo.distanceNM(from: position, to: routeEnd)
-        let course = Geo.bearing(from: position, to: routeEnd)
-        for vertex in polygon {
-            let distance = Geo.distanceNM(from: position, to: vertex)
-            let bearing = Geo.bearing(from: position, to: vertex)
-            let angle = Geo.headingDifference(course, bearing) * .pi / 180
-            let alongTrack = distance * cos(angle)
-            let crossTrack = abs(distance * sin(angle))
-            if crossTrack <= corridor, alongTrack >= -corridor, alongTrack <= routeLen + corridor {
-                return true
-            }
+        // The route line enters and leaves the area by crossing its boundary, so a
+        // pass-through with both endpoints outside is caught by an edge crossing.
+        var j = polygon.count - 1
+        for i in polygon.indices {
+            if Geo.segmentsIntersect(position, routeEnd, polygon[j], polygon[i]) { return true }
+            j = i
         }
         return false
     }
