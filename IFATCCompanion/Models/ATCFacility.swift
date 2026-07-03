@@ -58,4 +58,22 @@ enum ATCFacility: String, CaseIterable, Codable, Identifiable {
         case .approach: return "airplane.arrival"
         }
     }
+
+    /// Best-effort map from an Infinite Flight ATC facility name (e.g. "Ground",
+    /// "KSFO Tower", "Approach", "Clearance Delivery") to the matching facility.
+    /// Returns nil for names that don't correspond to a gate-to-gate FAA position
+    /// (UNICOM, ATIS, …) or that can't be recognised. Matching is token-based and
+    /// case-insensitive, checking the more specific words first so "Clearance
+    /// Delivery" and "Ground Control" resolve unambiguously.
+    static func matching(name: String?) -> ATCFacility? {
+        guard let raw = name?.uppercased().trimmingCharacters(in: .whitespaces),
+              !raw.isEmpty else { return nil }
+        if raw.contains("CLEARANCE") || raw.contains("DELIVERY") { return .clearance }
+        if raw.contains("GROUND") { return .ground }
+        if raw.contains("TOWER") { return .tower }
+        if raw.contains("DEPART") { return .departure }
+        if raw.contains("APPROACH") || raw.contains("ARRIVAL") { return .approach }
+        if raw.contains("CENTER") || raw.contains("CENTRE") { return .center }
+        return nil
+    }
 }
