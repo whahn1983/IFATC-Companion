@@ -33,4 +33,13 @@ final class LiveATCDetectorTests: XCTestCase {
         XCTAssertFalse(s.humanControllerActive)
         XCTAssertTrue(s.multiplayerOnline)
     }
+
+    func testAtisIsNotAHumanController() {
+        // ATIS is an automated broadcast, not a human controller, so it never gates.
+        let s = detector.status(atcActive: false, facilityName: "KBOS ATIS", facilityCount: 0,
+                                online: true, serverName: "Expert")
+        XCTAssertFalse(s.humanControllerActive)
+        XCTAssertNil(s.activeFacility)
+        XCTAssertTrue(s.multiplayerOnline)
+    }
 }
