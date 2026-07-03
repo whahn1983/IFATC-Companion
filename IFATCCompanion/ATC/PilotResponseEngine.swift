@@ -236,9 +236,39 @@ struct PilotResponseEngine {
               facility: .center)
     }
 
-    func requestHandoff(context c: ATCContext, facility: ATCFacility) -> ATCTransmission {
-        pilot("\(facility.spokenName), \(c.callsign.display), checking in.",
-              "\(facility.spokenName), \(c.callsign.spoken), checking in.",
-              facility: facility)
+    /// Pilot check-in on a newly tuned frequency.
+    ///
+    /// Airborne, the pilot reports altitude the way a controller expects to hear it:
+    /// "with you at <altitude>" when level, or "with you at <current> for <target>"
+    /// while climbing or descending toward the assigned altitude. On the ground
+    /// (Ramp, Ground, Clearance) — or whenever we have no usable altitude — a plain
+    /// "checking in" is correct.
+    ///
+    /// - Parameters:
+    ///   - currentAltitude: live aircraft altitude (ft MSL), or nil when unknown.
+    ///   - targetAltitude: the altitude ATC has assigned (what the aircraft is
+    ///     climbing/descending toward); 0 when none.
+    ///   - onGround: true when the aircraft is on the ground.
+    func requestHandoff(context c: ATCContext, facility: ATCFacility,
+                        currentAltitude: Int? = nil,
+                        targetAltitude: Int = 0,
+                        onGround: Bool = false) -> ATCTransmission {
+        // Ground positions and any on-ground / altitude-unknown check-in: "checking in".
+        let groundFacility = facility == .ramp || facility == .ground || facility == .clearance
+        guard !onGround, !groundFacility, let cur = currentAltitude else {
+            return pilot("\(facility.spokenName), \(c.callsign.display), checking in.",
+                         "\(facility.spokenName), \(c.callsign.spoken), checking in.",
+                         facility: facility)
+        }
+        // Climbing/descending toward a different assigned altitude: report both.
+        if targetAltitude > 0, abs(targetAltitude - cur) >= 200 {
+            return pilot("\(facility.spokenName), \(c.callsign.display), with you at \(engine.formatAltDisplay(cur)) for \(engine.formatAltDisplay(targetAltitude)).",
+                         "\(facility.spokenName), \(c.callsign.spoken), with you at \(Phonetic.altitude(cur, icao: icao)) for \(Phonetic.altitude(targetAltitude, icao: icao)).",
+                         facility: facility)
+        }
+        // Level: report the current altitude.
+        return pilot("\(facility.spokenName), \(c.callsign.display), with you at \(engine.formatAltDisplay(cur)).",
+                     "\(facility.spokenName), \(c.callsign.spoken), with you at \(Phonetic.altitude(cur, icao: icao)).",
+                     facility: facility)
     }
 }
