@@ -48,12 +48,22 @@ struct LiveATCStatus: Equatable {
     /// per-frequency, location-aware test: it's true only while the pilot has tuned a
     /// controller, and never for a controller working a different airport elsewhere in
     /// the session. UNICOM is an unstaffed advisory and ATIS is an automated broadcast,
-    /// so both are excluded.
+    /// so both are excluded — as is the "Unknown"/"None" placeholder Infinite Flight
+    /// reports for COM1 when the pilot isn't tuned to any frequency at all.
     var tunedToHumanController: Bool {
-        guard let raw = tunedFrequencyName?.trimmingCharacters(in: .whitespaces),
-              !raw.isEmpty else { return false }
-        let name = raw.uppercased()
-        return !name.contains("UNICOM") && !name.contains("ATIS")
+        LiveATCStatus.isHumanControllerFrequency(tunedFrequencyName)
+    }
+
+    /// True when `name` is a live, staffed human-controller frequency. Blank, missing,
+    /// UNICOM, ATIS, and the "Unknown"/"None" not-tuned placeholders all return false —
+    /// there is no controller to defer to in any of those cases.
+    static func isHumanControllerFrequency(_ name: String?) -> Bool {
+        guard let raw = name?.trimmingCharacters(in: .whitespaces), !raw.isEmpty else {
+            return false
+        }
+        let upper = raw.uppercased()
+        return !upper.contains("UNICOM") && !upper.contains("ATIS")
+            && upper != "UNKNOWN" && upper != "NONE"
     }
 
     /// Whether the companion should defer to a human controller right now: true exactly
@@ -121,7 +131,15 @@ struct LiveATCDetector {
         status.humanControllerActive = humanByFlag || humanByCount || nameIsHuman
         status.controllerName = nameIsHuman ? cleanedController : nil
 
-        status.tunedFrequencyName = tunedFrequencyName?.trimmingCharacters(in: .whitespaces).nonEmpty
+        // Infinite Flight reports "Unknown"/"None" for COM1 when the pilot isn't tuned to
+        // any frequency; treat those placeholders as "not tuned" so they never surface in
+        // the UI or trip the guard.
+        let cleanedTuned = tunedFrequencyName?.trimmingCharacters(in: .whitespaces).nonEmpty
+        let tunedIsPlaceholder = cleanedTuned.map {
+            let u = $0.uppercased()
+            return u == "UNKNOWN" || u == "NONE"
+        } ?? false
+        status.tunedFrequencyName = tunedIsPlaceholder ? nil : cleanedTuned
         status.tunedFrequencyMHz = tunedFrequencyMHz
 
         // Being tuned to a named controller frequency is itself proof a human is on the

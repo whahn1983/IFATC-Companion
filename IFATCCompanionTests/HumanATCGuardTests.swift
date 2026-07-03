@@ -54,6 +54,22 @@ final class HumanATCGuardTests: XCTestCase {
         XCTAssertFalse(tuned("").companionShouldStandBy)
     }
 
+    func testNotTunedToAnyFrequencyDoesNotStandBy() {
+        // Infinite Flight reports "Unknown"/"None" for COM1 when the pilot isn't tuned to
+        // any frequency at all. That is not a controller to defer to — the guard is off.
+        XCTAssertFalse(tuned("Unknown").companionShouldStandBy)
+        XCTAssertFalse(tuned("unknown").companionShouldStandBy)
+        XCTAssertFalse(tuned("None").companionShouldStandBy)
+        // The placeholder must not leak into the UI summary or facility mapping.
+        let detector = LiveATCDetector()
+        let notTuned = detector.status(atcActive: false, controllerName: nil, facilityCount: 0,
+                                       online: true, serverName: "Expert",
+                                       tunedFrequencyName: "Unknown")
+        XCTAssertFalse(notTuned.companionShouldStandBy)
+        XCTAssertNil(notTuned.tunedFrequencyName)
+        XCTAssertNil(notTuned.tunedFacility)
+    }
+
     func testHumanElsewhereButNotTunedDoesNotStandBy() {
         // A human controller is active in the session (username known) but the pilot is
         // on UNICOM: the companion keeps working, because that controller isn't on the
