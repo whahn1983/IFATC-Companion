@@ -374,8 +374,12 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Enforce the Mock-Mode lock from the subscription state: whenever Live
-    /// access is lost (expired, revoked, never purchased) force Mock Mode on.
+    /// Keep the active mode in sync with the subscription state: whenever Live
+    /// access is lost (expired, revoked, never purchased) force Mock Mode on, and
+    /// whenever it is gained (subscription confirmed at launch, purchased, or
+    /// restored) default into Live Connected Mode. At startup the app is pinned to
+    /// Mock Mode until the async entitlement refresh completes; this promotes a
+    /// subscribed user to Live once that check confirms their access.
     private func observeEntitlements() {
         entitlements.$hasLiveAccess
             .sink { [weak self] hasAccess in
@@ -383,6 +387,9 @@ final class AppModel: ObservableObject {
                 if !hasAccess && !self.settings.mockMode {
                     self.diagnostics.log(.app, "Live subscription not active — locking to Mock Mode.")
                     self.toggleMockMode(true)
+                } else if hasAccess && self.settings.mockMode {
+                    self.diagnostics.log(.app, "Live subscription active — switching to Live Connected Mode.")
+                    self.toggleMockMode(false)
                 }
             }
             .store(in: &cancellables)
