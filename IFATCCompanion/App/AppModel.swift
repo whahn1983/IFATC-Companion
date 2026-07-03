@@ -68,11 +68,18 @@ final class AppModel: ObservableObject {
     /// Mock-mode demo toggle to exercise the "step aside" behavior in the Simulator.
     @Published var simulateStaffedATC: Bool = false
 
-    /// Whether the companion should defer to a human controller right now. The guard
-    /// is per-frequency: it applies only while the pilot is tuned to the facility a
-    /// human is actually staffing. Switching to a frequency no human is working (or off
-    /// frequency entirely) lifts it, so the companion resumes covering that sector.
-    var companionStandby: Bool { liveATC.shouldStandBy(tunedTo: currentFacility) }
+    /// Whether the companion should defer to a human controller right now. The guard is
+    /// per-frequency and location-aware: in live mode it applies only while the pilot's
+    /// tuned COM frequency is a staffed human controller (read from Infinite Flight), so
+    /// tuning to UNICOM, ATIS, or an unstaffed field lifts it and the companion resumes
+    /// covering that sector. In mock mode it follows the demo toggle against the tuned
+    /// facility so the standby behavior can be exercised in the Simulator.
+    var companionStandby: Bool {
+        if settings.mockMode {
+            return simulateStaffedATC && currentFacility.isFAAATC
+        }
+        return liveATC.companionShouldStandBy
+    }
 
     /// Whether the pre-departure ground actions (clearance → pushback → engine
     /// start → taxi → ready) should be offered. True until the first departure.
@@ -454,28 +461,39 @@ final class AppModel: ObservableObject {
         $simulateStaffedATC
             .sink { [weak self] on in
                 guard let self, self.settings.mockMode else { return }
-                self.applyLiveATC(on
-                    ? LiveATCStatus(multiplayerOnline: true, serverName: "Expert",
-                                    humanControllerActive: true,
-                                    activeFacility: self.currentFacility.title)
-                    : .none)
+                self.applyLiveATC(on ? self.mockStaffedStatus() : .none)
             }
             .store(in: &cancellables)
     }
 
-    /// Apply a new live-ATC status and log human-ATC presence transitions. Whether
-    /// the companion actually stands by is decided per-frequency in `companionStandby`
-    /// (it only defers while tuned to the staffed facility), so this logs detection of
-    /// a human controller rather than the standby state itself.
+    /// A simulated staffing snapshot for the Diagnostics demo toggle in mock mode:
+    /// pretend the pilot is tuned to a staffed controller matching the current facility.
+    private func mockStaffedStatus() -> LiveATCStatus {
+        LiveATCStatus(multiplayerOnline: true,
+                      serverName: "Expert",
+                      humanControllerActive: true,
+                      controllerName: "Demo Controller",
+                      tunedFrequencyName: currentFacility.isFAAATC ? currentFacility.title : nil)
+    }
+
+    /// Apply a new live-ATC status and log human-ATC transitions. Logs both the
+    /// detection of a human controller in the session and the per-frequency standby
+    /// state (which only engages while the pilot is tuned to that controller).
     private func applyLiveATC(_ status: LiveATCStatus) {
-        let wasActive = liveATC.humanControllerActive
+        let wasHuman = liveATC.humanControllerActive
+        let wasStandby = liveATC.companionShouldStandBy
         liveATC = status
-        if status.humanControllerActive != wasActive {
-            if status.humanControllerActive {
-                let f = status.staffedFacility.map { " on \($0.title)" } ?? ""
-                diagnostics.log(.atc, "Human ATC detected\(f) — companion defers on that frequency.")
+        if status.humanControllerActive != wasHuman {
+            diagnostics.log(.atc, status.humanControllerActive
+                ? "Human ATC online in session\(status.controllerName.map { " (\($0))" } ?? "")."
+                : "Human ATC no longer present in session.")
+        }
+        if status.companionShouldStandBy != wasStandby {
+            if status.companionShouldStandBy {
+                let f = status.tunedFacility?.title ?? status.tunedFrequencyName ?? "a controller"
+                diagnostics.log(.atc, "Tuned to human ATC (\(f)) — companion standing by on this frequency.")
             } else {
-                diagnostics.log(.atc, "Human ATC cleared — companion resuming all sectors.")
+                diagnostics.log(.atc, "Off the human-controlled frequency — companion resuming.")
             }
         }
     }
@@ -497,10 +515,7 @@ final class AppModel: ObservableObject {
         atcState = .connectedIdle
         currentFacility = .clearance
         stateMachine.setConnected()
-        applyLiveATC(simulateStaffedATC
-            ? LiveATCStatus(multiplayerOnline: true, serverName: "Expert",
-                            humanControllerActive: true, activeFacility: currentFacility.title)
-            : .none)
+        applyLiveATC(simulateStaffedATC ? mockStaffedStatus() : .none)
         mock.start()
         diagnostics.log(.app, "Mock simulator feed started.")
         Task { await refreshWeather() }
@@ -879,8 +894,11 @@ final class AppModel: ObservableObject {
             try? await Task.sleep(nanoseconds: UInt64(max(0, self.takeoffClearanceDelay) * 1_000_000_000))
             guard !Task.isCancelled else { return }
             self.takeoffClearanceTimer = nil
+            // Stand by while tuned to a human controller — Tower's automatic takeoff
+            // clearance must not fire over a live controller. The next telemetry tick
+            // re-arms it once the pilot leaves the human frequency.
             guard !self.hasDeparted, self.stateMachine.current == .lineUpWait,
-                  !self.settings.mockMode, !self.readbackGateClosed,
+                  !self.settings.mockMode, !self.readbackGateClosed, !self.companionStandby,
                   self.isReadyForTakeoffClearance(state: self.aircraftState) else { return }
             self.autoIssueTakeoffClearance()
         }
@@ -994,6 +1012,14 @@ final class AppModel: ObservableObject {
             guard !Task.isCancelled, self.awaitingReadback,
                   let tx = self.pendingReadbackTx,
                   self.readbackPrompts < self.readbackMaxPrompts else { return }
+            // Stand by while tuned to a human controller: don't nag "how do you read?"
+            // over a live controller, but keep the timer alive (re-arm without counting
+            // a prompt) so the reminder resumes if the pilot leaves the human frequency
+            // before reading back.
+            if self.companionStandby {
+                self.armReadbackTimer()
+                return
+            }
             self.readbackPrompts += 1
             self.repeatPendingCall(tx)
             self.armReadbackTimer()

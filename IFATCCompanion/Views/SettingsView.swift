@@ -7,6 +7,7 @@ struct SettingsView: View {
     @EnvironmentObject var connect: IFConnectManager
     @EnvironmentObject var profiles: PhraseologyProfileStore
     @EnvironmentObject var entitlements: EntitlementManager
+    @EnvironmentObject var speech: SpeechService
     @State private var showResetConfirm = false
     @State private var showSubscription = false
 
@@ -163,13 +164,33 @@ struct SettingsView: View {
         }
     }
 
+    /// A voice row that pushes a dedicated, freely-scrollable picker screen. The
+    /// stock `Picker`'s list style snaps the scroll back to the checked row on every
+    /// re-render (auditioning a voice re-renders Settings), which made the list
+    /// impossible to scroll; a plain list of buttons has no selection auto-scroll, so
+    /// it scrolls normally and lets us audition the voice on tap.
     private func voicePicker(_ label: String, selection: Binding<String>) -> some View {
-        Picker(label, selection: selection) {
-            Text("System default").tag("")
-            ForEach(voices, id: \.identifier) { v in
-                Text("\(v.name) (\(v.language))").tag(v.identifier)
+        NavigationLink {
+            VoicePickerView(title: label, selection: selection, voices: voices) { id in
+                speech.previewVoice(identifier: id)
+            }
+        } label: {
+            HStack {
+                Text(label)
+                Spacer()
+                Text(voiceDisplayName(for: selection.wrappedValue))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
         }
+    }
+
+    /// Short name shown on the collapsed settings row for a selected voice id.
+    private func voiceDisplayName(for id: String) -> String {
+        guard !id.isEmpty, let v = voices.first(where: { $0.identifier == id }) else {
+            return "System default"
+        }
+        return v.name
     }
 
     // MARK: - Phraseology
@@ -272,6 +293,54 @@ struct SettingsView: View {
             Text("Advanced")
         } footer: {
             Text("IFATC Companion v1.0 — local-only, no accounts, no analytics, no AI.\n© 2026 H3 Consulting Partners LLC.")
+        }
+    }
+}
+
+// MARK: - Voice picker screen
+
+/// A full-screen, freely-scrollable voice list. Each row selects the voice and
+/// auditions it with a sample line so the user can hear the switch. Built from plain
+/// buttons rather than a `Picker` so the scroll never snaps back to the checked row.
+private struct VoicePickerView: View {
+    let title: String
+    @Binding var selection: String
+    let voices: [AVSpeechSynthesisVoice]
+    let onPreview: (String) -> Void
+
+    var body: some View {
+        List {
+            Section {
+                row(label: "System default", id: "")
+            } footer: {
+                Text("Tap a voice to select it and hear a sample line.")
+            }
+            Section("Installed voices") {
+                ForEach(voices, id: \.identifier) { v in
+                    row(label: "\(v.name) (\(v.language))", id: v.identifier)
+                }
+            }
+        }
+        .navigationTitle(title)
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func row(label: String, id: String) -> some View {
+        Button {
+            selection = id
+            onPreview(id)
+        } label: {
+            HStack {
+                Text(label)
+                    .foregroundStyle(.primary)
+                Spacer()
+                if id == selection {
+                    Image(systemName: "checkmark")
+                        .foregroundStyle(.tint)
+                        .fontWeight(.semibold)
+                }
+            }
+            .contentShape(Rectangle())
         }
     }
 }

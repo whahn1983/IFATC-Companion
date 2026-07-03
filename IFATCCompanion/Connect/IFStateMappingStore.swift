@@ -51,6 +51,15 @@ final class IFStateMappingStore {
         case atcFacilityCount
         case isOnline
         case serverName
+        /// The name of the frequency the pilot is currently tuned to on COM1
+        /// (`aircraft/0/systems/comm_radios/com_1/name`) — e.g. "Ground", "KSFO Tower",
+        /// "Unicom". This is the location-aware standby signal: it names the frequency
+        /// the pilot is actually on, so the companion can defer only when that frequency
+        /// is a staffed human controller.
+        case tunedComName
+        /// The COM1 frequency in MHz (`aircraft/0/systems/comm_radios/com_1/frequency`),
+        /// read for diagnostics/logging.
+        case tunedComFrequency
 
         /// Candidate name signatures (normalised, lowercased, separators removed),
         /// in priority order.
@@ -80,10 +89,12 @@ final class IFStateMappingStore {
             case .flightPlanRoute: return ["flightplanroute", "planroute"]
             case .flightPlanCoordinates: return ["flightplancoordinates", "plancoordinates"]
             case .atcActive: return ["isatcactive", "atcactive", "atcisactive", "controlleractive"]
-            case .atcFacilityName: return ["activeatcfacilityname", "atcfacilityname", "controllerfacility", "atcfacilit", "atcname"]
+            case .atcFacilityName: return ["activeatcfacilityname", "atcfacilityname", "controllerfacility", "atcfacilit", "atcname", "atcusername", "controllername"]
             case .atcFacilityCount: return ["activeatcfacilitycount", "atcfacilitycount", "activeatccount", "atccount"]
             case .isOnline: return ["ismultiplayer", "isonline", "online", "multiplayer"]
             case .serverName: return ["servername", "sessionname", "server"]
+            case .tunedComName: return ["com1name", "comm1name", "commradioscom1name", "activefrequencyname"]
+            case .tunedComFrequency: return ["com1frequency", "comm1frequency", "commradioscom1frequency"]
             }
         }
     }

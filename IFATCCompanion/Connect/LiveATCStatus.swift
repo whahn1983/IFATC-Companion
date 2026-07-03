@@ -2,61 +2,78 @@ import Foundation
 
 /// Snapshot of live multiplayer / ATC-staffing context read from Infinite Flight.
 /// Used so the companion can step aside when a human controller is present.
+///
+/// The Infinite Flight **Connect API** does not publish a map of which airport each
+/// controller is working, so a bare "a human is controlling somewhere in this session"
+/// flag can't tell us whether that controller is relevant to *this* flight. What it
+/// *does* publish is the name of the frequency the pilot is **currently tuned to**
+/// (`aircraft/0/systems/comm_radios/com_1/name`). That is the location-aware signal:
+/// if the pilot has dialled a staffed controller's frequency, that controller is on
+/// the pilot's own radio, so the companion must stand by; if the pilot is on UNICOM,
+/// ATIS, or an unstaffed field, the companion keeps working — regardless of who else
+/// is controlling elsewhere in the session.
 struct LiveATCStatus: Equatable {
     /// True when the session appears to be on a multiplayer server.
     var multiplayerOnline: Bool = false
     /// Server name, if exposed (e.g. "Expert", "Training").
     var serverName: String?
-    /// True when a human controller is staffing a relevant frequency.
+    /// True when a human controller is staffing *some* frequency somewhere in the
+    /// session. Presence only — it does not say which airport/facility they work, so it
+    /// can't decide standby on its own.
     var humanControllerActive: Bool = false
-    /// The staffed facility name, if known (e.g. "Tower", "Approach").
-    var activeFacility: String?
+    /// A human controller's reported name/username, if the manifest exposes one (e.g.
+    /// "j_vonl"). Informational: it identifies *a* controller in the session but not the
+    /// facility or frequency they work.
+    var controllerName: String?
+    /// The name of the frequency the pilot is tuned to right now, read live from COM1
+    /// (`aircraft/0/systems/comm_radios/com_1/name`) — e.g. "Ground", "KSFO Tower",
+    /// "Unicom", "ATIS". This is how the companion knows which frequency the pilot is
+    /// actually on. Nil/empty when unavailable or not tuned to a named frequency.
+    var tunedFrequencyName: String?
+    /// The COM1 frequency in MHz, if exposed (diagnostics/logging only).
+    var tunedFrequencyMHz: Double?
 
     static let none = LiveATCStatus()
 
-    /// Whether a human controller is staffing *some* relevant frequency. This is a
-    /// presence signal for the UI/diagnostics — it does not, on its own, mean the
-    /// companion should stand by. The per-frequency decision is `shouldStandBy(tunedTo:)`.
-    var shouldStandBy: Bool { humanControllerActive }
+    /// The facility the pilot is tuned to right now, resolved from the live COM1
+    /// frequency name (e.g. "KSFO Tower" → `.tower`). Nil for UNICOM/ATIS or a name that
+    /// doesn't map to a gate-to-gate position.
+    var tunedFacility: ATCFacility? { ATCFacility.matching(name: tunedFrequencyName) }
 
-    /// The FAA facility a human controller is working, resolved from
-    /// `activeFacility` when it maps to a gate-to-gate position. Nil when no
-    /// controller is active or the reported name can't be matched (e.g. UNICOM/ATIS,
-    /// or an IF version that exposes only a facility count).
-    var staffedFacility: ATCFacility? {
-        humanControllerActive ? ATCFacility.matching(name: activeFacility) : nil
-    }
-
-    /// Whether the companion should stand aside for a human controller **given the
-    /// facility the pilot is tuned to right now**. The guard is per-frequency: the
-    /// companion only defers while the pilot is actually tuned to the frequency a
-    /// human is confirmed to be working. It reads the currently tuned frequency and
-    /// gates *only* when that frequency is human-controlled — anything else keeps the
-    /// companion covering the sector. For example, with only Tower manned, the pilot
-    /// still gets Clearance Delivery, Ground, Departure and Center from the companion,
-    /// and only Tower defers.
+    /// Whether the frequency the pilot is tuned to is a **staffed human ATC** frequency.
     ///
-    /// The guard never engages unless the staffed facility can be positively
-    /// identified and matches the tuned one:
-    /// - Ramp is never FAA ATC, so it can't be human-staffed — the companion always
-    ///   handles the pushback / taxi-to-gate there.
-    /// - ATIS is an automated broadcast, not a human controller, so it is excluded (a
-    ///   frequency reported as ATIS never triggers the guard).
-    /// - When a controller is active but the staffed facility can't be identified
-    ///   (only a count/flag is exposed, or an unrecognised name), the companion does
-    ///   **not** gate — we can't confirm the tuned frequency is the human's, so the
-    ///   pilot keeps the companion rather than being locked out of an uncontrolled
-    ///   frequency.
-    func shouldStandBy(tunedTo facility: ATCFacility?) -> Bool {
-        guard let staffed = staffedFacility else { return false }
-        return facility == staffed
+    /// Infinite Flight only offers a field's ATC frequencies while a human is actually
+    /// working them — otherwise pilots use UNICOM — so a tuned COM name that isn't blank,
+    /// UNICOM, or ATIS is a live human controller on the pilot's own radio. This is the
+    /// per-frequency, location-aware test: it's true only while the pilot has tuned a
+    /// controller, and never for a controller working a different airport elsewhere in
+    /// the session. UNICOM is an unstaffed advisory and ATIS is an automated broadcast,
+    /// so both are excluded.
+    var tunedToHumanController: Bool {
+        guard let raw = tunedFrequencyName?.trimmingCharacters(in: .whitespaces),
+              !raw.isEmpty else { return false }
+        let name = raw.uppercased()
+        return !name.contains("UNICOM") && !name.contains("ATIS")
     }
+
+    /// Whether the companion should defer to a human controller right now: true exactly
+    /// when the pilot is tuned to a staffed human ATC frequency.
+    var companionShouldStandBy: Bool { tunedToHumanController }
 
     /// Short human-readable summary for the UI.
     var summary: String {
+        if tunedToHumanController {
+            let facility = tunedFacility?.title ?? tunedFrequencyName ?? "a controller"
+            // Append the controller's name only when it adds information beyond the
+            // frequency label itself.
+            let who = controllerName.flatMap { name in
+                name.caseInsensitiveCompare(facility) == .orderedSame ? nil : " (\(name))"
+            } ?? ""
+            return "Tuned to human ATC — \(facility)\(who). Companion standing by; follow the live controller."
+        }
         if humanControllerActive {
-            let f = activeFacility.map { " (\($0))" } ?? ""
-            return "Human ATC active\(f) — companion standing by."
+            let who = controllerName.map { " (\($0))" } ?? ""
+            return "Human ATC online\(who) — tune their frequency to hand off. Companion is covering your current frequency."
         }
         if multiplayerOnline {
             let s = serverName.map { " on \($0)" } ?? ""
@@ -73,31 +90,43 @@ struct LiveATCDetector {
 
     /// - Parameters:
     ///   - atcActive: an explicit "is ATC active" flag, if exposed.
-    ///   - facilityName: a staffed-facility name string, if exposed.
+    ///   - controllerName: a staffed-controller name/username string, if exposed.
     ///   - facilityCount: number of active ATC facilities, if exposed.
     ///   - online: an "is online / multiplayer" flag, if exposed.
     ///   - serverName: the server name string, if exposed.
+    ///   - tunedFrequencyName: the name of the frequency the pilot is tuned to (COM1),
+    ///     if exposed — the location-aware standby signal.
+    ///   - tunedFrequencyMHz: the tuned COM1 frequency in MHz, if exposed.
     func status(atcActive: Bool?,
-                facilityName: String?,
+                controllerName: String?,
                 facilityCount: Int?,
                 online: Bool?,
-                serverName: String?) -> LiveATCStatus {
+                serverName: String?,
+                tunedFrequencyName: String? = nil,
+                tunedFrequencyMHz: Double? = nil) -> LiveATCStatus {
         var status = LiveATCStatus()
         status.serverName = serverName?.trimmingCharacters(in: .whitespaces).nonEmpty
         status.multiplayerOnline = (online ?? false) || (status.serverName != nil)
 
-        let cleanedFacility = facilityName?.trimmingCharacters(in: .whitespaces).nonEmpty
+        let cleanedController = controllerName?.trimmingCharacters(in: .whitespaces).nonEmpty
         // UNICOM and ATIS are not human controllers — UNICOM is an unstaffed advisory
-        // frequency and ATIS is an automated broadcast, so neither should gate the app.
-        let facilityIsHuman = cleanedFacility.map {
+        // frequency and ATIS is an automated broadcast, so neither counts as staffing.
+        let nameIsHuman = cleanedController.map {
             let name = $0.uppercased()
             return !name.contains("UNICOM") && !name.contains("ATIS")
         } ?? false
 
         let humanByFlag = atcActive ?? false
         let humanByCount = (facilityCount ?? 0) > 0
-        status.humanControllerActive = humanByFlag || humanByCount || facilityIsHuman
-        status.activeFacility = facilityIsHuman ? cleanedFacility : nil
+        status.humanControllerActive = humanByFlag || humanByCount || nameIsHuman
+        status.controllerName = nameIsHuman ? cleanedController : nil
+
+        status.tunedFrequencyName = tunedFrequencyName?.trimmingCharacters(in: .whitespaces).nonEmpty
+        status.tunedFrequencyMHz = tunedFrequencyMHz
+
+        // Being tuned to a named controller frequency is itself proof a human is on the
+        // air, even if the standalone staffing flags didn't resolve on this IF version.
+        if status.tunedToHumanController { status.humanControllerActive = true }
         return status
     }
 }

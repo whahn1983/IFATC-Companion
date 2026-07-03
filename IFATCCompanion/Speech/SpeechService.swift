@@ -62,6 +62,40 @@ final class SpeechService: NSObject, ObservableObject {
         synthesizer.speak(utterance)
     }
 
+    /// Sample line spoken when auditioning a voice from Settings.
+    static let voiceSampleLine =
+        "Companion one, radar contact, climb and maintain flight level two four zero."
+
+    /// Speak a short sample line in a specific voice so the user can audition it while
+    /// picking a controller/pilot voice in Settings. Unlike `speak`, this is an
+    /// explicit audition tap, so it plays even when `voiceEnabled` is off — but it
+    /// still honours the configured volume, rate, pitch and silent-switch behaviour.
+    /// An empty `identifier` previews whatever the default/system voice resolves to.
+    func previewVoice(identifier: String, sample: String? = nil) {
+        activatePlaybackSession()
+        // Cut off any in-flight preview so rapid taps audition the latest pick
+        // immediately instead of queueing up behind earlier ones.
+        synthesizer.stopSpeaking(at: .immediate)
+
+        let utterance = AVSpeechUtterance(string: sample ?? Self.voiceSampleLine)
+        if !identifier.isEmpty, let v = AVSpeechSynthesisVoice(identifier: identifier) {
+            utterance.voice = v
+        } else if let id = settings?.defaultVoiceID, !id.isEmpty,
+                  let v = AVSpeechSynthesisVoice(identifier: id) {
+            utterance.voice = v
+        } else {
+            utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
+        }
+        let rate = Float(settings?.speechRate ?? Double(AVSpeechUtteranceDefaultSpeechRate))
+        utterance.rate = min(max(rate, AVSpeechUtteranceMinimumSpeechRate),
+                             AVSpeechUtteranceMaximumSpeechRate)
+        utterance.pitchMultiplier = Float(min(max(settings?.speechPitch ?? 1.0, 0.5), 2.0))
+        utterance.volume = Float(min(max(settings?.voiceVolume ?? 1.0, 0), 1))
+        utterance.preUtteranceDelay = 0.05
+        utterance.postUtteranceDelay = 0.1
+        synthesizer.speak(utterance)
+    }
+
     func stop() {
         synthesizer.stopSpeaking(at: .immediate)
         isSpeaking = false
