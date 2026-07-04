@@ -130,6 +130,45 @@ final class WeatherDeviationFlowTests: XCTestCase {
         XCTAssertTrue(withFix.readback?.displayText.contains("Direct WAGON") ?? false, withFix.readback?.displayText ?? "")
     }
 
+    /// Every weather deviation approval echoes the maintain altitude in its read-back.
+    func testDeviationApprovalReadbacksEchoMaintainAltitude() {
+        let phr = WeatherDeviationPhraseology(engine: PhraseologyEngine(digitStyle: .individual, mode: .faa))
+        let cs = phr.engine.callsign(airline: "United", flightNumber: "598", fallback: "")
+
+        let rejoin = phr.approvalWithRejoin(cs: cs, direction: .right, degrees: 20,
+                                            maintainAltitude: 37000, rejoinFix: "WAGON")
+        XCTAssertTrue(rejoin.readback?.displayText.contains("Maintain FL370") ?? false, rejoin.readback?.displayText ?? "")
+        XCTAssertTrue(rejoin.readback?.displayText.contains("WAGON") ?? false, rejoin.readback?.displayText ?? "")
+
+        let noRejoin = phr.approvalNoRejoin(cs: cs, direction: .left, degrees: 15, maintainAltitude: 34000)
+        XCTAssertTrue(noRejoin.readback?.displayText.contains("Maintain FL340") ?? false, noRejoin.readback?.displayText ?? "")
+
+        let star = phr.starDeviationApproval(cs: cs, direction: .right, degrees: 20, maintainAltitude: 11000,
+                                             starDisplay: "KKILR", starSpoken: "killer", rejoinFix: "HOBTT")
+        XCTAssertTrue(star.readback?.displayText.contains("Maintain 11,000") ?? false, star.readback?.displayText ?? "")
+        XCTAssertTrue(star.readback?.displayText.contains("HOBTT") ?? false, star.readback?.displayText ?? "")
+    }
+
+    /// Rejoining the STAR echoes the direct fix and the descend-via clearance.
+    func testRejoinStarReadbackEchoesDirectFixAndDescendVia() {
+        let phr = WeatherDeviationPhraseology(engine: PhraseologyEngine(digitStyle: .individual, mode: .faa))
+        let cs = phr.engine.callsign(airline: "United", flightNumber: "598", fallback: "")
+        let tx = phr.rejoinStar(cs: cs, rejoinFix: "HOBTT", starDisplay: "KKILR", starSpoken: "killer")
+        XCTAssertTrue(tx.readback?.displayText.contains("Direct HOBTT") ?? false, tx.readback?.displayText ?? "")
+        XCTAssertTrue(tx.readback?.displayText.contains("descend via the KKILR arrival") ?? false, tx.readback?.displayText ?? "")
+    }
+
+    /// A weather altitude change (higher/lower) echoes the assigned altitude.
+    func testWeatherAltitudeChangeReadbackEchoesAltitude() {
+        let phr = WeatherDeviationPhraseology(engine: PhraseologyEngine(digitStyle: .individual, mode: .faa))
+        let eng = WeatherDeviationEngine(phraseology: phr)
+        let cs = phr.engine.callsign(airline: "United", flightNumber: "598", fallback: "")
+        let result = eng.requestAltitude(cs: cs, higher: false, targetAltitude: 33000,
+                                         context: WeatherDeviationContext(), facility: .center)
+        let atc = result.atc.first
+        XCTAssertTrue(atc?.readback?.displayText.contains("Descend and maintain FL330") ?? false, atc?.readback?.displayText ?? "")
+    }
+
     // MARK: - Live/subscription gating does not break the mock demo
 
     func testMockDemoWorksWithoutSubscription() async {

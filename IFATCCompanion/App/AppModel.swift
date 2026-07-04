@@ -1903,10 +1903,15 @@ final class AppModel: ObservableObject {
         let c = buildContext(for: atcState)
         postPilot(pilotEngine.unable(context: c, facility: currentFacility))
         // Deterministic alternate controller response.
-        let alt = engine.formatAltDisplay(max(assignedAltitude, c.initialClimbAltitude))
-        let tx = ATCTransmission(sender: .atc, facility: currentFacility,
+        let target = max(assignedAltitude, c.initialClimbAltitude)
+        let alt = engine.formatAltDisplay(target)
+        var tx = ATCTransmission(sender: .atc, facility: currentFacility,
                                  displayText: "\(c.callsign.display), roger, maintain \(alt), advise able to comply.",
-                                 spokenText: "\(c.callsign.spoken), roger, maintain \(Phonetic.altitude(max(assignedAltitude, c.initialClimbAltitude))), advise able to comply.")
+                                 spokenText: "\(c.callsign.spoken), roger, maintain \(Phonetic.altitude(target)), advise able to comply.")
+        tx.readback = ATCTransmission.Readback(
+            displayText: "Maintain \(alt), \(c.callsign.display).",
+            spokenText: "Maintain \(Phonetic.altitude(target)), \(c.callsign.spoken).",
+            facility: currentFacility)
         post(tx, speak: true)
     }
 
@@ -2138,9 +2143,13 @@ final class AppModel: ObservableObject {
         recomputeRideItems()
         let target = nextAltitude(from: max(assignedAltitude, aircraftAltInt()), up: false)
         postPilot(pilotEngine.requestLower(context: c, target: target))
-        let tx = ATCTransmission(sender: .atc, facility: .center,
+        var tx = ATCTransmission(sender: .atc, facility: .center,
                                  displayText: "\(c.callsign.display), descend and maintain \(engine.formatAltDisplay(target)) for a smoother ride, report conditions.",
                                  spokenText: "\(c.callsign.spoken), descend and maintain \(Phonetic.altitude(target)) for a smoother ride, report conditions.")
+        tx.readback = ATCTransmission.Readback(
+            displayText: "Descend and maintain \(engine.formatAltDisplay(target)), \(c.callsign.display).",
+            spokenText: "Descend and maintain \(Phonetic.altitude(target)), \(c.callsign.spoken).",
+            facility: .center)
         post(tx, speak: true)
         assignedAltitude = target
     }

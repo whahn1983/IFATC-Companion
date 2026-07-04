@@ -137,9 +137,14 @@ struct WeatherDeviationEngine {
         var ctx = context
         let pilotTx = phraseology.pilotRequestAltitude(cs: cs, higher: higher, facility: facility)
         let verb = higher ? "climb and maintain" : "descend and maintain"
-        let atc = ATCTransmission(sender: .atc, facility: facility,
+        let verbCap = higher ? "Climb and maintain" : "Descend and maintain"
+        var atc = ATCTransmission(sender: .atc, facility: facility,
             displayText: "\(cs.display), \(verb) \(engine.formatAltDisplay(targetAltitude)) for weather, advise clear of weather.",
             spokenText: "\(cs.spoken), \(verb) \(Phonetic.altitude(targetAltitude, icao: engine.icao)) for weather, advise clear of weather.")
+        atc.readback = ATCTransmission.Readback(
+            displayText: "\(verbCap) \(engine.formatAltDisplay(targetAltitude)), \(cs.display).",
+            spokenText: "\(verbCap) \(Phonetic.altitude(targetAltitude, icao: engine.icao)), \(cs.spoken).",
+            facility: facility)
         ctx.state = .deviatingAroundWeather
         ctx.maintainAltitude = targetAltitude
         ctx.lastATCWeatherCall = atc.displayText
