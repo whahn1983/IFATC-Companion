@@ -142,9 +142,15 @@ struct WeatherDeviationPhraseology {
     /// Vectors around precipitation.
     func vectorApproval(cs: Callsign, heading: Int, maintainAltitude: Int,
                         facility: ATCFacility = .approach) -> ATCTransmission {
-        center("\(cs.display), fly heading \(headingDisplay(heading)), vectors around precipitation, maintain \(altDisplay(maintainAltitude)), advise clear of weather.",
+        var tx = center("\(cs.display), fly heading \(headingDisplay(heading)), vectors around precipitation, maintain \(altDisplay(maintainAltitude)), advise clear of weather.",
                "\(cs.spoken), fly heading \(Phonetic.heading(heading, icao: icao)), vectors around precipitation, maintain \(altSpoken(maintainAltitude)), advise clear of weather.",
                facility: facility)
+        // Read back both the assigned heading and the maintain altitude.
+        tx.readback = ATCTransmission.Readback(
+            displayText: "Heading \(headingDisplay(heading)), maintain \(altDisplay(maintainAltitude)), \(cs.display).",
+            spokenText: "Heading \(Phonetic.heading(heading, icao: icao)), maintain \(altSpoken(maintainAltitude)), \(cs.spoken).",
+            facility: facility)
+        return tx
     }
 
     /// Requested side unavailable — approve the other side.
@@ -185,15 +191,27 @@ struct WeatherDeviationPhraseology {
     func clearOfWeatherResume(cs: Callsign, rejoinFix: String?, nearRoute: Bool,
                               facility: ATCFacility = .center) -> ATCTransmission {
         if nearRoute || rejoinFix == nil {
-            return center("\(cs.display), resume own navigation.",
+            var tx = center("\(cs.display), resume own navigation.",
                           "\(cs.spoken), resume own navigation.",
                           facility: facility)
+            tx.readback = ATCTransmission.Readback(
+                displayText: "Resume own navigation, \(cs.display).",
+                spokenText: "Resume own navigation, \(cs.spoken).",
+                facility: facility)
+            return tx
         }
         let fix = rejoinFix!
         let fixS = Phonetic.spellToken(fix, icao: icao)
-        return center("\(cs.display), proceed direct \(fix), resume own navigation.",
+        var tx = center("\(cs.display), proceed direct \(fix), resume own navigation.",
                       "\(cs.spoken), proceed direct \(fixS), resume own navigation.",
                       facility: facility)
+        // Echo the direct fix and "resume own navigation" — the navigation change,
+        // not just an acknowledgement.
+        tx.readback = ATCTransmission.Readback(
+            displayText: "Direct \(fix), resume own navigation, \(cs.display).",
+            spokenText: "Direct \(fixS), resume own navigation, \(cs.spoken).",
+            facility: facility)
+        return tx
     }
 
     // MARK: - Formatting helpers

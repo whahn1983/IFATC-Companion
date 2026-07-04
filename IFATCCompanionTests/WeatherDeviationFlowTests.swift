@@ -89,6 +89,38 @@ final class WeatherDeviationFlowTests: XCTestCase {
         XCTAssertEqual(model.weatherDeviationState, .vectoringAroundWeather)
         XCTAssertTrue(atcContains(model, "vectors around precipitation"))
         XCTAssertTrue(atcContains(model, "fly heading"))
+
+        // Reading back the vector echoes both the heading and the maintain altitude.
+        model.readBack()
+        XCTAssertTrue(pilotContains(model, "Heading"), "vector read-back should echo the heading")
+        XCTAssertTrue(pilotContains(model, "maintain"), "vector read-back should echo the maintain altitude")
+    }
+
+    // MARK: - Read-back phraseology (unit)
+
+    /// The weather vector assigns a heading and an altitude; the read-back echoes both.
+    func testWeatherVectorReadbackEchoesHeadingAndAltitude() {
+        let phr = WeatherDeviationPhraseology(engine: PhraseologyEngine(digitStyle: .individual, mode: .faa))
+        let cs = phr.engine.callsign(airline: "United", flightNumber: "598", fallback: "")
+        let tx = phr.vectorApproval(cs: cs, heading: 90, maintainAltitude: 37000)
+        let rb = tx.readback
+        XCTAssertNotNil(rb, "weather vector must carry a read-back")
+        XCTAssertTrue(rb?.displayText.contains("Heading 090") ?? false, rb?.displayText ?? "")
+        XCTAssertTrue(rb?.displayText.contains("maintain FL370") ?? false, rb?.displayText ?? "")
+        XCTAssertTrue(rb?.displayText.contains("United 598") ?? false, rb?.displayText ?? "")
+    }
+
+    /// "Resume own navigation" (with and without a rejoin fix) is echoed in the read-back.
+    func testClearOfWeatherReadbackIncludesResumeOwnNavigation() {
+        let phr = WeatherDeviationPhraseology(engine: PhraseologyEngine(digitStyle: .individual, mode: .faa))
+        let cs = phr.engine.callsign(airline: "United", flightNumber: "598", fallback: "")
+
+        let noFix = phr.clearOfWeatherResume(cs: cs, rejoinFix: nil, nearRoute: true)
+        XCTAssertTrue(noFix.readback?.displayText.contains("Resume own navigation") ?? false, noFix.readback?.displayText ?? "")
+
+        let withFix = phr.clearOfWeatherResume(cs: cs, rejoinFix: "WAGON", nearRoute: false)
+        XCTAssertTrue(withFix.readback?.displayText.contains("resume own navigation") ?? false, withFix.readback?.displayText ?? "")
+        XCTAssertTrue(withFix.readback?.displayText.contains("Direct WAGON") ?? false, withFix.readback?.displayText ?? "")
     }
 
     // MARK: - Live/subscription gating does not break the mock demo
