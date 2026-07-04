@@ -124,9 +124,14 @@ struct WeatherDeviationPhraseology {
         let devD = deviationClause(direction: direction, degrees: degrees, spoken: false)
         let devS = deviationClause(direction: direction, degrees: degrees, spoken: true)
         let fixS = Phonetic.spellToken(rejoinFix, icao: icao)
-        return center("\(cs.display), \(devD) approved, maintain \(altDisplay(maintainAltitude)), when able proceed direct \(rejoinFix) and advise.",
+        var tx = center("\(cs.display), \(devD) approved, maintain \(altDisplay(maintainAltitude)), when able proceed direct \(rejoinFix) and advise.",
                       "\(cs.spoken), \(devS) approved, maintain \(altSpoken(maintainAltitude)), when able proceed direct \(fixS) and advise.",
                       facility: facility)
+        tx.readback = ATCTransmission.Readback(
+            displayText: "Maintain \(altDisplay(maintainAltitude)), \(devD), direct \(rejoinFix) when able, \(cs.display).",
+            spokenText: "Maintain \(altSpoken(maintainAltitude)), \(devS), direct \(fixS) when able, \(cs.spoken).",
+            facility: facility)
+        return tx
     }
 
     /// Deviation approved with no suitable rejoin fix — advise clear of weather.
@@ -134,17 +139,28 @@ struct WeatherDeviationPhraseology {
                           maintainAltitude: Int, facility: ATCFacility = .center) -> ATCTransmission {
         let devD = deviationClause(direction: direction, degrees: degrees, spoken: false)
         let devS = deviationClause(direction: direction, degrees: degrees, spoken: true)
-        return center("\(cs.display), \(devD) approved, maintain \(altDisplay(maintainAltitude)), advise clear of weather.",
+        var tx = center("\(cs.display), \(devD) approved, maintain \(altDisplay(maintainAltitude)), advise clear of weather.",
                       "\(cs.spoken), \(devS) approved, maintain \(altSpoken(maintainAltitude)), advise clear of weather.",
                       facility: facility)
+        tx.readback = ATCTransmission.Readback(
+            displayText: "Maintain \(altDisplay(maintainAltitude)), \(devD), \(cs.display).",
+            spokenText: "Maintain \(altSpoken(maintainAltitude)), \(devS), \(cs.spoken).",
+            facility: facility)
+        return tx
     }
 
     /// Vectors around precipitation.
     func vectorApproval(cs: Callsign, heading: Int, maintainAltitude: Int,
                         facility: ATCFacility = .approach) -> ATCTransmission {
-        center("\(cs.display), fly heading \(headingDisplay(heading)), vectors around precipitation, maintain \(altDisplay(maintainAltitude)), advise clear of weather.",
+        var tx = center("\(cs.display), fly heading \(headingDisplay(heading)), vectors around precipitation, maintain \(altDisplay(maintainAltitude)), advise clear of weather.",
                "\(cs.spoken), fly heading \(Phonetic.heading(heading, icao: icao)), vectors around precipitation, maintain \(altSpoken(maintainAltitude)), advise clear of weather.",
                facility: facility)
+        // Read back both the assigned heading and the maintain altitude.
+        tx.readback = ATCTransmission.Readback(
+            displayText: "Heading \(headingDisplay(heading)), maintain \(altDisplay(maintainAltitude)), \(cs.display).",
+            spokenText: "Heading \(Phonetic.heading(heading, icao: icao)), maintain \(altSpoken(maintainAltitude)), \(cs.spoken).",
+            facility: facility)
+        return tx
     }
 
     /// Requested side unavailable — approve the other side.
@@ -154,9 +170,14 @@ struct WeatherDeviationPhraseology {
         let devS = deviationClause(direction: approved, degrees: degrees, spoken: true)
         let maintainD = maintainAltitude.map { " maintain \(altDisplay($0))," } ?? ""
         let maintainS = maintainAltitude.map { " maintain \(altSpoken($0))," } ?? ""
-        return center("\(cs.display), unable \(requested.word) deviation due traffic, \(devD) approved,\(maintainD) advise clear of weather.",
+        var tx = center("\(cs.display), unable \(requested.word) deviation due traffic, \(devD) approved,\(maintainD) advise clear of weather.",
                       "\(cs.spoken), unable \(requested.word) deviation due traffic, \(devS) approved,\(maintainS) advise clear of weather.",
                       facility: facility)
+        // Echo the approved side and the maintain altitude when one was assigned.
+        let rbD = maintainAltitude.map { "Maintain \(altDisplay($0)), \(devD), \(cs.display)." } ?? "\(cap(devD)) approved, \(cs.display)."
+        let rbS = maintainAltitude.map { "Maintain \(altSpoken($0)), \(devS), \(cs.spoken)." } ?? "\(cap(devS)) approved, \(cs.spoken)."
+        tx.readback = ATCTransmission.Readback(displayText: rbD, spokenText: rbS, facility: facility)
+        return tx
     }
 
     /// On a STAR / in descent: preserve the altitude restriction with "maintain",
@@ -167,33 +188,55 @@ struct WeatherDeviationPhraseology {
         let devD = deviationClause(direction: direction, degrees: degrees, spoken: false)
         let devS = deviationClause(direction: direction, degrees: degrees, spoken: true)
         let fixS = Phonetic.spellToken(rejoinFix, icao: icao)
-        return center("\(cs.display), \(devD) approved, maintain \(altDisplay(maintainAltitude)), expect to rejoin the \(starDisplay) arrival at \(rejoinFix).",
+        var tx = center("\(cs.display), \(devD) approved, maintain \(altDisplay(maintainAltitude)), expect to rejoin the \(starDisplay) arrival at \(rejoinFix).",
                       "\(cs.spoken), \(devS) approved, maintain \(altSpoken(maintainAltitude)), expect to rejoin the \(starSpoken) arrival at \(fixS).",
                       facility: facility)
+        tx.readback = ATCTransmission.Readback(
+            displayText: "Maintain \(altDisplay(maintainAltitude)), \(devD), rejoin the \(starDisplay) arrival at \(rejoinFix), \(cs.display).",
+            spokenText: "Maintain \(altSpoken(maintainAltitude)), \(devS), rejoin the \(starSpoken) arrival at \(fixS), \(cs.spoken).",
+            facility: facility)
+        return tx
     }
 
     /// Rejoin the STAR once clear.
     func rejoinStar(cs: Callsign, rejoinFix: String, starDisplay: String, starSpoken: String,
                     facility: ATCFacility = .center) -> ATCTransmission {
         let fixS = Phonetic.spellToken(rejoinFix, icao: icao)
-        return center("\(cs.display), cleared direct \(rejoinFix), then descend via the \(starDisplay) arrival.",
+        var tx = center("\(cs.display), cleared direct \(rejoinFix), then descend via the \(starDisplay) arrival.",
                       "\(cs.spoken), cleared direct \(fixS), then descend via the \(starSpoken) arrival.",
                       facility: facility)
+        tx.readback = ATCTransmission.Readback(
+            displayText: "Direct \(rejoinFix), descend via the \(starDisplay) arrival, \(cs.display).",
+            spokenText: "Direct \(fixS), descend via the \(starSpoken) arrival, \(cs.spoken).",
+            facility: facility)
+        return tx
     }
 
     /// Clear of weather — proceed direct the rejoin fix, resume own navigation.
     func clearOfWeatherResume(cs: Callsign, rejoinFix: String?, nearRoute: Bool,
                               facility: ATCFacility = .center) -> ATCTransmission {
         if nearRoute || rejoinFix == nil {
-            return center("\(cs.display), resume own navigation.",
+            var tx = center("\(cs.display), resume own navigation.",
                           "\(cs.spoken), resume own navigation.",
                           facility: facility)
+            tx.readback = ATCTransmission.Readback(
+                displayText: "Resume own navigation, \(cs.display).",
+                spokenText: "Resume own navigation, \(cs.spoken).",
+                facility: facility)
+            return tx
         }
         let fix = rejoinFix!
         let fixS = Phonetic.spellToken(fix, icao: icao)
-        return center("\(cs.display), proceed direct \(fix), resume own navigation.",
+        var tx = center("\(cs.display), proceed direct \(fix), resume own navigation.",
                       "\(cs.spoken), proceed direct \(fixS), resume own navigation.",
                       facility: facility)
+        // Echo the direct fix and "resume own navigation" — the navigation change,
+        // not just an acknowledgement.
+        tx.readback = ATCTransmission.Readback(
+            displayText: "Direct \(fix), resume own navigation, \(cs.display).",
+            spokenText: "Direct \(fixS), resume own navigation, \(cs.spoken).",
+            facility: facility)
+        return tx
     }
 
     // MARK: - Formatting helpers
@@ -238,6 +281,12 @@ struct WeatherDeviationPhraseology {
     private func altDisplay(_ feet: Int) -> String { engine.formatAltDisplay(feet) }
     private func altSpoken(_ feet: Int) -> String { Phonetic.altitude(feet, icao: icao) }
     private func headingDisplay(_ deg: Int) -> String { String(format: "%03d", ((deg % 360) + 360) % 360) }
+
+    /// Capitalize the first character so a read-back that leads with a reused
+    /// controller clause ("deviation …") reads as a sentence ("Deviation …").
+    private func cap(_ s: String) -> String {
+        s.isEmpty ? s : s.prefix(1).uppercased() + s.dropFirst()
+    }
 
     static let clockWords: [Int: String] = [
         1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six",

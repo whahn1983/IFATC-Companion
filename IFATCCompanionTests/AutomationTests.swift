@@ -227,6 +227,49 @@ final class AutomationTests: XCTestCase {
         XCTAssertTrue(tx?.displayText.contains("direct WAGON") ?? false)
     }
 
+    // MARK: - Read-backs echo heading + altitude and "resume own navigation"
+
+    /// The takeoff clearance issues an initial heading and a climb; the read-back
+    /// must echo both, not just the runway.
+    func testTakeoffReadbackEchoesHeadingAndAltitude() {
+        let e = engine()
+        let cs = e.callsign(airline: "United", flightNumber: "598", fallback: "")
+        let tx = e.clearedForTakeoff(cs: cs, runway: "17R", windDir: 180, windSpeed: 8,
+                                     departureHeading: 90, initialAltitude: 5000)
+        let rb = tx.readback
+        XCTAssertNotNil(rb, "takeoff clearance with a heading must carry a read-back")
+        XCTAssertTrue(rb?.displayText.contains("heading 090") ?? false, rb?.displayText ?? "")
+        XCTAssertTrue(rb?.displayText.contains("climb and maintain 5,000") ?? false, rb?.displayText ?? "")
+        XCTAssertTrue(rb?.displayText.contains("17R") ?? false, rb?.displayText ?? "")
+        XCTAssertTrue(rb?.displayText.contains("United 598") ?? false, rb?.displayText ?? "")
+    }
+
+    /// When the departure heading aligns with the runway the clearance says
+    /// "fly runway heading" — the read-back echoes "runway heading".
+    func testTakeoffReadbackUsesRunwayHeadingWhenAligned() {
+        let e = engine()
+        let cs = e.callsign(airline: "United", flightNumber: "598", fallback: "")
+        // 17R ≈ 170°; a 172° assignment is within tolerance → "runway heading".
+        let tx = e.clearedForTakeoff(cs: cs, runway: "17R", windDir: 180, windSpeed: 8,
+                                     departureHeading: 172, initialAltitude: 5000)
+        XCTAssertTrue(tx.readback?.displayText.contains("runway heading") ?? false, tx.readback?.displayText ?? "")
+    }
+
+    /// The departure climb clears the aircraft to "resume own navigation"; the
+    /// read-back must include it (with the direct fix when one is named).
+    func testDepartureClimbReadbackIncludesResumeOwnNavigation() {
+        let e = engine()
+        let cs = e.callsign(airline: "United", flightNumber: "598", fallback: "")
+        let withFix = e.departureClimb(cs: cs, altitude: 18000, firstFix: "WAGON")
+        XCTAssertTrue(withFix.readback?.displayText.contains("resume own navigation") ?? false, withFix.readback?.displayText ?? "")
+        XCTAssertTrue(withFix.readback?.displayText.contains("direct WAGON") ?? false, withFix.readback?.displayText ?? "")
+        XCTAssertTrue(withFix.readback?.displayText.contains("climb and maintain FL180") ?? false, withFix.readback?.displayText ?? "")
+
+        let noFix = e.departureClimb(cs: cs, altitude: 18000, firstFix: "")
+        XCTAssertTrue(noFix.readback?.displayText.contains("resume own navigation") ?? false, noFix.readback?.displayText ?? "")
+        XCTAssertFalse(noFix.readback?.displayText.contains("direct") ?? true, noFix.readback?.displayText ?? "")
+    }
+
     // MARK: - Descent phraseology (non-contradictory)
 
     func testDescentTargetIsIntermediateBelowCruise() {

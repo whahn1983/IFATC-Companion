@@ -76,6 +76,13 @@ final class WeatherDeviationFlowTests: XCTestCase {
         XCTAssertTrue(atcContains(model, "resume own navigation"))
         XCTAssertNil(model.activeWeatherConflict, "the conflict clears after reporting clear of weather")
         XCTAssertEqual(model.weatherDeviationState, .none)
+
+        // Reading the call back must echo "resume own navigation", not a stale
+        // state-derived read-back.
+        model.readBack()
+        XCTAssertTrue(model.transcript.contains {
+            $0.sender == .pilot && $0.displayText.lowercased().contains("resume own navigation")
+        }, "clear-of-weather read-back should echo resume own navigation")
     }
 
     // MARK: - Vector variant
@@ -89,6 +96,77 @@ final class WeatherDeviationFlowTests: XCTestCase {
         XCTAssertEqual(model.weatherDeviationState, .vectoringAroundWeather)
         XCTAssertTrue(atcContains(model, "vectors around precipitation"))
         XCTAssertTrue(atcContains(model, "fly heading"))
+
+        // Reading back the vector echoes both the heading and the maintain altitude.
+        model.readBack()
+        XCTAssertTrue(pilotContains(model, "Heading"), "vector read-back should echo the heading")
+        XCTAssertTrue(pilotContains(model, "maintain"), "vector read-back should echo the maintain altitude")
+    }
+
+    // MARK: - Read-back phraseology (unit)
+
+    /// The weather vector assigns a heading and an altitude; the read-back echoes both.
+    func testWeatherVectorReadbackEchoesHeadingAndAltitude() {
+        let phr = WeatherDeviationPhraseology(engine: PhraseologyEngine(digitStyle: .individual, mode: .faa))
+        let cs = phr.engine.callsign(airline: "United", flightNumber: "598", fallback: "")
+        let tx = phr.vectorApproval(cs: cs, heading: 90, maintainAltitude: 37000)
+        let rb = tx.readback
+        XCTAssertNotNil(rb, "weather vector must carry a read-back")
+        XCTAssertTrue(rb?.displayText.contains("Heading 090") ?? false, rb?.displayText ?? "")
+        XCTAssertTrue(rb?.displayText.contains("maintain FL370") ?? false, rb?.displayText ?? "")
+        XCTAssertTrue(rb?.displayText.contains("United 598") ?? false, rb?.displayText ?? "")
+    }
+
+    /// "Resume own navigation" (with and without a rejoin fix) is echoed in the read-back.
+    func testClearOfWeatherReadbackIncludesResumeOwnNavigation() {
+        let phr = WeatherDeviationPhraseology(engine: PhraseologyEngine(digitStyle: .individual, mode: .faa))
+        let cs = phr.engine.callsign(airline: "United", flightNumber: "598", fallback: "")
+
+        let noFix = phr.clearOfWeatherResume(cs: cs, rejoinFix: nil, nearRoute: true)
+        XCTAssertTrue(noFix.readback?.displayText.contains("Resume own navigation") ?? false, noFix.readback?.displayText ?? "")
+
+        let withFix = phr.clearOfWeatherResume(cs: cs, rejoinFix: "WAGON", nearRoute: false)
+        XCTAssertTrue(withFix.readback?.displayText.contains("resume own navigation") ?? false, withFix.readback?.displayText ?? "")
+        XCTAssertTrue(withFix.readback?.displayText.contains("Direct WAGON") ?? false, withFix.readback?.displayText ?? "")
+    }
+
+    /// Every weather deviation approval echoes the maintain altitude in its read-back.
+    func testDeviationApprovalReadbacksEchoMaintainAltitude() {
+        let phr = WeatherDeviationPhraseology(engine: PhraseologyEngine(digitStyle: .individual, mode: .faa))
+        let cs = phr.engine.callsign(airline: "United", flightNumber: "598", fallback: "")
+
+        let rejoin = phr.approvalWithRejoin(cs: cs, direction: .right, degrees: 20,
+                                            maintainAltitude: 37000, rejoinFix: "WAGON")
+        XCTAssertTrue(rejoin.readback?.displayText.contains("Maintain FL370") ?? false, rejoin.readback?.displayText ?? "")
+        XCTAssertTrue(rejoin.readback?.displayText.contains("WAGON") ?? false, rejoin.readback?.displayText ?? "")
+
+        let noRejoin = phr.approvalNoRejoin(cs: cs, direction: .left, degrees: 15, maintainAltitude: 34000)
+        XCTAssertTrue(noRejoin.readback?.displayText.contains("Maintain FL340") ?? false, noRejoin.readback?.displayText ?? "")
+
+        let star = phr.starDeviationApproval(cs: cs, direction: .right, degrees: 20, maintainAltitude: 11000,
+                                             starDisplay: "KKILR", starSpoken: "killer", rejoinFix: "HOBTT")
+        XCTAssertTrue(star.readback?.displayText.contains("Maintain 11,000") ?? false, star.readback?.displayText ?? "")
+        XCTAssertTrue(star.readback?.displayText.contains("HOBTT") ?? false, star.readback?.displayText ?? "")
+    }
+
+    /// Rejoining the STAR echoes the direct fix and the descend-via clearance.
+    func testRejoinStarReadbackEchoesDirectFixAndDescendVia() {
+        let phr = WeatherDeviationPhraseology(engine: PhraseologyEngine(digitStyle: .individual, mode: .faa))
+        let cs = phr.engine.callsign(airline: "United", flightNumber: "598", fallback: "")
+        let tx = phr.rejoinStar(cs: cs, rejoinFix: "HOBTT", starDisplay: "KKILR", starSpoken: "killer")
+        XCTAssertTrue(tx.readback?.displayText.contains("Direct HOBTT") ?? false, tx.readback?.displayText ?? "")
+        XCTAssertTrue(tx.readback?.displayText.contains("descend via the KKILR arrival") ?? false, tx.readback?.displayText ?? "")
+    }
+
+    /// A weather altitude change (higher/lower) echoes the assigned altitude.
+    func testWeatherAltitudeChangeReadbackEchoesAltitude() {
+        let phr = WeatherDeviationPhraseology(engine: PhraseologyEngine(digitStyle: .individual, mode: .faa))
+        let eng = WeatherDeviationEngine(phraseology: phr)
+        let cs = phr.engine.callsign(airline: "United", flightNumber: "598", fallback: "")
+        let result = eng.requestAltitude(cs: cs, higher: false, targetAltitude: 33000,
+                                         context: WeatherDeviationContext(), facility: .center)
+        let atc = result.atc.first
+        XCTAssertTrue(atc?.readback?.displayText.contains("Descend and maintain FL330") ?? false, atc?.readback?.displayText ?? "")
     }
 
     // MARK: - Live/subscription gating does not break the mock demo
