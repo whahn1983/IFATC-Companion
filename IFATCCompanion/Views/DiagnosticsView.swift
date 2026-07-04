@@ -15,6 +15,7 @@ struct DiagnosticsView: View {
                     liveATCCard
                     phaseCard
                     weatherStatusCard
+                    weatherDiagnosticsCard
                     manifestCard
                     rawCard
                     logCard
@@ -106,6 +107,37 @@ struct DiagnosticsView: View {
                 Text(model.weatherStatus).font(.caption).foregroundStyle(.secondary)
             }
         }
+    }
+
+    private var weatherDiagnosticsCard: some View {
+        let d = model.weatherDiagnostics
+        return Card(title: "Weather Diagnostics", systemImage: "cloud.rain") {
+            VStack(alignment: .leading, spacing: 6) {
+                DataRow(label: "Precip source", value: d.radarSource)
+                DataRow(label: "Overlay coverage", value: d.coverageText)
+                DataRow(label: "Last radar update", value: timeText(d.lastRadarUpdate))
+                DataRow(label: "Last aviation wx update", value: timeText(d.lastAviationUpdate))
+                DataRow(label: "Hazards detected", value: "\(d.hazardCount)")
+                DataRow(label: "Route conflict", value: d.routeConflictStatus)
+                DataRow(label: "Rejoin fix", value: d.selectedRejoinFix ?? "—")
+                DataRow(label: "Deviation state", value: d.lastDeviationState.rawValue)
+                if let err = d.providerError {
+                    Text("Provider error: \(err)").font(.caption).foregroundStyle(.orange)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                if let msg = d.coverageMessage {
+                    Text(msg).font(.caption2).foregroundStyle(.tertiary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+    }
+
+    private func timeText(_ date: Date?) -> String {
+        guard let date else { return "—" }
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        return f.string(from: date)
     }
 
     private var manifestCard: some View {

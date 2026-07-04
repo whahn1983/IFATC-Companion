@@ -1,6 +1,8 @@
 import Foundation
 import Combine
 import CoreLocation
+import CoreGraphics
+import MapKit
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -12,6 +14,21 @@ enum PilotAction: CaseIterable {
     case clearance, pushback, engineStart, taxi, ready, takeoff
     case requestHigher, requestLower, vectors, approach, rideReport, destWx, checkIn
     case toGate
+}
+
+/// A pilot response-button action for the simulated weather-deviation flow. Kept
+/// separate from `PilotAction` so the existing gate-to-gate button logic is
+/// untouched; surfaced only while a route-weather conflict / deviation is active.
+enum WeatherDeviationAction: CaseIterable {
+    case askCenter
+    case requestRightDeviation
+    case requestLeftDeviation
+    case requestVector
+    case requestHigher
+    case requestLower
+    case clearOfWeather
+    case continueOnCourse
+    case sayAgain
 }
 
 /// Central coordinator. Owns all services, holds the published app state the UI
@@ -46,6 +63,12 @@ final class AppModel: ObservableObject {
     private var routeAnalyzer = WeatherRouteAnalyzer()
     private var turbulenceModel = TurbulenceModel()
     private var rideEngine: RideReportEngine
+    /// Precipitation overlay provider selector (NOAA → OPERA → NASA, or mock).
+    private let precipService = PrecipitationOverlayService()
+    /// Pure route-weather conflict detector.
+    private var conflictDetector = RouteWeatherConflictDetector()
+    /// Simulated weather-deviation flow coordinator (rebuilt with the engine).
+    private var deviationEngine: WeatherDeviationEngine
     private let airports = AirportDatabase.shared
     private let runways = RunwayDatabase.shared
 
@@ -200,6 +223,29 @@ final class AppModel: ObservableObject {
     @Published var rideAssessment: RideAssessment = .smooth
     @Published var weatherStatus: String = "Not loaded"
 
+    // Radar precipitation + simulated weather-deviation state.
+    /// Descriptive state for the Weather View radar layer (coverage, opacity,
+    /// source, last update, mock cells). The image/tiles themselves are fetched by
+    /// `RadarOverlayRenderer` from the live provider.
+    @Published var radarOverlay = RadarOverlayModel()
+    /// Normalized weather hazards fed to the route-conflict detector.
+    @Published var weatherHazards: [WeatherHazard] = []
+    /// The most significant route-weather conflict currently detected (nil = none).
+    @Published var activeWeatherConflict: RouteWeatherConflict?
+    /// The active simulated weather-deviation interaction (state + assignments).
+    @Published var weatherDeviation = WeatherDeviationContext()
+    /// A read-only snapshot for the Weather Diagnostics panel.
+    @Published var weatherDiagnostics = WeatherProviderDiagnostics.empty
+    /// True once a mock weather advisory has been auto-issued for the current
+    /// conflict, so the demo advisory fires once rather than every telemetry tick.
+    private var mockWeatherAdvisoryIssued = false
+    /// True once the pilot has acted on the current conflict (asked / deviated /
+    /// continued), so the "ask Center" banner doesn't re-appear while the same
+    /// weather is still ahead. Reset when the conflict clears.
+    private var weatherHandled = false
+    /// Timestamp of the last aviation-weather refresh, for the diagnostics panel.
+    private var lastAviationWeatherUpdate: Date?
+
     private var lastATCTransmission: ATCTransmission?
     private var cancellables = Set<AnyCancellable>()
     private var started = false
@@ -319,6 +365,7 @@ final class AppModel: ObservableObject {
         self.pilotEngine = PilotResponseEngine(engine: engine)
         self.rampEngine = RampPhraseologyEngine(engine: engine)
         self.rideEngine = RideReportEngine(engine: engine)
+        self.deviationEngine = WeatherDeviationEngine(phraseology: WeatherDeviationPhraseology(engine: engine))
     }
 
     /// Apply the current settings + active profile to the engine and rebuild the
@@ -331,6 +378,7 @@ final class AppModel: ObservableObject {
         pilotEngine = PilotResponseEngine(engine: engine)
         rampEngine = RampPhraseologyEngine(engine: engine)
         rideEngine = RideReportEngine(engine: engine)
+        deviationEngine = WeatherDeviationEngine(phraseology: WeatherDeviationPhraseology(engine: engine))
     }
 
     // MARK: - Lifecycle
@@ -344,6 +392,8 @@ final class AppModel: ObservableObject {
         speech.configure(settings: settings)
         connect.configure(diagnostics: diagnostics)
         Task { await weatherService.configure(baseURL: settings.weatherBaseURL, diagnostics: diagnostics) }
+        precipService.configure(diagnostics: diagnostics)
+        applyRadarProvider()
 
         // Route state from whichever feed is active.
         mock.onState = { [weak self] state in self?.handle(state: state) }
@@ -516,6 +566,8 @@ final class AppModel: ObservableObject {
         currentFacility = .clearance
         stateMachine.setConnected()
         applyLiveATC(simulateStaffedATC ? mockStaffedStatus() : .none)
+        applyRadarProvider()
+        resetWeatherDeviation()
         mock.start()
         diagnostics.log(.app, "Mock simulator feed started.")
         Task { await refreshWeather() }
@@ -531,6 +583,8 @@ final class AppModel: ObservableObject {
         pendingCheckInFacility = nil
         clearReadbackGate()
         cancelTakeoffClearanceTimer()
+        applyRadarProvider()
+        resetWeatherDeviation()
         // Resume a recent in-progress session if one was saved (reconnect / relaunch);
         // otherwise start the conversation fresh. Restoring is what keeps a parked
         // aircraft from being re-derived straight to cruise after a dropped link.
@@ -644,6 +698,11 @@ final class AppModel: ObservableObject {
                                           airports: airports, previous: phase)
         phase = result.phase
         phaseDebug = result.debug
+
+        // Re-evaluate route-weather conflicts / radar coverage as the aircraft
+        // moves. Pure and cheap; never advances the ATC state machine, so it can't
+        // interfere with the gate-to-gate flow or the readback gate.
+        recomputeWeatherHazards()
 
         if !phase.isGround { hasDeparted = true }
 
@@ -2110,11 +2169,19 @@ final class AppModel: ObservableObject {
             destinationMETAR = metars.first { $0.icao == flightPlan.destination } ?? metars.dropFirst().first
             destinationTAF = mock.sampleTAF()
             pireps = mock.samplePIREPs()
+            // Mock precipitation cell (crosses the route ~40 NM ahead) drives the
+            // offline weather-deviation demo.
+            radarOverlay.mockCells = mock.sampleRadarCells()
+            lastAviationWeatherUpdate = Date()
             recomputeRideItems()
+            recomputeWeatherHazards()
             weatherStatus = "Mock weather loaded (\(metars.count) METARs, \(pireps.count) PIREPs)."
             diagnostics.weatherEndpointStatus = "Mock mode — sample data"
             return
         }
+
+        // Live mode: no vector precipitation cells (radar is the NOAA image overlay).
+        radarOverlay.mockCells = []
 
         do {
             var ids = [flightPlan.departure, flightPlan.destination, flightPlan.alternate]
@@ -2127,12 +2194,15 @@ final class AppModel: ObservableObject {
             destinationTAF = try? await weatherService.taf(for: flightPlan.destination)
             pireps = (try? await weatherService.pireps()) ?? []
             sigmets = (try? await weatherService.airSigmets()) ?? []
+            lastAviationWeatherUpdate = Date()
             recomputeRideItems()
+            recomputeWeatherHazards()
             weatherStatus = "Loaded \(metars.count) METARs, \(pireps.count) PIREPs, \(sigmets.count) SIGMETs."
         } catch {
             let msg = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             weatherStatus = "Weather unavailable: \(msg)"
             diagnostics.log(.weather, "Weather fetch failed: \(msg)")
+            recomputeWeatherHazards()
         }
     }
 
@@ -2168,6 +2238,438 @@ final class AppModel: ObservableObject {
                                                 metar: nearMETAR, altitudeFt: liveAlt)
     }
 
+    // MARK: - Radar precipitation + weather deviation
+    //
+    // Simulation/training/entertainment only — never real-world flight safety
+    // guidance. Radar precipitation comes from the approved NOAA/NWS source where
+    // NOAA provides coverage; outside coverage the overlay reports unavailable and
+    // only existing aviation advisories (SIGMET etc.) drive the deviation flow.
+
+    /// Use the mock precipitation provider in Mock Mode, or the live NOAA → OPERA →
+    /// NASA selection otherwise.
+    private func applyRadarProvider() {
+        precipService.useMockProvider(settings.mockMode)
+    }
+
+    /// Reset the weather-deviation interaction (between flights / on mode change).
+    private func resetWeatherDeviation() {
+        weatherDeviation.reset()
+        weatherDeviation.state = .none
+        activeWeatherConflict = nil
+        weatherHazards = []
+        weatherHandled = false
+        mockWeatherAdvisoryIssued = false
+    }
+
+    /// The precipitation overlay image URL for the map's visible region, or nil when
+    /// the overlay is off / uncovered / in Mock Mode (which draws vector cells).
+    func radarImageURL(region: MKCoordinateRegion, size: CGSize) -> URL? {
+        guard !settings.mockMode, radarOverlay.shouldDisplay else { return nil }
+        return precipService.imageURL(for: region, size: size)
+    }
+
+    /// Rebuild the precipitation overlay descriptive state, the normalized hazard
+    /// list, and the active route-weather conflict. Selects a provider in
+    /// NOAA → OPERA → NASA order. Pure/cheap; safe to call every tick.
+    func recomputeWeatherHazards() {
+        let positions = [aircraftState.coordinate,
+                         airports.coordinate(for: flightPlan.departure),
+                         airports.coordinate(for: flightPlan.destination)].compactMap { $0 }
+        let enabled = settings.noaaRadarOverlay == .autoWhereAvailable
+        let provider = enabled ? precipService.selectedProvider(for: positions) : nil
+        let coverage = enabled && provider != nil
+
+        radarOverlay.isEnabled = enabled
+        radarOverlay.coverageAvailable = coverage
+        radarOverlay.opacity = settings.radarOpacity
+        if let provider {
+            radarOverlay.sourceDescription = provider.displayName
+            radarOverlay.attributionText = provider.attributionText
+            radarOverlay.coverageLabel = provider.coverageDescription
+            radarOverlay.layerType = provider.layerType
+            radarOverlay.layerLabel = provider.uiLayerLabel
+        }
+        if coverage { radarOverlay.lastUpdated = Date() }
+        weatherDeviation.radarCoverageAvailable = coverage
+        weatherDeviation.radarSourceDescription = provider?.displayName ?? radarOverlay.sourceDescription
+
+        let hazards = buildWeatherHazards(provider: provider)
+        weatherHazards = hazards
+
+        guard let pos = aircraftState.coordinate ?? airports.coordinate(for: flightPlan.departure),
+              pos.isValid else {
+            activeWeatherConflict = nil
+            updateWeatherDiagnostics(conflict: nil)
+            return
+        }
+        let course = currentCourse(from: pos)
+        let conflict = conflictDetector.detectConflict(position: pos, course: course,
+                                                       groundspeedKnots: aircraftState.groundSpeed,
+                                                       phase: phase, hazards: hazards,
+                                                       waypoints: flightPlan.waypoints)
+        activeWeatherConflict = conflict
+
+        // The weather ahead has cleared: forget the "handled" flag and roll back a
+        // not-yet-committed deviation lifecycle so a new conflict prompts afresh.
+        if conflict == nil {
+            weatherHandled = false
+            mockWeatherAdvisoryIssued = false
+            switch weatherDeviation.state {
+            case .weatherAheadDetected, .advisoryIssued, .awaitingPilotIntentions, .deviationRequested:
+                weatherDeviation.reset()
+            default:
+                break
+            }
+        }
+
+        // Mock Mode auto-issues the advisory once so the offline demo plays out.
+        maybeAutoIssueMockAdvisory(conflict: conflict)
+        updateWeatherDiagnostics(conflict: conflict)
+    }
+
+    /// Normalize the current weather into hazards for the conflict detector.
+    /// Precipitation cells are included only where the overlay is enabled and a
+    /// provider covers the region; SIGMETs along the route are always included
+    /// (SIGMET data can be global). Live raster→cell sampling for the image
+    /// providers is a documented future task (`docs/Weather.md`); today the
+    /// precipitation cells come from Mock Mode.
+    private func buildWeatherHazards(provider: RadarPrecipitationProvider?) -> [WeatherHazard] {
+        var hazards: [WeatherHazard] = []
+
+        if radarOverlay.isEnabled, radarOverlay.coverageAvailable {
+            let providerConfidence = provider?.confidence ?? .high
+            let providerLabel = provider?.uiLayerLabel ?? "Radar precipitation"
+            for cell in radarOverlay.mockCells {
+                hazards.append(WeatherHazard(
+                    source: .noaaRadar, providerID: provider?.id,
+                    phenomenon: .precipitation, intensity: cell.intensity,
+                    geometry: .polygon(cell.polygon), confidence: providerConfidence,
+                    movementDirectionDegrees: cell.movementDirectionDegrees,
+                    movementSpeedKnots: cell.movementSpeedKnots,
+                    notes: providerLabel))
+            }
+        }
+
+        for sigmet in routeSigmets {
+            guard let area = sigmet.drawableArea else { continue }
+            let phenomenon: WeatherPhenomenon
+            let intensity: WeatherIntensity
+            switch sigmet.category {
+            case .convective:
+                phenomenon = .thunderstorm; intensity = .extreme
+            case .turbulence:
+                phenomenon = .turbulence
+                intensity = sigmet.turbulenceSeverity >= .severe ? .heavy : .moderate
+            case .icingOrMountainWave:
+                phenomenon = .icing; intensity = .moderate
+            case .other:
+                phenomenon = .unknown; intensity = .light
+            }
+            hazards.append(WeatherHazard(source: .sigmet, phenomenon: phenomenon, intensity: intensity,
+                                         geometry: .polygon(area), confidence: .medium,
+                                         notes: sigmet.hazardLabel))
+        }
+        return hazards
+    }
+
+    /// The course to fly for the corridor: bearing to the next un-passed fix, else
+    /// to the destination, else the aircraft heading.
+    private func currentCourse(from pos: CLLocationCoordinate2D) -> Double {
+        let origin = airports.coordinate(for: flightPlan.departure)
+        if let next = flightPlan.nextUnpassedWaypoint(from: pos, origin: origin)?.coordinate {
+            return Geo.bearing(from: pos, to: next)
+        }
+        if let dest = airports.coordinate(for: flightPlan.destination) ?? flightPlan.lastWaypointCoordinate {
+            return Geo.bearing(from: pos, to: dest)
+        }
+        return aircraftState.heading ?? 0
+    }
+
+    private func updateWeatherDiagnostics(conflict: RouteWeatherConflict?) {
+        var d = WeatherProviderDiagnostics()
+        // Show the active provider + layer type ("radar" vs "satellite estimate").
+        d.radarSource = radarOverlay.coverageAvailable
+            ? "\(radarOverlay.sourceDescription) (\(radarOverlay.layerLabel))"
+            : "None"
+        d.radarCoverageAvailable = radarOverlay.coverageAvailable
+        d.lastRadarUpdate = radarOverlay.lastUpdated
+        d.lastAviationUpdate = lastAviationWeatherUpdate
+        d.hazardCount = weatherHazards.count
+        if let c = conflict {
+            d.routeConflictStatus = "\(c.severity.displayLabel) \(c.hazard.source.label), \(Int(c.distanceAheadNM.rounded())) NM"
+        } else {
+            d.routeConflictStatus = "No conflict"
+        }
+        d.selectedRejoinFix = conflict?.rejoinFix?.name ?? weatherDeviation.rejoinFix
+        d.lastDeviationState = weatherDeviation.state
+        d.providerError = precipService.lastError
+        d.coverageMessage = radarOverlay.coverageAvailable ? nil : radarOverlay.unavailableMessage
+        weatherDiagnostics = d
+    }
+
+    // MARK: - Weather deviation — UI gating
+
+    /// Whether the weather-deviation flow may run right now (airborne, enroute or
+    /// arrival, not on the ground / takeoff / landing / standby).
+    private var weatherFlowAllowed: Bool {
+        guard hasDeparted, !companionStandby else { return false }
+        switch atcState {
+        case .notConnected, .connectedIdle, .clearance, .pushback, .engineStart,
+             .pushbackTaxi, .groundTaxi, .runwayCrossing, .holdingShort, .lineUpWait,
+             .towerDeparture, .landing, .runwayExit, .groundArrival, .parked:
+            return false
+        default:
+            return true
+        }
+    }
+
+    /// Whether the pilot is established on final (weather-near-final advisory only).
+    private var establishedOnFinal: Bool {
+        atcState == .final || atcState == .landing
+    }
+
+    /// Whether the "Weather ahead — ask Center" banner should be shown in ATCView.
+    var weatherBannerVisible: Bool {
+        guard settings.weatherDeviationAlerts.alertsEnabled, weatherFlowAllowed, !weatherHandled else { return false }
+        guard let conflict = activeWeatherConflict, conflict.shouldPrompt else { return false }
+        return weatherDeviation.state == .none || weatherDeviation.state == .weatherAheadDetected
+    }
+
+    /// The banner text (advisory-only near final, else the ask-Center prompt).
+    var weatherBannerText: String {
+        establishedOnFinal ? "Weather near final — advisory only" : "Weather ahead — ask Center"
+    }
+
+    /// Whether the weather-deviation response card should be shown in ATCView.
+    var weatherDeviationCardVisible: Bool {
+        switch weatherDeviation.state {
+        case .none, .resumedOwnNavigation, .radarUnavailableForRegion:
+            return false
+        default:
+            return weatherFlowAllowed
+        }
+    }
+
+    /// The current simulated weather-deviation state.
+    var weatherDeviationState: WeatherDeviationState { weatherDeviation.state }
+
+    /// The weather response-buttons to surface, keyed off the deviation state.
+    var weatherActions: [WeatherDeviationAction] {
+        switch weatherDeviation.state {
+        case .advisoryIssued, .awaitingPilotIntentions, .deviationRequested:
+            if establishedOnFinal { return [.sayAgain] }
+            return [.requestRightDeviation, .requestLeftDeviation, .requestVector,
+                    .requestHigher, .requestLower, .continueOnCourse, .sayAgain]
+        case .deviationApproved, .vectoringAroundWeather, .deviatingAroundWeather, .clearOfWeather:
+            return [.clearOfWeather, .sayAgain]
+        default:
+            return []
+        }
+    }
+
+    // MARK: - Weather deviation — pilot actions
+
+    /// The controller working the weather deviation (Approach on arrival, else Center).
+    private var weatherFacility: ATCFacility {
+        if currentFacility == .approach { return .approach }
+        switch phase {
+        case .approach, .descent: return .approach
+        default: return .center
+        }
+    }
+
+    private var isOnSTAR: Bool {
+        guard !flightPlan.star.isEmpty else { return false }
+        return phase == .descent || phase == .approach
+            || atcState == .descent || atcState == .approach || atcState == .final
+    }
+
+    private func starDisplaySpoken() -> (display: String, spoken: String) {
+        guard !flightPlan.star.isEmpty else { return ("", "") }
+        if let star = ProcedureParser.parseSTAR(flightPlan.star, icao: flightPlan.destination) {
+            return (star.displayName, star.spokenName(icao: engine.icao))
+        }
+        return (flightPlan.star, Phonetic.spellToken(flightPlan.star, icao: engine.icao))
+    }
+
+    /// The altitude ATC assigns as "maintain" during a deviation.
+    private func weatherMaintainAltitude() -> Int {
+        if assignedAltitude > 0 { return assignedAltitude }
+        return flightPlan.cruiseAltitude > 0 ? flightPlan.cruiseAltitude : 37000
+    }
+
+    /// A heading offset from the current heading toward `direction` by the
+    /// recommended deviation amount, for a vector around weather.
+    private func weatherDeviationHeading(direction: DeviationDirection) -> Int {
+        let pos = aircraftState.coordinate ?? airports.coordinate(for: flightPlan.departure)
+        let base = aircraftState.heading ?? pos.map { currentCourse(from: $0) } ?? 0
+        let degrees = activeWeatherConflict?.recommendedDeviationDegrees ?? 20
+        let signed = Int(base.rounded()) + (direction == .right ? degrees : -degrees)
+        return ((signed % 360) + 360) % 360
+    }
+
+    private func deviationInputs(direction: DeviationDirection, unableSide: Bool = false) -> WeatherDeviationEngine.Inputs {
+        let star = starDisplaySpoken()
+        return WeatherDeviationEngine.Inputs(
+            maintainAltitude: weatherMaintainAltitude(),
+            heading: weatherDeviationHeading(direction: direction),
+            onSTAR: isOnSTAR,
+            starDisplay: star.display,
+            starSpoken: star.spoken,
+            nearRoute: false,
+            unableRequestedSide: unableSide)
+    }
+
+    private func applyDeviationResult(_ result: WeatherDeviationEngine.Result) {
+        weatherHandled = true
+        if let pilot = result.pilot { postPilot(pilot) }
+        for tx in result.atc { post(tx, speak: true) }
+        weatherDeviation = result.context
+        updateWeatherDiagnostics(conflict: activeWeatherConflict)
+    }
+
+    /// The weather situation to advise on, or nil when nothing significant applies.
+    private func currentWeatherSituation() -> WeatherDeviationEngine.Situation? {
+        if let conflict = activeWeatherConflict {
+            switch conflict.source {
+            case .sigmet:
+                return .sigmet(label: conflict.hazard.notes ?? "significant weather",
+                               convective: conflict.isConvectiveSigmet)
+            default:
+                return .radarConflict(conflict)
+            }
+        }
+        if !radarOverlay.coverageAvailable, routeSigmets.isEmpty {
+            return .noRadarNoAdvisory
+        }
+        return nil
+    }
+
+    /// Auto-issue the advisory once for a fresh conflict in Mock Mode (the demo).
+    private func maybeAutoIssueMockAdvisory(conflict: RouteWeatherConflict?) {
+        guard settings.mockMode, let conflict, conflict.shouldPrompt,
+              settings.weatherDeviationAlerts.alertsEnabled, weatherFlowAllowed,
+              !companionStandby, !mockWeatherAdvisoryIssued,
+              weatherDeviation.state == .none,
+              let situation = currentWeatherSituation() else { return }
+        mockWeatherAdvisoryIssued = true
+        weatherHandled = true
+        applyDeviationResult(deviationEngine.issueAdvisory(cs: callsignNow(),
+                                                           situation: situation,
+                                                           context: weatherDeviation,
+                                                           facility: weatherFacility))
+    }
+
+    private func callsignNow() -> PhraseologyEngine.Callsign {
+        engine.callsign(airline: flightPlan.airline, flightNumber: flightPlan.flightNumber,
+                        fallback: flightPlan.callsign)
+    }
+
+    /// Pilot taps "Ask Center": the controller volunteers the weather advisory.
+    func askCenterAboutWeather() {
+        guard !companionStandby else { return }
+        weatherHandled = true
+        let cs = callsignNow()
+        if let situation = currentWeatherSituation() {
+            // A brief pilot query, then the controller's advisory.
+            postPilot(ATCTransmission(sender: .pilot, facility: weatherFacility,
+                displayText: "Center, \(cs.display), weather ahead, requesting advisory.",
+                spokenText: "Center, \(cs.spoken), weather ahead, requesting advisory."))
+            applyDeviationResult(deviationEngine.issueAdvisory(cs: cs, situation: situation,
+                                                              context: weatherDeviation,
+                                                              facility: weatherFacility))
+        } else {
+            // Coverage but nothing significant along the route.
+            post(ATCTransmission(sender: .atc, facility: weatherFacility,
+                displayText: "\(cs.display), no significant precipitation along your route at this time.",
+                spokenText: "\(cs.spoken), no significant precipitation along your route at this time."),
+                speak: true)
+        }
+    }
+
+    /// Pilot requests a left/right weather deviation; the controller approves.
+    func requestWeatherDeviation(_ direction: DeviationDirection) {
+        guard !companionStandby, weatherFlowAllowed, !establishedOnFinal else { return }
+        let cs = callsignNow()
+        applyDeviationResult(deviationEngine.requestDeviation(
+            cs: cs, conflict: activeWeatherConflict, direction: direction,
+            inputs: deviationInputs(direction: direction), context: weatherDeviation,
+            facility: weatherFacility))
+    }
+
+    /// Pilot requests a vector around the weather; the controller assigns a heading.
+    func requestVectorAroundWeather() {
+        guard !companionStandby, weatherFlowAllowed, !establishedOnFinal else { return }
+        let cs = callsignNow()
+        let side = activeWeatherConflict?.recommendedDirection ?? .right
+        applyDeviationResult(deviationEngine.requestVectors(
+            cs: cs, inputs: deviationInputs(direction: side), context: weatherDeviation,
+            facility: weatherFacility))
+    }
+
+    func requestHigherForWeather() {
+        guard !companionStandby, weatherFlowAllowed else { return }
+        let target = nextAltitude(from: max(assignedAltitude, aircraftAltInt()), up: true)
+        applyDeviationResult(deviationEngine.requestAltitude(
+            cs: callsignNow(), higher: true, targetAltitude: target,
+            context: weatherDeviation, facility: weatherFacility))
+        assignedAltitude = target
+    }
+
+    func requestLowerForWeather() {
+        guard !companionStandby, weatherFlowAllowed else { return }
+        let target = nextAltitude(from: max(assignedAltitude, aircraftAltInt()), up: false)
+        applyDeviationResult(deviationEngine.requestAltitude(
+            cs: callsignNow(), higher: false, targetAltitude: target,
+            context: weatherDeviation, facility: weatherFacility))
+        assignedAltitude = target
+    }
+
+    /// Pilot reports clear of weather; the controller clears back to the route.
+    func reportClearOfWeather() {
+        guard !companionStandby else { return }
+        let cs = callsignNow()
+        applyDeviationResult(deviationEngine.reportClearOfWeather(
+            cs: cs, inputs: deviationInputs(direction: weatherDeviation.requestedDeviationDirection ?? .right),
+            context: weatherDeviation, facility: weatherFacility))
+        // Clear the conflict so the flow settles. In Mock Mode remove the demo cell
+        // so the aircraft is genuinely "past" the weather.
+        if settings.mockMode { radarOverlay.mockCells = [] }
+        activeWeatherConflict = nil
+        weatherDeviation.reset()
+        weatherDeviation.state = .none
+        weatherHandled = false
+        mockWeatherAdvisoryIssued = false
+    }
+
+    /// Pilot elects to continue on course through the advisory.
+    func continueThroughWeather() {
+        guard !companionStandby else { return }
+        weatherHandled = true
+        let cs = callsignNow()
+        postPilot(ATCTransmission(sender: .pilot, facility: weatherFacility,
+            displayText: "\(cs.display), continuing on course.",
+            spokenText: "\(cs.spoken), continuing on course."))
+        post(ATCTransmission(sender: .atc, facility: weatherFacility,
+            displayText: "\(cs.display), roger, advise if you need to deviate.",
+            spokenText: "\(cs.spoken), roger, advise if you need to deviate."), speak: true)
+        weatherDeviation.reset()
+        weatherDeviation.state = .none
+    }
+
+    /// Re-issue the last weather advisory/instruction ("say again").
+    func sayAgainWeather() {
+        guard !companionStandby else { return }
+        let cs = callsignNow()
+        postPilot(ATCTransmission(sender: .pilot, facility: weatherFacility,
+            displayText: "Say again for \(cs.display).",
+            spokenText: "Say again for \(cs.spoken)."))
+        if let last = lastATCTransmission {
+            post(ATCTransmission(sender: .atc, facility: last.facility,
+                                 displayText: last.displayText, spokenText: last.spokenText), speak: true)
+        }
+    }
+
     // MARK: - Diagnostics helpers
 
     func advanceMockPhase() {
@@ -2178,6 +2680,8 @@ final class AppModel: ObservableObject {
         transcript.removeAll()
         latestTransmission = nil
         clearSavedSession()
+        resetWeatherDeviation()
+        radarOverlay.mockCells = []
         settings.resetAll()
         syncFlightPlanFromSettings()
         diagnostics.log(.app, "App data reset.")
@@ -2194,6 +2698,7 @@ final class AppModel: ObservableObject {
         clearReadbackGate()
         cancelTakeoffClearanceTimer()
         clearSavedSession()
+        resetWeatherDeviation()
         speech.stop()
         transcript.removeAll()
         latestTransmission = nil

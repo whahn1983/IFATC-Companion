@@ -80,6 +80,23 @@ enum Geo {
         return false
     }
 
+    /// The coordinate reached by travelling `distanceNM` along `bearingDegrees`
+    /// (true) from `origin`, on a great circle. Used to build weather-deviation
+    /// corridors and recommended deviation paths.
+    static func destination(from origin: CLLocationCoordinate2D,
+                            bearingDegrees: Double,
+                            distanceNM: Double) -> CLLocationCoordinate2D {
+        let angular = distanceNM / earthRadiusNM
+        let brng = bearingDegrees * .pi / 180
+        let lat1 = origin.latitude * .pi / 180
+        let lon1 = origin.longitude * .pi / 180
+        let lat2 = asin(sin(lat1) * cos(angular) + cos(lat1) * sin(angular) * cos(brng))
+        let lon2 = lon1 + atan2(sin(brng) * sin(angular) * cos(lat1),
+                                cos(angular) - sin(lat1) * sin(lat2))
+        return CLLocationCoordinate2D(latitude: lat2 * 180 / .pi,
+                                      longitude: lon2 * 180 / .pi)
+    }
+
     /// Convert a compass bearing into a coarse clock/cardinal description.
     static func cardinal(_ bearing: Double) -> String {
         let dirs = ["north", "north-east", "east", "south-east",
