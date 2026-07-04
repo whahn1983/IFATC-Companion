@@ -238,11 +238,15 @@ struct PilotResponseEngine {
 
     /// Pilot check-in on a newly tuned frequency.
     ///
-    /// Airborne, the pilot reports altitude the way a controller expects to hear it:
-    /// "with you at <altitude>" when level, or "with you at <current> for <target>"
-    /// while climbing or descending toward the assigned altitude. On the ground
-    /// (Ramp, Ground, Clearance) — or whenever we have no usable altitude — a plain
-    /// "checking in" is correct.
+    /// Checking in with Tower while airborne means the pilot is inbound to land, so
+    /// the call reports the approach and runway ("inbound on the ILS runway 30L"),
+    /// the way IFATC expects — not an altitude.
+    ///
+    /// Otherwise, airborne, the pilot reports altitude the way a controller expects
+    /// to hear it: "with you at <altitude>" when level, or "with you at <current> for
+    /// <target>" while climbing or descending toward the assigned altitude. On the
+    /// ground (Ramp, Ground, Clearance, or Tower for departure) — or whenever we have
+    /// no usable altitude — a plain "checking in" is correct.
     ///
     /// - Parameters:
     ///   - currentAltitude: live aircraft altitude (ft MSL), or nil when unknown.
@@ -253,6 +257,32 @@ struct PilotResponseEngine {
                         currentAltitude: Int? = nil,
                         targetAltitude: Int = 0,
                         onGround: Bool = false) -> ATCTransmission {
+        // Airborne check-in with Tower = inbound to land: report the approach and
+        // runway, not an altitude. On the ground, Tower is a departure position, so
+        // fall through to the plain "checking in" call-up below.
+        if facility == .tower, !onGround {
+            let rwy = c.approachProcedure?.runway ?? c.runway
+            // Name the approach once. The parsed procedure's display/spoken forms omit
+            // the article ("ILS"), so add "the"; the approach-name string already
+            // carries its own ("the ILS").
+            let approachD: String
+            let approachS: String
+            if let type = c.approachProcedure?.approachType {
+                approachD = "the \(type.display)"; approachS = "the \(type.spoken)"
+            } else if !c.approachName.isEmpty {
+                approachD = c.approachName; approachS = c.approachName
+            } else {
+                approachD = "the ILS"; approachS = "the I L S"
+            }
+            guard !rwy.isEmpty else {
+                return pilot("\(facility.spokenName), \(c.callsign.display), inbound for landing.",
+                             "\(facility.spokenName), \(c.callsign.spoken), inbound for landing.",
+                             facility: facility)
+            }
+            return pilot("\(facility.spokenName), \(c.callsign.display), inbound on \(approachD) runway \(rwy).",
+                         "\(facility.spokenName), \(c.callsign.spoken), inbound on \(approachS) runway \(Phonetic.runway(rwy, icao: icao)).",
+                         facility: facility)
+        }
         // Ground positions and any on-ground / altitude-unknown check-in: "checking in".
         let groundFacility = facility == .ramp || facility == .ground || facility == .clearance
         guard !onGround, !groundFacility, let cur = currentAltitude else {
