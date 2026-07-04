@@ -244,7 +244,17 @@ struct PhraseologyEngine {
         }
         let display = "\(cs.display), wind \(String(format: "%03d", windDir)) at \(windSpeed), runway \(runway), \(phrase), \(hdgDisplay), climb and maintain \(formatAltDisplay(initialAltitude))."
         let spoken = "\(cs.spoken), \(Phonetic.wind(direction: windDir, speed: windSpeed, icao: icao)), runway \(Phonetic.runway(runway, icao: icao)), \(phrase), \(hdgSpoken), climb and maintain \(Phonetic.altitude(initialAltitude, icao: icao))."
-        return tx(.tower, display: display, spoken: spoken)
+        var transmission = tx(.tower, display: display, spoken: spoken)
+        // Read back both the assigned heading and the climb altitude — both are
+        // safety-critical. Drop the leading "fly " so the pilot echo reads naturally
+        // ("runway heading" / "heading 090" rather than "fly runway heading").
+        let hdgReadDisplay = hdgDisplay.hasPrefix("fly ") ? String(hdgDisplay.dropFirst(4)) : hdgDisplay
+        let hdgReadSpoken = hdgSpoken.hasPrefix("fly ") ? String(hdgSpoken.dropFirst(4)) : hdgSpoken
+        transmission.readback = ATCTransmission.Readback(
+            displayText: "Runway \(runway), cleared for takeoff, \(hdgReadDisplay), climb and maintain \(formatAltDisplay(initialAltitude)), \(cs.display).",
+            spokenText: "Runway \(Phonetic.runway(runway, icao: icao)), cleared for takeoff, \(hdgReadSpoken), climb and maintain \(Phonetic.altitude(initialAltitude, icao: icao)), \(cs.spoken).",
+            facility: .tower)
+        return transmission
     }
 
     // Departure — radar contact + climb.
@@ -259,9 +269,17 @@ struct PhraseologyEngine {
         let join = firstFix.isEmpty ? "resume own navigation" : "resume own navigation, direct \(firstFix)"
         let joinSpoken = firstFix.isEmpty ? "resume own navigation"
             : "resume own navigation, direct \(Phonetic.spellToken(firstFix, icao: icao))"
-        return tx(.departure,
+        var transmission = tx(.departure,
            display: "\(cs.display), radar contact, climb and maintain \(formatAltDisplay(altitude)), \(join).",
            spoken: "\(cs.spoken), radar contact, climb and maintain \(Phonetic.altitude(altitude, icao: icao)), \(joinSpoken).")
+        // Echo "resume own navigation" (and the direct fix, when named) in the
+        // read-back — the pilot must acknowledge the navigation change, not just the
+        // climb.
+        transmission.readback = ATCTransmission.Readback(
+            displayText: "Climb and maintain \(formatAltDisplay(altitude)), \(join), \(cs.display).",
+            spokenText: "Climb and maintain \(Phonetic.altitude(altitude, icao: icao)), \(joinSpoken), \(cs.spoken).",
+            facility: .departure)
+        return transmission
     }
 
     // Center — climb.
