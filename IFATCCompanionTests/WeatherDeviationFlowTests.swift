@@ -76,6 +76,13 @@ final class WeatherDeviationFlowTests: XCTestCase {
         XCTAssertTrue(atcContains(model, "resume own navigation"))
         XCTAssertNil(model.activeWeatherConflict, "the conflict clears after reporting clear of weather")
         XCTAssertEqual(model.weatherDeviationState, .none)
+
+        // Reading the call back must echo "resume own navigation", not a stale
+        // state-derived read-back.
+        model.readBack()
+        XCTAssertTrue(model.transcript.contains {
+            $0.sender == .pilot && $0.displayText.lowercased().contains("resume own navigation")
+        }, "clear-of-weather read-back should echo resume own navigation")
     }
 
     // MARK: - Vector variant
