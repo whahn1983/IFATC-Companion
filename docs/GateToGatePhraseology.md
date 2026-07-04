@@ -177,7 +177,7 @@ Pilot → App:    Heading 270, vectors ILS runway 30L, United 598.
 App → Pilot:    United 598, 5 miles from JERMS, turn left heading 300, maintain 4,000 until established on the localizer, cleared ILS runway 30L approach.
 Pilot → App:    Left heading 300, maintain 4,000 until established, cleared ILS runway 30L approach, United 598.
 App → Pilot:    United 598, contact Tower 126.7.
-Pilot → Tower:  Minneapolis Tower, United 598, ILS runway 30L final.
+Pilot → Tower:  Minneapolis Tower, United 598, inbound on the ILS runway 30L.
 Tower → Pilot:  United 598, wind 310 at 12, runway 30L, cleared to land.
 Pilot → Tower:  Runway 30L, cleared to land, United 598.
 ```

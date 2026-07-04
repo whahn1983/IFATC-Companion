@@ -88,6 +88,35 @@ final class CallFlowCompletenessTests: XCTestCase {
         XCTAssertTrue(tx.displayText.contains("with you at 12,000 for 4,000"), tx.displayText)
     }
 
+    /// Airborne check-in with Tower is an inbound-to-land call naming the approach
+    /// and runway, not an altitude report.
+    func testTowerCheckInReportsInboundApproachAndRunway() {
+        let pilot = PilotResponseEngine(engine: engine())
+        // Default context: no parsed procedure, approachName "the ILS", runway 17R.
+        let ctx = TestSupport.context(runway: "17R")
+        let tx = pilot.requestHandoff(context: ctx, facility: .tower,
+                                      currentAltitude: 3000, targetAltitude: 0, onGround: false)
+        XCTAssertTrue(tx.displayText.contains("inbound on the ILS runway 17R"), tx.displayText)
+        XCTAssertFalse(tx.displayText.contains("with you at"), "tower inbound should not report altitude: \(tx.displayText)")
+        XCTAssertFalse(tx.displayText.contains("checking in"), tx.displayText)
+    }
+
+    /// A parsed approach procedure names its type (GPS, visual, …) in the inbound call.
+    func testTowerCheckInUsesParsedApproachType() {
+        let pilot = PilotResponseEngine(engine: engine())
+        var gps = TestSupport.context(runway: "27")
+        gps.approachProcedure = ProcedureParser.parseApproach("GPS 27")
+        let gpsTx = pilot.requestHandoff(context: gps, facility: .tower,
+                                         currentAltitude: 2500, targetAltitude: 0, onGround: false)
+        XCTAssertTrue(gpsTx.displayText.contains("inbound on the GPS runway 27"), gpsTx.displayText)
+
+        var visual = TestSupport.context(runway: "30L")
+        visual.approachProcedure = ProcedureParser.parseApproach("Visual 30L")
+        let visualTx = pilot.requestHandoff(context: visual, facility: .tower,
+                                            currentAltitude: 2000, targetAltitude: 0, onGround: false)
+        XCTAssertTrue(visualTx.displayText.contains("inbound on the Visual runway 30L"), visualTx.displayText)
+    }
+
     /// On the ground (Ramp/Ground) or with no altitude telemetry: plain "checking in".
     func testCheckInOnGroundOrUnknownAltitudeSaysCheckingIn() {
         let pilot = PilotResponseEngine(engine: engine())
