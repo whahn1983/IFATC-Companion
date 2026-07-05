@@ -2528,10 +2528,24 @@ final class AppModel: ObservableObject {
         return flightPlan.cruiseAltitude > 0 ? flightPlan.cruiseAltitude : 37000
     }
 
-    /// A heading offset from the current heading toward `direction` by the
-    /// recommended deviation amount, for a vector around weather.
+    /// The heading to fly for a vector around weather.
+    ///
+    /// Prefer the bearing from the current position to the apex of the recommended
+    /// deviation path (the mint line drawn on the map, `deviationPath = [position,
+    /// apex, rejoin]`). Deriving the vector from that path keeps the assigned heading
+    /// consistent with the map and anchored to where the aircraft *is now* — so a
+    /// second vector requested while already deviated turns toward the suggested
+    /// reroute rather than stacking another offset on top of the current heading.
+    ///
+    /// Falls back to offsetting the current heading (or the filed course) by the
+    /// recommended amount when no usable deviation path is available.
     private func weatherDeviationHeading(direction: DeviationDirection) -> Int {
         let pos = aircraftState.coordinate ?? airports.coordinate(for: flightPlan.departure)
+        if let pos, pos.isValid,
+           let apex = activeWeatherConflict?.deviationPath.dropFirst().first, apex.isValid {
+            let bearing = Geo.bearing(from: pos, to: apex)
+            return ((Int(bearing.rounded()) % 360) + 360) % 360
+        }
         let base = aircraftState.heading ?? pos.map { currentCourse(from: $0) } ?? 0
         let degrees = activeWeatherConflict?.recommendedDeviationDegrees ?? 20
         let signed = Int(base.rounded()) + (direction == .right ? degrees : -degrees)

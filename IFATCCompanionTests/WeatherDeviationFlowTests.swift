@@ -103,6 +103,47 @@ final class WeatherDeviationFlowTests: XCTestCase {
         XCTAssertTrue(pilotContains(model, "maintain"), "vector read-back should echo the maintain altitude")
     }
 
+    /// A weather vector must fly toward the recommended reroute (the mint deviation
+    /// path) measured from the aircraft's current position — not the current heading
+    /// offset by the deviation amount. Otherwise a second vector requested while
+    /// already deviated stacks another turn onto the nose and points the wrong way.
+    func testVectorHeadingFollowsMintPathNotCurrentHeading() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)
+
+        // Simulate the aircraft already being deviated well off its filed course:
+        // keep the position, but swing the reported heading 70° to one side. The
+        // recommended reroute is anchored to the route from the current position, so
+        // the vector that follows it must not swing with the nose.
+        var deviated = model.mock.state(for: .cruise)
+        let skewed = ((deviated.heading ?? 0) + 70).truncatingRemainder(dividingBy: 360)
+        deviated.heading = skewed
+        deviated.track = skewed
+        model.ingestStateForTesting(deviated)
+
+        guard let conflict = model.activeWeatherConflict,
+              conflict.deviationPath.count >= 2,
+              let pos = model.aircraftState.coordinate else {
+            return XCTFail("expected a conflict with a deviation path")
+        }
+        let apex = conflict.deviationPath[1]
+        let expected = ((Int(Geo.bearing(from: pos, to: apex).rounded()) % 360) + 360) % 360
+
+        model.requestVectorAroundWeather()
+        XCTAssertEqual(model.weatherDeviation.assignedHeading, expected,
+                       "vector must follow the mint deviation path from the current position")
+
+        // It must NOT be the old current-heading ± degrees offset that caused the bug.
+        let base = Int(skewed.rounded())
+        let degrees = conflict.recommendedDeviationDegrees
+        let naiveRight = ((base + degrees) % 360 + 360) % 360
+        let naiveLeft = ((base - degrees) % 360 + 360) % 360
+        XCTAssertNotEqual(model.weatherDeviation.assignedHeading, naiveRight,
+                          "vector must not stack a fresh right offset on the deviated heading")
+        XCTAssertNotEqual(model.weatherDeviation.assignedHeading, naiveLeft,
+                          "vector must not stack a fresh left offset on the deviated heading")
+    }
+
     // MARK: - Banner persists for a later reroute
 
     /// After the pilot contacts ATC and elects to continue on course, the weather
