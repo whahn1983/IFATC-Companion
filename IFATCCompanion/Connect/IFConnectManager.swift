@@ -40,6 +40,15 @@ final class IFConnectManager: ObservableObject {
     /// changes mid-flight, so this is throttled relative to state polling.
     var flightPlanReadEveryTicks = 15
 
+    /// How many times `connect()` attempts the TCP-connect + manifest-discovery
+    /// handshake before surfacing a failure. Returning from the background often
+    /// makes Infinite Flight answer the first manifest request with a partial or
+    /// garbled frame (which decodes to "Failed to decode a response"), so a single
+    /// attempt would spuriously fail even though a retry a moment later succeeds.
+    var connectMaxAttempts = 4
+    /// Base delay between connect attempts; backs off linearly per attempt.
+    var connectRetryDelay: TimeInterval = 0.6
+
     func configure(diagnostics: DiagnosticsStore) {
         self.diagnostics = diagnostics
     }
@@ -53,28 +62,62 @@ final class IFConnectManager: ObservableObject {
         diagnostics?.log(.connect, "Connecting to \(host):\(port)…")
 
         Task {
-            do {
-                try await client.connect(host: host, port: port)
-                diagnostics?.log(.connect, "TCP connected. Requesting manifest…")
-                let entries = try await manifestService.discover(using: client, into: mappingStore)
-                manifestEntries = entries
-                diagnostics?.discoveredStates = entries
-                diagnostics?.log(.manifest, "Manifest discovered: \(entries.count) entries. Resolved \(mappingStore.resolved.count) logical states.")
-                if !mappingStore.unresolvedKeys.isEmpty {
-                    let names = mappingStore.unresolvedKeys.map { $0.rawValue }.joined(separator: ", ")
-                    diagnostics?.log(.manifest, "Unresolved (use manual override if needed): \(names)")
+            var lastFailure: Error?
+            for attempt in 1...max(1, connectMaxAttempts) {
+                do {
+                    try await performConnect(host: host, port: port, attempt: attempt)
+                    return
+                } catch is CancellationError {
+                    return
+                } catch IFConnectError.cancelled {
+                    // An intentional disconnect cancelled the socket mid-handshake —
+                    // don't retry, or we'd reconnect against the user's wishes.
+                    return
+                } catch {
+                    lastFailure = error
+                    // `.invalidHost` won't fix itself on a retry — give up immediately.
+                    if case IFConnectError.invalidHost = error { break }
+                    let message = errorMessage(error)
+                    if attempt < max(1, connectMaxAttempts) {
+                        diagnostics?.log(.connect, "Connect attempt \(attempt) failed (\(message)). Retrying…")
+                        // Drop the half-open socket so the next attempt starts clean,
+                        // then back off briefly to let Infinite Flight settle.
+                        await client.disconnect()
+                        try? await Task.sleep(nanoseconds: UInt64(connectRetryDelay * Double(attempt) * 1_000_000_000))
+                    }
                 }
-                logATCRelatedStates(entries)
-                connectionState = .connected
-                await readFlightPlan()
-                startPolling()
-            } catch {
-                let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                connectionState = .failed(message)
-                lastError = message
-                diagnostics?.log(.connect, "Connect failed: \(message)")
             }
+            let message = lastFailure.map(errorMessage) ?? "Connection failed."
+            connectionState = .failed(message)
+            lastError = message
+            diagnostics?.log(.connect, "Connect failed after \(max(1, connectMaxAttempts)) attempt(s): \(message)")
         }
+    }
+
+    /// One attempt of the connect + manifest-discovery handshake. Throws on any
+    /// failure so the caller can retry; only sets `.connected` and starts polling
+    /// once the manifest has been read successfully.
+    private func performConnect(host: String, port: Int, attempt: Int) async throws {
+        try await client.connect(host: host, port: port)
+        diagnostics?.log(.connect, attempt > 1
+            ? "TCP connected (attempt \(attempt)). Requesting manifest…"
+            : "TCP connected. Requesting manifest…")
+        let entries = try await manifestService.discover(using: client, into: mappingStore)
+        manifestEntries = entries
+        diagnostics?.discoveredStates = entries
+        diagnostics?.log(.manifest, "Manifest discovered: \(entries.count) entries. Resolved \(mappingStore.resolved.count) logical states.")
+        if !mappingStore.unresolvedKeys.isEmpty {
+            let names = mappingStore.unresolvedKeys.map { $0.rawValue }.joined(separator: ", ")
+            diagnostics?.log(.manifest, "Unresolved (use manual override if needed): \(names)")
+        }
+        logATCRelatedStates(entries)
+        connectionState = .connected
+        await readFlightPlan()
+        startPolling()
+    }
+
+    private func errorMessage(_ error: Error) -> String {
+        (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
     }
 
     func disconnect() {
