@@ -378,7 +378,7 @@ struct ATCView: View {
                         }
                     }
                 }
-                Text("Only the controllers you need now are shown. Tap one to change frequency, then tap Check In to call them or make a request. You drive every frequency change.")
+                Text("Only the controllers you need now are shown. Tap one to change frequency, then tap Check In to call them or make a request.")
                     .font(.caption2).foregroundStyle(.tertiary)
             }
         }
