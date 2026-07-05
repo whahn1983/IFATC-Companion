@@ -103,6 +103,36 @@ final class WeatherDeviationFlowTests: XCTestCase {
         XCTAssertTrue(pilotContains(model, "maintain"), "vector read-back should echo the maintain altitude")
     }
 
+    // MARK: - Banner persists for a later reroute
+
+    /// After the pilot contacts ATC and elects to continue on course, the weather
+    /// is still ahead — so the "contact ATC" banner must come back up, letting the
+    /// pilot re-open the deviation flow if they decide to reroute later.
+    func testBannerReturnsAfterContinuingThroughWeather() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)
+        XCTAssertNotNil(model.activeWeatherConflict)
+
+        // The demo auto-issues the advisory, so the deviation card is up (not the banner).
+        XCTAssertTrue(model.weatherDeviationCardVisible)
+        XCTAssertFalse(model.weatherBannerVisible)
+
+        // Pilot elects to continue on course; the deviation flow settles.
+        model.continueThroughWeather()
+        XCTAssertEqual(model.weatherDeviationState, .none)
+        XCTAssertFalse(model.weatherDeviationCardVisible)
+
+        // Weather is still ahead, so the banner comes back for a possible reroute.
+        XCTAssertNotNil(model.activeWeatherConflict)
+        XCTAssertTrue(model.weatherBannerVisible,
+                      "banner must persist while weather is still ahead after continuing")
+
+        // Tapping it re-opens the deviation flow.
+        model.askCenterAboutWeather()
+        XCTAssertTrue(model.weatherDeviationCardVisible,
+                      "re-contacting ATC must re-open the weather-deviation card")
+    }
+
     // MARK: - Read-back phraseology (unit)
 
     /// The weather vector assigns a heading and an altitude; the read-back echoes both.
