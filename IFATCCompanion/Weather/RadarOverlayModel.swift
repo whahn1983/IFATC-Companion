@@ -138,6 +138,13 @@ struct WeatherDeviationContext: Codable {
     var assignedHeading: Int?
     var maintainAltitude: Int?
     var rejoinFix: String?
+    /// The turn point in the recommended deviation path (the apex of the mint line)
+    /// and the heading to fly from there back to intercept the filed route. Captured
+    /// when a weather vector is issued so the telemetry loop can auto-issue the
+    /// rejoin turn once the aircraft reaches that turn. Cleared when the turn fires.
+    var vectorApexLatitude: Double?
+    var vectorApexLongitude: Double?
+    var pendingRejoinHeading: Int?
     var originalRouteSegment: RouteSegmentRef?
     var timeDeviationStarted: Date?
     var lastATCWeatherCall: String?

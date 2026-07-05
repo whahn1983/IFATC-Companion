@@ -2359,6 +2359,8 @@ final class AppModel: ObservableObject {
 
         // Mock Mode auto-issues the advisory once so the offline demo plays out.
         maybeAutoIssueMockAdvisory(conflict: conflict)
+        // When vectoring, auto-issue the turn back to course at the deviation apex.
+        maybeIssueWeatherRejoinTurn()
         updateWeatherDiagnostics(conflict: conflict)
     }
 
@@ -2670,6 +2672,45 @@ final class AppModel: ObservableObject {
         applyDeviationResult(deviationEngine.requestVectors(
             cs: cs, inputs: deviationInputs(direction: side), context: weatherDeviation,
             facility: weatherFacility))
+        captureWeatherRejoinTurn()
+    }
+
+    /// Capture the turn point (apex) of the recommended deviation path and the
+    /// heading to fly from there back to intercept the filed route, so the telemetry
+    /// loop can auto-issue the rejoin turn when the aircraft reaches that turn in the
+    /// mint line. The deviation path is `[position, apex, rejoin]`.
+    private func captureWeatherRejoinTurn() {
+        weatherDeviation.pendingRejoinHeading = nil
+        weatherDeviation.vectorApexLatitude = nil
+        weatherDeviation.vectorApexLongitude = nil
+        guard weatherDeviation.state == .vectoringAroundWeather,
+              let path = activeWeatherConflict?.deviationPath, path.count >= 3,
+              path[1].isValid, path[2].isValid else { return }
+        let apex = path[1], rejoin = path[2]
+        weatherDeviation.vectorApexLatitude = apex.latitude
+        weatherDeviation.vectorApexLongitude = apex.longitude
+        weatherDeviation.pendingRejoinHeading =
+            ApproachIntercept.normalizedHeading(Geo.bearing(from: apex, to: rejoin))
+    }
+
+    /// While vectoring around weather, once the aircraft reaches the turn in the
+    /// deviation path (the apex of the mint line), the controller automatically turns
+    /// it back to intercept the filed route. Called each telemetry tick.
+    private func maybeIssueWeatherRejoinTurn() {
+        guard !companionStandby, weatherFlowAllowed,
+              weatherDeviation.state == .vectoringAroundWeather,
+              let heading = weatherDeviation.pendingRejoinHeading,
+              let apexLat = weatherDeviation.vectorApexLatitude,
+              let apexLon = weatherDeviation.vectorApexLongitude,
+              let pos = aircraftState.coordinate, pos.isValid else { return }
+        let apex = CLLocationCoordinate2D(latitude: apexLat, longitude: apexLon)
+        // Capture radius scales with groundspeed (~30 s of travel) so a fast aircraft
+        // does not skip past the turn between telemetry ticks; at least 2 NM.
+        let captureNM = max(2.0, (aircraftState.groundSpeed ?? 300) / 120)
+        guard Geo.distanceNM(from: pos, to: apex) <= captureNM else { return }
+        applyDeviationResult(deviationEngine.rejoinTurn(
+            cs: callsignNow(), heading: heading, rejoinFix: weatherDeviation.rejoinFix,
+            context: weatherDeviation, facility: weatherFacility))
     }
 
     func requestHigherForWeather() {

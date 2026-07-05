@@ -144,6 +144,62 @@ final class WeatherDeviationFlowTests: XCTestCase {
                           "vector must not stack a fresh left offset on the deviated heading")
     }
 
+    /// The deviation path has a turn in it — deviate around the weather, then turn
+    /// back to intercept the filed route. When the aircraft reaches that turn (the
+    /// apex of the mint line), the controller must automatically issue the turn to
+    /// the rejoin heading, without the pilot asking.
+    func testWeatherVectorAutoTurnsBackAtDeviationApex() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)
+        guard let conflict = model.activeWeatherConflict, conflict.deviationPath.count >= 3 else {
+            return XCTFail("expected a conflict with a deviation path")
+        }
+        let apex = conflict.deviationPath[1]
+        let rejoin = conflict.deviationPath[2]
+        let expectedRejoinHeading = ApproachIntercept.normalizedHeading(Geo.bearing(from: apex, to: rejoin))
+
+        // Pilot requests the vector; the rejoin turn is armed for the apex.
+        model.requestVectorAroundWeather()
+        XCTAssertEqual(model.weatherDeviationState, .vectoringAroundWeather)
+        XCTAssertEqual(model.weatherDeviation.pendingRejoinHeading, expectedRejoinHeading,
+                       "issuing the vector should arm the rejoin turn at the apex")
+
+        let atcBefore = model.transcript.filter { $0.sender == .atc }.count
+
+        // Fly to the turn in the mint line (the apex of the deviation path).
+        var atApex = model.mock.state(for: .cruise)
+        atApex.latitude = apex.latitude
+        atApex.longitude = apex.longitude
+        model.ingestStateForTesting(atApex)
+
+        // The controller automatically turns the aircraft back to intercept course.
+        XCTAssertNil(model.weatherDeviation.pendingRejoinHeading, "the rejoin turn should fire once")
+        XCTAssertEqual(model.weatherDeviation.assignedHeading, expectedRejoinHeading,
+                       "the auto-turn assigns the rejoin heading")
+        XCTAssertTrue(atcContains(model, "rejoin course"),
+                      "controller should issue an automatic turn to rejoin course")
+        XCTAssertGreaterThan(model.transcript.filter { $0.sender == .atc }.count, atcBefore)
+        XCTAssertEqual(model.weatherDeviationState, .vectoringAroundWeather,
+                       "still advising clear of weather after the rejoin turn")
+    }
+
+    /// The rejoin turn is only armed for the vectoring flow, and does not fire
+    /// before the aircraft reaches the apex.
+    func testRejoinTurnDoesNotFireBeforeReachingApex() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)
+        model.requestVectorAroundWeather()
+        XCTAssertNotNil(model.weatherDeviation.pendingRejoinHeading)
+
+        let atcBefore = model.transcript.filter { $0.sender == .atc }.count
+        // A tick well short of the apex must not trigger the turn.
+        model.ingestStateForTesting(model.mock.state(for: .cruise))
+        XCTAssertNotNil(model.weatherDeviation.pendingRejoinHeading,
+                        "the turn stays armed until the aircraft reaches the apex")
+        XCTAssertEqual(model.transcript.filter { $0.sender == .atc }.count, atcBefore,
+                       "no automatic turn before the apex")
+    }
+
     // MARK: - Banner persists for a later reroute
 
     /// After the pilot contacts ATC and elects to continue on course, the weather
