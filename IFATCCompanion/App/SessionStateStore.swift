@@ -17,6 +17,10 @@ struct SessionSnapshot: Codable {
     var arrivalAnnounced: Bool
     var awaitingGateArrival: Bool
     var manualTuning: Bool
+    /// The in-progress weather-deviation interaction, so a reconnect mid-diversion
+    /// restores the deviation card (and its "clear of weather" button) rather than
+    /// dropping it. Optional so snapshots written before this field decode cleanly.
+    var weatherDeviation: WeatherDeviationContext? = nil
     var transcript: [ATCTransmission]
     /// Flight-plan endpoints, recorded so a stale snapshot from a different flight
     /// can be recognized if needed.

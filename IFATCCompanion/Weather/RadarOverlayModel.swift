@@ -120,14 +120,17 @@ enum WeatherDeviationState: String, Codable, CaseIterable {
 
 /// A reference to the filed route segment a deviation departs from (by fix name),
 /// so the rejoin clearance can name where the aircraft left course.
-struct RouteSegmentRef {
+struct RouteSegmentRef: Codable {
     var from: String
     var to: String
 }
 
 /// Mutable storage for the active weather-deviation interaction. Held on
-/// `AppModel`; the phraseology/engine read and update it.
-struct WeatherDeviationContext {
+/// `AppModel`; the phraseology/engine read and update it. `Codable` so an
+/// in-progress deviation can be captured in the session snapshot and restored on
+/// reconnect (otherwise the deviation card and its "clear of weather" button
+/// vanish when the Infinite Flight link drops and comes back mid-diversion).
+struct WeatherDeviationContext: Codable {
     var state: WeatherDeviationState = .none
     var activeHazardID: UUID?
     var requestedDeviationDirection: DeviationDirection?

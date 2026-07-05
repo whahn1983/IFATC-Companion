@@ -103,6 +103,65 @@ final class ReconnectStateTests: XCTestCase {
         XCTAssertEqual(model.transcript.count, 1)
     }
 
+    // MARK: - A mid-diversion weather card survives a reconnect
+
+    /// If the link drops while the pilot is mid weather-diversion, the snapshot must
+    /// carry the deviation context so the reconnected session still shows the weather
+    /// card and its "Clear of Wx" button — rather than dropping to `.none`.
+    func testMidDiversionSurvivesSnapshotRestore() {
+        let model = makeLiveModel()
+
+        // A committed diversion: deviation approved, off course for weather.
+        var deviation = WeatherDeviationContext()
+        deviation.state = .deviationApproved
+        deviation.assignedHeading = 250
+        deviation.maintainAltitude = 28000
+        deviation.rejoinFix = "WAGON"
+        let snapshot = SessionSnapshot(
+            atcState: .cruise,
+            stateMachineCurrent: .cruise,
+            currentFacility: .center,
+            phase: .cruise,
+            assignedAltitude: 28000,
+            hasDeparted: true,
+            arrivalAnnounced: false,
+            awaitingGateArrival: false,
+            manualTuning: false,
+            weatherDeviation: deviation,
+            transcript: [ATCTransmission(sender: .atc, facility: .center,
+                                         displayText: "United 598, deviation right approved, advise clear of weather.")],
+            departure: "KIAH",
+            destination: "KMSP",
+            mockMode: false,
+            savedAt: Date())
+
+        model.applySnapshotForTesting(snapshot)
+
+        XCTAssertEqual(model.weatherDeviationState, .deviationApproved,
+                       "the in-progress diversion must be restored on reconnect")
+        XCTAssertTrue(model.weatherDeviationCardVisible,
+                      "the deviation card must be shown again after reconnect")
+        XCTAssertTrue(model.weatherActions.contains(.clearOfWeather),
+                      "the 'Clear of Wx' button must be available again after reconnect")
+
+        // A reconnect-handshake blip (empty telemetry) must not drop the diversion.
+        model.ingestStateForTesting(.empty)
+        XCTAssertEqual(model.weatherDeviationState, .deviationApproved,
+                       "an empty handshake tick must not clear the restored diversion")
+        XCTAssertTrue(model.weatherActions.contains(.clearOfWeather))
+    }
+
+    /// A live snapshot taken mid-diversion carries the deviation state, so a
+    /// reconnect has the weather card to resume from.
+    func testSnapshotCapturesInProgressDiversion() {
+        let model = makeLiveModel()
+        model.weatherDeviation.state = .vectoringAroundWeather
+
+        let snapshot = model.snapshotForTesting()
+
+        XCTAssertEqual(snapshot.weatherDeviation?.state, .vectoringAroundWeather)
+    }
+
     /// The snapshot taken from a running session reflects the live state, so a
     /// reconnect has something accurate to resume from.
     func testSnapshotCapturesLiveState() {
