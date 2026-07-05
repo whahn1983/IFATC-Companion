@@ -183,6 +183,37 @@ final class WeatherDeviationFlowTests: XCTestCase {
                        "still advising clear of weather after the rejoin turn")
     }
 
+    /// Flying wide of the apex (never within the capture radius) must still trigger
+    /// the rejoin turn once the aircraft passes abeam/beyond the apex along the
+    /// outbound leg.
+    func testRejoinTurnFiresWhenPassingAbeamApexBeyondRadius() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)
+        guard let conflict = model.activeWeatherConflict, conflict.deviationPath.count >= 3 else {
+            return XCTFail("expected a conflict with a deviation path")
+        }
+        let start = conflict.deviationPath[0]
+        let apex = conflict.deviationPath[1]
+        let legBearing = Geo.bearing(from: start, to: apex)
+
+        model.requestVectorAroundWeather()
+        XCTAssertNotNil(model.weatherDeviation.pendingRejoinHeading)
+
+        // A point 8 NM beyond the apex along the outbound leg — outside the capture
+        // radius, but past the apex's abeam line.
+        let beyondApex = Geo.destination(from: apex, bearingDegrees: legBearing, distanceNM: 8)
+        XCTAssertGreaterThan(Geo.distanceNM(from: beyondApex, to: apex), 4,
+                             "the test point must be outside the capture radius")
+        var atBeyond = model.mock.state(for: .cruise)
+        atBeyond.latitude = beyondApex.latitude
+        atBeyond.longitude = beyondApex.longitude
+        model.ingestStateForTesting(atBeyond)
+
+        XCTAssertNil(model.weatherDeviation.pendingRejoinHeading,
+                     "passing abeam the apex fires the rejoin turn even outside the radius")
+        XCTAssertTrue(atcContains(model, "rejoin course"))
+    }
+
     /// The rejoin turn is only armed for the vectoring flow, and does not fire
     /// before the aircraft reaches the apex.
     func testRejoinTurnDoesNotFireBeforeReachingApex() async {

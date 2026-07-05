@@ -145,6 +145,9 @@ struct WeatherDeviationContext: Codable {
     var vectorApexLatitude: Double?
     var vectorApexLongitude: Double?
     var pendingRejoinHeading: Int?
+    /// Bearing of the outbound deviation leg (start → apex), so the loop can detect
+    /// the aircraft passing abeam/past the apex even if it flies wide of it.
+    var vectorLegBearing: Double?
     var originalRouteSegment: RouteSegmentRef?
     var timeDeviationStarted: Date?
     var lastATCWeatherCall: String?

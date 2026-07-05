@@ -143,6 +143,7 @@ struct WeatherDeviationEngine {
         ctx.pendingRejoinHeading = nil
         ctx.vectorApexLatitude = nil
         ctx.vectorApexLongitude = nil
+        ctx.vectorLegBearing = nil
         ctx.lastATCWeatherCall = tx.displayText
         return Result(pilot: nil, atc: [tx], context: ctx)
     }

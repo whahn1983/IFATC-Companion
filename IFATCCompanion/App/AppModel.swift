@@ -2683,12 +2683,14 @@ final class AppModel: ObservableObject {
         weatherDeviation.pendingRejoinHeading = nil
         weatherDeviation.vectorApexLatitude = nil
         weatherDeviation.vectorApexLongitude = nil
+        weatherDeviation.vectorLegBearing = nil
         guard weatherDeviation.state == .vectoringAroundWeather,
               let path = activeWeatherConflict?.deviationPath, path.count >= 3,
-              path[1].isValid, path[2].isValid else { return }
-        let apex = path[1], rejoin = path[2]
+              path[0].isValid, path[1].isValid, path[2].isValid else { return }
+        let start = path[0], apex = path[1], rejoin = path[2]
         weatherDeviation.vectorApexLatitude = apex.latitude
         weatherDeviation.vectorApexLongitude = apex.longitude
+        weatherDeviation.vectorLegBearing = Geo.bearing(from: start, to: apex)
         weatherDeviation.pendingRejoinHeading =
             ApproachIntercept.normalizedHeading(Geo.bearing(from: apex, to: rejoin))
     }
@@ -2704,10 +2706,25 @@ final class AppModel: ObservableObject {
               let apexLon = weatherDeviation.vectorApexLongitude,
               let pos = aircraftState.coordinate, pos.isValid else { return }
         let apex = CLLocationCoordinate2D(latitude: apexLat, longitude: apexLon)
-        // Capture radius scales with groundspeed (~30 s of travel) so a fast aircraft
-        // does not skip past the turn between telemetry ticks; at least 2 NM.
+        let distance = Geo.distanceNM(from: pos, to: apex)
+        // Fire when near the apex, or once the aircraft has passed abeam/beyond it
+        // along the outbound leg (so flying wide of the apex still triggers the turn).
+        // The capture radius scales with groundspeed (~30 s of travel), min 2 NM, so
+        // a fast aircraft does not skip past the turn between telemetry ticks.
         let captureNM = max(2.0, (aircraftState.groundSpeed ?? 300) / 120)
-        guard Geo.distanceNM(from: pos, to: apex) <= captureNM else { return }
+        let reached: Bool
+        if distance <= captureNM {
+            reached = true
+        } else if let legBearing = weatherDeviation.vectorLegBearing {
+            // Along-track distance from the apex in the outbound leg direction; ≥ 0
+            // means the aircraft is at or beyond the apex's abeam line.
+            let apexToAircraft = Geo.bearing(from: apex, to: pos)
+            let alongNM = distance * cos((apexToAircraft - legBearing) * .pi / 180)
+            reached = alongNM >= 0
+        } else {
+            reached = false
+        }
+        guard reached else { return }
         applyDeviationResult(deviationEngine.rejoinTurn(
             cs: callsignNow(), heading: heading, rejoinFix: weatherDeviation.rejoinFix,
             context: weatherDeviation, facility: weatherFacility))
