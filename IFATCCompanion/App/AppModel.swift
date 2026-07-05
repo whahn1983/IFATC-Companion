@@ -1306,8 +1306,11 @@ final class AppModel: ObservableObject {
             if agl < 2000 { return .towerDeparture }
         }
 
-        // Departure keeps the climb until passing the TRACON ceiling, then Center.
-        if mapped == .climb, alt < ceiling - 200,
+        // Departure hands off to Center 1,000 ft below the TRACON ceiling (17,000 ft
+        // for a FL180 ceiling) rather than right at it. That buffer gives the pilot
+        // time to check in with Center and be cleared to the next altitude before the
+        // climb reaches the ceiling, so it continues past FL180 without pausing.
+        if mapped == .climb, alt < ceiling - 1000,
            [.towerDeparture, .initialClimb, .departure].contains(stateMachine.current) {
             return .initialClimb
         }
