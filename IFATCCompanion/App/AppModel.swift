@@ -2438,8 +2438,15 @@ final class AppModel: ObservableObject {
     }
 
     /// Whether the "Weather ahead — contact ATC" banner should be shown in ATCView.
+    ///
+    /// The banner stays up for as long as weather is detected ahead and no
+    /// deviation interaction is currently in progress — even after the pilot has
+    /// already contacted ATC and elected to continue on course. That way a pilot
+    /// who continues now but decides to reroute later still has the banner to tap
+    /// to re-open the weather-deviation flow. While a deviation is actively being
+    /// worked, the deviation card (not the banner) carries the controls.
     var weatherBannerVisible: Bool {
-        guard settings.weatherDeviationAlerts.alertsEnabled, weatherFlowAllowed, !weatherHandled else { return false }
+        guard settings.weatherDeviationAlerts.alertsEnabled, weatherFlowAllowed else { return false }
         guard let conflict = activeWeatherConflict, conflict.shouldPrompt else { return false }
         return weatherDeviation.state == .none || weatherDeviation.state == .weatherAheadDetected
     }
