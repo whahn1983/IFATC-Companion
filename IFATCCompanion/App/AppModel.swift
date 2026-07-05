@@ -1961,11 +1961,14 @@ final class AppModel: ObservableObject {
     func requestVectors() {
         let c = buildContext(for: atcState, arrivalOverride: true)
         postPilot(pilotEngine.requestVectors(context: c))
-        let hdg = Int(aircraftState.heading ?? 270)
         // Name the approach as "<type> runway <rwy>" (e.g. "ILS runway 01R") rather
         // than a display name that already embeds the runway, to avoid "… ILS RWY
         // 01R runway 01R approach".
         let rwy = c.approachProcedure?.runway ?? c.runway
+        // A real 30° intercept to the final approach course, turning toward the
+        // extended centerline from whichever side the aircraft is on — rather than
+        // just handing back the current heading.
+        let hdg = approachInterceptHeading(runway: rwy)
         let typeD = c.approachProcedure?.approachType?.display ?? (c.approachName.isEmpty ? "ILS" : c.approachName)
         let typeS = c.approachProcedure?.approachType?.spoken ?? (c.approachName.isEmpty ? "I L S" : c.approachName)
         var tx = ATCTransmission(sender: .atc, facility: .approach,
@@ -1977,6 +1980,23 @@ final class AppModel: ObservableObject {
             spokenText: "Heading \(Phonetic.heading(hdg)), \(c.callsign.spoken).",
             facility: .approach)
         post(tx, speak: true)
+    }
+
+    /// The heading to fly for approach vectors: a 30° intercept to the landing
+    /// runway's final approach course, turning toward the extended centerline from
+    /// whichever side the aircraft is on. Falls back to the current heading when
+    /// the runway or position data is unavailable (e.g. manual practice with no
+    /// telemetry, or an airport not in the coordinate database).
+    private func approachInterceptHeading(runway: String) -> Int {
+        let fallback = ApproachIntercept.normalizedHeading(aircraftState.heading ?? 270)
+        guard let finalCourse = RunwayDatabase.heading(forRunway: runway),
+              let aircraft = aircraftState.coordinate, aircraft.isValid,
+              let airport = airports.coordinate(for: flightPlan.destination), airport.isValid else {
+            return fallback
+        }
+        return ApproachIntercept.heading(finalCourse: finalCourse,
+                                         aircraft: aircraft,
+                                         runwayReference: airport)
     }
 
     func requestApproach() {
