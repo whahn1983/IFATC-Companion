@@ -78,8 +78,15 @@ struct RunwayDatabase {
     /// Magnetic heading implied by a runway ident's leading number (×10).
     /// "22R" -> 220, "4L" -> 40, "36" -> 360.
     private func heading(of ident: String) -> Double {
+        Self.heading(forRunway: ident) ?? 360
+    }
+
+    /// Magnetic heading implied by a runway ident's leading number (×10), or nil
+    /// when the ident carries no usable runway number. "22R" -> 220, "4L" -> 40,
+    /// "36" -> 360. Accurate to within a few degrees of the true runway heading.
+    static func heading(forRunway ident: String) -> Double? {
         let digits = ident.prefix { $0.isNumber }
-        let number = Int(digits) ?? 0
-        return Double(number == 0 ? 360 : number * 10)
+        guard let number = Int(digits), number > 0, number <= 36 else { return nil }
+        return Double(number * 10)
     }
 }

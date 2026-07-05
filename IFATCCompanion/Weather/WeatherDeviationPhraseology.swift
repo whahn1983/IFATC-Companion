@@ -167,6 +167,22 @@ struct WeatherDeviationPhraseology {
         return tx
     }
 
+    /// At the turn in the deviation path: turn back to intercept and rejoin the
+    /// filed route. Names the rejoin fix when one is known. Read back the heading.
+    func rejoinInterceptVector(cs: Callsign, heading: Int, rejoinFix: String?,
+                               facility: ATCFacility = .approach) -> ATCTransmission {
+        let rejoinD = rejoinFix.map { " to rejoin course direct \($0)" } ?? " to rejoin course"
+        let rejoinS = rejoinFix.map { " to rejoin course direct \(Phonetic.spellToken($0, icao: icao))" } ?? " to rejoin course"
+        var tx = center("\(cs.display), fly heading \(headingDisplay(heading))\(rejoinD).",
+               "\(cs.spoken), fly heading \(Phonetic.heading(heading, icao: icao))\(rejoinS).",
+               facility: facility)
+        tx.readback = ATCTransmission.Readback(
+            displayText: "Heading \(headingDisplay(heading)), \(cs.display).",
+            spokenText: "Heading \(Phonetic.heading(heading, icao: icao)), \(cs.spoken).",
+            facility: facility)
+        return tx
+    }
+
     /// Requested side unavailable — approve the other side.
     func unableSideApproval(cs: Callsign, requested: DeviationDirection, approved: DeviationDirection,
                             degrees: Int?, maintainAltitude: Int?, facility: ATCFacility = .center) -> ATCTransmission {

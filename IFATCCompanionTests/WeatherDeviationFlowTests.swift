@@ -103,6 +103,134 @@ final class WeatherDeviationFlowTests: XCTestCase {
         XCTAssertTrue(pilotContains(model, "maintain"), "vector read-back should echo the maintain altitude")
     }
 
+    /// A weather vector must fly toward the recommended reroute (the mint deviation
+    /// path) measured from the aircraft's current position — not the current heading
+    /// offset by the deviation amount. Otherwise a second vector requested while
+    /// already deviated stacks another turn onto the nose and points the wrong way.
+    func testVectorHeadingFollowsMintPathNotCurrentHeading() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)
+
+        // Simulate the aircraft already being deviated well off its filed course:
+        // keep the position, but swing the reported heading 70° to one side. The
+        // recommended reroute is anchored to the route from the current position, so
+        // the vector that follows it must not swing with the nose.
+        var deviated = model.mock.state(for: .cruise)
+        let skewed = ((deviated.heading ?? 0) + 70).truncatingRemainder(dividingBy: 360)
+        deviated.heading = skewed
+        deviated.track = skewed
+        model.ingestStateForTesting(deviated)
+
+        guard let conflict = model.activeWeatherConflict,
+              conflict.deviationPath.count >= 2,
+              let pos = model.aircraftState.coordinate else {
+            return XCTFail("expected a conflict with a deviation path")
+        }
+        let apex = conflict.deviationPath[1]
+        let expected = ((Int(Geo.bearing(from: pos, to: apex).rounded()) % 360) + 360) % 360
+
+        model.requestVectorAroundWeather()
+        XCTAssertEqual(model.weatherDeviation.assignedHeading, expected,
+                       "vector must follow the mint deviation path from the current position")
+
+        // It must NOT be the old current-heading ± degrees offset that caused the bug.
+        let base = Int(skewed.rounded())
+        let degrees = conflict.recommendedDeviationDegrees
+        let naiveRight = ((base + degrees) % 360 + 360) % 360
+        let naiveLeft = ((base - degrees) % 360 + 360) % 360
+        XCTAssertNotEqual(model.weatherDeviation.assignedHeading, naiveRight,
+                          "vector must not stack a fresh right offset on the deviated heading")
+        XCTAssertNotEqual(model.weatherDeviation.assignedHeading, naiveLeft,
+                          "vector must not stack a fresh left offset on the deviated heading")
+    }
+
+    /// The deviation path has a turn in it — deviate around the weather, then turn
+    /// back to intercept the filed route. When the aircraft reaches that turn (the
+    /// apex of the mint line), the controller must automatically issue the turn to
+    /// the rejoin heading, without the pilot asking.
+    func testWeatherVectorAutoTurnsBackAtDeviationApex() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)
+        guard let conflict = model.activeWeatherConflict, conflict.deviationPath.count >= 3 else {
+            return XCTFail("expected a conflict with a deviation path")
+        }
+        let apex = conflict.deviationPath[1]
+        let rejoin = conflict.deviationPath[2]
+        let expectedRejoinHeading = ApproachIntercept.normalizedHeading(Geo.bearing(from: apex, to: rejoin))
+
+        // Pilot requests the vector; the rejoin turn is armed for the apex.
+        model.requestVectorAroundWeather()
+        XCTAssertEqual(model.weatherDeviationState, .vectoringAroundWeather)
+        XCTAssertEqual(model.weatherDeviation.pendingRejoinHeading, expectedRejoinHeading,
+                       "issuing the vector should arm the rejoin turn at the apex")
+
+        let atcBefore = model.transcript.filter { $0.sender == .atc }.count
+
+        // Fly to the turn in the mint line (the apex of the deviation path).
+        var atApex = model.mock.state(for: .cruise)
+        atApex.latitude = apex.latitude
+        atApex.longitude = apex.longitude
+        model.ingestStateForTesting(atApex)
+
+        // The controller automatically turns the aircraft back to intercept course.
+        XCTAssertNil(model.weatherDeviation.pendingRejoinHeading, "the rejoin turn should fire once")
+        XCTAssertEqual(model.weatherDeviation.assignedHeading, expectedRejoinHeading,
+                       "the auto-turn assigns the rejoin heading")
+        XCTAssertTrue(atcContains(model, "rejoin course"),
+                      "controller should issue an automatic turn to rejoin course")
+        XCTAssertGreaterThan(model.transcript.filter { $0.sender == .atc }.count, atcBefore)
+        XCTAssertEqual(model.weatherDeviationState, .vectoringAroundWeather,
+                       "still advising clear of weather after the rejoin turn")
+    }
+
+    /// Flying wide of the apex (never within the capture radius) must still trigger
+    /// the rejoin turn once the aircraft passes abeam/beyond the apex along the
+    /// outbound leg.
+    func testRejoinTurnFiresWhenPassingAbeamApexBeyondRadius() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)
+        guard let conflict = model.activeWeatherConflict, conflict.deviationPath.count >= 3 else {
+            return XCTFail("expected a conflict with a deviation path")
+        }
+        let start = conflict.deviationPath[0]
+        let apex = conflict.deviationPath[1]
+        let legBearing = Geo.bearing(from: start, to: apex)
+
+        model.requestVectorAroundWeather()
+        XCTAssertNotNil(model.weatherDeviation.pendingRejoinHeading)
+
+        // A point 8 NM beyond the apex along the outbound leg — outside the capture
+        // radius, but past the apex's abeam line.
+        let beyondApex = Geo.destination(from: apex, bearingDegrees: legBearing, distanceNM: 8)
+        XCTAssertGreaterThan(Geo.distanceNM(from: beyondApex, to: apex), 4,
+                             "the test point must be outside the capture radius")
+        var atBeyond = model.mock.state(for: .cruise)
+        atBeyond.latitude = beyondApex.latitude
+        atBeyond.longitude = beyondApex.longitude
+        model.ingestStateForTesting(atBeyond)
+
+        XCTAssertNil(model.weatherDeviation.pendingRejoinHeading,
+                     "passing abeam the apex fires the rejoin turn even outside the radius")
+        XCTAssertTrue(atcContains(model, "rejoin course"))
+    }
+
+    /// The rejoin turn is only armed for the vectoring flow, and does not fire
+    /// before the aircraft reaches the apex.
+    func testRejoinTurnDoesNotFireBeforeReachingApex() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)
+        model.requestVectorAroundWeather()
+        XCTAssertNotNil(model.weatherDeviation.pendingRejoinHeading)
+
+        let atcBefore = model.transcript.filter { $0.sender == .atc }.count
+        // A tick well short of the apex must not trigger the turn.
+        model.ingestStateForTesting(model.mock.state(for: .cruise))
+        XCTAssertNotNil(model.weatherDeviation.pendingRejoinHeading,
+                        "the turn stays armed until the aircraft reaches the apex")
+        XCTAssertEqual(model.transcript.filter { $0.sender == .atc }.count, atcBefore,
+                       "no automatic turn before the apex")
+    }
+
     // MARK: - Banner persists for a later reroute
 
     /// After the pilot contacts ATC and elects to continue on course, the weather

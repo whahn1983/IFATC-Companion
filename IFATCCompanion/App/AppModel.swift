@@ -1961,11 +1961,14 @@ final class AppModel: ObservableObject {
     func requestVectors() {
         let c = buildContext(for: atcState, arrivalOverride: true)
         postPilot(pilotEngine.requestVectors(context: c))
-        let hdg = Int(aircraftState.heading ?? 270)
         // Name the approach as "<type> runway <rwy>" (e.g. "ILS runway 01R") rather
         // than a display name that already embeds the runway, to avoid "… ILS RWY
         // 01R runway 01R approach".
         let rwy = c.approachProcedure?.runway ?? c.runway
+        // A real 30° intercept to the final approach course, turning toward the
+        // extended centerline from whichever side the aircraft is on — rather than
+        // just handing back the current heading.
+        let hdg = approachInterceptHeading(runway: rwy)
         let typeD = c.approachProcedure?.approachType?.display ?? (c.approachName.isEmpty ? "ILS" : c.approachName)
         let typeS = c.approachProcedure?.approachType?.spoken ?? (c.approachName.isEmpty ? "I L S" : c.approachName)
         var tx = ATCTransmission(sender: .atc, facility: .approach,
@@ -1977,6 +1980,23 @@ final class AppModel: ObservableObject {
             spokenText: "Heading \(Phonetic.heading(hdg)), \(c.callsign.spoken).",
             facility: .approach)
         post(tx, speak: true)
+    }
+
+    /// The heading to fly for approach vectors: a 30° intercept to the landing
+    /// runway's final approach course, turning toward the extended centerline from
+    /// whichever side the aircraft is on. Falls back to the current heading when
+    /// the runway or position data is unavailable (e.g. manual practice with no
+    /// telemetry, or an airport not in the coordinate database).
+    private func approachInterceptHeading(runway: String) -> Int {
+        let fallback = ApproachIntercept.normalizedHeading(aircraftState.heading ?? 270)
+        guard let finalCourse = RunwayDatabase.heading(forRunway: runway),
+              let aircraft = aircraftState.coordinate, aircraft.isValid,
+              let airport = airports.coordinate(for: flightPlan.destination), airport.isValid else {
+            return fallback
+        }
+        return ApproachIntercept.heading(finalCourse: finalCourse,
+                                         aircraft: aircraft,
+                                         runwayReference: airport)
     }
 
     func requestApproach() {
@@ -2339,6 +2359,8 @@ final class AppModel: ObservableObject {
 
         // Mock Mode auto-issues the advisory once so the offline demo plays out.
         maybeAutoIssueMockAdvisory(conflict: conflict)
+        // When vectoring, auto-issue the turn back to course at the deviation apex.
+        maybeIssueWeatherRejoinTurn()
         updateWeatherDiagnostics(conflict: conflict)
     }
 
@@ -2528,10 +2550,24 @@ final class AppModel: ObservableObject {
         return flightPlan.cruiseAltitude > 0 ? flightPlan.cruiseAltitude : 37000
     }
 
-    /// A heading offset from the current heading toward `direction` by the
-    /// recommended deviation amount, for a vector around weather.
+    /// The heading to fly for a vector around weather.
+    ///
+    /// Prefer the bearing from the current position to the apex of the recommended
+    /// deviation path (the mint line drawn on the map, `deviationPath = [position,
+    /// apex, rejoin]`). Deriving the vector from that path keeps the assigned heading
+    /// consistent with the map and anchored to where the aircraft *is now* — so a
+    /// second vector requested while already deviated turns toward the suggested
+    /// reroute rather than stacking another offset on top of the current heading.
+    ///
+    /// Falls back to offsetting the current heading (or the filed course) by the
+    /// recommended amount when no usable deviation path is available.
     private func weatherDeviationHeading(direction: DeviationDirection) -> Int {
         let pos = aircraftState.coordinate ?? airports.coordinate(for: flightPlan.departure)
+        if let pos, pos.isValid,
+           let apex = activeWeatherConflict?.deviationPath.dropFirst().first, apex.isValid {
+            let bearing = Geo.bearing(from: pos, to: apex)
+            return ((Int(bearing.rounded()) % 360) + 360) % 360
+        }
         let base = aircraftState.heading ?? pos.map { currentCourse(from: $0) } ?? 0
         let degrees = activeWeatherConflict?.recommendedDeviationDegrees ?? 20
         let signed = Int(base.rounded()) + (direction == .right ? degrees : -degrees)
@@ -2636,6 +2672,62 @@ final class AppModel: ObservableObject {
         applyDeviationResult(deviationEngine.requestVectors(
             cs: cs, inputs: deviationInputs(direction: side), context: weatherDeviation,
             facility: weatherFacility))
+        captureWeatherRejoinTurn()
+    }
+
+    /// Capture the turn point (apex) of the recommended deviation path and the
+    /// heading to fly from there back to intercept the filed route, so the telemetry
+    /// loop can auto-issue the rejoin turn when the aircraft reaches that turn in the
+    /// mint line. The deviation path is `[position, apex, rejoin]`.
+    private func captureWeatherRejoinTurn() {
+        weatherDeviation.pendingRejoinHeading = nil
+        weatherDeviation.vectorApexLatitude = nil
+        weatherDeviation.vectorApexLongitude = nil
+        weatherDeviation.vectorLegBearing = nil
+        guard weatherDeviation.state == .vectoringAroundWeather,
+              let path = activeWeatherConflict?.deviationPath, path.count >= 3,
+              path[0].isValid, path[1].isValid, path[2].isValid else { return }
+        let start = path[0], apex = path[1], rejoin = path[2]
+        weatherDeviation.vectorApexLatitude = apex.latitude
+        weatherDeviation.vectorApexLongitude = apex.longitude
+        weatherDeviation.vectorLegBearing = Geo.bearing(from: start, to: apex)
+        weatherDeviation.pendingRejoinHeading =
+            ApproachIntercept.normalizedHeading(Geo.bearing(from: apex, to: rejoin))
+    }
+
+    /// While vectoring around weather, once the aircraft reaches the turn in the
+    /// deviation path (the apex of the mint line), the controller automatically turns
+    /// it back to intercept the filed route. Called each telemetry tick.
+    private func maybeIssueWeatherRejoinTurn() {
+        guard !companionStandby, weatherFlowAllowed,
+              weatherDeviation.state == .vectoringAroundWeather,
+              let heading = weatherDeviation.pendingRejoinHeading,
+              let apexLat = weatherDeviation.vectorApexLatitude,
+              let apexLon = weatherDeviation.vectorApexLongitude,
+              let pos = aircraftState.coordinate, pos.isValid else { return }
+        let apex = CLLocationCoordinate2D(latitude: apexLat, longitude: apexLon)
+        let distance = Geo.distanceNM(from: pos, to: apex)
+        // Fire when near the apex, or once the aircraft has passed abeam/beyond it
+        // along the outbound leg (so flying wide of the apex still triggers the turn).
+        // The capture radius scales with groundspeed (~30 s of travel), min 2 NM, so
+        // a fast aircraft does not skip past the turn between telemetry ticks.
+        let captureNM = max(2.0, (aircraftState.groundSpeed ?? 300) / 120)
+        let reached: Bool
+        if distance <= captureNM {
+            reached = true
+        } else if let legBearing = weatherDeviation.vectorLegBearing {
+            // Along-track distance from the apex in the outbound leg direction; ≥ 0
+            // means the aircraft is at or beyond the apex's abeam line.
+            let apexToAircraft = Geo.bearing(from: apex, to: pos)
+            let alongNM = distance * cos((apexToAircraft - legBearing) * .pi / 180)
+            reached = alongNM >= 0
+        } else {
+            reached = false
+        }
+        guard reached else { return }
+        applyDeviationResult(deviationEngine.rejoinTurn(
+            cs: callsignNow(), heading: heading, rejoinFix: weatherDeviation.rejoinFix,
+            context: weatherDeviation, facility: weatherFacility))
     }
 
     func requestHigherForWeather() {

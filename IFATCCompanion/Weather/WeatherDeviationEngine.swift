@@ -131,6 +131,23 @@ struct WeatherDeviationEngine {
         return Result(pilot: pilotTx, atc: [approval], context: ctx)
     }
 
+    /// At the turn in the deviation path the controller automatically turns the
+    /// aircraft back to intercept and rejoin the filed route. Keeps the vectoring
+    /// state (the pilot still advises clear of weather) and clears the armed turn.
+    func rejoinTurn(cs: Callsign, heading: Int, rejoinFix: String?,
+                    context: WeatherDeviationContext, facility: ATCFacility) -> Result {
+        var ctx = context
+        let tx = phraseology.rejoinInterceptVector(cs: cs, heading: heading,
+                                                   rejoinFix: rejoinFix, facility: facility)
+        ctx.assignedHeading = heading
+        ctx.pendingRejoinHeading = nil
+        ctx.vectorApexLatitude = nil
+        ctx.vectorApexLongitude = nil
+        ctx.vectorLegBearing = nil
+        ctx.lastATCWeatherCall = tx.displayText
+        return Result(pilot: nil, atc: [tx], context: ctx)
+    }
+
     /// Pilot requests higher/lower for weather; controller assigns the altitude.
     func requestAltitude(cs: Callsign, higher: Bool, targetAltitude: Int,
                          context: WeatherDeviationContext, facility: ATCFacility) -> Result {
