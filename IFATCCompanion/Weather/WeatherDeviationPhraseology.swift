@@ -84,28 +84,32 @@ struct WeatherDeviationPhraseology {
                                facility: ATCFacility = .center) -> ATCTransmission {
         let degD = String(degrees)
         let degS = Phonetic.spellDigits(degD, icao: icao)
-        return pilot("Center, \(cs.display) requests \(degD) degrees \(direction.word) for weather.",
-                     "Center, \(cs.spoken) requests \(degS) degrees \(direction.word) for weather.",
+        let f = facility.spokenName
+        return pilot("\(f), \(cs.display) requests \(degD) degrees \(direction.word) for weather.",
+                     "\(f), \(cs.spoken) requests \(degS) degrees \(direction.word) for weather.",
                      facility: facility)
     }
 
     func pilotRequestDirectDeviation(cs: Callsign, direction: DeviationDirection,
                                      facility: ATCFacility = .center) -> ATCTransmission {
-        pilot("Center, \(cs.display) requests deviation \(direction.word) of course for weather.",
-              "Center, \(cs.spoken) requests deviation \(direction.word) of course for weather.",
+        let f = facility.spokenName
+        return pilot("\(f), \(cs.display) requests deviation \(direction.word) of course for weather.",
+              "\(f), \(cs.spoken) requests deviation \(direction.word) of course for weather.",
               facility: facility)
     }
 
     func pilotRequestVectors(cs: Callsign, facility: ATCFacility = .center) -> ATCTransmission {
-        pilot("Center, \(cs.display) requests vectors around weather.",
-              "Center, \(cs.spoken) requests vectors around weather.",
+        let f = facility.spokenName
+        return pilot("\(f), \(cs.display) requests vectors around weather.",
+              "\(f), \(cs.spoken) requests vectors around weather.",
               facility: facility)
     }
 
     func pilotRequestAltitude(cs: Callsign, higher: Bool, facility: ATCFacility = .center) -> ATCTransmission {
         let word = higher ? "higher" : "lower"
-        return pilot("Center, \(cs.display) requests \(word) for weather.",
-                     "Center, \(cs.spoken) requests \(word) for weather.",
+        let f = facility.spokenName
+        return pilot("\(f), \(cs.display) requests \(word) for weather.",
+                     "\(f), \(cs.spoken) requests \(word) for weather.",
                      facility: facility)
     }
 

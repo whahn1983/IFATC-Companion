@@ -149,6 +149,23 @@ final class WeatherDeviationFlowTests: XCTestCase {
         XCTAssertTrue(star.readback?.displayText.contains("HOBTT") ?? false, star.readback?.displayText ?? "")
     }
 
+    /// Pilot weather requests address whatever controller is working the flight —
+    /// Approach on arrival, Departure on climb — not a hard-coded "Center".
+    func testPilotWeatherRequestsAddressTunedFacility() {
+        let phr = WeatherDeviationPhraseology(engine: PhraseologyEngine(digitStyle: .individual, mode: .faa))
+        let cs = phr.engine.callsign(airline: "United", flightNumber: "598", fallback: "")
+
+        let approach = phr.pilotRequestDeviation(cs: cs, direction: .right, degrees: 20, facility: .approach)
+        XCTAssertTrue(approach.displayText.hasPrefix("Approach,"), approach.displayText)
+        XCTAssertTrue(approach.spokenText.hasPrefix("Approach,"), approach.spokenText)
+
+        let departure = phr.pilotRequestVectors(cs: cs, facility: .departure)
+        XCTAssertTrue(departure.displayText.hasPrefix("Departure,"), departure.displayText)
+
+        let center = phr.pilotRequestAltitude(cs: cs, higher: true, facility: .center)
+        XCTAssertTrue(center.displayText.hasPrefix("Center,"), center.displayText)
+    }
+
     /// Rejoining the STAR echoes the direct fix and the descend-via clearance.
     func testRejoinStarReadbackEchoesDirectFixAndDescendVia() {
         let phr = WeatherDeviationPhraseology(engine: PhraseologyEngine(digitStyle: .individual, mode: .faa))
