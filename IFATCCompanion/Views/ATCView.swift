@@ -217,8 +217,8 @@ struct ATCView: View {
 
     // MARK: - Weather deviation
 
-    /// "Weather ahead — ask Center" banner. Tapping asks Center for the simulated
-    /// weather advisory. Shown only when a route-weather conflict exists.
+    /// "Weather ahead — contact ATC" banner. Tapping contacts the tuned controller
+    /// for the simulated weather advisory. Shown only when a route-weather conflict exists.
     private var weatherBanner: some View {
         Button {
             model.askCenterAboutWeather()
@@ -228,7 +228,7 @@ struct ATCView: View {
                 Text(model.weatherBannerText)
                     .font(.subheadline.weight(.semibold))
                 Spacer(minLength: 0)
-                Text("Ask Center").font(.caption.weight(.semibold))
+                Text("Contact ATC").font(.caption.weight(.semibold))
                 Image(systemName: "chevron.right").font(.caption)
             }
             .padding(.horizontal, 14)
@@ -278,7 +278,7 @@ struct ATCView: View {
     private func weatherActionButton(for action: WeatherDeviationAction) -> some View {
         switch action {
         case .askCenter:
-            ActionButton(title: "Ask Center", systemImage: "cloud") { model.askCenterAboutWeather() }
+            ActionButton(title: "Contact ATC", systemImage: "cloud") { model.askCenterAboutWeather() }
         case .requestRightDeviation:
             ActionButton(title: "Right Dev", systemImage: "arrow.turn.up.right") { model.requestWeatherDeviation(.right) }
         case .requestLeftDeviation:

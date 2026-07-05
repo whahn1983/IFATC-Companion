@@ -115,10 +115,12 @@ UI labels: NOAA and OPERA both show *"Radar precipitation"*; NASA shows
    computes distance, clock position(s), estimated time, severity, a left/right
    bypass score, a recommended deviation amount, and a downstream rejoin fix.
 3. **Advisory.** When a conflict warrants prompting, ATCView shows a
-   *"Weather ahead — ask Center"* banner. Tapping **Ask Center** (or, in the Mock
+   *"Weather ahead — contact ATC"* banner. Tapping **Contact ATC** (or, in the Mock
    demo, automatically) issues a simulated advisory ("area of heavy precipitation
    …, say intentions"), degrading gracefully to *"movement unknown"* /
-   *"intensity unknown"* and to the SIGMET / no-advisory variants.
+   *"intensity unknown"* and to the SIGMET / no-advisory variants. The calls and
+   read-backs address whichever radar controller is currently tuned — Departure on
+   climb, Center enroute, Approach on arrival.
 4. **Deviation.** The pilot can request a right/left deviation, vectors around
    weather, or higher/lower for weather. Simulated ATC approves — with a suggested
    deviation (default 20°, 10° for small/light cells, 20–30° for moderate/heavy,
@@ -129,8 +131,9 @@ UI labels: NOAA and OPERA both show *"Radar precipitation"*; NASA shows
    the rejoin fix (or *"resume own navigation"* when already near the route), or
    rejoins the STAR.
 
-The deviation flow only runs during the enroute/arrival phases (Center/Approach).
-It is conservative in departure/climb, preserves altitude restrictions on a STAR,
+The deviation flow runs during the airborne enroute/climb/arrival phases and works
+with whichever radar controller is tuned (Departure, Center, or Approach).
+It preserves altitude restrictions on a STAR,
 never interferes with takeoff/landing clearance logic, and shows an advisory-only
 state when established on final.
 

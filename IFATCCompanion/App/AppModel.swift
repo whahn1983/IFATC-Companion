@@ -2437,16 +2437,16 @@ final class AppModel: ObservableObject {
         atcState == .final || atcState == .landing
     }
 
-    /// Whether the "Weather ahead — ask Center" banner should be shown in ATCView.
+    /// Whether the "Weather ahead — contact ATC" banner should be shown in ATCView.
     var weatherBannerVisible: Bool {
         guard settings.weatherDeviationAlerts.alertsEnabled, weatherFlowAllowed, !weatherHandled else { return false }
         guard let conflict = activeWeatherConflict, conflict.shouldPrompt else { return false }
         return weatherDeviation.state == .none || weatherDeviation.state == .weatherAheadDetected
     }
 
-    /// The banner text (advisory-only near final, else the ask-Center prompt).
+    /// The banner text (advisory-only near final, else the contact-ATC prompt).
     var weatherBannerText: String {
-        establishedOnFinal ? "Weather near final — advisory only" : "Weather ahead — ask Center"
+        establishedOnFinal ? "Weather near final — advisory only" : "Weather ahead — contact ATC"
     }
 
     /// Whether the weather-deviation response card should be shown in ATCView.
@@ -2478,12 +2478,20 @@ final class AppModel: ObservableObject {
 
     // MARK: - Weather deviation — pilot actions
 
-    /// The controller working the weather deviation (Approach on arrival, else Center).
+    /// The controller working the weather deviation. Uses whatever radar controller
+    /// is currently tuned — Departure on climb, Approach on arrival, Center enroute —
+    /// so the weather calls and read-backs address the active facility. Falls back to
+    /// the phase of flight when the tuned facility is not an enroute/radar position.
     private var weatherFacility: ATCFacility {
-        if currentFacility == .approach { return .approach }
-        switch phase {
-        case .approach, .descent: return .approach
-        default: return .center
+        switch currentFacility {
+        case .departure, .center, .approach:
+            return currentFacility
+        default:
+            switch phase {
+            case .approach, .descent: return .approach
+            case .initialClimb, .climb: return .departure
+            default: return .center
+            }
         }
     }
 
@@ -2574,22 +2582,23 @@ final class AppModel: ObservableObject {
                         fallback: flightPlan.callsign)
     }
 
-    /// Pilot taps "Ask Center": the controller volunteers the weather advisory.
+    /// Pilot taps "Contact ATC": the controller volunteers the weather advisory.
     func askCenterAboutWeather() {
         guard !companionStandby else { return }
         weatherHandled = true
         let cs = callsignNow()
+        let facility = weatherFacility
         if let situation = currentWeatherSituation() {
             // A brief pilot query, then the controller's advisory.
-            postPilot(ATCTransmission(sender: .pilot, facility: weatherFacility,
-                displayText: "Center, \(cs.display), weather ahead, requesting advisory.",
-                spokenText: "Center, \(cs.spoken), weather ahead, requesting advisory."))
+            postPilot(ATCTransmission(sender: .pilot, facility: facility,
+                displayText: "\(facility.spokenName), \(cs.display), weather ahead, requesting advisory.",
+                spokenText: "\(facility.spokenName), \(cs.spoken), weather ahead, requesting advisory."))
             applyDeviationResult(deviationEngine.issueAdvisory(cs: cs, situation: situation,
                                                               context: weatherDeviation,
-                                                              facility: weatherFacility))
+                                                              facility: facility))
         } else {
             // Coverage but nothing significant along the route.
-            post(ATCTransmission(sender: .atc, facility: weatherFacility,
+            post(ATCTransmission(sender: .atc, facility: facility,
                 displayText: "\(cs.display), no significant precipitation along your route at this time.",
                 spokenText: "\(cs.spoken), no significant precipitation along your route at this time."),
                 speak: true)
