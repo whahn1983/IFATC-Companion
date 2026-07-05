@@ -1537,6 +1537,7 @@ final class AppModel: ObservableObject {
             arrivalAnnounced: arrivalAnnounced,
             awaitingGateArrival: awaitingGateArrival,
             manualTuning: manualTuning,
+            weatherDeviation: weatherDeviation,
             transcript: transcript,
             departure: flightPlan.departure,
             destination: flightPlan.destination,
@@ -1553,7 +1554,7 @@ final class AppModel: ObservableObject {
         let sig = [stateMachine.current.rawValue, atcState.rawValue, currentFacility.rawValue,
                    phase.rawValue, String(assignedAltitude), String(hasDeparted),
                    String(arrivalAnnounced), String(awaitingGateArrival), String(manualTuning),
-                   String(transcript.count)].joined(separator: "|")
+                   weatherDeviation.state.rawValue, String(transcript.count)].joined(separator: "|")
         let now = Date()
         let heartbeatDue = lastPersistedAt.map { now.timeIntervalSince($0) >= persistHeartbeat } ?? true
         guard sig != lastPersistSignature || heartbeatDue else { return }
@@ -1587,6 +1588,11 @@ final class AppModel: ObservableObject {
         arrivalAnnounced = snap.arrivalAnnounced
         awaitingGateArrival = snap.awaitingGateArrival
         manualTuning = snap.manualTuning
+        // Resume an in-progress weather diversion so the deviation card (and its
+        // "clear of weather" button) survives the reconnect. A subsequent telemetry
+        // tick may still clear a non-committed lifecycle if the weather is gone, but
+        // a committed diversion stays put until the pilot reports clear of weather.
+        if let deviation = snap.weatherDeviation { weatherDeviation = deviation }
         if !snap.transcript.isEmpty {
             transcript = snap.transcript
             let lastATC = snap.transcript.last { $0.sender == .atc }
