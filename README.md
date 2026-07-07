@@ -1,144 +1,130 @@
 # IFATC Companion
 
-IFATC Companion is a deterministic, local-only air traffic control (ATC) companion for the flight simulator [Infinite Flight](https://infiniteflight.com). You fly Infinite Flight on an iPad; this iPhone app runs on the same Wi-Fi network, connects to Infinite Flight via the local **Infinite Flight Connect API v2**, reads your aircraft state and flight data, and produces realistic ATC-style conversation when no staffed (human) ATC is available. There is no backend, no AI/LLM, no accounts, and no internet dependency beyond free public aviation weather.
+**IFATC Companion** is your personal, simulated air traffic control (ATC) companion for the flight simulator [Infinite Flight](https://infiniteflight.com). You fly Infinite Flight on your iPad; IFATC Companion runs on your iPhone, connects to Infinite Flight over your local Wi-Fi network, and talks you through your flight gate-to-gate with realistic, spoken ATC — approach, tower, ground, departure, ramp, and en-route — whenever no human (staffed) controller is online.
 
-## What it does
+Everything runs on your device. There are no accounts to create, no logins, no ads, and no AI/chatbot in the loop — just deterministic, real-world-style radio phraseology built from your live flight, plus free public aviation weather.
 
-IFATC Companion provides simulated, procedural ATC and pilot phraseology driven entirely by your live flight state, organized into five tabs:
+> **Not affiliated with Infinite Flight.** IFATC Companion is an independent, third-party app. It is **not** created, endorsed, sponsored by, or affiliated with Infinite Flight LLC or its products in any way. "Infinite Flight" and related marks are the property of their respective owners. Infinite Flight is required to use Live Connected Mode and is sold separately.
 
-- **ATC** — Live ATC-style conversation transcript driven by an internal state machine. Generates approach, tower, ground, departure, and en-route style calls plus pilot readbacks, all spoken aloud with text-to-speech. **Push-to-talk** lets you speak readbacks and requests (on-device recognition). When a human controller is detected on a multiplayer server, the companion **stands by** and defers to the live controller.
-- **Flight** — Current aircraft state and flight plan: position, altitude, heading, speed, vertical speed, flight phase, and route.
-- **Weather** — METAR, TAF, PIREP, and SIGMET briefings from NOAA, with a route weather analysis, a composite ride-quality model, and a **ForeFlight-style route/weather map overlay**.
-- **Settings** — Connection (Host/IP + Port), voices, phraseology and unit preferences.
-- **Diagnostics** — Connection status, Connect API manifest discovery, Mock Mode toggle, and troubleshooting information.
+---
 
-Key feature highlights:
+## What you get
 
-- Deterministic, template-based phraseology engine ("niner", "flight level three seven zero", etc.) — no generative AI, fully reproducible.
-- **Selectable FAA and ICAO phraseology packs** (digit words, "decimal" vs "point", QNH/hPa vs inHg) plus **user-created phraseology profiles** (custom call templates and airline call sets, shareable as JSON).
-- **Push-to-talk** with on-device speech recognition and deterministic intent parsing.
-- **Hybrid ATC flow (real-world)** — **you drive your own pilot calls** with the buttons (clearance → pushback → engine start → taxi → ready, plus read backs and check-ins), and the **controller's position-based calls play automatically**: **takeoff clearance once you line up on the runway** (with the initial departure heading + climb), automatic **facility hand-offs** (Departure, then Center at a configurable FL180 TRACON ceiling, Approach, Tower, Ground), descent, cleared approach, cleared to land, and taxi-in to the gate. The takeoff/departure vectors are built from your filed route. The response buttons are **tied to the controller you're tuned to and the phase of flight**, so only the calls that make sense right now are shown (Clearance at the gate, push/start on Ramp, taxi on Ground, takeoff on Tower, the enroute/arrival requests on their controllers) instead of every button all the time. Requesting **taxi while still on the Ramp hands you to Ground** and stops there — you request taxi again on Ground for the actual taxi clearance, so the flow never jumps Ramp → Ground → taxi on its own. A **Tune Frequency** card also lets you change controllers with a button, showing the controller you're working plus the next one ahead — the first manual tune hands progression to you, so the next call waits for your next frequency change instead of the calls playing one after the next. In Mock Mode use those buttons to drive the flight forward, and a **Clear Flight** button resets the conversation for a new flight. The complete call sequence is documented in [`docs/ATC-Flow.md`](docs/ATC-Flow.md).
-- **Flight plan read from Infinite Flight** — the companion reads your IF flight plan (`aircraft/0/flightplan`) and uses the departure, destination and route fixes for clearances and departure vectors (manual overrides still win).
-- **Call sign parsing** — entered on the main ATC page (Infinite Flight's Connect API does not expose the user's own call sign), a call sign such as `UA598` or `UAL598` is resolved to its radiotelephony name and flight number ("United five niner eight") using a built-in airline database covering ICAO and IATA designators for the common carriers; unrecognized call signs (e.g. tail numbers like `N123AB`) are spelled out phonetically.
-- **Procedure-aware** instructions: SID/STAR/approach name parsing with a built-in fix library.
+IFATC Companion is organized into five tabs:
+
+- **ATC** — A live, spoken ATC conversation for your flight. It generates clearances, taxi instructions, takeoff and landing clearances, hand-offs, descents, and approach clearances — plus your pilot read-backs — all read aloud with distinct voices for each controller and for you. You drive your own pilot calls with on-screen buttons or **push-to-talk**, and the controller's position-based calls play automatically at the right moments.
+- **Flight** — Your live aircraft state and flight plan at a glance: position, altitude, heading, speed, vertical speed, flight phase, and route.
+- **Weather** — Aviation weather briefings (METAR, TAF, PIREP, SIGMET) with a route weather analysis, a ride-quality/turbulence outlook, a **route map with a radar precipitation overlay**, and a simulated **weather-deviation** flow with ATC.
+- **Settings** — Your connection to Infinite Flight, controller and pilot voices, phraseology and unit preferences, custom phraseology profiles, weather options, and your subscription.
+- **Diagnostics** — Connection status and troubleshooting, plus the free **Mock Mode** toggle for a full offline demo flight.
+
+---
+
+## Key features
+
+### Realistic, gate-to-gate ATC
+- **Hybrid ATC flow.** You drive your own pilot calls — clearance → pushback → engine start → taxi → ready, plus read-backs and check-ins — and the controller responds. Position-based controller calls play automatically: your **takeoff clearance fires once you line up on the runway** (with your initial heading and climb), then automatic hand-offs to Departure, Center, Approach, Tower, and Ground follow you through the flight, including descent, cleared approach, cleared to land, and taxi-in to the gate.
+- **Smart, context-aware buttons.** Only the calls that make sense right now are shown — Clearance at the gate, pushback and start on the Ramp, taxi on Ground, takeoff on Tower, and the en-route and arrival requests on their controllers — instead of every button all the time.
+- **Tune Frequency card.** Change controllers yourself with a button. It shows the controller you're working plus the next one ahead, and once you start tuning manually, the flow waits for you to make each frequency change.
+- **Reads your Infinite Flight flight plan.** Your filed departure, destination, and route are used for clearances and departure vectors. Manual overrides always win when you want to set something yourself.
+- **Call sign recognition.** Enter a call sign like `UA598` or `UAL598` and it's spoken as its real radio name ("United five niner eight") using a built-in airline database; tail numbers like `N123AB` are spelled out phonetically.
+- **Procedure-aware.** SID, STAR, and approach names are recognized and referenced in your clearances.
 - **Modeled taxi routing** with taxiways, runway crossings, and ramp routes.
-- **Multiplayer / human-ATC staffing detection** so the companion steps aside for live controllers.
-- Automatic flight-phase detection (parked, taxi, takeoff, climb, cruise, descent, approach, landing, etc.).
-- Offline text-to-speech via `AVSpeechSynthesizer`, with **per-facility controller voices and a separate pilot voice** — your readbacks and requests are spoken aloud when you use the buttons (push-to-talk input is never repeated).
-- Free aviation weather from NOAA (no API keys), a composite turbulence/ride-quality model, and a MapKit route overlay.
-- Mock Mode for a complete demo in the iOS Simulator with no Infinite Flight present.
+- **Ramp handling** as a first-class facility — pushback, engine-start coordination, and the hand-off to Ground — modeled separately from ATC ground control.
+- **Push-to-talk.** Hold to talk and speak your read-backs and requests. Recognition runs entirely on your device.
+- **Distinct voices** for each controller position and a separate pilot voice, all spoken offline.
 
-## Requirements
+### Phraseology you can trust
+- **FAA (US) phraseology by default**, faithful to real-world procedures, with a selectable **ICAO** pack (different digit words, "decimal" vs "point", QNH/hPa vs inHg).
+- **Custom phraseology profiles.** Create your own call templates and airline call sets, and share them as files.
+- **Safe, current wording, enforced.** Outdated or unsafe phrases are blocked — takeoff and landing clearances always include the runway, "line up and wait" is used instead of "position and hold", and so on.
 
-- **Xcode 26.x** with the iOS 26 SDK.
-- **iOS 17.0 or later** (minimum deployment target).
-- For **live mode**: an iPad running Infinite Flight on the **same Wi-Fi network** as the iPhone running this app.
-- For **demo/offline use**: Mock Mode, which requires no Infinite Flight and runs fully in the iOS Simulator.
+### Weather and weather routing
+- **Aviation weather briefings** — METAR, TAF, PIREP, and SIGMET, sourced from free public NOAA data (no keys, no subscriptions to weather services).
+- **Route weather analysis** and a **composite ride-quality / turbulence outlook** that blends pilot reports, advisories, and surface winds into a continuous ride index.
+- **Route map with a radar precipitation overlay.** See your route, your live aircraft position, and precipitation where coverage is available (NOAA/NWS radar in the U.S., EUMETNET OPERA radar in Europe, and a NASA satellite precipitation estimate elsewhere), with clear data-source labels and coverage notes.
+- **Simulated weather-deviation flow.** When weather is detected along your route, ATC gives an advisory and you can request a deviation ("twenty degrees right for weather"), get a suggested heading and a rejoin point, then report clear of weather and be cleared back on course — all simulated, for immersion only.
 
-## How to run
+### Convenience
+- **Resume on reconnect.** If your Wi-Fi drops or you relaunch the app, your in-progress flight and conversation pick up where they left off.
+- **Clear Flight** button to reset the conversation and start fresh.
+- **Auto-discover** to find Infinite Flight on your local network.
+- **Multiplayer awareness.** When a human controller is staffing your airport on a multiplayer server, IFATC Companion detects it and **stands by** so it never talks over the real controller.
 
-1. Open `IFATCCompanion.xcodeproj` in Xcode 26.x.
-2. Select an iPhone simulator or a connected iPhone device.
-3. Build & Run (Cmd-R).
-4. In the iOS Simulator there is no Infinite Flight available, so the app starts in (or you can enable) **Mock Mode** from the **Diagnostics** tab to see a full simulated flight.
+---
 
-The app uses synchronized file groups, so any new Swift files added to the source folder are automatically included in the project.
+## Getting started
 
-## Enabling the Infinite Flight Connect API
+### Free demo — Mock Mode
+You can try the whole app for free, with no Infinite Flight and no subscription, using **Mock Mode**. Open the **Diagnostics** tab and turn on Mock Mode to fly a complete simulated flight — every call, the weather flow, and the map — right on your iPhone.
 
-On the iPad running Infinite Flight:
+### Flying with Infinite Flight — Live Connected Mode
+To connect IFATC Companion to your real Infinite Flight session, you'll need **Live Connected Mode** (a subscription — see below) and Infinite Flight running on another device on the same Wi-Fi network.
 
-1. Open **Settings → General**.
-2. Enable **"Infinite Flight Connect"**.
-3. Note the iPad's **IP address** shown there. You will enter this in IFATC Companion.
+**1. Turn on Infinite Flight Connect (on the device running Infinite Flight):**
+- Open **Settings → General** in Infinite Flight.
+- Enable **"Infinite Flight Connect"**.
+- Note the **IP address** shown there.
 
-## Entering the iPad IP address
+**2. Connect IFATC Companion (on your iPhone):**
+- Open the **Settings** tab.
+- Enter the **Host/IP** and **Port** from Infinite Flight (the default port is **10112**), or use **auto-discover** to find it automatically.
 
-On the iPhone running IFATC Companion:
+Once connected, IFATC Companion reads your live aircraft state and flight plan automatically, and the ATC conversation follows your flight.
 
-1. Open the **Settings** tab.
-2. Enter the iPad's **Host/IP** and **Port** (default port **10112**).
-3. Alternatively, use **auto-discover** to find Infinite Flight on the local network.
+---
 
-Once connected, the app reads live aircraft state and your flight plan automatically.
+## Subscription
+
+- **Mock Mode is free** and never requires a subscription — you can explore the full experience offline.
+- **Live Connected Mode** — connecting to your live Infinite Flight session — is unlocked with a subscription:
+  - **Monthly** or **Annual** options, with pricing shown in your local currency in the app.
+  - Manage or cancel anytime in your Apple Account settings.
+
+Live Connected Mode requires Infinite Flight, which is sold separately.
+
+---
 
 ## Multiplayer etiquette
 
-**IFATC Companion is NOT staffed (human) ATC.** It is a personal, simulated ATC companion for your own situational awareness and immersion.
+**IFATC Companion is NOT staffed (human) ATC.** It's a personal companion for your own situational awareness and immersion.
 
 - It does **not** impersonate live controllers and must never be presented as official or human ATC.
-- When ATC is staffed by a real controller, follow that controller — not this app.
+- When a real controller is on frequency, follow that controller — not this app. IFATC Companion detects staffed ATC and steps aside automatically.
 
-Use it responsibly and in keeping with Infinite Flight community standards.
+Please use it responsibly and in keeping with Infinite Flight community standards.
 
-## Phraseology, Ramp, and clearance modes
+---
 
-IFATC Companion uses **FAA / US phraseology** as the default, authoritative ATC
-mode (FAA JO 7110.65, AIM, Pilot/Controller Glossary, Chart Supplement). ICAO is a
-separate selectable pack and is never mixed into FAA mode. The full call reference
-is in [`docs/GateToGatePhraseology.md`](docs/GateToGatePhraseology.md), the
-structured catalog in [`Resources/GateToGateCallCatalog.json`](Resources/GateToGateCallCatalog.json),
-and the audit of corrections in [`docs/PhraseologyAudit.md`](docs/PhraseologyAudit.md).
+## Good to know
 
-- **Simulated private ATC only.** Every call is for *you*. The app is never staffed
-  (human) ATC for other multiplayer users and defers to live controllers.
-- **Ramp is a first-class, simulated facility — not FAA ATC.** Pushback, engine-start
-  coordination, alley/spot movement, hold/give-way, and the handoff to Ground happen
-  on **Ramp** (a *local/airline/company procedure* that varies by airport). Ramp is
-  modeled **separately from Ground** and never issues runway, takeoff, landing,
-  crossing, route, altitude, heading, SID, STAR, or approach instructions.
-- **Non-movement vs movement area.** Ramp controls the non-movement area up to the
-  **spot / movement-area boundary**, where it hands off to **Ground** (FAA ATC),
-  which controls taxiways and runway crossings. On arrival, Ground hands back to Ramp
-  at the ramp boundary when a ramp profile applies.
-- **Ramp profiles.** A `RampProfile` system lets ramp behavior vary by airport
-  without code changes. With no airport profile, a conservative **generic airline
-  ramp** is used: push requires approval, tail/face direction is given only when
-  known (else "push approved, advise ready to taxi"), and the app never invents
-  precise spots.
-- **Safe phraseology, enforced.** A `PhraseologyValidator` blocks banned/outdated
-  wording — never "cleared to taxi", "cleared for pushback", "position and hold",
-  "takeoff at your discretion", "any traffic please advise", or "active runway".
-  Taxi instructions use "taxi/hold short/cross/continue/give way"; takeoff and
-  landing clearances always include the runway; "line up and wait" replaces
-  "position and hold".
-- **Clearance modes (planned).** Commercial flights may receive a PDC/CPDLC-style
-  text clearance instead of a full voice readback; the catalog/docs define both, and
-  a Voice/PDC/Auto setting is the next step (current runtime is voice clearance).
-- **Manual overrides.** When Infinite Flight doesn't expose a field, you can set
-  callsign, airline, flight number, departure/destination/alternate, departure
-  and arrival gates, ramp
-  profile/frequency/spot, runway, SID/STAR/approach, cruise altitude, ATIS codes,
-  departure frequency, squawk, and taxi route. Missing data falls back to
-  conservative phraseology rather than guessing.
+IFATC Companion aims for realism, but a few things are worth setting expectations on:
 
-## Known limitations
+- ATC is procedural and doesn't model every real-world situation or controller decision.
+- Flight-phase detection is automatic and occasionally misjudges a transition.
+- Taxi routing and procedure references use built-in datasets that cover the demo airports in detail and fall back to sensible defaults elsewhere.
+- Push-to-talk accuracy depends on your device and microphone.
 
-- ATC behavior is procedural and template-driven; it does not model every real-world situation or every controller decision.
-- Phase detection is heuristic and may occasionally misjudge transitions.
-- Taxi routing is modeled from a built-in airport-surface dataset for the demo airports, with a deterministic fallback elsewhere — it is not full, surveyed surface routing.
-- SID/STAR/approach names are parsed and referenced, enriched from a small built-in fix library; published charts are not ingested in full.
-- Multiplayer / human-ATC staffing detection is best-effort and signature-based against the Connect manifest; exact field coverage varies by Infinite Flight version.
-- Push-to-talk uses on-device speech recognition; accuracy depends on the device and microphone, and intent mapping is keyword-based.
+**About the weather:** it comes from free public NOAA sources, so availability depends on NOAA coverage and uptime, some fields are best-effort, and data may be a few minutes old or unavailable offline. Radar precipitation is only true radar where NOAA (U.S.) or EUMETNET OPERA (Europe) provide it; elsewhere it's a lower-confidence satellite estimate, and above roughly ±60° latitude it may be unavailable. **All weather, radar, and deviation features are for simulation, training, and entertainment only — never for real-world flight.**
 
-### Weather data limitations
+---
 
-Weather is sourced from free public NOAA Aviation Weather Center endpoints (aviationweather.gov), with no API keys. As a result:
+## Your privacy
 
-- Availability depends on NOAA endpoint uptime and coverage for your region.
-- Parsing of METAR/TAF/PIREP/SIGMET is best-effort and may not interpret every field.
-- Results are cached, so data may be a few minutes old or unavailable when offline.
+IFATC Companion is built to be private and self-contained:
 
-## No AI / No backend
+- **No accounts, no login, no sign-up.**
+- **No ads and no analytics or tracking.**
+- **No AI or chatbot** — every call is produced by deterministic, real-world-style phraseology on your device.
+- **No cloud servers of ours.** The only network connections are the local link to Infinite Flight on your own Wi-Fi and free public NOAA weather.
+- **Push-to-talk stays on your device** — speech recognition uses Apple's on-device framework and makes no calls to us.
 
-IFATC Companion is **deterministic and local-only**. There is:
+See the [Privacy Policy](https://whahn1983.github.io/IFATC-Companion/privacy-policy.html) for details.
 
-- **No** backend server.
-- **No** generative AI/LLM of any kind.
-- **No** paid APIs, accounts, login, analytics, ads, or in-app purchases.
+---
 
-All ATC and pilot phraseology is produced by deterministic, template-based engines on-device. Push-to-talk uses Apple's on-device Speech framework purely to transcribe your microphone input (it is not an LLM and makes no network calls); the resulting text is mapped to actions by deterministic keyword rules. The only network usage is the local Infinite Flight Connect connection and free public NOAA weather.
+## Legal
 
-## License
+IFATC Companion is proprietary software. Copyright © 2026 H3 Consulting Partners LLC. All rights reserved.
 
-This software is proprietary. See [`LICENSE`](LICENSE). Copyright © 2026 H3 Consulting Partners LLC. All rights reserved.
+IFATC Companion is an independent app and is **not** affiliated with, endorsed by, or sponsored by Infinite Flight LLC. "Infinite Flight" and all related names and marks are trademarks of their respective owners.
