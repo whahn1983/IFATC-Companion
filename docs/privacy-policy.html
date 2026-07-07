@@ -221,6 +221,10 @@
     precipitation imagery for the map area you are viewing from the following public services:
   </p>
   <ul>
+    <li><strong>NOAA / U.S. National Weather Service (NWS)</strong> — radar base-reflectivity
+      precipitation, used in NOAA-covered radar regions (contiguous U.S., Alaska, Hawaii, and Puerto
+      Rico approximations) and served from <code>mapservices.weather.noaa.gov</code>. Radar
+      precipitation data: NOAA/NWS.</li>
     <li><strong>EUMETNET OPERA</strong> — European radar precipitation composites, used where OPERA
       radar coverage is available (Europe). Radar precipitation data: EUMETNET OPERA (CC BY 4.0).</li>
     <li><strong>NASA Global Imagery Browse Services (GIBS)</strong> — a global satellite precipitation
@@ -233,7 +237,7 @@
     <li>Like any internet request, these providers may receive your device's IP address and standard
       request metadata as part of normal network operation. Your use of each service is subject to that
       provider's own policies.</li>
-    <li>Both services require no API key and no account.</li>
+    <li>These services require no API key and no account.</li>
   </ul>
 
   <h3>3.4 Maps</h3>
@@ -296,6 +300,13 @@
         <td>No</td>
       </tr>
       <tr>
+        <td>Precipitation radar / satellite imagery</td>
+        <td>NOAA / U.S. National Weather Service (<code>mapservices.weather.noaa.gov</code>),
+          EUMETNET OPERA, or NASA Global Imagery Browse Services (GIBS) over the internet</td>
+        <td>Only the map area (bounding box) being displayed; IP/request metadata</td>
+        <td>No</td>
+      </tr>
+      <tr>
         <td>Speech recognition (only if on-device is unavailable)</td>
         <td>Apple Speech services</td>
         <td>Microphone audio for transcription, handled by Apple</td>
@@ -325,6 +336,13 @@
       <a href="https://infiniteflight.com/legal/privacy" rel="noopener" target="_blank">Infinite Flight's privacy policy</a>.</li>
     <li><strong>NOAA Aviation Weather Center</strong> (U.S. National Weather Service /
       <code>aviationweather.gov</code>) — public aviation weather data.</li>
+    <li><strong>NOAA / U.S. National Weather Service radar</strong>
+      (<code>mapservices.weather.noaa.gov</code>) — public radar precipitation imagery for
+      NOAA-covered regions.</li>
+    <li><strong>EUMETNET OPERA</strong> — European radar precipitation composites (CC BY 4.0).</li>
+    <li><strong>NASA Global Imagery Browse Services (GIBS)</strong> — global satellite precipitation
+      estimate imagery (part of NASA's Earth Science Data and Information System, using GPM IMERG where
+      applicable).</li>
     <li><strong>Apple frameworks</strong> — Speech (speech recognition), MapKit (maps), and
       AVSpeechSynthesizer (text-to-speech), provided by Apple Inc. See
       <a href="https://www.apple.com/legal/privacy/" rel="noopener" target="_blank">Apple's Privacy Policy</a>.</li>
