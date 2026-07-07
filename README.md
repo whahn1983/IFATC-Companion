@@ -4,7 +4,7 @@
 
 Everything runs on your device. There are no accounts to create, no logins, no ads, and no AI/chatbot in the loop — just deterministic, real-world-style radio phraseology built from your live flight, plus free public aviation weather.
 
-> **Not affiliated with Infinite Flight.** IFATC Companion is an independent, third-party app. It is **not** created, endorsed, sponsored by, or affiliated with Infinite Flight LLC or its products in any way. "Infinite Flight" and related marks are the property of their respective owners. Infinite Flight is required to use Live Connected Mode and is sold separately.
+> **Not affiliated with Infinite Flight.** IFATC Companion is an independent, third-party app. It is **not** created, endorsed, sponsored by, or affiliated with Infinite Flight Corporation or its products in any way. "Infinite Flight" and related marks are the property of their respective owners. Infinite Flight is required to use Live Connected Mode and is sold separately.
 
 ---
 
@@ -127,4 +127,4 @@ See the [Privacy Policy](https://whahn1983.github.io/IFATC-Companion/privacy-pol
 
 IFATC Companion is proprietary software. Copyright © 2026 H3 Consulting Partners LLC. All rights reserved.
 
-IFATC Companion is an independent app and is **not** affiliated with, endorsed by, or sponsored by Infinite Flight LLC. "Infinite Flight" and all related names and marks are trademarks of their respective owners.
+IFATC Companion is an independent app and is **not** affiliated with, endorsed by, or sponsored by Infinite Flight Corporation. "Infinite Flight" and all related names and marks are trademarks of their respective owners.
