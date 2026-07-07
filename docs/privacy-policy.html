@@ -221,6 +221,10 @@
     precipitation imagery for the map area you are viewing from the following public services:
   </p>
   <ul>
+    <li><strong>NOAA / U.S. National Weather Service (NWS)</strong> — radar base-reflectivity
+      precipitation, used in NOAA-covered radar regions (contiguous U.S., Alaska, Hawaii, and Puerto
+      Rico approximations) and served from <code>mapservices.weather.noaa.gov</code>. Radar
+      precipitation data: NOAA/NWS.</li>
     <li><strong>EUMETNET OPERA</strong> — European radar precipitation composites, used where OPERA
       radar coverage is available (Europe). Radar precipitation data: EUMETNET OPERA (CC BY 4.0).</li>
     <li><strong>NASA Global Imagery Browse Services (GIBS)</strong> — a global satellite precipitation
@@ -233,7 +237,7 @@
     <li>Like any internet request, these providers may receive your device's IP address and standard
       request metadata as part of normal network operation. Your use of each service is subject to that
       provider's own policies.</li>
-    <li>Both services require no API key and no account.</li>
+    <li>These services require no API key and no account.</li>
   </ul>
 
   <h3>3.4 Maps</h3>
@@ -293,6 +297,13 @@
         <td>Aviation weather</td>
         <td>NOAA Aviation Weather Center (<code>aviationweather.gov</code>) over the internet</td>
         <td>Airport/station identifiers and simulated route parameters; IP/request metadata</td>
+        <td>No</td>
+      </tr>
+      <tr>
+        <td>Precipitation radar / satellite imagery</td>
+        <td>NOAA / U.S. National Weather Service (<code>mapservices.weather.noaa.gov</code>),
+          EUMETNET OPERA, or NASA Global Imagery Browse Services (GIBS) over the internet</td>
+        <td>Only the map area (bounding box) being displayed; IP/request metadata</td>
         <td>No</td>
       </tr>
       <tr>
