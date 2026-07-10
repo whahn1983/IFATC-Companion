@@ -78,6 +78,13 @@ struct RadarOverlayModel {
     /// Deterministic precipitation cells for Mock Mode / tests. Empty in live
     /// mode (live precipitation is drawn from the NOAA image overlay instead).
     var mockCells: [RadarCell] = []
+    /// Moderate-or-greater precipitation cells sampled from the live radar image
+    /// (NOAA/OPERA base reflectivity). Used **only** to focus the weather-deviation
+    /// vector on the actual precipitation core within a SIGMET rather than routing
+    /// around the entire advisory area — never drawn on the map (the radar image
+    /// overlay already shows the precipitation). Empty in Mock Mode and wherever
+    /// true-radar sampling is unavailable.
+    var sampledCells: [RadarCell] = []
 
     /// Whether the overlay should actually be shown on the map right now.
     var shouldDisplay: Bool { isEnabled && coverageAvailable }

@@ -9,7 +9,7 @@ struct WeatherView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 14) {
-                    actionsCard
+                    refreshButton
                     routeOverlayCard
                     radarCard
                     statusCard
@@ -32,22 +32,18 @@ struct WeatherView: View {
         }
     }
 
-    private var actionsCard: some View {
-        Card(title: "Ask Center", systemImage: "globe.americas") {
-            VStack(spacing: 10) {
-                ActionButton(title: "Ride Reports", systemImage: "wind") { model.requestRideReport() }
-                ActionButton(title: "Destination Weather", systemImage: "cloud.sun.rain") { model.requestDestinationWeather() }
-                ActionButton(title: "Lower / Higher Due Ride", systemImage: "arrow.up.arrow.down") { model.requestLowerDueRide() }
-                Button {
-                    Task { await refresh() }
-                } label: {
-                    Label(refreshing ? "Refreshing…" : "Refresh Weather Data", systemImage: "arrow.clockwise")
-                        .frame(maxWidth: .infinity, minHeight: 44)
-                }
-                .buttonStyle(.bordered)
-                .disabled(refreshing)
-            }
+    /// The Ride Reports / Destination Weather / Lower-Higher requests live on the
+    /// ATC view, so the Weather view keeps only a single refresh control above the
+    /// map. Pull-to-refresh remains available too.
+    private var refreshButton: some View {
+        Button {
+            Task { await refresh() }
+        } label: {
+            Label(refreshing ? "Refreshing…" : "Refresh Weather", systemImage: "arrow.clockwise")
+                .frame(maxWidth: .infinity, minHeight: 44)
         }
+        .buttonStyle(.bordered)
+        .disabled(refreshing)
     }
 
     private var routeOverlayCard: some View {
