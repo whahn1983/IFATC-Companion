@@ -59,8 +59,10 @@ struct RouteWeatherConflictDetector {
         /// Lateral clearance kept from the most intense (red/extreme) cells (NM). A
         /// wide berth around convective cores — used for both path validation and
         /// gap/side-hug spacing — so the reroute rounds them well clear instead of
-        /// shaving past or threading a coarse-sampled gap straight through one.
-        var severeBerthNM: Double = 15
+        /// shaving past or threading a coarse-sampled gap straight through one. Set to
+        /// the ~20 NM real-world guidance for avoiding severe/extreme radar echoes
+        /// (FAA AC 00-24C); moderate/heavy returns keep the tighter `pathClearanceNM`.
+        var severeBerthNM: Double = 20
         /// The most a deviation leg may turn away from the course (degrees). ATC never
         /// turns an aircraft the long way around a storm, so the drawn mint line — and
         /// therefore the assigned vector / rejoin turn derived from it — is bounded to
@@ -353,6 +355,14 @@ struct RouteWeatherConflictDetector {
             ?? Geo.destination(from: position, bearingDegrees: course, distanceNM: lineFar + 20)
         let rejoinCoord = cappedToAlong(rawRejoin, capAlong: capAlong, position: position, course: course)
 
+        // Per-cell required clearance (berth) for every precipitation cell — a wide
+        // berth for red/extreme cores, the base margin for lighter returns. Used both
+        // to validate a whole candidate path and to search for the tightest clear hug.
+        let cellBerths: [(polygon: [CLLocationCoordinate2D], clearance: Double)] = hazards.compactMap {
+            guard let poly = $0.geometry.polygonPoints, poly.count >= 3 else { return nil }
+            return (poly, berthNM(for: $0.intensity))
+        }
+
         // A single dogleg abeam the middle of the line at a lateral offset.
         func apexPath(for target: Double) -> [CLLocationCoordinate2D] {
             let sideBearing = course + (target >= 0 ? 90 : -90)
@@ -361,8 +371,7 @@ struct RouteWeatherConflictDetector {
         }
 
         // A path that hugs one side of the line: step out to `offset` just before the
-        // near edge, hold it past the far edge, then close to the rejoin. `offset` is
-        // the line's outboard edge on that side, so the parallel leg clears every cell.
+        // near edge, hold it past the far edge, then close to the rejoin.
         func hugPath(offset: Double) -> [CLLocationCoordinate2D] {
             let sideBearing = course + (offset >= 0 ? 90 : -90)
             let margin = config.lateralBufferNM
@@ -375,23 +384,42 @@ struct RouteWeatherConflictDetector {
             return [position, pNear, pFar, rejoinCoord]
         }
 
+        // The tightest parallel-offset hug on one side (+1 right / −1 left): the
+        // smallest offset whose whole path clears every cell by its berth. This mirrors
+        // the real-world weather-deviation maneuver — turn out just enough to parallel
+        // the weather's edge, hold the offset, then rejoin when clear. Being the
+        // *minimum* clearing offset — not the outboard edge of the whole clustered line,
+        // which a far-off-course cell can drag way out — it stays close to the flight
+        // plan, so the shortest-path selector picks it *early* instead of the aircraft
+        // first diving wide and only tucking back in once the cluster thins downrange.
+        func tightHug(side: Double) -> (path: [CLLocationCoordinate2D], target: Double)? {
+            var offset = config.lateralBufferNM
+            while offset <= config.searchHalfWidthNM {
+                let path = hugPath(offset: side * offset)
+                if pathIsClear(path, cells: cellBerths, origin: position) {
+                    return (path, side * offset)
+                }
+                offset += 2
+            }
+            return nil
+        }
+
         var candidates: [(path: [CLLocationCoordinate2D], target: Double)] =
             solution.targets.map { (path: apexPath(for: $0), target: $0) }
         candidates.append((path: hugPath(offset: solution.leftEdge), target: solution.leftEdge))
         candidates.append((path: hugPath(offset: solution.rightEdge), target: solution.rightEdge))
+        // Offer the tight parallel hug on each side as well; the shortest-clear selector
+        // then flies it over a deep single apex when a line lies along course.
+        if let tight = tightHug(side: 1) { candidates.append(tight) }
+        if let tight = tightHug(side: -1) { candidates.append(tight) }
 
         // Validate the whole path against *every* precipitation cell, not just the
         // line being threaded — so we never avoid one storm and route into another.
-        // Each cell carries its own required clearance: red/extreme cores demand a
-        // wide berth, lighter returns the base margin. Fly the shortest candidate that
-        // stays clear of them all. When none is clear (the aircraft is boxed in), fall
-        // back to the candidate that best respects those berths — never the straight-
-        // through least-deviation one — so the line skirts the weather (giving the red
-        // cores the widest room it can) instead of cutting through a core.
-        let cellBerths: [(polygon: [CLLocationCoordinate2D], clearance: Double)] = hazards.compactMap {
-            guard let poly = $0.geometry.polygonPoints, poly.count >= 3 else { return nil }
-            return (poly, berthNM(for: $0.intensity))
-        }
+        // Fly the shortest candidate that stays clear of them all. When none is clear
+        // (the aircraft is boxed in), fall back to the candidate that best respects
+        // those berths — never the straight-through least-deviation one — so the line
+        // skirts the weather (giving the red cores the widest room it can) instead of
+        // cutting through a core.
         let clear = candidates.filter {
             pathIsClear($0.path, cells: cellBerths, origin: position)
         }
@@ -607,9 +635,12 @@ struct RouteWeatherConflictDetector {
                                   severity: WeatherIntensity) -> Int {
         let turn = abs(normalizedSigned(Geo.bearing(from: position, to: throughPoint) - course))
         var degrees = Int((turn / 5).rounded()) * 5
+        // Severity-based floor: a real weather deviation turns out ~20–30° to establish
+        // a parallel offset, so moderate-or-heavy precip is never given a token nudge
+        // and a convective core gets the larger initial turn.
         switch severity {
         case .extreme: degrees = max(degrees, 30)
-        case .heavy, .moderate: degrees = max(degrees, 15)
+        case .heavy, .moderate: degrees = max(degrees, 20)
         case .light, .unknown: break
         }
         return min(45, max(10, degrees))
