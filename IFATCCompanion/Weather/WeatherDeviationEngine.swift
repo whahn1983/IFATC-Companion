@@ -17,6 +17,10 @@ struct WeatherDeviationEngine {
         case radarConflict(RouteWeatherConflict)
         /// A SIGMET along the route (outside radar coverage or radar off).
         case sigmet(label: String, convective: Bool)
+        /// A turbulence / icing SIGMET along the route. There is nothing to laterally
+        /// route around, so the advisory recommends an altitude change (smoother air,
+        /// or out of the icing) rather than a deviation.
+        case rideSigmet(label: String, icing: Bool)
         /// Radar unavailable and no advisory data — do not invent precipitation.
         case noRadarNoAdvisory
     }
@@ -62,6 +66,9 @@ struct WeatherDeviationEngine {
             tx = convective
                 ? phraseology.sigmetConvectiveAdvisory(cs: cs, facility: facility)
                 : phraseology.sigmetAdvisory(cs: cs, hazardLabel: label, facility: facility)
+            ctx.state = .awaitingPilotIntentions
+        case .rideSigmet(let label, let icing):
+            tx = phraseology.sigmetRideAdvisory(cs: cs, hazardLabel: label, icing: icing, facility: facility)
             ctx.state = .awaitingPilotIntentions
         case .noRadarNoAdvisory:
             tx = phraseology.noRadarNoAdvisory(cs: cs, facility: facility)

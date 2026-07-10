@@ -124,6 +124,14 @@ UI labels: NOAA and OPERA both show *"Radar precipitation"*; NASA shows
      (`routeSigmets`); they just don't feed `buildWeatherHazards`. Turbulence
      wording remains reserved for PIREP / AIREP / SIGMET / G-AIRMET / CWA / ride
      reports elsewhere in the app.
+   - **Turbulence / icing → altitude, not a lateral reroute.** A turbulence or icing
+     SIGMET along the route has nothing to laterally route around — real ATC handles
+     it by facilitating a climb or descent (smoother air, or out of the icing), and
+     relaying ride reports. So when there is no precipitation conflict but a
+     turbulence / icing SIGMET lies along the route (`activeRideSigmet`), the app
+     raises an **altitude-change advisory** whose only response buttons are
+     higher / lower / continue — never deviate / vectors. Precipitation always takes
+     precedence when both are present.
 2. **Conflict detection + gap threading.** `RouteWeatherConflictDetector` builds a
    corridor from the aircraft through the upcoming route fixes (lookahead 25–75 NM
    in the terminal area, 100–250 NM enroute, with a 30–120 minute groundspeed-based

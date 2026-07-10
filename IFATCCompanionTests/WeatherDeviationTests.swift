@@ -307,6 +307,41 @@ final class WeatherDeviationTests: XCTestCase {
         XCTAssertEqual(WeatherHazardSource.gairmet.label, "G-AIRMET")
     }
 
+    // MARK: - Turbulence / icing ride advisory (altitude, not lateral)
+
+    func testSigmetRideAdvisoryTurbulenceOffersSmootherAir() {
+        let engine = PhraseologyEngine(digitStyle: .individual, mode: .faa)
+        let phr = WeatherDeviationPhraseology(engine: engine)
+        let cs = engine.callsign(airline: "United", flightNumber: "598", fallback: "")
+        let tx = phr.sigmetRideAdvisory(cs: cs, hazardLabel: "severe turbulence", icing: false)
+        XCTAssertTrue(tx.displayText.contains("severe turbulence"))
+        XCTAssertTrue(tx.displayText.contains("smoother air"))
+        XCTAssertTrue(tx.displayText.contains("Say intentions"))
+        // A turbulence advisory is resolved with altitude, never a lateral deviation.
+        XCTAssertFalse(tx.displayText.lowercased().contains("deviation"))
+        XCTAssertFalse(tx.displayText.lowercased().contains("vector"))
+    }
+
+    func testSigmetRideAdvisoryIcingFramesExit() {
+        let engine = PhraseologyEngine(digitStyle: .individual, mode: .faa)
+        let phr = WeatherDeviationPhraseology(engine: engine)
+        let cs = engine.callsign(airline: "United", flightNumber: "598", fallback: "")
+        let tx = phr.sigmetRideAdvisory(cs: cs, hazardLabel: "icing", icing: true)
+        XCTAssertTrue(tx.displayText.contains("icing"))
+        XCTAssertTrue(tx.displayText.contains("exit the icing"))
+    }
+
+    func testRideSigmetSituationAwaitsIntentions() {
+        let engine = PhraseologyEngine(digitStyle: .individual, mode: .faa)
+        let phr = WeatherDeviationPhraseology(engine: engine)
+        let dev = WeatherDeviationEngine(phraseology: phr)
+        let cs = phr.engine.callsign(airline: "United", flightNumber: "598", fallback: "")
+        let result = dev.issueAdvisory(cs: cs, situation: .rideSigmet(label: "severe turbulence", icing: false),
+                                       context: WeatherDeviationContext(), facility: .center)
+        XCTAssertEqual(result.context.state, .awaitingPilotIntentions)
+        XCTAssertTrue(result.atc.first?.displayText.contains("smoother air") ?? false)
+    }
+
     // MARK: - Radar unavailable fallback
 
     func testRadarUnavailableGracefulFallback() {

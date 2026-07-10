@@ -1,4 +1,5 @@
 import XCTest
+import CoreLocation
 @testable import IFATCCompanion
 
 /// Drives the `AppModel` through the offline mock weather-deviation demo and
@@ -39,6 +40,54 @@ final class WeatherDeviationFlowTests: XCTestCase {
 
     private func pilotContains(_ model: AppModel, _ needle: String) -> Bool {
         model.transcript.contains { $0.sender == .pilot && $0.displayText.contains(needle) }
+    }
+
+    private func box(around c: CLLocationCoordinate2D, half: Double) -> [CLLocationCoordinate2D] {
+        [CLLocationCoordinate2D(latitude: c.latitude - half, longitude: c.longitude - half),
+         CLLocationCoordinate2D(latitude: c.latitude - half, longitude: c.longitude + half),
+         CLLocationCoordinate2D(latitude: c.latitude + half, longitude: c.longitude + half),
+         CLLocationCoordinate2D(latitude: c.latitude + half, longitude: c.longitude - half)]
+    }
+
+    // MARK: - Turbulence / icing SIGMET → altitude advisory (not a lateral reroute)
+
+    func testTurbulenceSigmetOffersAltitudeNotDeviation() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)
+        guard let pos = model.aircraftState.coordinate else {
+            return XCTFail("expected an aircraft position at cruise")
+        }
+        // The mock auto-issues the precip advisory; settle it back to idle first.
+        model.continueThroughWeather()
+
+        // Swap the precipitation cell for a severe-turbulence SIGMET over the aircraft.
+        model.radarOverlay.mockCells = []
+        model.sigmets = [SIGMET(raw: "SEV TURB", hazard: "TURB", severity: "SEV",
+                                area: box(around: pos, half: 0.8))]
+        model.recomputeRideItems()
+        model.recomputeWeatherHazards()
+
+        XCTAssertNil(model.activeWeatherConflict, "no precipitation → no lateral conflict")
+        XCTAssertEqual(model.weatherDeviationState, .none, "the precip flow settled before the ride advisory")
+        XCTAssertNotNil(model.activeRideSigmet, "a turbulence SIGMET on the route drives a ride advisory")
+        XCTAssertTrue(model.weatherBannerVisible)
+        XCTAssertTrue(model.weatherBannerText.contains("Turbulence"), model.weatherBannerText)
+
+        model.askCenterAboutWeather()
+        XCTAssertEqual(model.weatherDeviationState, .awaitingPilotIntentions)
+        XCTAssertTrue(atcContains(model, "turbulence"), "advisory should name the turbulence")
+        XCTAssertTrue(atcContains(model, "smoother air"), "advisory should point at an altitude change")
+
+        // The offered responses are altitude changes — never a lateral deviation.
+        XCTAssertTrue(model.weatherActions.contains(.requestHigher))
+        XCTAssertTrue(model.weatherActions.contains(.requestLower))
+        XCTAssertFalse(model.weatherActions.contains(.requestRightDeviation))
+        XCTAssertFalse(model.weatherActions.contains(.requestLeftDeviation))
+        XCTAssertFalse(model.weatherActions.contains(.requestVector))
+
+        // Requesting higher assigns a new altitude for the smoother ride.
+        model.requestHigherForWeather()
+        XCTAssertEqual(model.weatherDeviationState, .deviatingAroundWeather)
     }
 
     // MARK: - Banner only when a conflict exists
