@@ -243,6 +243,16 @@ final class AppModel: ObservableObject {
     /// continued), so the "ask Center" banner doesn't re-appear while the same
     /// weather is still ahead. Reset when the conflict clears.
     private var weatherHandled = false
+    /// When a route-weather conflict was last actually detected. Drives the confirm-
+    /// clear hysteresis: once weather is shown, the mint line and "contact ATC"
+    /// banner are held until the route has tested continuously clear for
+    /// `weatherClearConfirmWindow`, so a noisy radar resample that momentarily loses
+    /// a storm still ahead doesn't blink them out. Nil once clear is confirmed.
+    private var lastConflictSeenAt: Date?
+    /// How long the route must test continuously clear before a shown conflict is
+    /// removed — long enough to span a radar resample cycle (~45 s) so a single
+    /// empty sample never drops a storm that's really still there.
+    private var weatherClearConfirmWindow: TimeInterval = 90
     /// Timestamp of the last aviation-weather refresh, for the diagnostics panel.
     private var lastAviationWeatherUpdate: Date?
 
@@ -673,6 +683,11 @@ final class AppModel: ObservableObject {
     /// Test hook: restore from a snapshot the same way a reconnect would, so a test
     /// can verify the conversation resumes where it left off.
     func applySnapshotForTesting(_ snapshot: SessionSnapshot) { apply(snapshot: snapshot) }
+
+    /// Test hook: force the confirm-clear window to have elapsed, so the next
+    /// recompute drops a held (no-longer-detected) conflict instead of waiting out
+    /// the real hysteresis window.
+    func expireWeatherClearWindowForTesting() { lastConflictSeenAt = .distantPast }
     #endif
 
     private func handle(state: AircraftState) {
@@ -2311,6 +2326,7 @@ final class AppModel: ObservableObject {
         radarOverlay.sampledCells = []
         weatherHandled = false
         mockWeatherAdvisoryIssued = false
+        lastConflictSeenAt = nil
         lastPrecipSampleAt = nil
         lastPrecipSamplePos = nil
     }
@@ -2357,11 +2373,15 @@ final class AppModel: ObservableObject {
             return
         }
         let course = currentCourse(from: pos)
-        let conflict = conflictDetector.detectConflict(position: pos, course: course,
+        let detected = conflictDetector.detectConflict(position: pos, course: course,
                                                        groundspeedKnots: aircraftState.groundSpeed,
                                                        phase: phase, hazards: hazards,
                                                        waypoints: flightPlan.waypoints,
-                                                       routeAhead: upcomingRouteCoordinates(from: pos))
+                                                       routeAhead: upcomingRouteCoordinates(from: pos),
+                                                       rejoinCap: weatherRejoinCap())
+        // Apply confirm-clear hysteresis so the mint line / banner don't blink out on
+        // a noisy resample that momentarily loses a storm that's really still ahead.
+        let conflict = resolveConflictWithHysteresis(detected: detected)
         activeWeatherConflict = conflict
 
         // The weather ahead has cleared: forget the "handled" flag and roll back a
@@ -2384,6 +2404,37 @@ final class AppModel: ObservableObject {
         // When vectoring, auto-issue the turn back to course at the deviation apex.
         maybeIssueWeatherRejoinTurn()
         updateWeatherDiagnostics(conflict: conflict)
+    }
+
+    /// Apply confirm-clear hysteresis to the raw per-tick detection so the mint line
+    /// and "contact ATC" banner stay put through a noisy radar resample. Live radar
+    /// sampling is noisy: a storm that is really still ahead can drop out of a single
+    /// sample and return on the next, which — read straight through — blinks the mint
+    /// line and banner on and off at the resample cadence. So once a conflict is
+    /// shown we keep returning it until the route has tested continuously clear for
+    /// `weatherClearConfirmWindow` (a *confirmed* clean route), rather than dropping
+    /// it the instant one sample comes back empty. A committed deviation is never
+    /// torn down here — the pilot is already flying the mint line; it settles only on
+    /// clear-of-weather.
+    private func resolveConflictWithHysteresis(detected: RouteWeatherConflict?) -> RouteWeatherConflict? {
+        if let detected {
+            lastConflictSeenAt = Date()
+            return detected
+        }
+        // Nothing detected this tick. With no conflict currently shown, stay clear.
+        guard let held = activeWeatherConflict else {
+            lastConflictSeenAt = nil
+            return nil
+        }
+        // A committed deviation keeps its conflict/mint line regardless of a momentary
+        // clear — the pilot is following the approved reroute.
+        if weatherDeviation.state.isCommittedDeviation { return held }
+        // Otherwise hold the last shown conflict until the clear is confirmed.
+        if let since = lastConflictSeenAt, Date().timeIntervalSince(since) < weatherClearConfirmWindow {
+            return held
+        }
+        lastConflictSeenAt = nil
+        return nil
     }
 
     /// Normalize the current weather into the hazards the conflict detector routes
@@ -2645,6 +2696,35 @@ final class AppModel: ObservableObject {
     /// The current simulated weather-deviation state.
     var weatherDeviationState: WeatherDeviationState { weatherDeviation.state }
 
+    /// The mint deviation line to draw on the route map: the frozen path the pilot
+    /// has committed to fly once a vector/deviation is approved, else the live
+    /// recommended reroute from the current conflict. Nil when there's nothing to
+    /// draw. Freezing after commit is what stops the line shifting/blinking while the
+    /// pilot is following it — only a fresh reroute request or clear-of-weather
+    /// resumes live proposals.
+    var weatherDeviationLine: [CLLocationCoordinate2D]? {
+        if let frozen = weatherDeviation.committedDeviationPath, frozen.count >= 2 {
+            return frozen.map { $0.coordinate }
+        }
+        let path = activeWeatherConflict?.deviationPath
+        return (path?.count ?? 0) >= 2 ? path : nil
+    }
+
+    /// The rejoin fix marker for the mint line: its name and coordinate. Uses the
+    /// live conflict's rejoin fix when available, else the end of the frozen
+    /// committed path (labeled with the recorded rejoin fix name) so the marker stays
+    /// put with the locked line even after the conflict itself settles.
+    var weatherRejoinMarker: (name: String, coordinate: CLLocationCoordinate2D)? {
+        if let fix = activeWeatherConflict?.rejoinFix, let c = fix.coordinate, c.isValid {
+            return (fix.name.isEmpty ? "Rejoin" : fix.name, c)
+        }
+        if let frozen = weatherDeviation.committedDeviationPath, let last = frozen.last {
+            let c = last.coordinate
+            if c.isValid { return (weatherDeviation.rejoinFix ?? "Rejoin", c) }
+        }
+        return nil
+    }
+
     /// The weather response-buttons to surface, keyed off the deviation state. A
     /// turbulence / icing advisory offers only altitude changes (there is nothing to
     /// laterally route around); a precipitation advisory offers the full set.
@@ -2658,7 +2738,15 @@ final class AppModel: ObservableObject {
             return [.requestRightDeviation, .requestLeftDeviation, .requestVector,
                     .requestHigher, .requestLower, .continueOnCourse, .sayAgain]
         case .deviationApproved, .vectoringAroundWeather, .deviatingAroundWeather, .clearOfWeather:
-            return [.clearOfWeather, .sayAgain]
+            if establishedOnFinal { return [.clearOfWeather, .sayAgain] }
+            // Keep Vectors available while flying a lateral deviation so the pilot can
+            // re-plan around NEW weather that pops up ahead — the fresh vector is
+            // computed from the current position, treating the committed mint line as
+            // the route. An altitude-change ride advisory has nothing lateral to
+            // re-vector around, so it only offers clear-of-weather.
+            let flyingLateralDeviation = weatherDeviation.committedDeviationPath != nil || activeWeatherConflict != nil
+            if currentAdvisoryIsAltitude || !flyingLateralDeviation { return [.clearOfWeather, .sayAgain] }
+            return [.requestVector, .clearOfWeather, .sayAgain]
         default:
             return []
         }
@@ -2830,17 +2918,94 @@ final class AppModel: ObservableObject {
             cs: cs, conflict: activeWeatherConflict, direction: direction,
             inputs: deviationInputs(direction: direction), context: weatherDeviation,
             facility: weatherFacility))
+        freezeCommittedDeviationPath()
     }
 
     /// Pilot requests a vector around the weather; the controller assigns a heading.
+    ///
+    /// When the pilot is **already** committed to a deviation and requests vectors
+    /// again — new weather has popped up ahead of the reroute they're flying — the
+    /// new vector is re-planned from where the aircraft is *now*, treating the
+    /// committed mint line as the current route. So the fresh heading, mint line and
+    /// rejoin turn are computed against the new weather and rejoin the line the
+    /// aircraft was already following, rather than the original filed course.
     func requestVectorAroundWeather() {
         guard !companionStandby, weatherFlowAllowed, !establishedOnFinal else { return }
+        if weatherDeviation.state.isCommittedDeviation,
+           let pos = aircraftState.coordinate, pos.isValid,
+           let fresh = detectConflictAlong(route: revectorRouteAhead(from: pos)) {
+            activeWeatherConflict = fresh
+            lastConflictSeenAt = Date()
+        }
         let cs = callsignNow()
         let side = activeWeatherConflict?.recommendedDirection ?? .right
         applyDeviationResult(deviationEngine.requestVectors(
             cs: cs, inputs: deviationInputs(direction: side), context: weatherDeviation,
             facility: weatherFacility))
+        freezeCommittedDeviationPath()
         captureWeatherRejoinTurn()
+    }
+
+    /// Detect a route-weather conflict along an explicit route polyline from the
+    /// current position — used to re-plan a vector while already deviating, where the
+    /// route to protect is the committed mint line (plus the filed route past it)
+    /// rather than the straight filed course. Reuses the current normalized hazards.
+    private func detectConflictAlong(route: [CLLocationCoordinate2D]) -> RouteWeatherConflict? {
+        guard let pos = aircraftState.coordinate, pos.isValid else { return nil }
+        // Aim the corridor at the first route point meaningfully ahead of the aircraft
+        // (the route may start at the current position), else the filed course.
+        let course = route.first(where: { $0.isValid && Geo.distanceNM(from: pos, to: $0) > 1 })
+            .map { Geo.bearing(from: pos, to: $0) } ?? currentCourse(from: pos)
+        return conflictDetector.detectConflict(position: pos, course: course,
+                                               groundspeedKnots: aircraftState.groundSpeed,
+                                               phase: phase, hazards: weatherHazards,
+                                               waypoints: flightPlan.waypoints, routeAhead: route,
+                                               rejoinCap: weatherRejoinCap())
+    }
+
+    /// The deepest point a weather deviation may rejoin the route: never past the
+    /// destination, and at most the first fix of the ILS/approach when the plan names
+    /// one. So the mint line always intercepts the filed route at or before this
+    /// point — even when weather sits right on the destination.
+    private func weatherRejoinCap() -> CLLocationCoordinate2D? {
+        if let approachFix = flightPlan.approachStartCoordinate, approachFix.isValid {
+            return approachFix
+        }
+        if let dest = airports.coordinate(for: flightPlan.destination), dest.isValid {
+            return dest
+        }
+        return flightPlan.lastWaypointCoordinate
+    }
+
+    /// The route ahead to protect on a re-vector: the committed mint line from the
+    /// vertex nearest the aircraft to its end (the part still being flown), then the
+    /// filed route beyond the committed line's rejoin. Falls back to the plain filed
+    /// route ahead when nothing is committed.
+    private func revectorRouteAhead(from pos: CLLocationCoordinate2D) -> [CLLocationCoordinate2D] {
+        guard let frozen = weatherDeviation.committedDeviationPath else {
+            return upcomingRouteCoordinates(from: pos)
+        }
+        let committed = frozen.map { $0.coordinate }.filter { $0.isValid }
+        guard committed.count >= 2 else { return upcomingRouteCoordinates(from: pos) }
+        let nearestIdx = committed.enumerated().min {
+            Geo.distanceNM(from: pos, to: $0.element) < Geo.distanceNM(from: pos, to: $1.element)
+        }?.offset ?? 0
+        let tail = Array(committed[nearestIdx...])
+        let beyond = tail.last.map { upcomingRouteCoordinates(from: $0) } ?? []
+        return tail + beyond
+    }
+
+    /// Freeze the currently recommended mint deviation line as the path the pilot has
+    /// now committed to fly, so it stops being re-proposed (and stops shifting with
+    /// each radar resample) while the deviation is flown. Once frozen, the map draws
+    /// this fixed line until the pilot reports clear of weather or requests another
+    /// reroute (which re-freezes it to the fresh recommendation).
+    private func freezeCommittedDeviationPath() {
+        guard let path = activeWeatherConflict?.deviationPath, path.count >= 2 else {
+            weatherDeviation.committedDeviationPath = nil
+            return
+        }
+        weatherDeviation.committedDeviationPath = path.map(WeatherDeviationContext.PathPoint.init)
     }
 
     /// Capture the turn point (apex) of the recommended deviation path and the
@@ -2931,6 +3096,7 @@ final class AppModel: ObservableObject {
         weatherDeviation.state = .none
         weatherHandled = false
         mockWeatherAdvisoryIssued = false
+        lastConflictSeenAt = nil
     }
 
     /// Pilot elects to continue on course through the advisory.
@@ -2946,6 +3112,10 @@ final class AppModel: ObservableObject {
             spokenText: "\(cs.spoken), roger, advise if you need to deviate."), speak: true)
         weatherDeviation.reset()
         weatherDeviation.state = .none
+        // Continuing resolves the prompt: drop the confirm-clear hold so a genuinely
+        // clear route removes the banner promptly. Weather still ahead re-arms the
+        // hold on the next detected tick (the banner stays for a possible reroute).
+        lastConflictSeenAt = nil
     }
 
     /// Re-issue the last weather advisory/instruction ("say again").

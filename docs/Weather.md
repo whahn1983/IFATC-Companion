@@ -197,6 +197,18 @@ UI labels: NOAA and OPERA both show *"Radar precipitation"*; NASA shows
      falls back to the one that keeps the **most clearance** from the cells — never
      the straight-through least-deviation dogleg — so the line always skirts the
      weather on the most open side rather than cutting through it.
+   - **Bounded turns — never reverse the aircraft.** Every leg of the drawn line is
+     clamped to at most `maxDeviationTurnDegrees` (100°) off the course. ATC vectors
+     around a storm; it never turns an aircraft the long way around, so any leg that
+     would point further back is pulled onto the bound. The assigned vector and the
+     auto rejoin turn are derived from the clamped line, so they can't command a
+     near-180° reversal either.
+   - **Never past the destination / approach.** The reroute rejoins the route no
+     deeper than a **cap** (`rejoinCap`) — the first fix of the ILS/approach when the
+     plan names one (`FlightPlan.approachStartCoordinate`), else the destination.
+     Even with weather sitting right on the field, the mint line intercepts the route
+     at or before that cap instead of routing past it. Every vertex past the cap's
+     along-course distance is pulled back to it (`clampPathToAlong`).
    It also computes distance, clock position(s), estimated time, severity, the spoken
    deviation amount (the actual initial turn onto the threading path), and a
    downstream rejoin fix.
@@ -216,6 +228,30 @@ UI labels: NOAA and OPERA both show *"Radar precipitation"*; NASA shows
 5. **Clear of weather.** When the pilot reports clear of weather, ATC clears direct
    the rejoin fix (or *"resume own navigation"* when already near the route), or
    rejoins the STAR.
+
+**Stable, non-flickering display.** Radar resampling is noisy: a storm that is
+really still ahead can drop out of a single sample and return on the next. Read
+straight through, that blinks the mint line and the "contact ATC" banner on and off
+at the resample cadence. So once a conflict is shown, `resolveConflictWithHysteresis`
+**holds** it until the route has tested *continuously clear* for a confirm window
+(`weatherClearConfirmWindow`, ~90 s — longer than a resample cycle) — a *confirmed*
+clean route — rather than removing it the instant one sample comes back empty. The
+window resets when the pilot resolves the prompt (continue / clear of weather).
+
+**The committed line is locked.** Once the pilot commits to a vector or deviation,
+the mint line is **frozen** into `WeatherDeviationContext.committedDeviationPath` and
+the map draws that fixed path (`weatherDeviationLine`) — it no longer shifts or
+blinks as the radar resamples, and confirm-clear hysteresis never tears it down. The
+lock releases only on clear-of-weather (which resets the flow) or on a fresh reroute
+request, which re-freezes it.
+
+**Re-vectoring for new weather.** While flying a lateral deviation, the **Vectors**
+button stays on the card alongside *Clear of Weather*. If new weather pops up ahead
+of the reroute, tapping it re-plans from the aircraft's **current position**, treating
+the committed mint line as the current route (`revectorRouteAhead` + `detectConflictAlong`):
+a fresh heading, mint line and rejoin turn are computed against the new weather and
+rejoin the line the aircraft was already following, rather than the original filed
+course.
 
 The deviation flow runs during the airborne enroute/climb/arrival phases and works
 with whichever radar controller is tuned (Departure, Center, or Approach).

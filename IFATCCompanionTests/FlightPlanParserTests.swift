@@ -74,6 +74,15 @@ final class FlightPlanParserTests: XCTestCase {
         XCTAssertEqual(plan?.approachInterceptAltitude, 3000)
     }
 
+    func testDetailedJSONTagsFirstApproachFix() {
+        let plan = IFFlightPlanParser.parse(detailedJSON)
+        // The first fix of the approach section — the deepest a weather deviation may
+        // rejoin the route (never past it toward the destination).
+        XCTAssertEqual(plan?.approachStartFixName, "PESKS")
+        XCTAssertEqual(plan?.approachStartCoordinate?.latitude ?? 0, 39.92, accuracy: 0.001)
+        XCTAssertEqual(plan?.approachStartCoordinate?.longitude ?? 0, -75.40, accuracy: 0.001)
+    }
+
     func testSimplifiedWaypointsListFallbackDropsPseudoFixes() {
         // When only the simplified string list is present, pseudo markers are still
         // stripped (leaving the real fixes), rather than shown as waypoints.

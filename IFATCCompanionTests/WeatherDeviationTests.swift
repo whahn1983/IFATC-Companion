@@ -226,6 +226,71 @@ final class WeatherDeviationTests: XCTestCase {
         }
     }
 
+    // MARK: - Turn bound (never reverse the aircraft)
+
+    /// Every leg of the drawn mint line stays within the configured off-course turn
+    /// bound, so the reroute never turns the aircraft the long way around. Uses a
+    /// tight bound to force the clamp to engage on a path that would otherwise swing
+    /// out to a large offset.
+    func testDeviationPathRespectsTurnBound() throws {
+        var tight = RouteWeatherConflictDetector()
+        tight.config.maxDeviationTurnDegrees = 20
+        let wide = radarHazard(cell(alongNM: 40, crossNM: -10, halfCross: 40, from: usPosition))
+        let conflict = try XCTUnwrap(tight.detectConflict(
+            position: usPosition, course: course, groundspeedKnots: 450, phase: .cruise,
+            hazards: [wide], waypoints: []))
+        let path = conflict.deviationPath
+        XCTAssertGreaterThanOrEqual(path.count, 2)
+        for i in 0..<(path.count - 1) {
+            let brg = Geo.bearing(from: path[i], to: path[i + 1])
+            XCTAssertLessThanOrEqual(Geo.headingDifference(brg, course), 20 + 0.5,
+                                     "leg \(i) turns beyond the deviation bound")
+        }
+    }
+
+    /// At the default bound the mint line is never reversed: no leg exceeds ~100° off
+    /// course, even for a diagonal line whose rejoin sits well downrange.
+    func testDeviationPathNeverReversesAtDefaultBound() throws {
+        let polys = [
+            cell(alongNM: 40,  crossNM: -30, halfCross: 12, from: usPosition),
+            cell(alongNM: 80,  crossNM: -10, halfCross: 12, from: usPosition),
+            cell(alongNM: 120, crossNM: 10,  halfCross: 12, from: usPosition),
+            cell(alongNM: 160, crossNM: 30,  halfCross: 12, from: usPosition),
+        ]
+        let conflict = try XCTUnwrap(detector.detectConflict(
+            position: usPosition, course: course, groundspeedKnots: 450, phase: .cruise,
+            hazards: polys.map { radarHazard($0) }, waypoints: []))
+        for i in 0..<(conflict.deviationPath.count - 1) {
+            let brg = Geo.bearing(from: conflict.deviationPath[i], to: conflict.deviationPath[i + 1])
+            XCTAssertLessThanOrEqual(Geo.headingDifference(brg, course), 100 + 0.5,
+                                     "the mint line must never turn the aircraft around")
+        }
+    }
+
+    // MARK: - Rejoin cap (never route past the destination / approach)
+
+    /// The along-course component (NM) of a point relative to the northbound course.
+    private func alongFromCourse(_ point: CLLocationCoordinate2D) -> Double {
+        let d = Geo.distanceNM(from: usPosition, to: point)
+        let delta = (Geo.bearing(from: usPosition, to: point) - course) * .pi / 180
+        return d * cos(delta)
+    }
+
+    /// Weather sitting well downrange (and, implicitly, the destination beyond it)
+    /// must not pull the mint line past the rejoin cap: every vertex intercepts the
+    /// route at or before the cap (here a fix 90 NM ahead, e.g. the first ILS fix).
+    func testMintLineNeverRoutesPastTheRejoinCap() throws {
+        let storm = radarHazard(cell(alongNM: 110, crossNM: 0, halfAlong: 20, halfCross: 20, from: usPosition))
+        let cap = Geo.destination(from: usPosition, bearingDegrees: course, distanceNM: 90)
+        let conflict = try XCTUnwrap(detector.detectConflict(
+            position: usPosition, course: course, groundspeedKnots: 450, phase: .cruise,
+            hazards: [storm], waypoints: [], rejoinCap: cap))
+        for point in conflict.deviationPath {
+            XCTAssertLessThanOrEqual(alongFromCourse(point), 90 + 1,
+                                     "the mint line must intercept the route no deeper than the rejoin cap")
+        }
+    }
+
     func testDetectsWeatherOnALegAfterATurn() throws {
         // The route turns at a nearby fix and then flies into weather on the *next*
         // leg. A straight corridor aimed at the near fix slides past the storm (the

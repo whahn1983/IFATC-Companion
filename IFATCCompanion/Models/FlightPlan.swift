@@ -45,6 +45,11 @@ struct FlightPlan: Equatable, Codable {
     /// Intercept/initial altitude (ft MSL) for the approach — the first altitude in
     /// the approach section of the flight plan when known, else 0 (callers default).
     var approachInterceptAltitude: Int = 0
+    /// Name of the first fix of the approach procedure (the initial approach fix),
+    /// when the plan carries a parsed approach. This is the deepest a weather
+    /// deviation may rejoin the route — the mint line never routes past it toward the
+    /// destination. Empty when no approach is known.
+    var approachStartFixName: String = ""
     var waypoints: [Waypoint] = []
 
     /// Source of truth flag — when true, fields were entered manually and should
@@ -66,6 +71,13 @@ struct FlightPlan: Equatable, Codable {
     /// when the destination airport isn't in the built-in coordinate database.
     var lastWaypointCoordinate: CLLocationCoordinate2D? {
         waypoints.last { $0.coordinate != nil }?.coordinate
+    }
+
+    /// Coordinate of the first approach fix, when the plan names one and it carries a
+    /// coordinate. The deepest point a weather deviation may rejoin the route.
+    var approachStartCoordinate: CLLocationCoordinate2D? {
+        guard !approachStartFixName.isEmpty else { return nil }
+        return waypoints.first { $0.name == approachStartFixName }?.coordinate
     }
 
     /// The next un-passed waypoint relative to a position, or destination.

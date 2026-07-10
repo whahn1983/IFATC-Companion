@@ -406,6 +406,110 @@ final class WeatherDeviationFlowTests: XCTestCase {
         XCTAssertEqual(model.weatherDeviationState, .deviationApproved)
     }
 
+    // MARK: - Confirm-clear hysteresis (no flicker)
+
+    /// A single radar sample that momentarily loses a storm still ahead must NOT drop
+    /// the mint line, the banner, or the deviation lifecycle — they're held until the
+    /// route has tested clear long enough to confirm a clean route.
+    func testMintLineAndBannerHoldThroughTransientRadarClear() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)
+        XCTAssertNotNil(model.activeWeatherConflict)
+        XCTAssertNotNil(model.weatherDeviationLine, "a mint line is drawn for the conflict")
+
+        // A noisy resample momentarily reports the sky clear (the storm is still there).
+        model.radarOverlay.mockCells = []
+        model.recomputeWeatherHazards()
+
+        XCTAssertNotNil(model.activeWeatherConflict,
+                        "a single empty sample must not drop a just-detected conflict")
+        XCTAssertNotNil(model.weatherDeviationLine, "the mint line holds through a transient clear")
+        XCTAssertEqual(model.weatherDeviationState, .awaitingPilotIntentions,
+                       "the deviation lifecycle is not torn down on a transient clear")
+    }
+
+    /// Once the route has tested clear past the confirm window, the mint line, banner
+    /// and lifecycle are removed — a confirmed clean route.
+    func testConfirmedClearRemovesMintLineAndBanner() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)
+        XCTAssertNotNil(model.activeWeatherConflict)
+
+        model.radarOverlay.mockCells = []
+        model.recomputeWeatherHazards()
+        XCTAssertNotNil(model.activeWeatherConflict, "held within the confirm window")
+
+        // Let the confirm window elapse: the next clear sample confirms a clean route.
+        model.expireWeatherClearWindowForTesting()
+        model.recomputeWeatherHazards()
+        XCTAssertNil(model.activeWeatherConflict, "confirmed clear removes the conflict")
+        XCTAssertNil(model.weatherDeviationLine, "confirmed clear removes the mint line")
+        XCTAssertFalse(model.weatherBannerVisible)
+        XCTAssertEqual(model.weatherDeviationState, .none, "lifecycle rolls back after a confirmed clear")
+    }
+
+    // MARK: - Committed mint line is locked
+
+    /// Once the pilot commits to a vector, the mint line freezes to the path being
+    /// flown: neither a fresh radar sample nor an elapsed confirm window moves or
+    /// drops it. Only clear-of-weather releases it.
+    func testCommittedMintLineIsLockedThroughRadarResamples() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)
+
+        model.requestVectorAroundWeather()
+        XCTAssertEqual(model.weatherDeviationState, .vectoringAroundWeather)
+        guard let locked = model.weatherDeviationLine else {
+            return XCTFail("expected a frozen mint line after committing to a vector")
+        }
+
+        // A radar clear plus an elapsed window would remove a not-yet-committed line —
+        // the committed line stays locked.
+        model.radarOverlay.mockCells = []
+        model.expireWeatherClearWindowForTesting()
+        model.recomputeWeatherHazards()
+        XCTAssertEqual(model.weatherDeviationLine?.count, locked.count,
+                       "the committed mint line stays drawn, locked, through a radar clear")
+        XCTAssertEqual(model.weatherDeviationLine?.first?.latitude, locked.first?.latitude)
+        XCTAssertEqual(model.weatherDeviationLine?.last?.longitude, locked.last?.longitude)
+
+        // Reporting clear of weather releases the lock and removes the line.
+        model.reportClearOfWeather()
+        XCTAssertNil(model.weatherDeviationLine, "clear of weather releases the locked mint line")
+    }
+
+    // MARK: - Re-vector while committed (new weather ahead)
+
+    /// While already committed to a deviation, Vectors stays available so the pilot
+    /// can re-plan around NEW weather that appears on the reroute — re-issuing a
+    /// vector, mint line and rejoin turn computed from the current position.
+    func testReVectorWhileCommittedReplansAroundNewWeather() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)
+
+        model.requestVectorAroundWeather()
+        XCTAssertEqual(model.weatherDeviationState, .vectoringAroundWeather)
+        XCTAssertTrue(model.weatherActions.contains(.requestVector),
+                      "Vectors stays available while flying a lateral deviation")
+        guard let firstPath = model.weatherDeviation.committedDeviationPath, firstPath.count >= 2 else {
+            return XCTFail("expected a committed mint line after the first vector")
+        }
+
+        // New weather straddles the committed mint line ahead of the aircraft.
+        let mid = firstPath[firstPath.count / 2].coordinate
+        model.radarOverlay.mockCells = [RadarCell(polygon: box(around: mid, half: 0.3), intensity: .heavy)]
+        model.recomputeWeatherHazards()
+
+        // Re-request vectors: the reroute is re-planned and the rejoin turn re-armed.
+        model.requestVectorAroundWeather()
+        XCTAssertEqual(model.weatherDeviationState, .vectoringAroundWeather)
+        XCTAssertNotNil(model.weatherDeviation.committedDeviationPath,
+                        "the re-vector re-freezes a committed mint line")
+        XCTAssertNotNil(model.weatherDeviation.pendingRejoinHeading,
+                        "a fresh re-vector re-arms the rejoin turn")
+        XCTAssertTrue(atcContains(model, "fly heading"), "the re-vector assigns a fresh heading")
+    }
+
     // MARK: - Existing weather features still work
 
     func testExistingWeatherStillLoadsInMock() async {
