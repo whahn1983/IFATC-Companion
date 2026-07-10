@@ -226,6 +226,34 @@ final class WeatherDeviationTests: XCTestCase {
         }
     }
 
+    func testDetectsWeatherOnALegAfterATurn() throws {
+        // The route turns at a nearby fix and then flies into weather on the *next*
+        // leg. A straight corridor aimed at the near fix slides past the storm (the
+        // failure the user hit: cells detected, but "No conflict"); following the
+        // route polyline turns the corridor down-route and catches it.
+        let f1 = Geo.destination(from: usPosition, bearingDegrees: 90, distanceNM: 15)   // close, due east
+        let f2 = Geo.destination(from: f1, bearingDegrees: 0, distanceNM: 80)            // then north
+        let storm = radarHazard(cell(alongNM: 40, crossNM: 0, halfAlong: 12, halfCross: 12,
+                                     course: 0, from: f1))
+        let wps = [Waypoint(name: "F1", latitude: f1.latitude, longitude: f1.longitude),
+                   Waypoint(name: "F2", latitude: f2.latitude, longitude: f2.longitude)]
+        let courseToNext = Geo.bearing(from: usPosition, to: f1)
+
+        // Straight corridor along the bearing to the next fix misses it.
+        let straight = detector.detectConflict(position: usPosition, course: courseToNext,
+                                               groundspeedKnots: 450, phase: .cruise,
+                                               hazards: [storm], waypoints: wps)
+        XCTAssertNil(straight, "a straight corridor to the next fix misses weather on the next leg")
+
+        // Following the upcoming route polyline detects it.
+        let routed = detector.detectConflict(position: usPosition, course: courseToNext,
+                                             groundspeedKnots: 450, phase: .cruise,
+                                             hazards: [storm], waypoints: wps,
+                                             routeAhead: [f1, f2])
+        XCTAssertNotNil(routed, "following the route polyline detects weather on the next leg")
+        XCTAssertEqual(routed?.severity, .heavy)
+    }
+
     func testTerminalWeatherJustAfterDeparture() throws {
         // A cell 30 NM off the departure end, on course, is caught by the terminal
         // lookahead band (25–75 NM) while still on the ground / departing.

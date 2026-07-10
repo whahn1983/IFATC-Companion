@@ -2360,7 +2360,8 @@ final class AppModel: ObservableObject {
         let conflict = conflictDetector.detectConflict(position: pos, course: course,
                                                        groundspeedKnots: aircraftState.groundSpeed,
                                                        phase: phase, hazards: hazards,
-                                                       waypoints: flightPlan.waypoints)
+                                                       waypoints: flightPlan.waypoints,
+                                                       routeAhead: upcomingRouteCoordinates(from: pos))
         activeWeatherConflict = conflict
 
         // The weather ahead has cleared: forget the "handled" flag and roll back a
@@ -2498,6 +2499,30 @@ final class AppModel: ObservableObject {
             return
         }
         radarOverlay.sampledCells = cells
+    }
+
+    /// The upcoming route as ordered coordinates — the located fixes still ahead of
+    /// the aircraft, then the destination — so the conflict detector can follow the
+    /// route's bends into the weather rather than a straight bearing to the next fix.
+    /// A fix counts as "ahead" when it lies farther down-route than the aircraft's
+    /// progress from the origin (the same test `nextUnpassedWaypoint` uses).
+    private func upcomingRouteCoordinates(from pos: CLLocationCoordinate2D) -> [CLLocationCoordinate2D] {
+        let origin = airports.coordinate(for: flightPlan.departure) ?? flightPlan.firstWaypointCoordinate
+        let progress = origin.map { Geo.distanceNM(from: $0, to: pos) }
+        var coords: [CLLocationCoordinate2D] = []
+        for wp in flightPlan.waypoints {
+            guard let c = wp.coordinate, c.isValid else { continue }
+            if let origin, let progress {
+                if Geo.distanceNM(from: origin, to: c) > progress + 1 { coords.append(c) }
+            } else {
+                coords.append(c)
+            }
+        }
+        if let dest = airports.coordinate(for: flightPlan.destination) ?? flightPlan.lastWaypointCoordinate,
+           dest.isValid {
+            coords.append(dest)
+        }
+        return coords
     }
 
     /// The course to fly for the corridor: bearing to the next un-passed fix, else
