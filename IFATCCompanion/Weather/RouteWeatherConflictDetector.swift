@@ -34,11 +34,17 @@ struct RouteWeatherConflictDetector {
         // MARK: Gap threading
         /// Lateral clearance kept on each side of a precipitation cell (NM). Cells
         /// are padded by this before gaps are measured, so a threaded gap keeps this
-        /// much room from the actual precipitation on both sides.
-        var lateralBufferNM: Double = 6
+        /// much room from the actual precipitation on both sides. Kept just above the
+        /// validated floor (`pathClearanceNM`) so a genuinely flyable gap between two
+        /// moderate/heavy cores isn't padded shut — the reroute then threads the gap
+        /// with a slight jog rather than looping around the whole line. Red/extreme
+        /// cores are unaffected: they use the wider `severeBerthNM` via `berthNM`.
+        var lateralBufferNM: Double = 4
         /// Minimum *clear* lateral width (after the buffers) for a gap between two
-        /// cells to count as threadable (NM).
-        var minGapWidthNM: Double = 4
+        /// cells to count as threadable (NM). With the buffers above, a gap needs
+        /// `2 * lateralBufferNM + minGapWidthNM` ≈ 11 NM of clear air to be flown —
+        /// low enough to use the breaks in a broken line instead of rounding it.
+        var minGapWidthNM: Double = 3
         /// How far off the course line to look for a threadable gap or an
         /// around-the-end bypass (NM).
         var searchHalfWidthNM: Double = 60
