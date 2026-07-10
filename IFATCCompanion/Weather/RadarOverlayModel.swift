@@ -123,6 +123,20 @@ enum WeatherDeviationState: String, Codable, CaseIterable {
     var isDeviating: Bool {
         self == .deviationApproved || self == .deviatingAroundWeather || self == .vectoringAroundWeather
     }
+
+    /// Whether the pilot has committed to a controller-approved reroute — a lateral
+    /// deviation or a vector is being flown. While committed the mint line is
+    /// **locked** to the path the pilot is following: a fresh radar sample no longer
+    /// moves or re-proposes it, and confirm-clear hysteresis never tears it down.
+    /// The lock releases only on clear-of-weather (or a fresh reroute request).
+    var isCommittedDeviation: Bool {
+        switch self {
+        case .deviationApproved, .vectoringAroundWeather, .deviatingAroundWeather, .clearOfWeather:
+            return true
+        default:
+            return false
+        }
+    }
 }
 
 /// A reference to the filed route segment a deviation departs from (by fix name),
@@ -138,8 +152,26 @@ struct RouteSegmentRef: Codable {
 /// reconnect (otherwise the deviation card and its "clear of weather" button
 /// vanish when the Infinite Flight link drops and comes back mid-diversion).
 struct WeatherDeviationContext: Codable {
+    /// A Codable lat/lon pair. `CLLocationCoordinate2D` is not `Codable`, so the
+    /// frozen mint line is stored as these, mirroring how the vector apex is stored
+    /// as separate `Double`s so an in-progress deviation survives a reconnect.
+    struct PathPoint: Codable {
+        var latitude: Double
+        var longitude: Double
+        init(_ c: CLLocationCoordinate2D) { latitude = c.latitude; longitude = c.longitude }
+        var coordinate: CLLocationCoordinate2D {
+            CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+        }
+    }
+
     var state: WeatherDeviationState = .none
     var activeHazardID: UUID?
+    /// The mint deviation line the pilot has committed to fly, frozen when the
+    /// controller approves the vector/deviation. While set, the map draws this fixed
+    /// path instead of the live per-sample recommendation, so the mint line stops
+    /// shifting and blinking once the pilot is following it. Cleared on clear-of-
+    /// weather / reset; replaced only when the pilot requests another reroute.
+    var committedDeviationPath: [PathPoint]?
     var requestedDeviationDirection: DeviationDirection?
     var approvedDeviationDegrees: Int?
     var assignedHeading: Int?

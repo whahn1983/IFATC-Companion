@@ -60,9 +60,6 @@ struct RouteMapView: View {
         return model.flightPlan.nextUnpassedWaypoint(from: pos, origin: depCoord)
     }
 
-    /// The active route-weather conflict (intersection area + deviation path + rejoin).
-    private var weatherConflict: RouteWeatherConflict? { model.activeWeatherConflict }
-
     /// Whether to render the live NOAA radar image overlay.
     private var showsRadarImage: Bool {
         !model.settings.mockMode && model.radarOverlay.shouldDisplay
@@ -130,20 +127,20 @@ struct RouteMapView: View {
                     .stroke(sigmetColor(sigmet), lineWidth: 2)
             }
 
-            // Recommended deviation path + rejoin fix. The precipitation itself is
-            // shown full-size by the radar overlay and the SIGMET/AIRMET shading, so
-            // we no longer outline the single conflicting cell — that outline was
-            // re-cut every radar resample and read as the weather "resizing" in
-            // flight. The mint path is what conveys the reroute.
-            if let conflict = weatherConflict {
-                if conflict.deviationPath.count >= 2 {
-                    MapPolyline(coordinates: conflict.deviationPath)
-                        .stroke(.mint, style: StrokeStyle(lineWidth: 3, lineCap: .round, dash: [2, 5]))
-                }
-                if let rejoin = conflict.rejoinFix?.coordinate, rejoin.isValid {
-                    Marker(conflict.rejoinFix?.name ?? "Rejoin", systemImage: "arrow.uturn.up", coordinate: rejoin)
-                        .tint(.mint)
-                }
+            // Recommended (or committed) deviation path + rejoin fix. The precipitation
+            // itself is shown full-size by the radar overlay and the SIGMET/AIRMET
+            // shading, so we no longer outline the single conflicting cell — that
+            // outline was re-cut every radar resample and read as the weather
+            // "resizing" in flight. The mint path is what conveys the reroute; once the
+            // pilot commits to a vector/deviation it is frozen (drawn from the locked
+            // path) so it stops shifting or blinking as the radar resamples.
+            if let deviationLine = model.weatherDeviationLine, deviationLine.count >= 2 {
+                MapPolyline(coordinates: deviationLine)
+                    .stroke(.mint, style: StrokeStyle(lineWidth: 3, lineCap: .round, dash: [2, 5]))
+            }
+            if let rejoin = model.weatherRejoinMarker {
+                Marker(rejoin.name, systemImage: "arrow.uturn.up", coordinate: rejoin.coordinate)
+                    .tint(.mint)
             }
 
             if routeCoordinates.count >= 2 {

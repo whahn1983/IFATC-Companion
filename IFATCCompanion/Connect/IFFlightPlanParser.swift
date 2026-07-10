@@ -221,6 +221,15 @@ enum IFFlightPlanParser {
                        let alt = plannedAltitude(in: dict) {
                         plan.approachInterceptAltitude = alt
                     }
+                    // Tag the first real approach fix (the initial approach fix) — the
+                    // deepest a weather deviation may rejoin the route. Skip runway /
+                    // display-marker tokens so the tag names an actual fix.
+                    if isApproach, plan.approachStartFixName.isEmpty {
+                        let cn = childName(child)
+                        if !cn.isEmpty, !isRunwayToken(cn), !isPseudoWaypoint(cn) {
+                            plan.approachStartFixName = cn
+                        }
+                    }
                 }
             } else {
                 appendFix(item, to: &fixes, maxAltitude: &maxAltitude, seen: &seen)
@@ -295,6 +304,19 @@ enum IFFlightPlanParser {
         if let pair = dict.first(where: { $0.key.lowercased() == "children" }),
            let c = pair.value as? [Any] { return c }
         return []
+    }
+
+    /// The upper-cased identifier/name of a flight-plan item (string entry or dict),
+    /// or empty when it carries none. Mirrors the name extraction in `appendFix`.
+    private static func childName(_ item: Any) -> String {
+        if let name = item as? String {
+            return name.trimmingCharacters(in: .whitespaces).uppercased()
+        }
+        if let dict = item as? [String: Any] {
+            return (string(dict, "identifier") ?? string(dict, "name") ?? "")
+                .trimmingCharacters(in: .whitespaces).uppercased()
+        }
+        return ""
     }
 
     /// Append a single fix (with coordinate + planned altitude when present).

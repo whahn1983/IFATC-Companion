@@ -55,6 +55,12 @@ struct RouteWeatherConflictDetector {
         /// gap/side-hug spacing — so the reroute rounds them well clear instead of
         /// shaving past or threading a coarse-sampled gap straight through one.
         var severeBerthNM: Double = 15
+        /// The most a deviation leg may turn away from the course (degrees). ATC never
+        /// turns an aircraft the long way around a storm, so the drawn mint line — and
+        /// therefore the assigned vector / rejoin turn derived from it — is bounded to
+        /// this off-course angle. Any leg that would point further back is pulled in to
+        /// this bound, so the line never reverses the aircraft.
+        var maxDeviationTurnDegrees: Double = 100
     }
 
     var config = Config()
@@ -112,13 +118,18 @@ struct RouteWeatherConflictDetector {
     ///     destination). When supplied, the corridor follows the route's bends into
     ///     the weather instead of a straight band along `course`, so a storm sitting
     ///     on a leg *after* a turn is still caught. Empty → straight-course detection.
+    ///   - rejoinCap: the deepest point the reroute may rejoin the route (never past
+    ///     it). Used to keep the mint line from routing past the destination / into
+    ///     the approach — the caller passes the first approach fix (else the
+    ///     destination). Nil → uncapped.
     func detectConflict(position: CLLocationCoordinate2D,
                         course: Double,
                         groundspeedKnots: Double?,
                         phase: FlightPhase,
                         hazards: [WeatherHazard],
                         waypoints: [Waypoint],
-                        routeAhead: [CLLocationCoordinate2D] = []) -> RouteWeatherConflict? {
+                        routeAhead: [CLLocationCoordinate2D] = [],
+                        rejoinCap: CLLocationCoordinate2D? = nil) -> RouteWeatherConflict? {
         guard position.isValid, !hazards.isEmpty else { return nil }
         let lookahead = lookaheadNM(phase: phase, groundspeed: groundspeedKnots)
         let flyCourse = routeAwareCourse(position: position, fallback: course, routeAhead: routeAhead,
@@ -129,7 +140,8 @@ struct RouteWeatherConflictDetector {
         let routeRejoin = routeRejoinCoord(position: position, routeAhead: routeAhead,
                                            hazards: hazards, lookahead: lookahead)
         return detect(position: position, course: flyCourse, groundspeedKnots: groundspeedKnots,
-                      phase: phase, hazards: hazards, waypoints: waypoints, rejoinOverride: routeRejoin)
+                      phase: phase, hazards: hazards, waypoints: waypoints, rejoinOverride: routeRejoin,
+                      rejoinCap: rejoinCap)
     }
 
     /// Aim the detection corridor along the route rather than a straight bearing to
@@ -266,7 +278,8 @@ struct RouteWeatherConflictDetector {
                         phase: FlightPhase,
                         hazards: [WeatherHazard],
                         waypoints: [Waypoint],
-                        rejoinOverride: CLLocationCoordinate2D? = nil) -> RouteWeatherConflict? {
+                        rejoinOverride: CLLocationCoordinate2D? = nil,
+                        rejoinCap: CLLocationCoordinate2D? = nil) -> RouteWeatherConflict? {
         guard position.isValid, !hazards.isEmpty else { return nil }
         let lookahead = lookaheadNM(phase: phase, groundspeed: groundspeedKnots)
         let corridorEnd = Geo.destination(from: position, bearingDegrees: course, distanceNM: lookahead)
@@ -325,8 +338,14 @@ struct RouteWeatherConflictDetector {
         // the route itself exits the weather (so a route that turns past the storm
         // puts the intercept on that turn and the shorter side wins); otherwise return
         // to course right past the far edge. Either keeps each candidate compact.
-        let rejoinCoord = rejoinOverride
+        // The deepest along-course distance the reroute may rejoin the route — the
+        // cap (first approach fix / destination) projected onto course. The mint line
+        // must never route past it, even for weather sitting on the destination.
+        let capAlong = rejoinCap.map { project($0, from: position, course: course).along }
+            .flatMap { $0 > 0 ? $0 : nil }
+        let rawRejoin = rejoinOverride
             ?? Geo.destination(from: position, bearingDegrees: course, distanceNM: lineFar + 20)
+        let rejoinCoord = cappedToAlong(rawRejoin, capAlong: capAlong, position: position, course: course)
 
         // A single dogleg abeam the middle of the line at a lateral offset.
         func apexPath(for target: Double) -> [CLLocationCoordinate2D] {
@@ -376,8 +395,13 @@ struct RouteWeatherConflictDetector {
             ?? (path: apexPath(for: 0), target: 0)
         let target = chosen.target
         let direction: DeviationDirection = target >= 0 ? .right : .left
-        let deviationPath = chosen.path
-        let throughPoint = deviationPath[1]
+        // Cap every vertex at the rejoin limit so the line never runs past the
+        // destination / into the approach, then bound each leg to the max off-course
+        // turn so it never reverses the aircraft (ATC vectors around a storm; it
+        // neither turns the long way nor routes beyond the field).
+        let cappedPath = clampPathToAlong(chosen.path, capAlong: capAlong, position: position, course: course)
+        let deviationPath = boundedToCourse(cappedPath, course: course)
+        let throughPoint = deviationPath.count >= 2 ? deviationPath[1] : chosen.path[1]
 
         // Speak the deviation the drawn line actually flies: the initial turn from
         // course to the through-point, rounded to 5°, with a severity-based floor.
@@ -583,6 +607,57 @@ struct RouteWeatherConflictDetector {
         case .light, .unknown: break
         }
         return min(45, max(10, degrees))
+    }
+
+    /// Pull a rejoin point back to the cap's along-course distance when it lies past
+    /// it (keeping any cross-track offset), so the reroute intercepts the route no
+    /// deeper than the cap. Uncapped (nil) or not-yet-past → returned unchanged.
+    private func cappedToAlong(_ point: CLLocationCoordinate2D, capAlong: Double?,
+                               position: CLLocationCoordinate2D, course: Double) -> CLLocationCoordinate2D {
+        guard let capAlong else { return point }
+        let s = project(point, from: position, course: course)
+        guard s.along > capAlong else { return point }
+        let onCourse = Geo.destination(from: position, bearingDegrees: course, distanceNM: capAlong)
+        guard abs(s.cross) > 0.01 else { return onCourse }
+        return Geo.destination(from: onCourse, bearingDegrees: course + (s.cross >= 0 ? 90 : -90),
+                               distanceNM: abs(s.cross))
+    }
+
+    /// Cap every vertex of a deviation path (past the start) at the rejoin limit, so
+    /// no part of the drawn line runs past the destination / into the approach.
+    private func clampPathToAlong(_ path: [CLLocationCoordinate2D], capAlong: Double?,
+                                  position: CLLocationCoordinate2D, course: Double) -> [CLLocationCoordinate2D] {
+        guard capAlong != nil else { return path }
+        return path.enumerated().map { idx, pt in
+            idx == 0 ? pt : cappedToAlong(pt, capAlong: capAlong, position: position, course: course)
+        }
+    }
+
+    /// Clamp a deviation path so no leg turns more than `maxDeviationTurnDegrees` off
+    /// the course — ATC never turns an aircraft the long way around weather, so the
+    /// drawn line (and the vector / rejoin turn derived from it) is prevented from
+    /// reversing. Each successive vertex whose leg bearing exceeds the bound is pulled
+    /// back onto the bound at the same leg length, keeping the path moving downrange.
+    /// The starting position is never moved.
+    private func boundedToCourse(_ path: [CLLocationCoordinate2D], course: Double) -> [CLLocationCoordinate2D] {
+        guard path.count >= 2 else { return path }
+        let maxTurn = config.maxDeviationTurnDegrees
+        var result = [path[0]]
+        var prev = path[0]
+        for i in 1..<path.count {
+            let pt = path[i]
+            guard pt.isValid else { continue }
+            let delta = normalizedSigned(Geo.bearing(from: prev, to: pt) - course)
+            if abs(delta) > maxTurn {
+                let clamped = course + (delta > 0 ? maxTurn : -maxTurn)
+                let dist = Geo.distanceNM(from: prev, to: pt)
+                prev = Geo.destination(from: prev, bearingDegrees: clamped, distanceNM: dist)
+            } else {
+                prev = pt
+            }
+            result.append(prev)
+        }
+        return result
     }
 
     // MARK: - Lookahead
