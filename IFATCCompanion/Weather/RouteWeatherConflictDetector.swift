@@ -47,8 +47,14 @@ struct RouteWeatherConflictDetector {
         var clusterAlongMarginNM: Double = 30
         /// A candidate deviation path must stay at least this far from every
         /// precipitation cell to be accepted, so a reroute never threads a gap in one
-        /// storm only to cut through another (NM).
+        /// storm only to cut through another (NM). This is the base margin for
+        /// moderate/heavy returns.
         var pathClearanceNM: Double = 3
+        /// Lateral clearance kept from the most intense (red/extreme) cells (NM). A
+        /// wide berth around convective cores — used for both path validation and
+        /// gap/side-hug spacing — so the reroute rounds them well clear instead of
+        /// shaving past or threading a coarse-sampled gap straight through one.
+        var severeBerthNM: Double = 15
     }
 
     var config = Config()
@@ -351,18 +357,22 @@ struct RouteWeatherConflictDetector {
 
         // Validate the whole path against *every* precipitation cell, not just the
         // line being threaded — so we never avoid one storm and route into another.
-        // Fly the shortest candidate whose path is clear. When none is clear (the
-        // aircraft is boxed in), fall back to the candidate that stays **farthest**
-        // from the cells — never the straight-through least-deviation one — so the
-        // drawn line skirts the weather on the open side instead of cutting through a
-        // core the way it did when it was jammed toward a distant rejoin.
-        let allPolygons = hazards.compactMap { $0.geometry.polygonPoints }
+        // Each cell carries its own required clearance: red/extreme cores demand a
+        // wide berth, lighter returns the base margin. Fly the shortest candidate that
+        // stays clear of them all. When none is clear (the aircraft is boxed in), fall
+        // back to the candidate that best respects those berths — never the straight-
+        // through least-deviation one — so the line skirts the weather (giving the red
+        // cores the widest room it can) instead of cutting through a core.
+        let cellBerths: [(polygon: [CLLocationCoordinate2D], clearance: Double)] = hazards.compactMap {
+            guard let poly = $0.geometry.polygonPoints, poly.count >= 3 else { return nil }
+            return (poly, berthNM(for: $0.intensity))
+        }
         let clear = candidates.filter {
-            pathIsClear($0.path, polygons: allPolygons, buffer: config.pathClearanceNM, origin: position)
+            pathIsClear($0.path, cells: cellBerths, origin: position)
         }
         let chosen = clear.min { pathLengthNM($0.path) < pathLengthNM($1.path) }
-            ?? candidates.max { pathMinClearanceNM($0.path, polygons: allPolygons, origin: position)
-                                < pathMinClearanceNM($1.path, polygons: allPolygons, origin: position) }
+            ?? candidates.max { pathBerthMarginNM($0.path, cells: cellBerths, origin: position)
+                                < pathBerthMarginNM($1.path, cells: cellBerths, origin: position) }
             ?? (path: apexPath(for: 0), target: 0)
         let target = chosen.target
         let direction: DeviationDirection = target >= 0 ? .right : .left
@@ -414,7 +424,9 @@ struct RouteWeatherConflictDetector {
     /// conventional first offer); the caller validates each candidate's full path.
     private func threadSolution(cells: [Projection]) -> (targets: [Double], leftEdge: Double, rightEdge: Double) {
         var intervals: [(lo: Double, hi: Double)] = cells.map {
-            let buf = config.lateralBufferNM + $0.radiusBuffer
+            // Pad each cell by the lateral buffer — or the cell's wider berth, for a
+            // red/extreme core — so the gaps and side-hug edges keep that much room.
+            let buf = max(config.lateralBufferNM, berthNM(for: $0.hazard.intensity)) + $0.radiusBuffer
             return (lo: $0.crossLo - buf, hi: $0.crossHi + buf)
         }
         intervals.sort { $0.lo < $1.lo }
@@ -460,25 +472,33 @@ struct RouteWeatherConflictDetector {
 
     // MARK: - Path clearance
 
-    /// Whether a deviation path stays at least `buffer` NM clear of every cell
-    /// polygon along its whole length — the guard that stops a reroute from threading
-    /// one storm and cutting into another. Samples each leg and ignores the immediate
-    /// vicinity of `origin` (the aircraft may already be in light precipitation; we
-    /// only care that the path ahead stays clear).
+    /// The clearance (NM) a reroute keeps from a cell of the given intensity: a wide
+    /// berth for red/extreme cores, the base margin for everything lighter. Applied to
+    /// both path validation and the gap/side-hug spacing so the whole reroute — not
+    /// just its abeam point — gives convective cores real room.
+    private func berthNM(for intensity: WeatherIntensity) -> Double {
+        intensity == .extreme ? config.severeBerthNM : config.pathClearanceNM
+    }
+
+    /// Whether a deviation path stays clear of every cell along its whole length,
+    /// each by that cell's own required clearance — the guard that stops a reroute
+    /// from threading one storm and cutting into another, and that keeps a wide berth
+    /// from red/extreme cores. Samples each leg and ignores the immediate vicinity of
+    /// `origin` (the aircraft may already be in light precipitation; we only care that
+    /// the path ahead stays clear).
     private func pathIsClear(_ path: [CLLocationCoordinate2D],
-                             polygons: [[CLLocationCoordinate2D]],
-                             buffer: Double, origin: CLLocationCoordinate2D) -> Bool {
-        guard path.count >= 2, !polygons.isEmpty else { return true }
+                             cells: [(polygon: [CLLocationCoordinate2D], clearance: Double)],
+                             origin: CLLocationCoordinate2D) -> Bool {
+        guard path.count >= 2, !cells.isEmpty else { return true }
         let startSkip = 8.0
         for i in 0..<(path.count - 1) {
             let a = path[i], b = path[i + 1]
             let steps = max(1, Int(Geo.distanceNM(from: a, to: b) / 4))
             for s in 0...steps {
                 let f = Double(s) / Double(steps)
-                let p = CLLocationCoordinate2D(latitude: a.latitude + (b.latitude - a.latitude) * f,
-                                               longitude: a.longitude + (b.longitude - a.longitude) * f)
+                let p = interpolate(a, b, f)
                 if Geo.distanceNM(from: origin, to: p) < startSkip { continue }
-                for poly in polygons where distanceToPolygonNM(p, poly) < buffer { return false }
+                for cell in cells where distanceToPolygonNM(p, cell.polygon) < cell.clearance { return false }
             }
         }
         return true
@@ -495,15 +515,17 @@ struct RouteWeatherConflictDetector {
         return total
     }
 
-    /// The smallest clearance (NM) from a path to any cell polygon along its whole
-    /// length (0 where it enters one), ignoring the immediate vicinity of the origin.
-    /// Used only as the boxed-in tie-breaker: with no fully-clear candidate, fly the
-    /// one that keeps the most room from the weather rather than the one that happens
-    /// to need the smallest turn (which can drive straight through a core).
-    private func pathMinClearanceNM(_ path: [CLLocationCoordinate2D],
-                                    polygons: [[CLLocationCoordinate2D]],
-                                    origin: CLLocationCoordinate2D) -> Double {
-        guard path.count >= 2, !polygons.isEmpty else { return .greatestFiniteMagnitude }
+    /// How well a path respects every cell's required berth: the smallest value of
+    /// (distance to the cell − that cell's clearance) along the whole path, ignoring
+    /// the immediate vicinity of the origin. Positive means it keeps the full berth
+    /// everywhere; more negative means it cuts deeper past a berth. Used only as the
+    /// boxed-in tie-breaker: with no fully-clear candidate, fly the one that intrudes
+    /// least — which keeps the widest room from a red core — rather than the one that
+    /// happens to need the smallest turn (which can drive straight through it).
+    private func pathBerthMarginNM(_ path: [CLLocationCoordinate2D],
+                                   cells: [(polygon: [CLLocationCoordinate2D], clearance: Double)],
+                                   origin: CLLocationCoordinate2D) -> Double {
+        guard path.count >= 2, !cells.isEmpty else { return .greatestFiniteMagnitude }
         let startSkip = 8.0
         var worst = Double.greatestFiniteMagnitude
         for i in 0..<(path.count - 1) {
@@ -513,7 +535,7 @@ struct RouteWeatherConflictDetector {
                 let f = Double(s) / Double(steps)
                 let p = interpolate(a, b, f)
                 if Geo.distanceNM(from: origin, to: p) < startSkip { continue }
-                for poly in polygons { worst = min(worst, distanceToPolygonNM(p, poly)) }
+                for cell in cells { worst = min(worst, distanceToPolygonNM(p, cell.polygon) - cell.clearance) }
             }
         }
         return worst

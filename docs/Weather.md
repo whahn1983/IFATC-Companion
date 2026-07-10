@@ -180,6 +180,13 @@ UI labels: NOAA and OPERA both show *"Radar precipitation"*; NASA shows
      route is supplied it falls back to returning to course just past the far edge.
      The nearest downstream fix is still selected and named for the ATC rejoin call
      ("proceed direct …"); it simply lies on ahead of where the drawn line rejoins.
+   - **Red cores get a wide berth.** Clearance is per-cell by intensity: a
+     red/extreme return demands a wide berth (`severeBerthNM`, 15 NM) while
+     moderate/heavy cells keep the base margin. That berth is applied both to path
+     validation and to the gap/side-hug spacing, so a reroute rounds a convective core
+     well clear instead of shaving past it — or threading a coarse-sampled gap
+     straight through one. When boxed in, the fallback picks the path that intrudes
+     least on those berths, so the red cores keep the most room available.
    - **Shortest clear path wins.** All candidates — the gap/around-the-end doglegs
      and the two side-hugs — are validated end-to-end: the whole path is sampled
      against **every** cell polygon (so a reroute never avoids one storm and turns

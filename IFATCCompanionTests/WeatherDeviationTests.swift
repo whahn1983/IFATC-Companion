@@ -296,6 +296,22 @@ final class WeatherDeviationTests: XCTestCase {
                           "the deviation should rejoin on the route's southward leg, not straight ahead")
     }
 
+    func testGivesRedCellsAWiderBerthThanLighterCells() throws {
+        // The same cell straddling the course, once heavy and once red/extreme. The
+        // red core must be rounded with a noticeably wider berth than the heavy cell.
+        let poly = cell(alongNM: 40, crossNM: 10, halfCross: 12, from: usPosition)
+        func bypassOffset(_ intensity: WeatherIntensity) throws -> Double {
+            let conflict = try XCTUnwrap(detector.detectConflict(
+                position: usPosition, course: course, groundspeedKnots: 450, phase: .cruise,
+                hazards: [radarHazard(poly, intensity: intensity)], waypoints: []))
+            return abs(offsetFromCourse(conflict.deviationPath[1]))
+        }
+        let heavy = try bypassOffset(.heavy)
+        let extreme = try bypassOffset(.extreme)
+        XCTAssertGreaterThan(extreme, heavy + 5,
+                             "a red/extreme core must be rounded with a wider berth than a heavy cell")
+    }
+
     func testTerminalWeatherJustAfterDeparture() throws {
         // A cell 30 NM off the departure end, on course, is caught by the terminal
         // lookahead band (25–75 NM) while still on the ground / departing.
