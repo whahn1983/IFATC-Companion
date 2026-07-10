@@ -7,9 +7,23 @@ import CoreLocation
 /// onto the cross-track axis and **threads the widest clear gap** between them
 /// (going around the near end of a solid line when no gap is usable), the way a
 /// controller vectors a pilot between cells. When a line lies roughly along course,
-/// it also offers **side-hug** reroutes down either edge and flies the **shortest
-/// path that stays clear of every cell**, so a long line is passed on the genuinely
-/// shorter side rather than the one that merely needs the smallest initial turn.
+/// it also offers **side-hug** reroutes down either edge.
+///
+/// The reroute is deliberately conservative, matching how a real tactical deviation
+/// works:
+/// - **Only when the weather is genuinely upcoming.** A deviation is surfaced only
+///   once the blocking weather's near edge is within `deviationTriggerNM`; farther
+///   out the route ahead is still clear, so no line is drawn yet.
+/// - **Tight to the storm, wide only as a last resort.** Candidates are ranked so the
+///   line hugs the weather: the shortest routine-width path clear of every cell, else
+///   the shortest that at least clears the intense (heavy/extreme) cores while skirting
+///   lighter precip, and only then — when nothing tight can dodge the cores — the
+///   shortest wide detour. It never swings far out of the way when a closer path exists.
+/// - **Validated as drawn.** Every candidate is finalized (capped to the rejoin limit,
+///   bounded to the max off-course turn) *before* it is validated for clearance, so the
+///   line actually drawn is the one checked against the cells.
+/// - **Ends at the first route intercept.** The drawn line rejoins the filed route once
+///   and stops; it never crosses the route and loops back to intercept a second time.
 /// No AI, no I/O — fully unit-testable.
 struct RouteWeatherConflictDetector {
 
@@ -17,11 +31,21 @@ struct RouteWeatherConflictDetector {
         /// Lookahead band for terminal/departure/arrival phases (NM).
         var terminalLookahead: ClosedRange<Double> = 25...75
         /// Lookahead band for the enroute phase (NM).
-        var enrouteLookahead: ClosedRange<Double> = 100...250
+        var enrouteLookahead: ClosedRange<Double> = 80...180
+        /// The near edge of the blocking weather must be within this distance for a
+        /// deviation to be **surfaced** (NM). Real-world tactical convective deviations
+        /// are flown from close in — pilots avoid severe/extreme echoes by ~20 NM
+        /// laterally (FAA AC 00-24C) and typically start deviating ~20–40 NM out, with
+        /// ATC coordinating a little earlier. Farther out the route ahead is still
+        /// clear, so drawing a full reroute 100–250 NM in advance is neither realistic
+        /// nor useful. Detection still looks farther (the lookahead bands) so the line
+        /// is stable once shown; this only gates *when* it appears. Continuous
+        /// re-detection surfaces it as the aircraft closes on the weather.
+        var deviationTriggerNM: Double = 60
         /// Half-width of the route corridor around the course line (NM).
         var corridorHalfWidthNM: Double = 15
         /// Minutes of travel used for the time-based lookahead fallback.
-        var timeLookaheadMinutes: ClosedRange<Double> = 30...120
+        var timeLookaheadMinutes: ClosedRange<Double> = 20...45
         /// Light precipitation only prompts when this close and near-dead-ahead.
         var lightImmediateNM: Double = 20
         /// Max relative bearing (deg) for "directly ahead" (light-precip prompting).
@@ -45,9 +69,17 @@ struct RouteWeatherConflictDetector {
         /// `2 * lateralBufferNM + minGapWidthNM` ≈ 11 NM of clear air to be flown —
         /// low enough to use the breaks in a broken line instead of rounding it.
         var minGapWidthNM: Double = 3
-        /// How far off the course line to look for a threadable gap or an
-        /// around-the-end bypass (NM).
+        /// How far off the course line a **routine** deviation may steer for a
+        /// threadable gap or an around-the-end bypass (NM). The reroute hugs the storm
+        /// within this bound; anything wider is a last resort (`maxDetourOffsetNM`),
+        /// used only when nothing within this bound can clear the intense cores. Keeps
+        /// the mint line tight to the weather instead of swinging far out of the way.
         var searchHalfWidthNM: Double = 60
+        /// The absolute maximum lateral offset for a **last-resort** detour (NM), taken
+        /// only when no path within `searchHalfWidthNM` can even avoid the heavy/extreme
+        /// cores. Bounds how far out of the way the line may ever go, so a broad system
+        /// never produces a runaway loop far from the route.
+        var maxDetourOffsetNM: Double = 150
         /// Cells whose along-track position is within this margin of the blocking
         /// band are treated as part of the same line for gap analysis (NM).
         var clusterAlongMarginNM: Double = 30
@@ -156,13 +188,23 @@ struct RouteWeatherConflictDetector {
         guard var conflict = detect(position: position, course: flyCourse, groundspeedKnots: groundspeedKnots,
                                     phase: phase, hazards: hazards, waypoints: waypoints,
                                     rejoinOverride: routeRejoin, rejoinCap: rejoinCap) else { return nil }
-        // Guarantee the drawn line ends exactly ON the filed route (the intercept):
-        // snap its final vertex to the nearest point on the upcoming route polyline, so
-        // capping/bounding can never leave the rejoin floating just off the flight plan.
+        // End the drawn line exactly where it first rejoins the filed route. The
+        // deviation begins on the route, turns off it, and must come back to intercept it
+        // **once** — it can't cross the route and loop back to intercept a second time.
+        // So truncate it at the first point (past the departure) where it re-crosses the
+        // upcoming route polyline. Truncation only ever shortens the path, so a candidate
+        // validated clear stays clear. When it never re-crosses (it ends alongside the
+        // route), fall back to snapping the final vertex onto the route so the line still
+        // ends exactly on the flight plan.
         let routePoly = ([position] + routeAhead).filter { $0.isValid }
-        if routePoly.count >= 2, conflict.deviationPath.count >= 2, let last = conflict.deviationPath.last,
-           let onRoute = nearestPointOnPolyline(last, routePoly) {
-            conflict.deviationPath[conflict.deviationPath.count - 1] = onRoute
+        if routePoly.count >= 2, conflict.deviationPath.count >= 2 {
+            if let truncated = truncatedAtFirstRouteIntercept(conflict.deviationPath, route: routePoly),
+               truncated.count >= 2 {
+                conflict.deviationPath = truncated
+            } else if let last = conflict.deviationPath.last,
+                      let onRoute = nearestPointOnPolyline(last, routePoly) {
+                conflict.deviationPath[conflict.deviationPath.count - 1] = onRoute
+            }
         }
         return conflict
     }
@@ -327,6 +369,12 @@ struct RouteWeatherConflictDetector {
         // the same line — these are what the gap solver threads between.
         let bandNear = blockers.map { $0.nearAlong }.min() ?? primary.nearAlong
         let bandFar = blockers.map { $0.farAlong }.max() ?? primary.farAlong
+
+        // Only surface a deviation when the blocking weather is genuinely upcoming. When
+        // the nearest blocker's near edge is still beyond the tactical deviation range,
+        // the route ahead is clear for a good while yet — don't draw a reroute or raise
+        // the advisory this early. Continuous re-detection picks it up as we close in.
+        guard bandNear <= config.deviationTriggerNM else { return nil }
         let lineCells = projections.filter {
             $0.alongMax >= bandNear - config.clusterAlongMarginNM
                 && $0.alongMin <= bandFar + config.clusterAlongMarginNM
@@ -377,6 +425,14 @@ struct RouteWeatherConflictDetector {
             guard let poly = $0.geometry.polygonPoints, poly.count >= 3 else { return nil }
             return (poly, berthNM(for: $0.intensity))
         }
+        // The intense cores (heavy + extreme — the orange/red returns) that a deviation
+        // must *always* clear, each by its berth. Lighter (moderate) precipitation may be
+        // skirted to keep the line tight to the storm when clearing everything would force
+        // a wide detour; the intense cores never are.
+        let intenseBerths: [(polygon: [CLLocationCoordinate2D], clearance: Double)] = hazards.compactMap {
+            guard $0.intensity >= .heavy, let poly = $0.geometry.polygonPoints, poly.count >= 3 else { return nil }
+            return (poly, berthNM(for: $0.intensity))
+        }
 
         // A single dogleg abeam the middle of the line at a lateral offset.
         func apexPath(for target: Double) -> [CLLocationCoordinate2D] {
@@ -413,22 +469,32 @@ struct RouteWeatherConflictDetector {
             abs(offset) / tan(config.initialDeviationTurnDegrees * .pi / 180)
         }
 
-        // The tightest parallel-offset hug on one side (+1 right / −1 left): the
-        // smallest offset whose whole path clears every cell by its berth. This mirrors
-        // the real-world weather-deviation maneuver — turn out just enough to parallel
-        // the weather's edge, hold the offset, then rejoin when clear. Being the
-        // *minimum* clearing offset — not the outboard edge of the whole clustered line,
-        // which a far-off-course cell can drag way out — it stays close to the flight
-        // plan, so the shortest-path selector picks it *early* instead of the aircraft
-        // first diving wide and only tucking back in once the cluster thins downrange.
-        // `gentle` bounds the initial turn; a steep variant is offered too for when the
-        // gentle start would clip weather sitting at the aircraft.
-        func tightHug(side: Double, gentle: Bool) -> (path: [CLLocationCoordinate2D], target: Double)? {
+        // The finally-drawn geometry of a candidate: capped to the rejoin limit (never
+        // past the destination / approach) and bounded to the max off-course turn (never
+        // reversing the aircraft). Validation and selection run on THIS — the line
+        // actually drawn — so the clearance guard can't be defeated by a cap or bound
+        // that bends an already-validated candidate back into a cell.
+        func finalize(_ path: [CLLocationCoordinate2D]) -> [CLLocationCoordinate2D] {
+            boundedToCourse(clampPathToAlong(path, capAlong: capAlong, position: position, course: course),
+                            course: course)
+        }
+
+        // The tightest parallel-offset hug on one side (+1 right / −1 left) that stays
+        // clear of `cells`: the smallest offset (out to `maxOffset`) whose whole drawn
+        // path clears them. Mirrors the real weather-deviation maneuver — turn out just
+        // enough to parallel the weather's edge, hold the offset, then rejoin when clear.
+        // Being the *minimum* clearing offset it stays close to the flight plan, so the
+        // shortest-path selector picks it early rather than diving wide. `gentle` bounds
+        // the initial turn; a steep variant is offered for when the gentle start would
+        // clip weather sitting right at the aircraft.
+        func tightHug(side: Double, gentle: Bool,
+                      cells: [(polygon: [CLLocationCoordinate2D], clearance: Double)],
+                      maxOffset: Double) -> (path: [CLLocationCoordinate2D], target: Double)? {
             var offset = config.lateralBufferNM
-            while offset <= config.searchHalfWidthNM {
+            while offset <= maxOffset {
                 let target = side * offset
-                let path = hugPath(offset: target, minLead: gentle ? gentleLead(target) : 0)
-                if pathIsClear(path, cells: cellBerths, origin: position) {
+                let path = finalize(hugPath(offset: target, minLead: gentle ? gentleLead(target) : 0))
+                if pathIsClear(path, cells: cells, origin: position) {
                     return (path, target)
                 }
                 offset += 2
@@ -436,40 +502,78 @@ struct RouteWeatherConflictDetector {
             return nil
         }
 
+        // Routine-width candidates (offset bounded to `searchHalfWidthNM`): the gap /
+        // around-the-end doglegs, the capped side-edge hugs, and the tightest clearing
+        // hug on each side. Each is finalized up front so it is validated and ranked as
+        // the line actually drawn. Offsets beyond the bound are dropped here, so a broad
+        // line can never emit a runaway around-the-end candidate that loops far out.
         var candidates: [(path: [CLLocationCoordinate2D], target: Double)] =
-            solution.targets.map { (path: apexPath(for: $0), target: $0) }
-        candidates.append((path: hugPath(offset: solution.leftEdge, minLead: 0), target: solution.leftEdge))
-        candidates.append((path: hugPath(offset: solution.rightEdge, minLead: 0), target: solution.rightEdge))
-        // Offer the tight parallel hug on each side (gentle initial turn preferred, steep
-        // as a fallback); the shortest-clear selector then flies it over a deep single
-        // apex when a line lies along course.
+            solution.targets.filter { abs($0) <= config.searchHalfWidthNM }
+                .map { (path: finalize(apexPath(for: $0)), target: $0) }
+        for edge in [solution.leftEdge, solution.rightEdge] where abs(edge) <= config.searchHalfWidthNM {
+            candidates.append((path: finalize(hugPath(offset: edge, minLead: 0)), target: edge))
+        }
         for gentle in [true, false] {
-            if let tight = tightHug(side: 1, gentle: gentle) { candidates.append(tight) }
-            if let tight = tightHug(side: -1, gentle: gentle) { candidates.append(tight) }
+            for side in [1.0, -1.0] {
+                // The tightest hug that clears EVERY cell (the ideal, fully-clear option).
+                if let tight = tightHug(side: side, gentle: gentle, cells: cellBerths,
+                                        maxOffset: config.searchHalfWidthNM) {
+                    candidates.append(tight)
+                }
+                // The tightest hug that clears the INTENSE cores but may skirt lighter
+                // precip — the close-in option that keeps the line tight to a broad area
+                // of moderate returns instead of forcing a wide detour around all of it.
+                if let tight = tightHug(side: side, gentle: gentle, cells: intenseBerths,
+                                        maxOffset: config.searchHalfWidthNM) {
+                    candidates.append(tight)
+                }
+            }
         }
 
-        // Validate the whole path against *every* precipitation cell, not just the
-        // line being threaded — so we never avoid one storm and route into another.
-        // Fly the shortest candidate that stays clear of them all. When none is clear
-        // (the aircraft is boxed in), fall back to the candidate that best respects
-        // those berths — never the straight-through least-deviation one — so the line
-        // skirts the weather (giving the red cores the widest room it can) instead of
-        // cutting through a core.
-        let clear = candidates.filter {
-            pathIsClear($0.path, cells: cellBerths, origin: position)
+        // The shortest of a candidate set (by total drawn length), or nil when empty.
+        func shortest(_ set: [(path: [CLLocationCoordinate2D], target: Double)])
+            -> (path: [CLLocationCoordinate2D], target: Double)? {
+            set.min { pathLengthNM($0.path) < pathLengthNM($1.path) }
         }
-        let chosen = clear.min { pathLengthNM($0.path) < pathLengthNM($1.path) }
-            ?? candidates.max { pathBerthMarginNM($0.path, cells: cellBerths, origin: position)
-                                < pathBerthMarginNM($1.path, cells: cellBerths, origin: position) }
-            ?? (path: apexPath(for: 0), target: 0)
+        // Last resort: the shortest *wide* hug (out to maxDetourOffsetNM) that clears
+        // every cell — used only when nothing routine-width can even dodge the intense
+        // cores, so a big detour is taken solely when there is no closer clear path.
+        func wideDetourClearingAll() -> (path: [CLLocationCoordinate2D], target: Double)? {
+            var best: (path: [CLLocationCoordinate2D], target: Double)?
+            for gentle in [true, false] {
+                for side in [1.0, -1.0] {
+                    if let tight = tightHug(side: side, gentle: gentle, cells: cellBerths,
+                                            maxOffset: config.maxDetourOffsetNM),
+                       best == nil || pathLengthNM(tight.path) < pathLengthNM(best!.path) {
+                        best = tight
+                    }
+                }
+            }
+            return best
+        }
+
+        // Choose the reroute the pilot actually flies, in priority order that keeps it
+        // tight to the storm and only ever swings wide as an absolute last resort:
+        //   1. the shortest routine-width path clear of EVERY cell;
+        //   2. else the shortest routine-width path that clears the intense (heavy /
+        //      extreme) cores — skirting lighter precip to stay close, not looping;
+        //   3. else, last resort, the shortest *wide* detour that clears every cell —
+        //      taken only when nothing tight can dodge the intense cores;
+        //   4. else (genuinely boxed in) the routine path that keeps the most room from
+        //      the intense cores — never the straight-through least-deviation one.
+        let clearAll = candidates.filter { pathIsClear($0.path, cells: cellBerths, origin: position) }
+        let clearIntense = candidates.filter { pathIsClear($0.path, cells: intenseBerths, origin: position) }
+        let chosen = shortest(clearAll)
+            ?? shortest(clearIntense)
+            ?? wideDetourClearingAll()
+            ?? candidates.max { pathBerthMarginNM($0.path, cells: intenseBerths, origin: position)
+                                < pathBerthMarginNM($1.path, cells: intenseBerths, origin: position) }
+            ?? (path: finalize(apexPath(for: 0)), target: 0)
         let target = chosen.target
         let direction: DeviationDirection = target >= 0 ? .right : .left
-        // Cap every vertex at the rejoin limit so the line never runs past the
-        // destination / into the approach, then bound each leg to the max off-course
-        // turn so it never reverses the aircraft (ATC vectors around a storm; it
-        // neither turns the long way nor routes beyond the field).
-        let cappedPath = clampPathToAlong(chosen.path, capAlong: capAlong, position: position, course: course)
-        let deviationPath = boundedToCourse(cappedPath, course: course)
+        // The chosen path is already finalized (capped + turn-bounded), so the drawn line
+        // is exactly what was validated for clearance.
+        let deviationPath = chosen.path
         let throughPoint = deviationPath.count >= 2 ? deviationPath[1] : chosen.path[1]
 
         // Speak the deviation the drawn line actually flies: the initial turn from
@@ -675,6 +779,51 @@ struct RouteWeatherConflictDetector {
             if d < bestD { bestD = d; best = c }
         }
         return best
+    }
+
+    /// Truncate a deviation path so it ends exactly where it first re-intercepts the
+    /// filed route — the mint line rejoins the route once and stops, never crossing it
+    /// and looping back to intercept a second time. The path starts on the route (at the
+    /// aircraft), so crossings within `departureSkipNM` of the start are ignored as the
+    /// shared departure; the first crossing beyond that cuts the path, keeping the
+    /// vertices up to that leg and ending precisely at the intercept. Returns nil when
+    /// the path never re-crosses the route (the caller then snaps the last vertex on).
+    private func truncatedAtFirstRouteIntercept(_ path: [CLLocationCoordinate2D],
+                                                route: [CLLocationCoordinate2D]) -> [CLLocationCoordinate2D]? {
+        guard path.count >= 2, route.count >= 2, let start = path.first else { return nil }
+        let departureSkipNM = 3.0
+        for i in 0..<(path.count - 1) {
+            let a = path[i], b = path[i + 1]
+            var bestPoint: CLLocationCoordinate2D?
+            var bestAlong = Double.greatestFiniteMagnitude
+            for r in 0..<(route.count - 1) {
+                guard let x = segmentIntersectionPoint(a, b, route[r], route[r + 1]),
+                      Geo.distanceNM(from: start, to: x) > departureSkipNM else { continue }
+                // The crossing nearest this leg's start is the earliest along the path.
+                let along = Geo.distanceNM(from: a, to: x)
+                if along < bestAlong { bestAlong = along; bestPoint = x }
+            }
+            if let x = bestPoint { return Array(path[0...i]) + [x] }
+        }
+        return nil
+    }
+
+    /// The intersection point of two planar segments a–b and c–d (lat/lon treated as a
+    /// flat plane, matching the detector's other planar geometry), or nil when they do
+    /// not cross within both segments (including the parallel / collinear case).
+    private func segmentIntersectionPoint(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D,
+                                          _ c: CLLocationCoordinate2D, _ d: CLLocationCoordinate2D)
+        -> CLLocationCoordinate2D? {
+        let x1 = a.longitude, y1 = a.latitude
+        let x2 = b.longitude, y2 = b.latitude
+        let x3 = c.longitude, y3 = c.latitude
+        let x4 = d.longitude, y4 = d.latitude
+        let denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+        guard abs(denom) > 1e-12 else { return nil }
+        let t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom
+        let u = ((x1 - x3) * (y1 - y2) - (y1 - y3) * (x1 - x2)) / denom
+        guard t >= 0, t <= 1, u >= 0, u <= 1 else { return nil }
+        return CLLocationCoordinate2D(latitude: y1 + t * (y2 - y1), longitude: x1 + t * (x2 - x1))
     }
 
     /// The closest point on segment a→b to `p`, in the same local NM plane as

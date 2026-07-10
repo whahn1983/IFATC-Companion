@@ -185,12 +185,12 @@ final class WeatherDeviationTests: XCTestCase {
         // cuts back through the line. The reroute must still stay clear of every cell
         // along its whole length — a side-hug down one edge of the line.
         let polys = [
-            cell(alongNM: 40,  crossNM: -30, halfCross: 12, from: usPosition),
-            cell(alongNM: 80,  crossNM: -10, halfCross: 12, from: usPosition),
-            cell(alongNM: 120, crossNM: 10,  halfCross: 12, from: usPosition),
-            cell(alongNM: 160, crossNM: 30,  halfCross: 12, from: usPosition),
+            cell(alongNM: 30,  crossNM: -30, halfCross: 12, from: usPosition),
+            cell(alongNM: 55,  crossNM: -10, halfCross: 12, from: usPosition),
+            cell(alongNM: 80,  crossNM: 10,  halfCross: 12, from: usPosition),
+            cell(alongNM: 105, crossNM: 30,  halfCross: 12, from: usPosition),
         ]
-        let downstream = Geo.destination(from: usPosition, bearingDegrees: course, distanceNM: 240)
+        let downstream = Geo.destination(from: usPosition, bearingDegrees: course, distanceNM: 160)
         let wp = Waypoint(name: "RJOIN", latitude: downstream.latitude, longitude: downstream.longitude)
         let conflict = try XCTUnwrap(detector.detectConflict(
             position: usPosition, course: course, groundspeedKnots: 450, phase: .cruise,
@@ -252,10 +252,10 @@ final class WeatherDeviationTests: XCTestCase {
     /// course, even for a diagonal line whose rejoin sits well downrange.
     func testDeviationPathNeverReversesAtDefaultBound() throws {
         let polys = [
-            cell(alongNM: 40,  crossNM: -30, halfCross: 12, from: usPosition),
-            cell(alongNM: 80,  crossNM: -10, halfCross: 12, from: usPosition),
-            cell(alongNM: 120, crossNM: 10,  halfCross: 12, from: usPosition),
-            cell(alongNM: 160, crossNM: 30,  halfCross: 12, from: usPosition),
+            cell(alongNM: 30,  crossNM: -30, halfCross: 12, from: usPosition),
+            cell(alongNM: 55,  crossNM: -10, halfCross: 12, from: usPosition),
+            cell(alongNM: 80,  crossNM: 10,  halfCross: 12, from: usPosition),
+            cell(alongNM: 105, crossNM: 30,  halfCross: 12, from: usPosition),
         ]
         let conflict = try XCTUnwrap(detector.detectConflict(
             position: usPosition, course: course, groundspeedKnots: 450, phase: .cruise,
@@ -280,15 +280,169 @@ final class WeatherDeviationTests: XCTestCase {
     /// must not pull the mint line past the rejoin cap: every vertex intercepts the
     /// route at or before the cap (here a fix 90 NM ahead, e.g. the first ILS fix).
     func testMintLineNeverRoutesPastTheRejoinCap() throws {
-        let storm = radarHazard(cell(alongNM: 110, crossNM: 0, halfAlong: 20, halfCross: 20, from: usPosition))
-        let cap = Geo.destination(from: usPosition, bearingDegrees: course, distanceNM: 90)
+        let storm = radarHazard(cell(alongNM: 60, crossNM: 0, halfAlong: 20, halfCross: 20, from: usPosition))
+        let cap = Geo.destination(from: usPosition, bearingDegrees: course, distanceNM: 50)
         let conflict = try XCTUnwrap(detector.detectConflict(
             position: usPosition, course: course, groundspeedKnots: 450, phase: .cruise,
             hazards: [storm], waypoints: [], rejoinCap: cap))
         for point in conflict.deviationPath {
-            XCTAssertLessThanOrEqual(alongFromCourse(point), 90 + 1,
+            XCTAssertLessThanOrEqual(alongFromCourse(point), 50 + 1,
                                      "the mint line must intercept the route no deeper than the rejoin cap")
         }
+    }
+
+    // MARK: - Proximity gate (only reroute for genuinely upcoming weather)
+
+    func testNoDeviationWhenWeatherIsFarAhead() {
+        // Weather well beyond the tactical deviation range: the route ahead is still
+        // clear for a long way, so no reroute is surfaced even though the cell is within
+        // the (wider) detection lookahead. The same cell up close does prompt one.
+        let farCell = radarHazard(cell(alongNM: 140, crossNM: 0, from: usPosition))
+        XCTAssertNil(detector.detectConflict(position: usPosition, course: course,
+                                             groundspeedKnots: 450, phase: .cruise,
+                                             hazards: [farCell], waypoints: []),
+                     "weather far ahead must not trigger a reroute while the near path is clear")
+
+        let nearCell = radarHazard(cell(alongNM: 45, crossNM: 0, from: usPosition))
+        XCTAssertNotNil(detector.detectConflict(position: usPosition, course: course,
+                                                groundspeedKnots: 450, phase: .cruise,
+                                                hazards: [nearCell], waypoints: []),
+                        "weather within the tactical deviation range must trigger a reroute")
+    }
+
+    // MARK: - Tight to the storm (no giant last-resort detours)
+
+    func testKeepsDeviationTightAroundACore() throws {
+        // A heavy core blocking the corridor. The reroute hugs close to it — it must stay
+        // within the routine offset bound, never swinging out to a huge last-resort loop.
+        let core = cell(alongNM: 45, crossNM: 0, halfCross: 10, from: usPosition)
+        let conflict = try XCTUnwrap(detector.detectConflict(
+            position: usPosition, course: course, groundspeedKnots: 450, phase: .cruise,
+            hazards: [radarHazard(core, intensity: .heavy)], waypoints: []))
+        for point in conflict.deviationPath {
+            XCTAssertLessThanOrEqual(abs(offsetFromCourse(point)), 60 + 1,
+                                     "a routine deviation must stay tight, never a huge detour")
+        }
+        assertPathClear(conflict.deviationPath, of: [core])
+    }
+
+    func testDeviationNeverExceedsTheMaxDetourOffset() throws {
+        // Even a broad wall of precipitation across the corridor must never produce a
+        // reroute wider than the absolute last-resort detour bound.
+        let wall = stride(from: -60.0, through: 60.0, by: 15.0).map {
+            radarHazard(cell(alongNM: 45, crossNM: $0, halfCross: 10, from: usPosition), intensity: .moderate)
+        }
+        let conflict = try XCTUnwrap(detector.detectConflict(
+            position: usPosition, course: course, groundspeedKnots: 450, phase: .cruise,
+            hazards: wall, waypoints: []))
+        for point in conflict.deviationPath {
+            XCTAssertLessThanOrEqual(abs(offsetFromCourse(point)), 150 + 1,
+                                     "the mint line must never exceed the maximum last-resort detour")
+        }
+    }
+
+    func testNeverCutsAnIntenseCoreToStayTight() throws {
+        // A wall of moderate precip too wide to clear tightly, with an extreme core off to
+        // one side. The reroute may skirt the moderate wall, but it must never cut through
+        // the extreme core — the intense cores are always avoided.
+        var hazards = stride(from: -55.0, through: 55.0, by: 11.0).map {
+            radarHazard(cell(alongNM: 45, crossNM: $0, halfCross: 7, from: usPosition), intensity: .moderate)
+        }
+        let corePoly = cell(alongNM: 45, crossNM: 33, halfCross: 8, from: usPosition)
+        hazards.append(radarHazard(corePoly, intensity: .extreme))
+        let conflict = try XCTUnwrap(detector.detectConflict(
+            position: usPosition, course: course, groundspeedKnots: 450, phase: .cruise,
+            hazards: hazards, waypoints: []))
+        let path = conflict.deviationPath
+        for i in 0..<(path.count - 1) {
+            let a = path[i], b = path[i + 1]
+            for s in 0...30 {
+                let f = Double(s) / 30
+                let p = CLLocationCoordinate2D(latitude: a.latitude + (b.latitude - a.latitude) * f,
+                                               longitude: a.longitude + (b.longitude - a.longitude) * f)
+                guard Geo.distanceNM(from: usPosition, to: p) > 8 else { continue }
+                XCTAssertFalse(WeatherRouteAnalyzer.pointInPolygon(p, corePoly),
+                               "the mint line must never cut through the extreme core")
+            }
+        }
+    }
+
+    // MARK: - Final drawn geometry is what gets validated
+
+    func testFinalDrawnPathClearsCoreUnderRejoinCap() throws {
+        // An extreme core straddling the course with a rejoin cap just past it. The
+        // capped, turn-bounded line that is actually drawn must still clear the core — the
+        // clearance check governs the final geometry, not a pre-cap candidate shape.
+        let corePoly = cell(alongNM: 45, crossNM: 0, halfAlong: 12, halfCross: 12, from: usPosition)
+        let cap = Geo.destination(from: usPosition, bearingDegrees: course, distanceNM: 75)
+        let conflict = try XCTUnwrap(detector.detectConflict(
+            position: usPosition, course: course, groundspeedKnots: 450, phase: .cruise,
+            hazards: [radarHazard(corePoly, intensity: .extreme)], waypoints: [], rejoinCap: cap))
+        assertPathClear(conflict.deviationPath, of: [corePoly])
+    }
+
+    // MARK: - Ends at the first route intercept (no double-cross)
+
+    func testDeviationEndsAtFirstRouteInterceptNoDoubleCross() throws {
+        // The route runs north, then bends north-east just past the weather. A reroute
+        // aimed at a straight-ahead rejoin would cross the bent route and come back down
+        // to intercept it a second time. The drawn line must instead end at the first
+        // intercept — crossing the route exactly once.
+        let f1 = Geo.destination(from: usPosition, bearingDegrees: 0, distanceNM: 60)   // north
+        let f2 = Geo.destination(from: f1, bearingDegrees: 45, distanceNM: 90)          // then NE
+        let storm = radarHazard(cell(alongNM: 40, crossNM: 0, halfCross: 14, from: usPosition))
+        let wps = [Waypoint(name: "F1", latitude: f1.latitude, longitude: f1.longitude),
+                   Waypoint(name: "F2", latitude: f2.latitude, longitude: f2.longitude)]
+        let conflict = try XCTUnwrap(detector.detectConflict(
+            position: usPosition, course: 0, groundspeedKnots: 450, phase: .cruise,
+            hazards: [storm], waypoints: wps, routeAhead: [f1, f2]))
+
+        let route = [usPosition, f1, f2]
+        let path = conflict.deviationPath
+        // The line ends on the filed route.
+        let end = try XCTUnwrap(path.last)
+        XCTAssertLessThan(minDistanceToPolyline(end, route), 1.0,
+                          "the deviation must end on the filed route")
+        // It intercepts the route exactly once (its endpoint) — never a second time.
+        var hits: [CLLocationCoordinate2D] = []
+        for i in 0..<(path.count - 1) {
+            for r in 0..<(route.count - 1) {
+                guard let x = segmentIntersectionPoint(path[i], path[i + 1], route[r], route[r + 1]),
+                      Geo.distanceNM(from: usPosition, to: x) > 3 else { continue }
+                if !hits.contains(where: { Geo.distanceNM(from: $0, to: x) < 1 }) { hits.append(x) }
+            }
+        }
+        XCTAssertEqual(hits.count, 1, "the deviation must intercept the route exactly once and end there")
+    }
+
+    /// Minimum distance (NM) from a point to a polyline (test helper).
+    private func minDistanceToPolyline(_ p: CLLocationCoordinate2D, _ line: [CLLocationCoordinate2D]) -> Double {
+        guard line.count >= 2 else { return .greatestFiniteMagnitude }
+        var best = Double.greatestFiniteMagnitude
+        for i in 0..<(line.count - 1) {
+            let a = line[i], b = line[i + 1]
+            for s in 0...50 {
+                let f = Double(s) / 50
+                let q = CLLocationCoordinate2D(latitude: a.latitude + (b.latitude - a.latitude) * f,
+                                               longitude: a.longitude + (b.longitude - a.longitude) * f)
+                best = min(best, Geo.distanceNM(from: p, to: q))
+            }
+        }
+        return best
+    }
+
+    /// Planar segment-intersection point (test helper mirroring the detector's geometry).
+    private func segmentIntersectionPoint(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D,
+                                          _ c: CLLocationCoordinate2D, _ d: CLLocationCoordinate2D)
+        -> CLLocationCoordinate2D? {
+        let x1 = a.longitude, y1 = a.latitude, x2 = b.longitude, y2 = b.latitude
+        let x3 = c.longitude, y3 = c.latitude, x4 = d.longitude, y4 = d.latitude
+        let denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+        guard abs(denom) > 1e-12 else { return nil }
+        let t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom
+        let u = ((x1 - x3) * (y1 - y2) - (y1 - y3) * (x1 - x2)) / denom
+        guard t >= 0, t <= 1, u >= 0, u <= 1 else { return nil }
+        return CLLocationCoordinate2D(latitude: y1 + t * (y2 - y1), longitude: x1 + t * (x2 - x1))
     }
 
     func testDetectsWeatherOnALegAfterATurn() throws {

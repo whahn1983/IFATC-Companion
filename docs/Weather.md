@@ -140,13 +140,22 @@ UI labels: NOAA and OPERA both show *"Radar precipitation"*; NASA shows
      precedence when both are present.
 2. **Conflict detection + gap threading.** `RouteWeatherConflictDetector` builds a
    corridor from the aircraft through the upcoming route fixes (lookahead 25–75 NM
-   in the terminal area, 100–250 NM enroute, with a 30–120 minute groundspeed-based
+   in the terminal area, 80–180 NM enroute, with a 20–45 minute groundspeed-based
    fallback) and finds the precipitation cells that block it. Rather than hopping
    around a single cell, it projects every nearby cell onto the cross-track axis,
    pads each by a lateral buffer, merges the overlaps, and **threads the widest
    clear gap** between adjacent cells — offering the reachable gaps and going around
    either end of a solid line. This mirrors how a controller vectors a pilot between
    cells, whether they appear just after takeoff, enroute, or on approach.
+   - **Only when the weather is genuinely upcoming.** A deviation is surfaced only once
+     the nearest blocking cell's near edge is within `deviationTriggerNM` (~60 NM) — the
+     realistic range for a tactical convective deviation (pilots avoid severe echoes by
+     ~20 NM laterally per FAA AC 00-24C and start deviating ~20–40 NM out, with ATC
+     coordinating a little earlier). Farther out the route ahead is still clear, so no
+     mint line or "contact ATC" banner is drawn yet; the wider detection lookahead is
+     kept only so the line is *stable* once shown, and continuous re-detection surfaces
+     it as the aircraft closes in. This is why weather 100+ NM ahead no longer draws a
+     reroute while the near path is clear.
    - **The corridor follows the route.** The detection band is only ±15 NM wide, so a
      straight corridor aimed at the *bearing to the next fix* misses weather that sits
      on the route **after a turn** — the aircraft's wide sampling window still finds
@@ -204,16 +213,27 @@ UI labels: NOAA and OPERA both show *"Radar precipitation"*; NASA shows
      well clear instead of shaving past it — or threading a coarse-sampled gap
      straight through one. When boxed in, the fallback picks the path that intrudes
      least on those berths, so the red cores keep the most room available.
-   - **Shortest clear path wins.** All candidates — the gap/around-the-end doglegs
-     and the two side-hugs — are validated end-to-end: the whole path is sampled
-     against **every** cell polygon (so a reroute never avoids one storm and turns
-     into another), and the one with the **shortest total length** that stays clear
-     is flown. Ranking by true distance rather than smallest initial turn is what
-     keeps the reroute from looping the long way around a line when the other side is
-     shorter. If the aircraft is genuinely boxed in with no fully-clear candidate, it
-     falls back to the one that keeps the **most clearance** from the cells — never
-     the straight-through least-deviation dogleg — so the line always skirts the
-     weather on the most open side rather than cutting through it.
+   - **Tight to the storm; wide only as a last resort.** All candidates — the
+     gap/around-the-end doglegs and the side-hugs — are **finalized first** (capped +
+     turn-bounded, see below) and then validated end-to-end against **every** cell
+     polygon, so what is ranked and flown is exactly the line drawn. Routine candidates
+     are bounded to `searchHalfWidthNM` (~60 NM) off course, and the pick is made in a
+     priority order that keeps the line close to the weather:
+     1. the **shortest routine-width path clear of every cell**;
+     2. else the shortest routine-width path that clears the **intense (heavy/extreme)
+        cores** while skirting lighter (moderate) precip — so a broad area of moderate
+        returns is passed close rather than looped around wholesale;
+     3. else, **only as an absolute last resort**, the shortest *wide* detour (out to
+        `maxDetourOffsetNM`) that clears every cell — taken solely when nothing tight can
+        even dodge the intense cores;
+     4. else (genuinely boxed in) the routine path that keeps the **most room from the
+        intense cores** — never the straight-through least-deviation dogleg.
+
+     Ranking by true distance (not smallest initial turn) keeps the reroute on the
+     genuinely shorter side, and dropping any candidate wider than the bound stops a
+     broad line from emitting a runaway around-the-end loop far from the route. The
+     intense cores are **always** avoided when any path — tight or wide — can; only a
+     genuine box-in ever brings the line near one, and then it keeps the most room it can.
    - **Bounded turns — never reverse the aircraft.** Every leg of the drawn line is
      clamped to at most `maxDeviationTurnDegrees` (100°) off the course. ATC vectors
      around a storm; it never turns an aircraft the long way around, so any leg that
@@ -245,10 +265,12 @@ UI labels: NOAA and OPERA both show *"Radar precipitation"*; NASA shows
 5. **Clear of weather.** When the pilot reports clear of weather, ATC clears direct
    the rejoin fix (or *"resume own navigation"* when already near the route), or
    rejoins the STAR.
-   - **The mint line always ends on the filed route.** The drawn deviation's final
-     vertex is snapped to the nearest point on the upcoming route polyline, so the line
-     intercepts the flight plan cleanly (capping/bounding can't leave it floating just
-     off course).
+   - **The mint line ends at the first route intercept.** The deviation leaves the
+     route, rounds the weather, and rejoins it **once** — it is truncated exactly where
+     it first re-crosses the upcoming route polyline, so it can never cross the route and
+     loop back to intercept a second time. (When it never re-crosses — it ends alongside
+     the route — its final vertex is snapped to the nearest route point instead, so the
+     line still ends cleanly on the flight plan.)
    - **Auto-resume at the intercept.** If the pilot never reports clear of weather, the
      controller automatically issues *"resume own navigation"* and ends the deviation
      once the aircraft reaches within 15 NM of that intercept (measured on the final leg,
