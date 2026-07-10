@@ -41,6 +41,10 @@ struct RouteWeatherConflictDetector {
         /// Cells whose along-track position is within this margin of the blocking
         /// band are treated as part of the same line for gap analysis (NM).
         var clusterAlongMarginNM: Double = 30
+        /// A candidate deviation path must stay at least this far from every
+        /// precipitation cell to be accepted, so a reroute never threads a gap in one
+        /// storm only to cut through another (NM).
+        var pathClearanceNM: Double = 3
     }
 
     var config = Config()
@@ -126,22 +130,35 @@ struct RouteWeatherConflictDetector {
             $0.alongMax >= bandNear - config.clusterAlongMarginNM
                 && $0.alongMin <= bandFar + config.clusterAlongMarginNM
         }
-        let gap = threadGap(cells: lineCells.isEmpty ? blockers : lineCells)
-
-        // Build the deviation path that threads the chosen gap:
-        //   position → through-point (abeam the middle of the line, offset into the
-        //   gap) → rejoin (downstream fix or a point past the far edge).
+        // Candidate lateral offsets to thread/round the line, best (least deviation)
+        // first. The through-point sits abeam the middle of the line at that offset;
+        // the path is position → through-point → rejoin.
+        let candidates = orderedThreadTargets(cells: lineCells.isEmpty ? blockers : lineCells)
         let midAlong = max(0, (bandNear + bandFar) / 2)
         let onCourse = Geo.destination(from: position, bearingDegrees: course, distanceNM: midAlong)
-        let sideBearing = course + (gap.direction == .right ? 90 : -90)
-        let throughPoint = Geo.destination(from: onCourse, bearingDegrees: sideBearing,
-                                           distanceNM: abs(gap.target))
 
         let rejoin = rejoinFix(waypoints: waypoints, position: position, course: course,
                                farAlong: bandFar, lookahead: lookahead, polygon: primary.polygon)
         let rejoinCoord = rejoin?.coordinate
             ?? Geo.destination(from: position, bearingDegrees: course, distanceNM: bandFar + 20)
-        let path = [position, throughPoint, rejoinCoord]
+
+        func path(for target: Double) -> [CLLocationCoordinate2D] {
+            let sideBearing = course + (target >= 0 ? 90 : -90)
+            let apex = Geo.destination(from: onCourse, bearingDegrees: sideBearing, distanceNM: abs(target))
+            return [position, apex, rejoinCoord]
+        }
+
+        // Validate the whole path against *every* precipitation cell, not just the
+        // line being threaded — so we never avoid one storm and route into another.
+        // Pick the least-deviation candidate whose path is clear; fall back to the
+        // best gap when none is fully clear (the aircraft may already be boxed in).
+        let allPolygons = hazards.compactMap { $0.geometry.polygonPoints }
+        let target = candidates.first { pathIsClear(path(for: $0), polygons: allPolygons,
+                                                    buffer: config.pathClearanceNM, origin: position) }
+            ?? candidates.first ?? 0
+        let direction: DeviationDirection = target >= 0 ? .right : .left
+        let deviationPath = path(for: target)
+        let throughPoint = deviationPath[1]
 
         // Speak the deviation the drawn line actually flies: the initial turn from
         // course to the through-point, rounded to 5°, with a severity-based floor.
@@ -168,25 +185,25 @@ struct RouteWeatherConflictDetector {
             severity: primary.hazard.intensity,
             leftBypassScore: primary.leftExtent,
             rightBypassScore: primary.rightExtent,
-            recommendedDirection: gap.direction,
+            recommendedDirection: direction,
             recommendedDeviationDegrees: degrees,
             rejoinFix: rejoin,
             originalSegment: segment,
             shouldPrompt: prompt,
             intersectionArea: area,
-            deviationPath: path)
+            deviationPath: deviationPath)
     }
 
     // MARK: - Gap threading
 
-    /// The lateral offset (signed cross-track NM, +right) to steer for, and which
-    /// side of course that is. Projects the cells onto the cross-track axis, pads
-    /// each by the lateral buffer, merges overlaps, and picks the reachable target
-    /// requiring the least deviation among clear gaps — threading between cells when
-    /// an adequately-wide gap exists, otherwise going around the nearer end of the
-    /// line. Ties break toward the wider gap, then to the right (the conventional
-    /// first offer).
-    private func threadGap(cells: [Projection]) -> (target: Double, direction: DeviationDirection) {
+    /// Candidate lateral offsets (signed cross-track NM, +right) to steer for,
+    /// ordered best-first. Projects the cells onto the cross-track axis, pads each by
+    /// the lateral buffer, merges overlaps, and offers the interior gaps between
+    /// adjacent cells (wide enough to fly) plus going around either end of the line.
+    /// Ordered by least deviation, then wider gap, then to the right (the
+    /// conventional first offer). The caller validates each candidate's full path and
+    /// takes the first that is actually clear.
+    private func orderedThreadTargets(cells: [Projection]) -> [Double] {
         var intervals: [(lo: Double, hi: Double)] = cells.map {
             let buf = config.lateralBufferNM + $0.radiusBuffer
             return (lo: $0.crossLo - buf, hi: $0.crossHi + buf)
@@ -201,7 +218,7 @@ struct RouteWeatherConflictDetector {
                 merged.append(iv)
             }
         }
-        guard let first = merged.first, let last = merged.last else { return (0, .right) }
+        guard let first = merged.first, let last = merged.last else { return [0] }
 
         struct Candidate { var target: Double; var width: Double }
         var candidates: [Candidate] = []
@@ -221,13 +238,65 @@ struct RouteWeatherConflictDetector {
         let reachable = candidates.filter { abs($0.target) <= config.searchHalfWidthNM }
         let pool = reachable.isEmpty ? candidates : reachable
 
-        let best = pool.min { a, b in
+        return pool.sorted { a, b in
             if abs(a.target) != abs(b.target) { return abs(a.target) < abs(b.target) }
             if a.width != b.width { return a.width > b.width }
             return a.target >= 0 && b.target < 0   // prefer the right side on an exact tie
-        } ?? Candidate(target: last.hi, width: 0)
+        }.map { $0.target }
+    }
 
-        return (best.target, best.target >= 0 ? .right : .left)
+    // MARK: - Path clearance
+
+    /// Whether a deviation path stays at least `buffer` NM clear of every cell
+    /// polygon along its whole length — the guard that stops a reroute from threading
+    /// one storm and cutting into another. Samples each leg and ignores the immediate
+    /// vicinity of `origin` (the aircraft may already be in light precipitation; we
+    /// only care that the path ahead stays clear).
+    private func pathIsClear(_ path: [CLLocationCoordinate2D],
+                             polygons: [[CLLocationCoordinate2D]],
+                             buffer: Double, origin: CLLocationCoordinate2D) -> Bool {
+        guard path.count >= 2, !polygons.isEmpty else { return true }
+        let startSkip = 8.0
+        for i in 0..<(path.count - 1) {
+            let a = path[i], b = path[i + 1]
+            let steps = max(1, Int(Geo.distanceNM(from: a, to: b) / 4))
+            for s in 0...steps {
+                let f = Double(s) / Double(steps)
+                let p = CLLocationCoordinate2D(latitude: a.latitude + (b.latitude - a.latitude) * f,
+                                               longitude: a.longitude + (b.longitude - a.longitude) * f)
+                if Geo.distanceNM(from: origin, to: p) < startSkip { continue }
+                for poly in polygons where distanceToPolygonNM(p, poly) < buffer { return false }
+            }
+        }
+        return true
+    }
+
+    /// Distance (NM) from a point to a polygon: 0 inside, else the nearest edge.
+    private func distanceToPolygonNM(_ p: CLLocationCoordinate2D, _ poly: [CLLocationCoordinate2D]) -> Double {
+        guard poly.count >= 3 else { return .greatestFiniteMagnitude }
+        if WeatherRouteAnalyzer.pointInPolygon(p, poly) { return 0 }
+        var best = Double.greatestFiniteMagnitude
+        var j = poly.count - 1
+        for i in poly.indices {
+            best = min(best, pointToSegmentNM(p, poly[j], poly[i]))
+            j = i
+        }
+        return best
+    }
+
+    /// Point-to-segment distance (NM) using a local equirectangular NM plane.
+    private func pointToSegmentNM(_ p: CLLocationCoordinate2D,
+                                  _ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D) -> Double {
+        let latScale = 60.0
+        let lonScale = 60.0 * cos(p.latitude * .pi / 180)
+        let px = p.longitude * lonScale, py = p.latitude * latScale
+        let ax = a.longitude * lonScale, ay = a.latitude * latScale
+        let bx = b.longitude * lonScale, by = b.latitude * latScale
+        let dx = bx - ax, dy = by - ay
+        let lenSq = dx * dx + dy * dy
+        let t = lenSq <= 0 ? 0 : max(0, min(1, ((px - ax) * dx + (py - ay) * dy) / lenSq))
+        let cx = ax + t * dx, cy = ay + t * dy
+        return hypot(px - cx, py - cy)
     }
 
     /// The spoken deviation amount: the initial turn from course to the through-

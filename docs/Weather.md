@@ -147,10 +147,17 @@ UI labels: NOAA and OPERA both show *"Radar precipitation"*; NASA shows
    clear gap** between adjacent cells — picking the reachable gap that needs the
    least deviation, and going around the near end of a solid line only when no gap
    is wide enough. This mirrors how a controller vectors a pilot between cells,
-   whether they appear just after takeoff, enroute, or on approach. It also computes
-   distance, clock position(s), estimated time, severity, the spoken deviation
-   amount (the actual initial turn onto the threading path), and a downstream rejoin
-   fix.
+   whether they appear just after takeoff, enroute, or on approach.
+   - **Path clearance.** Because the cross-track projection collapses along-track
+     structure, a diagonal into a clean-looking gap could still clip a *different*
+     cell. So each candidate gap is validated end-to-end: the whole path (outbound
+     leg, abeam point, and rejoin leg) is sampled against **every** cell polygon, and
+     the least-deviation candidate that stays clear of all of them is chosen — so a
+     reroute never avoids one storm and turns into another. If the aircraft is
+     genuinely boxed in with no clear candidate, it falls back to the best gap.
+   It also computes distance, clock position(s), estimated time, severity, the spoken
+   deviation amount (the actual initial turn onto the threading path), and a
+   downstream rejoin fix.
 3. **Advisory.** When a conflict warrants prompting, ATCView shows a
    *"Weather ahead — contact ATC"* banner. Tapping **Contact ATC** (or, in the Mock
    demo, automatically) issues a simulated advisory ("area of heavy precipitation
