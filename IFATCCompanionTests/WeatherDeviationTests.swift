@@ -126,6 +126,26 @@ final class WeatherDeviationTests: XCTestCase {
         return Geo.crossTrackDistanceNM(point: point, pathStart: usPosition, pathEnd: end)
     }
 
+    /// Assert a reroute path stays clear of every cell along its whole length
+    /// (sampling each leg), ignoring the immediate vicinity of the aircraft.
+    private func assertPathClear(_ path: [CLLocationCoordinate2D], of polys: [[CLLocationCoordinate2D]],
+                                 file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertGreaterThanOrEqual(path.count, 2, "no reroute path was produced", file: file, line: line)
+        for i in 0..<(path.count - 1) {
+            let a = path[i], b = path[i + 1]
+            for s in 0...40 {
+                let f = Double(s) / 40
+                let p = CLLocationCoordinate2D(latitude: a.latitude + (b.latitude - a.latitude) * f,
+                                               longitude: a.longitude + (b.longitude - a.longitude) * f)
+                guard Geo.distanceNM(from: usPosition, to: p) > 8 else { continue }
+                for poly in polys {
+                    XCTAssertFalse(WeatherRouteAnalyzer.pointInPolygon(p, poly),
+                                   "reroute enters a precipitation cell", file: file, line: line)
+                }
+            }
+        }
+    }
+
     func testThreadsGapBetweenAdjacentCells() throws {
         // A line of two cells ~40 NM ahead: a large cell that just crosses the course
         // to the left, and a cell to the right — leaving a clear gap on the right.
@@ -154,6 +174,56 @@ final class WeatherDeviationTests: XCTestCase {
         XCTAssertEqual(conflict.recommendedDirection, .right)
         let offset = offsetFromCourse(conflict.deviationPath[1])
         XCTAssertGreaterThan(offset, 25, "no gap → route around the near (right) end, a large offset")
+        // The reroute around the wide cell must actually stay clear of it — a single
+        // dogleg to the shared rejoin clips the near corner, so a side-hug is used.
+        assertPathClear(conflict.deviationPath, of: [wide.geometry.polygonPoints ?? []])
+    }
+
+    func testReroutePathStaysClearAcrossADiagonalLine() throws {
+        // A line of cells angling across course (near end left of course, far end well
+        // right of it): the classic case where a single dogleg to the shared rejoin
+        // cuts back through the line. The reroute must still stay clear of every cell
+        // along its whole length — a side-hug down one edge of the line.
+        let polys = [
+            cell(alongNM: 40,  crossNM: -30, halfCross: 12, from: usPosition),
+            cell(alongNM: 80,  crossNM: -10, halfCross: 12, from: usPosition),
+            cell(alongNM: 120, crossNM: 10,  halfCross: 12, from: usPosition),
+            cell(alongNM: 160, crossNM: 30,  halfCross: 12, from: usPosition),
+        ]
+        let downstream = Geo.destination(from: usPosition, bearingDegrees: course, distanceNM: 240)
+        let wp = Waypoint(name: "RJOIN", latitude: downstream.latitude, longitude: downstream.longitude)
+        let conflict = try XCTUnwrap(detector.detectConflict(
+            position: usPosition, course: course, groundspeedKnots: 450, phase: .cruise,
+            hazards: polys.map { radarHazard($0) }, waypoints: [wp]))
+
+        assertPathClear(conflict.deviationPath, of: polys)
+    }
+
+    func testTakesShorterSideAroundLineLeaningOneWay() throws {
+        // A line that just touches the course at its near end and then leans hard to
+        // the right. The shorter reroute is a small jog LEFT past the near cell, not a
+        // long loop around the far right end. The path must take the left side and
+        // stay clear — never swinging out to the far (right) edge of the line.
+        let polys = [
+            cell(alongNM: 40,  crossNM: 0,  halfCross: 12, from: usPosition),
+            cell(alongNM: 80,  crossNM: 25, halfCross: 12, from: usPosition),
+            cell(alongNM: 120, crossNM: 50, halfCross: 12, from: usPosition),
+            cell(alongNM: 160, crossNM: 75, halfCross: 12, from: usPosition),
+        ]
+        let downstream = Geo.destination(from: usPosition, bearingDegrees: course, distanceNM: 220)
+        let wp = Waypoint(name: "RJOIN", latitude: downstream.latitude, longitude: downstream.longitude)
+        let conflict = try XCTUnwrap(detector.detectConflict(
+            position: usPosition, course: course, groundspeedKnots: 450, phase: .cruise,
+            hazards: polys.map { radarHazard($0) }, waypoints: [wp]))
+
+        XCTAssertEqual(conflict.recommendedDirection, .left, "the shorter way is left of the near cell")
+        assertPathClear(conflict.deviationPath, of: polys)
+        // It must not loop around the far right edge (~68 NM out); the left hug stays
+        // within a modest offset of course the whole way.
+        for point in conflict.deviationPath {
+            XCTAssertLessThan(offsetFromCourse(point), 25,
+                              "reroute must not swing out to the far right edge of the line")
+        }
     }
 
     func testTerminalWeatherJustAfterDeparture() throws {
