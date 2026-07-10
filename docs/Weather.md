@@ -147,6 +147,16 @@ UI labels: NOAA and OPERA both show *"Radar precipitation"*; NASA shows
    clear gap** between adjacent cells — offering the reachable gaps and going around
    either end of a solid line. This mirrors how a controller vectors a pilot between
    cells, whether they appear just after takeoff, enroute, or on approach.
+   - **The corridor follows the route.** The detection band is only ±15 NM wide, so a
+     straight corridor aimed at the *bearing to the next fix* misses weather that sits
+     on the route **after a turn** — the aircraft's wide sampling window still finds
+     the cells (so Diagnostics shows hazards), but the narrow band slides past them
+     and reports "no conflict". So the detector walks the **upcoming route polyline**
+     (the fixes still ahead → destination, within the lookahead), finds the nearest
+     point on it that comes within a corridor half-width of a cell, and aims the
+     corridor from the aircraft at that blockage — turning the band down-route so a
+     storm on a later leg is caught. With no route supplied, or nothing on it blocked,
+     it keeps the straight bearing (unchanged behavior).
    - **Side-hug for lines along course.** A single dogleg abeam the middle of the
      line always aims at the same downstream rejoin, so when a long line lies roughly
      *along* the course (each end near the aircraft and near the destination), the

@@ -95,13 +95,105 @@ struct RouteWeatherConflictDetector {
     /// - Parameters:
     ///   - position: current aircraft position.
     ///   - course: course/heading to fly (deg true) — bearing to the next fix or
-    ///     the aircraft heading.
+    ///     the aircraft heading. Used as the corridor direction unless `routeAhead`
+    ///     reveals weather on a later leg (see below).
     ///   - groundspeedKnots: for the time-based lookahead + ETA (nil → phase band).
     ///   - phase: current flight phase (selects the lookahead band).
     ///   - hazards: normalized weather hazards to test (moderate-or-greater
     ///     precipitation cells — SIGMET polygons are not fed here).
     ///   - waypoints: filed route fixes, for rejoin-fix selection.
+    ///   - routeAhead: the upcoming route as ordered coordinates (fixes still ahead →
+    ///     destination). When supplied, the corridor follows the route's bends into
+    ///     the weather instead of a straight band along `course`, so a storm sitting
+    ///     on a leg *after* a turn is still caught. Empty → straight-course detection.
     func detectConflict(position: CLLocationCoordinate2D,
+                        course: Double,
+                        groundspeedKnots: Double?,
+                        phase: FlightPhase,
+                        hazards: [WeatherHazard],
+                        waypoints: [Waypoint],
+                        routeAhead: [CLLocationCoordinate2D] = []) -> RouteWeatherConflict? {
+        guard position.isValid, !hazards.isEmpty else { return nil }
+        let lookahead = lookaheadNM(phase: phase, groundspeed: groundspeedKnots)
+        let flyCourse = routeAwareCourse(position: position, fallback: course, routeAhead: routeAhead,
+                                         hazards: hazards, lookahead: lookahead)
+        return detect(position: position, course: flyCourse, groundspeedKnots: groundspeedKnots,
+                      phase: phase, hazards: hazards, waypoints: waypoints)
+    }
+
+    /// Aim the detection corridor along the route rather than a straight bearing to
+    /// the next fix. The narrow corridor otherwise misses weather on the route
+    /// *after* a turn — the sampler still finds the cells (its window is far wider),
+    /// but the straight band slides past them, so hazards are seen with "no conflict".
+    /// Walks the upcoming route polyline (within the lookahead), finds the nearest
+    /// point on it that lies within a corridor half-width of a cell, and aims the
+    /// course from the aircraft at that blockage. Returns `fallback` unchanged when no
+    /// route is supplied or nothing on it is blocked — straight-ahead detection is
+    /// then unaffected.
+    private func routeAwareCourse(position: CLLocationCoordinate2D, fallback: Double,
+                                  routeAhead: [CLLocationCoordinate2D],
+                                  hazards: [WeatherHazard], lookahead: Double) -> Double {
+        let ahead = routeAhead.filter { $0.isValid }
+        guard !ahead.isEmpty else { return fallback }
+        let route = [position] + ahead
+        guard route.count >= 2 else { return fallback }
+
+        // The nearest point on the upcoming route (within the lookahead) that sits
+        // within a corridor half-width of a cell — the first place the route flies
+        // into weather, wherever it bends.
+        var bestAlong = Double.greatestFiniteMagnitude
+        var bestPoint: CLLocationCoordinate2D?
+        var cumulative = 0.0
+        for i in 0..<(route.count - 1) {
+            if cumulative > lookahead { break }
+            let a = route[i], b = route[i + 1]
+            let segLen = Geo.distanceNM(from: a, to: b)
+            let steps = max(1, Int(segLen / 5))
+            for s in 0...steps {
+                let t = Double(s) / Double(steps)
+                let along = cumulative + segLen * t
+                if along > lookahead { break }
+                let p = interpolate(a, b, t)
+                for hazard in hazards {
+                    let half = config.corridorHalfWidthNM + pointRadiusBuffer(hazard)
+                    if distanceHazardToPointNM(hazard, p) <= half, along < bestAlong {
+                        bestAlong = along
+                        bestPoint = p
+                    }
+                }
+            }
+            cumulative += segLen
+        }
+
+        // Aim the course at the blockage. Too close for a stable bearing → keep the
+        // filed course (the aircraft is essentially already at the weather).
+        guard let point = bestPoint,
+              Geo.distanceNM(from: position, to: point) > 5 else { return fallback }
+        return Geo.bearing(from: position, to: point)
+    }
+
+    /// Distance (NM) from a hazard's shape to a point: 0 inside a polygon, else the
+    /// nearest edge / sample point.
+    private func distanceHazardToPointNM(_ hazard: WeatherHazard, _ p: CLLocationCoordinate2D) -> Double {
+        if let poly = hazard.geometry.polygonPoints, poly.count >= 3 {
+            return distanceToPolygonNM(p, poly)
+        }
+        let pts = samplePoints(for: hazard)
+        return pts.map { Geo.distanceNM(from: p, to: $0) }.min() ?? .greatestFiniteMagnitude
+    }
+
+    /// Linear interpolation between two coordinates (planar; adequate at corridor
+    /// scale and consistent with the detector's other planar helpers).
+    private func interpolate(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D,
+                             _ t: Double) -> CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: a.latitude + (b.latitude - a.latitude) * t,
+                               longitude: a.longitude + (b.longitude - a.longitude) * t)
+    }
+
+    /// The single-course detection body: builds the corridor from `position` along
+    /// `course`, finds the blocking cells, threads/hugs the shortest clear reroute,
+    /// and picks a downstream rejoin fix.
+    private func detect(position: CLLocationCoordinate2D,
                         course: Double,
                         groundspeedKnots: Double?,
                         phase: FlightPhase,
