@@ -245,6 +245,15 @@ UI labels: NOAA and OPERA both show *"Radar precipitation"*; NASA shows
 5. **Clear of weather.** When the pilot reports clear of weather, ATC clears direct
    the rejoin fix (or *"resume own navigation"* when already near the route), or
    rejoins the STAR.
+   - **The mint line always ends on the filed route.** The drawn deviation's final
+     vertex is snapped to the nearest point on the upcoming route polyline, so the line
+     intercepts the flight plan cleanly (capping/bounding can't leave it floating just
+     off course).
+   - **Auto-resume at the intercept.** If the pilot never reports clear of weather, the
+     controller automatically issues *"resume own navigation"* and ends the deviation
+     once the aircraft reaches within 15 NM of that intercept (measured on the final leg,
+     so it can't trip during the outbound or parallel legs). On a vector this fires the
+     tick after the automatic rejoin turn, so the two don't collide.
 
 **Stable, non-flickering display.** Radar resampling is noisy: a storm that is
 really still ahead can drop out of a single sample and return on the next. Read

@@ -153,9 +153,18 @@ struct RouteWeatherConflictDetector {
         // deviation onto the shorter side wins. Nil when no route is supplied.
         let routeRejoin = routeRejoinCoord(position: position, routeAhead: routeAhead,
                                            hazards: hazards, lookahead: lookahead)
-        return detect(position: position, course: flyCourse, groundspeedKnots: groundspeedKnots,
-                      phase: phase, hazards: hazards, waypoints: waypoints, rejoinOverride: routeRejoin,
-                      rejoinCap: rejoinCap)
+        guard var conflict = detect(position: position, course: flyCourse, groundspeedKnots: groundspeedKnots,
+                                    phase: phase, hazards: hazards, waypoints: waypoints,
+                                    rejoinOverride: routeRejoin, rejoinCap: rejoinCap) else { return nil }
+        // Guarantee the drawn line ends exactly ON the filed route (the intercept):
+        // snap its final vertex to the nearest point on the upcoming route polyline, so
+        // capping/bounding can never leave the rejoin floating just off the flight plan.
+        let routePoly = ([position] + routeAhead).filter { $0.isValid }
+        if routePoly.count >= 2, conflict.deviationPath.count >= 2, let last = conflict.deviationPath.last,
+           let onRoute = nearestPointOnPolyline(last, routePoly) {
+            conflict.deviationPath[conflict.deviationPath.count - 1] = onRoute
+        }
+        return conflict
     }
 
     /// Aim the detection corridor along the route rather than a straight bearing to
@@ -651,6 +660,38 @@ struct RouteWeatherConflictDetector {
         let t = lenSq <= 0 ? 0 : max(0, min(1, ((px - ax) * dx + (py - ay) * dy) / lenSq))
         let cx = ax + t * dx, cy = ay + t * dy
         return hypot(px - cx, py - cy)
+    }
+
+    /// The point on a polyline nearest to `p` — used to snap the drawn deviation's final
+    /// vertex exactly onto the filed route so the mint line always ends on the flight plan.
+    private func nearestPointOnPolyline(_ p: CLLocationCoordinate2D,
+                                        _ line: [CLLocationCoordinate2D]) -> CLLocationCoordinate2D? {
+        guard line.count >= 2 else { return line.first }
+        var best: CLLocationCoordinate2D?
+        var bestD = Double.greatestFiniteMagnitude
+        for i in 0..<(line.count - 1) {
+            let c = closestPointOnSegment(p, line[i], line[i + 1])
+            let d = Geo.distanceNM(from: p, to: c)
+            if d < bestD { bestD = d; best = c }
+        }
+        return best
+    }
+
+    /// The closest point on segment a→b to `p`, in the same local NM plane as
+    /// `pointToSegmentNM` (which returns only the distance).
+    private func closestPointOnSegment(_ p: CLLocationCoordinate2D,
+                                       _ a: CLLocationCoordinate2D,
+                                       _ b: CLLocationCoordinate2D) -> CLLocationCoordinate2D {
+        let latScale = 60.0
+        let lonScale = 60.0 * cos(p.latitude * .pi / 180)
+        let ax = a.longitude * lonScale, ay = a.latitude * latScale
+        let bx = b.longitude * lonScale, by = b.latitude * latScale
+        let px = p.longitude * lonScale, py = p.latitude * latScale
+        let dx = bx - ax, dy = by - ay
+        let lenSq = dx * dx + dy * dy
+        let t = lenSq <= 0 ? 0 : max(0, min(1, ((px - ax) * dx + (py - ay) * dy) / lenSq))
+        let cx = ax + t * dx, cy = ay + t * dy
+        return CLLocationCoordinate2D(latitude: cy / latScale, longitude: cx / lonScale)
     }
 
     /// The spoken deviation amount: the initial turn from course to the through-

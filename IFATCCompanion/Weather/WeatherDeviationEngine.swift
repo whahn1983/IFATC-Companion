@@ -197,4 +197,16 @@ struct WeatherDeviationEngine {
         ctx.lastATCWeatherCall = atc.displayText
         return Result(pilot: pilotTx, atc: [atc], context: ctx)
     }
+
+    /// The aircraft reached the rejoin end of the deviation without the pilot reporting
+    /// clear of weather. The controller automatically resumes own navigation and ends
+    /// the deviation — no pilot call, since the pilot did not initiate it.
+    func autoResumeOwnNavigation(cs: Callsign, context: WeatherDeviationContext,
+                                 facility: ATCFacility) -> Result {
+        var ctx = context
+        let atc = phraseology.clearOfWeatherResume(cs: cs, rejoinFix: nil, nearRoute: true, facility: facility)
+        ctx.state = .resumedOwnNavigation
+        ctx.lastATCWeatherCall = atc.displayText
+        return Result(pilot: nil, atc: [atc], context: ctx)
+    }
 }
