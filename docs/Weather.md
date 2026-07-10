@@ -109,6 +109,18 @@ UI labels: NOAA and OPERA both show *"Radar precipitation"*; NASA shows
    *"turbulence"*. Turbulence wording is reserved for PIREP / AIREP / SIGMET /
    G-AIRMET / CWA / existing ride-report logic. Convective SIGMETs are phrased as
    *"convective weather / thunderstorms"* only when the advisory supports it.
+   - **Precipitation-core focus.** A convective SIGMET often covers a very large
+     advisory area, most of which is precipitation-free. So the *deviation geometry*
+     for a convective SIGMET is tightened to the **moderate-or-greater precipitation
+     core** inside it, sampled from the live radar image by `RadarImageSampler`
+     (the "raster → cell" step): on refresh the app fetches a coarse NOAA/OPERA
+     base-reflectivity image for the route region, classifies pixels by the
+     reflectivity color ramp, and clusters the moderate-and-warmer returns into
+     cells. The reroute then hugs the actual precipitation rather than the whole
+     polygon; the SIGMET keeps its convective wording. This is **true-radar only**
+     and best-effort — outside NOAA/OPERA coverage, or on any sampling failure, the
+     deviation falls back to the full SIGMET area. The sampled cells drive geometry
+     only and are never drawn (the radar image overlay already shows precipitation).
 2. **Conflict detection.** `RouteWeatherConflictDetector` builds a corridor from the
    aircraft through the upcoming route fixes (lookahead 25–75 NM in the terminal
    area, 100–250 NM enroute, with a 30–120 minute groundspeed-based fallback) and

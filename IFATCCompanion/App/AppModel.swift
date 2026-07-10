@@ -2208,8 +2208,9 @@ final class AppModel: ObservableObject {
             destinationTAF = mock.sampleTAF()
             pireps = mock.samplePIREPs()
             // Mock precipitation cell (crosses the route ~40 NM ahead) drives the
-            // offline weather-deviation demo.
+            // offline weather-deviation demo. Live radar sampling is Mock-Mode-off.
             radarOverlay.mockCells = mock.sampleRadarCells()
+            radarOverlay.sampledCells = []
             lastAviationWeatherUpdate = Date()
             recomputeRideItems()
             recomputeWeatherHazards()
@@ -2232,6 +2233,7 @@ final class AppModel: ObservableObject {
             destinationTAF = try? await weatherService.taf(for: flightPlan.destination)
             pireps = (try? await weatherService.pireps()) ?? []
             sigmets = (try? await weatherService.airSigmets()) ?? []
+            await sampleLivePrecipitation()
             lastAviationWeatherUpdate = Date()
             recomputeRideItems()
             recomputeWeatherHazards()
@@ -2295,6 +2297,7 @@ final class AppModel: ObservableObject {
         weatherDeviation.state = .none
         activeWeatherConflict = nil
         weatherHazards = []
+        radarOverlay.sampledCells = []
         weatherHandled = false
         mockWeatherAdvisoryIssued = false
     }
@@ -2370,9 +2373,10 @@ final class AppModel: ObservableObject {
     /// Normalize the current weather into hazards for the conflict detector.
     /// Precipitation cells are included only where the overlay is enabled and a
     /// provider covers the region; SIGMETs along the route are always included
-    /// (SIGMET data can be global). Live raster→cell sampling for the image
-    /// providers is a documented future task (`docs/Weather.md`); today the
-    /// precipitation cells come from Mock Mode.
+    /// (SIGMET data can be global). A convective SIGMET's deviation geometry is
+    /// tightened to the moderate-or-greater precipitation core sampled from the
+    /// live radar image (`sampleLivePrecipitation()`), or the Mock-Mode cells,
+    /// so the reroute hugs the actual precipitation rather than the whole advisory.
     private func buildWeatherHazards(provider: RadarPrecipitationProvider?) -> [WeatherHazard] {
         var hazards: [WeatherHazard] = []
 
@@ -2390,6 +2394,11 @@ final class AppModel: ObservableObject {
             }
         }
 
+        // Moderate-or-greater precipitation cells used to focus a convective SIGMET
+        // deviation on the actual precipitation core: sampled from the live radar
+        // image, or the hand-authored cells in Mock Mode.
+        let precipCells = settings.mockMode ? radarOverlay.mockCells : radarOverlay.sampledCells
+
         for sigmet in routeSigmets {
             guard let area = sigmet.drawableArea else { continue }
             let phenomenon: WeatherPhenomenon
@@ -2405,11 +2414,66 @@ final class AppModel: ObservableObject {
             case .other:
                 phenomenon = .unknown; intensity = .light
             }
+
+            // A convective SIGMET is a precipitation hazard: when radar shows where
+            // the moderate-or-greater precipitation actually sits inside the advisory,
+            // route around that core rather than the entire (often huge) polygon.
+            // Each core keeps the SIGMET's convective wording; only the geometry
+            // tightens. With no sampled precipitation we fall back to the full area.
+            if sigmet.category == .convective {
+                let cores = RadarImageSampler.precipitationCores(in: area, cells: precipCells)
+                if !cores.isEmpty {
+                    for core in cores {
+                        hazards.append(WeatherHazard(
+                            source: .sigmet, phenomenon: phenomenon, intensity: intensity,
+                            geometry: .polygon(core), confidence: .medium,
+                            notes: sigmet.hazardLabel))
+                    }
+                    continue
+                }
+            }
+
             hazards.append(WeatherHazard(source: .sigmet, phenomenon: phenomenon, intensity: intensity,
                                          geometry: .polygon(area), confidence: .medium,
                                          notes: sigmet.hazardLabel))
         }
         return hazards
+    }
+
+    /// Sample the live radar image into moderate-or-greater precipitation cells for
+    /// the current route region, so a convective SIGMET deviation routes around the
+    /// precipitation core instead of the whole advisory area (the "raster → cell"
+    /// step in `docs/Weather.md`). Best-effort and **true-radar only** (NOAA/OPERA):
+    /// a satellite estimate, no coverage, or any decode/fetch failure leaves the
+    /// sampled cells empty and the deviation falls back to the full SIGMET area.
+    /// Simulation/training only — a coarse sample of an approximate radar image.
+    private func sampleLivePrecipitation() async {
+        radarOverlay.sampledCells = []
+        guard settings.noaaRadarOverlay == .autoWhereAvailable else { return }
+
+        let positions = ([aircraftState.coordinate,
+                          airports.coordinate(for: flightPlan.departure),
+                          airports.coordinate(for: flightPlan.destination)]
+                         + flightPlan.waypoints.map { $0.coordinate })
+            .compactMap { $0 }
+            .filter { $0.isValid }
+        guard let region = PrecipitationOverlayService.region(enclosing: positions),
+              let provider = precipService.selectedProvider(for: region),
+              provider.supportsTrueRadar else { return }
+
+        let bbox = RadarBoundingBox(region: region)
+        let sample = 160
+        let frames = (try? await provider.availableFrames(for: region)) ?? []
+        let frame = frames.first ?? RadarFrame(id: "sample", timestamp: Date(), label: "Current")
+        // `exportImage` itself returns an optional Data, so flatten the `try?`
+        // double-optional before decoding.
+        let fetched = try? await provider.exportImage(
+            for: bbox, size: CGSize(width: sample, height: sample), frame: frame)
+        guard let data = fetched ?? nil,
+              let cells = RadarImageSampler.cells(fromPNG: data, columns: sample, rows: sample, bbox: bbox) else {
+            return
+        }
+        radarOverlay.sampledCells = cells
     }
 
     /// The course to fly for the corridor: bearing to the next un-passed fix, else
@@ -2808,6 +2872,7 @@ final class AppModel: ObservableObject {
         clearSavedSession()
         resetWeatherDeviation()
         radarOverlay.mockCells = []
+        radarOverlay.sampledCells = []
         settings.resetAll()
         syncFlightPlanFromSettings()
         diagnostics.log(.app, "App data reset.")
