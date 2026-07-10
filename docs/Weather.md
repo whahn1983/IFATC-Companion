@@ -174,6 +174,16 @@ UI labels: NOAA and OPERA both show *"Radar precipitation"*; NASA shows
        close to the flight plan. Because it stays close, the shortest-clear selector
        picks it **early** — so the line hugs the weather from the start instead of the
        aircraft diving wide and only tucking back in once the cluster thins downrange.
+     - The **initial turn-out is a realistic ~30°**, not a 90° sideways step: the hug
+       reaches its offset over enough along-course distance (`initialDeviationTurnDegrees`)
+       to make the first leg a genuine deviation. When the weather sits right at the
+       aircraft (near edge ≈ 0) the forward-angled start would cut back through the cell,
+       so a steeper turn-out is offered as a fallback and validation picks whichever
+       stays clear.
+     - The parallel leg **turns back at the rejoin, never past it**: the far corner is
+       capped to the along-distance where the route exits the weather, so the line does
+       not run out to the far edge of distant off-route cells and then double back across
+       the intercept.
    - **Rejoin on the route just past the weather, not at a distant fix.** Every
      candidate returns to the route at the point where the route **exits the weather**
      — it does *not* stretch the drawn line to a far-downstream fix. Two things matter
