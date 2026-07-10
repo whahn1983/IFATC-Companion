@@ -47,8 +47,14 @@ struct RouteWeatherConflictDetector {
         var clusterAlongMarginNM: Double = 30
         /// A candidate deviation path must stay at least this far from every
         /// precipitation cell to be accepted, so a reroute never threads a gap in one
-        /// storm only to cut through another (NM).
+        /// storm only to cut through another (NM). This is the base margin for
+        /// moderate/heavy returns.
         var pathClearanceNM: Double = 3
+        /// Lateral clearance kept from the most intense (red/extreme) cells (NM). A
+        /// wide berth around convective cores — used for both path validation and
+        /// gap/side-hug spacing — so the reroute rounds them well clear instead of
+        /// shaving past or threading a coarse-sampled gap straight through one.
+        var severeBerthNM: Double = 15
     }
 
     var config = Config()
@@ -117,8 +123,13 @@ struct RouteWeatherConflictDetector {
         let lookahead = lookaheadNM(phase: phase, groundspeed: groundspeedKnots)
         let flyCourse = routeAwareCourse(position: position, fallback: course, routeAhead: routeAhead,
                                          hazards: hazards, lookahead: lookahead)
+        // Rejoin on the route where it exits the weather — so when the route turns
+        // (e.g. south) past the storm, the intercept is measured to that turn and a
+        // deviation onto the shorter side wins. Nil when no route is supplied.
+        let routeRejoin = routeRejoinCoord(position: position, routeAhead: routeAhead,
+                                           hazards: hazards, lookahead: lookahead)
         return detect(position: position, course: flyCourse, groundspeedKnots: groundspeedKnots,
-                      phase: phase, hazards: hazards, waypoints: waypoints)
+                      phase: phase, hazards: hazards, waypoints: waypoints, rejoinOverride: routeRejoin)
     }
 
     /// Aim the detection corridor along the route rather than a straight bearing to
@@ -172,6 +183,62 @@ struct RouteWeatherConflictDetector {
         return Geo.bearing(from: position, to: point)
     }
 
+    /// The point on the route where the deviation should rejoin: just past the far
+    /// extent of the weather **along the route**. Because it follows the route's
+    /// bends, a route that turns (say south) past the storm puts the rejoin on that
+    /// turn — so the reroute's length is measured to the real intercept and the
+    /// shorter-side deviation wins. Nil when no route is supplied or nothing on it is
+    /// within the corridor (detection then rejoins straight ahead, as before).
+    private func routeRejoinCoord(position: CLLocationCoordinate2D,
+                                  routeAhead: [CLLocationCoordinate2D],
+                                  hazards: [WeatherHazard], lookahead: Double) -> CLLocationCoordinate2D? {
+        let ahead = routeAhead.filter { $0.isValid }
+        guard !ahead.isEmpty else { return nil }
+        let route = [position] + ahead
+        guard route.count >= 2 else { return nil }
+
+        // The farthest point along the route still within a corridor half-width of a
+        // cell — where the route finally exits the weather.
+        var weatherFarAlong: Double?
+        var cumulative = 0.0
+        for i in 0..<(route.count - 1) {
+            if cumulative > lookahead { break }
+            let a = route[i], b = route[i + 1]
+            let segLen = Geo.distanceNM(from: a, to: b)
+            let steps = max(1, Int(segLen / 5))
+            for s in 0...steps {
+                let t = Double(s) / Double(steps)
+                let along = cumulative + segLen * t
+                if along > lookahead { break }
+                let p = interpolate(a, b, t)
+                for hazard in hazards {
+                    let half = config.corridorHalfWidthNM + pointRadiusBuffer(hazard)
+                    if distanceHazardToPointNM(hazard, p) <= half {
+                        weatherFarAlong = max(weatherFarAlong ?? 0, along)
+                    }
+                }
+            }
+            cumulative += segLen
+        }
+        guard let far = weatherFarAlong else { return nil }
+        return pointOnRoute(route, atAlong: far + 20)
+    }
+
+    /// The coordinate a given distance along a route polyline (clamped to its end).
+    private func pointOnRoute(_ route: [CLLocationCoordinate2D], atAlong target: Double) -> CLLocationCoordinate2D {
+        var cumulative = 0.0
+        for i in 0..<(route.count - 1) {
+            let a = route[i], b = route[i + 1]
+            let segLen = Geo.distanceNM(from: a, to: b)
+            if cumulative + segLen >= target {
+                let t = segLen <= 0 ? 0 : (target - cumulative) / segLen
+                return interpolate(a, b, min(1, max(0, t)))
+            }
+            cumulative += segLen
+        }
+        return route.last ?? route[0]
+    }
+
     /// Distance (NM) from a hazard's shape to a point: 0 inside a polygon, else the
     /// nearest edge / sample point.
     private func distanceHazardToPointNM(_ hazard: WeatherHazard, _ p: CLLocationCoordinate2D) -> Double {
@@ -198,7 +265,8 @@ struct RouteWeatherConflictDetector {
                         groundspeedKnots: Double?,
                         phase: FlightPhase,
                         hazards: [WeatherHazard],
-                        waypoints: [Waypoint]) -> RouteWeatherConflict? {
+                        waypoints: [Waypoint],
+                        rejoinOverride: CLLocationCoordinate2D? = nil) -> RouteWeatherConflict? {
         guard position.isValid, !hazards.isEmpty else { return nil }
         let lookahead = lookaheadNM(phase: phase, groundspeed: groundspeedKnots)
         let corridorEnd = Geo.destination(from: position, bearingDegrees: course, distanceNM: lookahead)
@@ -247,10 +315,18 @@ struct RouteWeatherConflictDetector {
         let lineNear = lineSet.map { $0.nearAlong }.min() ?? bandNear
         let lineFar = max(lineNear, lineSet.map { $0.farAlong }.max() ?? bandFar)
 
+        // The named downstream fix drives the ATC rejoin call ("proceed direct …").
         let rejoin = rejoinFix(waypoints: waypoints, position: position, course: course,
                                farAlong: bandFar, lookahead: lookahead, polygon: primary.polygon)
-        let rejoinCoord = rejoin?.coordinate
-            ?? Geo.destination(from: position, bearingDegrees: course, distanceNM: bandFar + 20)
+        // The drawn deviation, however, rejoins **just past the weather** — never at a
+        // distant downstream fix. Chasing a far fix forces every candidate to swing
+        // back across the storms to reach it, so a short one-side deviation gets
+        // rejected and the reroute takes the long way round. Prefer the point where
+        // the route itself exits the weather (so a route that turns past the storm
+        // puts the intercept on that turn and the shorter side wins); otherwise return
+        // to course right past the far edge. Either keeps each candidate compact.
+        let rejoinCoord = rejoinOverride
+            ?? Geo.destination(from: position, bearingDegrees: course, distanceNM: lineFar + 20)
 
         // A single dogleg abeam the middle of the line at a lateral offset.
         func apexPath(for target: Double) -> [CLLocationCoordinate2D] {
@@ -281,14 +357,22 @@ struct RouteWeatherConflictDetector {
 
         // Validate the whole path against *every* precipitation cell, not just the
         // line being threaded — so we never avoid one storm and route into another.
-        // Fly the shortest candidate whose path is clear; fall back to the least-
-        // deviation dogleg when none is clear (the aircraft may already be boxed in).
-        let allPolygons = hazards.compactMap { $0.geometry.polygonPoints }
+        // Each cell carries its own required clearance: red/extreme cores demand a
+        // wide berth, lighter returns the base margin. Fly the shortest candidate that
+        // stays clear of them all. When none is clear (the aircraft is boxed in), fall
+        // back to the candidate that best respects those berths — never the straight-
+        // through least-deviation one — so the line skirts the weather (giving the red
+        // cores the widest room it can) instead of cutting through a core.
+        let cellBerths: [(polygon: [CLLocationCoordinate2D], clearance: Double)] = hazards.compactMap {
+            guard let poly = $0.geometry.polygonPoints, poly.count >= 3 else { return nil }
+            return (poly, berthNM(for: $0.intensity))
+        }
         let clear = candidates.filter {
-            pathIsClear($0.path, polygons: allPolygons, buffer: config.pathClearanceNM, origin: position)
+            pathIsClear($0.path, cells: cellBerths, origin: position)
         }
         let chosen = clear.min { pathLengthNM($0.path) < pathLengthNM($1.path) }
-            ?? candidates.first
+            ?? candidates.max { pathBerthMarginNM($0.path, cells: cellBerths, origin: position)
+                                < pathBerthMarginNM($1.path, cells: cellBerths, origin: position) }
             ?? (path: apexPath(for: 0), target: 0)
         let target = chosen.target
         let direction: DeviationDirection = target >= 0 ? .right : .left
@@ -340,7 +424,9 @@ struct RouteWeatherConflictDetector {
     /// conventional first offer); the caller validates each candidate's full path.
     private func threadSolution(cells: [Projection]) -> (targets: [Double], leftEdge: Double, rightEdge: Double) {
         var intervals: [(lo: Double, hi: Double)] = cells.map {
-            let buf = config.lateralBufferNM + $0.radiusBuffer
+            // Pad each cell by the lateral buffer — or the cell's wider berth, for a
+            // red/extreme core — so the gaps and side-hug edges keep that much room.
+            let buf = max(config.lateralBufferNM, berthNM(for: $0.hazard.intensity)) + $0.radiusBuffer
             return (lo: $0.crossLo - buf, hi: $0.crossHi + buf)
         }
         intervals.sort { $0.lo < $1.lo }
@@ -386,25 +472,33 @@ struct RouteWeatherConflictDetector {
 
     // MARK: - Path clearance
 
-    /// Whether a deviation path stays at least `buffer` NM clear of every cell
-    /// polygon along its whole length — the guard that stops a reroute from threading
-    /// one storm and cutting into another. Samples each leg and ignores the immediate
-    /// vicinity of `origin` (the aircraft may already be in light precipitation; we
-    /// only care that the path ahead stays clear).
+    /// The clearance (NM) a reroute keeps from a cell of the given intensity: a wide
+    /// berth for red/extreme cores, the base margin for everything lighter. Applied to
+    /// both path validation and the gap/side-hug spacing so the whole reroute — not
+    /// just its abeam point — gives convective cores real room.
+    private func berthNM(for intensity: WeatherIntensity) -> Double {
+        intensity == .extreme ? config.severeBerthNM : config.pathClearanceNM
+    }
+
+    /// Whether a deviation path stays clear of every cell along its whole length,
+    /// each by that cell's own required clearance — the guard that stops a reroute
+    /// from threading one storm and cutting into another, and that keeps a wide berth
+    /// from red/extreme cores. Samples each leg and ignores the immediate vicinity of
+    /// `origin` (the aircraft may already be in light precipitation; we only care that
+    /// the path ahead stays clear).
     private func pathIsClear(_ path: [CLLocationCoordinate2D],
-                             polygons: [[CLLocationCoordinate2D]],
-                             buffer: Double, origin: CLLocationCoordinate2D) -> Bool {
-        guard path.count >= 2, !polygons.isEmpty else { return true }
+                             cells: [(polygon: [CLLocationCoordinate2D], clearance: Double)],
+                             origin: CLLocationCoordinate2D) -> Bool {
+        guard path.count >= 2, !cells.isEmpty else { return true }
         let startSkip = 8.0
         for i in 0..<(path.count - 1) {
             let a = path[i], b = path[i + 1]
             let steps = max(1, Int(Geo.distanceNM(from: a, to: b) / 4))
             for s in 0...steps {
                 let f = Double(s) / Double(steps)
-                let p = CLLocationCoordinate2D(latitude: a.latitude + (b.latitude - a.latitude) * f,
-                                               longitude: a.longitude + (b.longitude - a.longitude) * f)
+                let p = interpolate(a, b, f)
                 if Geo.distanceNM(from: origin, to: p) < startSkip { continue }
-                for poly in polygons where distanceToPolygonNM(p, poly) < buffer { return false }
+                for cell in cells where distanceToPolygonNM(p, cell.polygon) < cell.clearance { return false }
             }
         }
         return true
@@ -419,6 +513,32 @@ struct RouteWeatherConflictDetector {
             total += Geo.distanceNM(from: path[i], to: path[i + 1])
         }
         return total
+    }
+
+    /// How well a path respects every cell's required berth: the smallest value of
+    /// (distance to the cell − that cell's clearance) along the whole path, ignoring
+    /// the immediate vicinity of the origin. Positive means it keeps the full berth
+    /// everywhere; more negative means it cuts deeper past a berth. Used only as the
+    /// boxed-in tie-breaker: with no fully-clear candidate, fly the one that intrudes
+    /// least — which keeps the widest room from a red core — rather than the one that
+    /// happens to need the smallest turn (which can drive straight through it).
+    private func pathBerthMarginNM(_ path: [CLLocationCoordinate2D],
+                                   cells: [(polygon: [CLLocationCoordinate2D], clearance: Double)],
+                                   origin: CLLocationCoordinate2D) -> Double {
+        guard path.count >= 2, !cells.isEmpty else { return .greatestFiniteMagnitude }
+        let startSkip = 8.0
+        var worst = Double.greatestFiniteMagnitude
+        for i in 0..<(path.count - 1) {
+            let a = path[i], b = path[i + 1]
+            let steps = max(1, Int(Geo.distanceNM(from: a, to: b) / 4))
+            for s in 0...steps {
+                let f = Double(s) / Double(steps)
+                let p = interpolate(a, b, f)
+                if Geo.distanceNM(from: origin, to: p) < startSkip { continue }
+                for cell in cells { worst = min(worst, distanceToPolygonNM(p, cell.polygon) - cell.clearance) }
+            }
+        }
+        return worst
     }
 
     /// Distance (NM) from a point to a polygon: 0 inside, else the nearest edge.

@@ -167,14 +167,36 @@ UI labels: NOAA and OPERA both show *"Radar precipitation"*; NASA shows
      parallel to course past the far end, then close to the rejoin. Because the
      parallel leg sits outside the widest excursion of the line, it clears every cell
      on that side.
+   - **Rejoin on the route just past the weather, not at a distant fix.** Every
+     candidate returns to the route at the point where the route **exits the weather**
+     — it does *not* stretch the drawn line to a far-downstream fix. Two things matter
+     here. First, chasing a distant fix forces the closing leg of a short one-side
+     deviation to swing back across the storm, so that candidate gets rejected and the
+     reroute either loops the long way or, up close, drives straight through a core.
+     Second, the rejoin follows the route's **bends**: if the route turns (say south)
+     just past the storm, the intercept is on that turn, so the reroute's length is
+     measured to the real rejoin and the shorter (southern) side wins — rather than
+     measuring to a straight-ahead point that makes both sides look equal. When no
+     route is supplied it falls back to returning to course just past the far edge.
+     The nearest downstream fix is still selected and named for the ATC rejoin call
+     ("proceed direct …"); it simply lies on ahead of where the drawn line rejoins.
+   - **Red cores get a wide berth.** Clearance is per-cell by intensity: a
+     red/extreme return demands a wide berth (`severeBerthNM`, 15 NM) while
+     moderate/heavy cells keep the base margin. That berth is applied both to path
+     validation and to the gap/side-hug spacing, so a reroute rounds a convective core
+     well clear instead of shaving past it — or threading a coarse-sampled gap
+     straight through one. When boxed in, the fallback picks the path that intrudes
+     least on those berths, so the red cores keep the most room available.
    - **Shortest clear path wins.** All candidates — the gap/around-the-end doglegs
      and the two side-hugs — are validated end-to-end: the whole path is sampled
      against **every** cell polygon (so a reroute never avoids one storm and turns
      into another), and the one with the **shortest total length** that stays clear
      is flown. Ranking by true distance rather than smallest initial turn is what
      keeps the reroute from looping the long way around a line when the other side is
-     shorter. If the aircraft is genuinely boxed in with no clear candidate, it falls
-     back to the least-deviation dogleg.
+     shorter. If the aircraft is genuinely boxed in with no fully-clear candidate, it
+     falls back to the one that keeps the **most clearance** from the cells — never
+     the straight-through least-deviation dogleg — so the line always skirts the
+     weather on the most open side rather than cutting through it.
    It also computes distance, clock position(s), estimated time, severity, the spoken
    deviation amount (the actual initial turn onto the threading path), and a
    downstream rejoin fix.

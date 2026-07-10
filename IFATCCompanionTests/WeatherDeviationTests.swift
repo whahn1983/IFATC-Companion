@@ -254,6 +254,64 @@ final class WeatherDeviationTests: XCTestCase {
         XCTAssertEqual(routed?.severity, .heavy)
     }
 
+    func testDeviationRejoinsPromptlyNotAtADistantFix() throws {
+        // A cell dead ahead with the next filed fix far beyond it. The drawn deviation
+        // must return to course just past the weather (a compact reroute) rather than
+        // stretch all the way to that distant fix — chasing the far fix is what forced
+        // a short side deviation to swing back across the storm and get rejected, so
+        // the reroute took the long way (or drove straight through when boxed in). The
+        // fix is still named for the rejoin clearance; it simply lies on ahead.
+        let hazard = radarHazard(cell(alongNM: 40, crossNM: 0, from: usPosition))
+        let far = Geo.destination(from: usPosition, bearingDegrees: course, distanceNM: 150)
+        let wp = Waypoint(name: "FODAK", latitude: far.latitude, longitude: far.longitude)
+        let conflict = try XCTUnwrap(detector.detectConflict(
+            position: usPosition, course: course, groundspeedKnots: 450, phase: .cruise,
+            hazards: [hazard], waypoints: [wp]))
+
+        XCTAssertEqual(conflict.rejoinFix?.name, "FODAK", "the downstream fix is still named for the rejoin")
+        let end = try XCTUnwrap(conflict.deviationPath.last)
+        let endDist = Geo.distanceNM(from: usPosition, to: end)
+        XCTAssertLessThan(endDist, 90,
+                          "the drawn deviation rejoins course just past the weather, not at the 150 NM fix")
+    }
+
+    func testRejoinFollowsTheRouteSouthThroughATurn() throws {
+        // The route runs east, then turns south just past the weather. The intercept
+        // back onto the route is therefore to the south — so the deviation length must
+        // be measured to that southward turn (not a straight-ahead point), which makes
+        // the southern deviation the shortest. Verify the drawn line rejoins on the
+        // route's southward leg: its endpoint is well south of the aircraft.
+        let f1 = Geo.destination(from: usPosition, bearingDegrees: 90, distanceNM: 50)   // east
+        let f2 = Geo.destination(from: f1, bearingDegrees: 180, distanceNM: 80)          // then south
+        let storm = radarHazard(cell(alongNM: 45, crossNM: 0, halfCross: 12, course: 90, from: usPosition))
+        let wps = [Waypoint(name: "F1", latitude: f1.latitude, longitude: f1.longitude),
+                   Waypoint(name: "F2", latitude: f2.latitude, longitude: f2.longitude)]
+        let conflict = try XCTUnwrap(detector.detectConflict(
+            position: usPosition, course: Geo.bearing(from: usPosition, to: f1),
+            groundspeedKnots: 450, phase: .cruise, hazards: [storm], waypoints: wps,
+            routeAhead: [f1, f2]))
+
+        let end = try XCTUnwrap(conflict.deviationPath.last)
+        XCTAssertLessThan(end.latitude, usPosition.latitude - 0.3,
+                          "the deviation should rejoin on the route's southward leg, not straight ahead")
+    }
+
+    func testGivesRedCellsAWiderBerthThanLighterCells() throws {
+        // The same cell straddling the course, once heavy and once red/extreme. The
+        // red core must be rounded with a noticeably wider berth than the heavy cell.
+        let poly = cell(alongNM: 40, crossNM: 10, halfCross: 12, from: usPosition)
+        func bypassOffset(_ intensity: WeatherIntensity) throws -> Double {
+            let conflict = try XCTUnwrap(detector.detectConflict(
+                position: usPosition, course: course, groundspeedKnots: 450, phase: .cruise,
+                hazards: [radarHazard(poly, intensity: intensity)], waypoints: []))
+            return abs(offsetFromCourse(conflict.deviationPath[1]))
+        }
+        let heavy = try bypassOffset(.heavy)
+        let extreme = try bypassOffset(.extreme)
+        XCTAssertGreaterThan(extreme, heavy + 5,
+                             "a red/extreme core must be rounded with a wider berth than a heavy cell")
+    }
+
     func testTerminalWeatherJustAfterDeparture() throws {
         // A cell 30 NM off the departure end, on course, is caught by the terminal
         // lookahead band (25–75 NM) while still on the ground / departing.
