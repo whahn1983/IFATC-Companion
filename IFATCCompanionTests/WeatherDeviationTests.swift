@@ -167,6 +167,30 @@ final class WeatherDeviationTests: XCTestCase {
         XCTAssertTrue(conflict.shouldPrompt)
     }
 
+    func testDeviationPathStaysClearOfCells() throws {
+        // A recommended reroute must not pass through a cell anywhere along its
+        // length — not just at the abeam point — so it never avoids one storm and
+        // routes into another.
+        let leftPoly = cell(alongNM: 40, crossNM: -24, halfCross: 26, from: usPosition)
+        let rightPoly = cell(alongNM: 40, crossNM: 36, halfCross: 14, from: usPosition)
+        let conflict = try XCTUnwrap(detector.detectConflict(
+            position: usPosition, course: course, groundspeedKnots: 450, phase: .cruise,
+            hazards: [radarHazard(leftPoly), radarHazard(rightPoly)], waypoints: []))
+
+        let path = conflict.deviationPath
+        for i in 0..<(path.count - 1) {
+            let a = path[i], b = path[i + 1]
+            for s in 0...20 {
+                let f = Double(s) / 20
+                let p = CLLocationCoordinate2D(latitude: a.latitude + (b.latitude - a.latitude) * f,
+                                               longitude: a.longitude + (b.longitude - a.longitude) * f)
+                guard Geo.distanceNM(from: usPosition, to: p) > 8 else { continue }
+                XCTAssertFalse(WeatherRouteAnalyzer.pointInPolygon(p, leftPoly), "path enters the left cell")
+                XCTAssertFalse(WeatherRouteAnalyzer.pointInPolygon(p, rightPoly), "path enters the right cell")
+            }
+        }
+    }
+
     func testRejoinFixSelection() {
         let hazard = radarHazard(cell(alongNM: 40, crossNM: 0, from: usPosition))
         // A filed fix 100 NM ahead, downstream of the weather.
