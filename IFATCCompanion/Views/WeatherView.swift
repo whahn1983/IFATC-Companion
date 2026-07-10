@@ -57,7 +57,7 @@ struct WeatherView: View {
                     legendDot(.red, "Severe")
                 }
                 .font(.caption2).foregroundStyle(.secondary)
-                Text("Dots are pilot reports; shaded areas are SIGMET/AIRMET advisories and the precipitation overlay where available (NOAA/OPERA radar or NASA satellite estimate). The purple outline and mint path show a simulated weather-deviation conflict and recommended reroute.")
+                Text("Dots are pilot reports; shaded areas are SIGMET/AIRMET advisories and the precipitation overlay where available (NOAA/OPERA radar or NASA satellite estimate). The mint path shows the simulated recommended reroute around the precipitation.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
         }

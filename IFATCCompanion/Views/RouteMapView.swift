@@ -130,14 +130,12 @@ struct RouteMapView: View {
                     .stroke(sigmetColor(sigmet), lineWidth: 2)
             }
 
-            // Detected route-weather conflict area (outlined) + recommended
-            // deviation path + rejoin fix.
+            // Recommended deviation path + rejoin fix. The precipitation itself is
+            // shown full-size by the radar overlay and the SIGMET/AIRMET shading, so
+            // we no longer outline the single conflicting cell — that outline was
+            // re-cut every radar resample and read as the weather "resizing" in
+            // flight. The mint path is what conveys the reroute.
             if let conflict = weatherConflict {
-                if conflict.intersectionArea.count >= 3 {
-                    MapPolygon(coordinates: conflict.intersectionArea)
-                        .foregroundStyle(Color.purple.opacity(0.12))
-                        .stroke(Color.purple, style: StrokeStyle(lineWidth: 2, dash: [4, 3]))
-                }
                 if conflict.deviationPath.count >= 2 {
                     MapPolyline(coordinates: conflict.deviationPath)
                         .stroke(.mint, style: StrokeStyle(lineWidth: 3, lineCap: .round, dash: [2, 5]))
