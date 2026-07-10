@@ -109,14 +109,20 @@ UI labels: NOAA and OPERA both show *"Radar precipitation"*; NASA shows
 1. **Hazards.** The weather-deviation flow (the mint reroute line) is driven
    **only by moderate-or-greater precipitation cells** — the hand-authored cells in
    Mock Mode, or the cells sampled from the live radar image by `RadarImageSampler`
-   (the "raster → cell" step): on refresh the app fetches a coarse NOAA/OPERA
-   base-reflectivity image for the route region, classifies pixels by the
-   reflectivity color ramp, and clusters the moderate-and-warmer returns into cells.
-   This is **true-radar only** and best-effort — outside NOAA/OPERA coverage, or on
-   any sampling failure, there are no cells and so no deviation is offered (rather
-   than one invented from coarser data). The sampled cells drive geometry only and
-   are never drawn (the radar image overlay already shows the precipitation). Radar
-   is always spoken as *"precipitation"*, never *"turbulence"*.
+   (the "raster → cell" step): the app fetches a NOAA/OPERA base-reflectivity image
+   for a **window around the aircraft and the route ahead** (~280 NM ahead, ±90 NM
+   wide — not the whole dep→dest box, which under-resolves storms on long routes),
+   classifies pixels by the reflectivity color ramp, and clusters the
+   moderate-and-warmer returns into cells. Sampling is **continuous** — it resamples
+   as the aircraft flies (throttled by time/distance in `maybeResamplePrecipitation`),
+   not only on a manual refresh, so the reroute tracks the weather rather than going
+   stale. On a fetch/decode failure it **keeps the last good cells** instead of
+   wiping them, so a transient hiccup doesn't blink the mint line out. This is
+   **true-radar only** and best-effort — outside NOAA/OPERA coverage there are no
+   cells and no deviation is offered (rather than one invented from coarser data).
+   The sampled cells drive geometry only and are never drawn (the radar image overlay
+   already shows the precipitation). Radar is always spoken as *"precipitation"*,
+   never *"turbulence"*.
    - **SIGMETs do not steer the reroute.** A SIGMET/AIRMET polygon is a coarse,
      often huge advisory box, not a precipitation shape — routing around it produces
      reroutes that ignore where the storms actually are. SIGMETs still shade the

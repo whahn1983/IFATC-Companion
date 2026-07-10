@@ -703,6 +703,10 @@ final class AppModel: ObservableObject {
         // moves. Pure and cheap; never advances the ATC state machine, so it can't
         // interfere with the gate-to-gate flow or the readback gate.
         recomputeWeatherHazards()
+        // Keep the sampled precipitation current as the aircraft flies (throttled),
+        // so the deviation line tracks the weather ahead instead of going stale and
+        // dropping between manual refreshes.
+        maybeResamplePrecipitation()
 
         if !phase.isGround { hasDeparted = true }
 
@@ -2291,6 +2295,13 @@ final class AppModel: ObservableObject {
         precipService.useMockProvider(settings.mockMode)
     }
 
+    /// Throttle state for continuously resampling live precipitation as the aircraft
+    /// moves (so the deviation line tracks the weather rather than only updating on a
+    /// manual refresh). Guards against overlapping fetches.
+    private var lastPrecipSampleAt: Date?
+    private var lastPrecipSamplePos: CLLocationCoordinate2D?
+    private var isSamplingPrecip = false
+
     /// Reset the weather-deviation interaction (between flights / on mode change).
     private func resetWeatherDeviation() {
         weatherDeviation.reset()
@@ -2300,6 +2311,8 @@ final class AppModel: ObservableObject {
         radarOverlay.sampledCells = []
         weatherHandled = false
         mockWeatherAdvisoryIssued = false
+        lastPrecipSampleAt = nil
+        lastPrecipSamplePos = nil
     }
 
     /// The precipitation overlay image URL for the map's visible region, or nil when
@@ -2401,27 +2414,74 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Sample the live radar image into moderate-or-greater precipitation cells for
-    /// the current route region. These cells are the sole input to the weather-
-    /// deviation flow, which threads the widest clear gap between them (the "raster →
-    /// cell" step in `docs/Weather.md`). Best-effort and **true-radar only**
-    /// (NOAA/OPERA): a satellite estimate, no coverage, or any decode/fetch failure
-    /// leaves the sampled cells empty, so no deviation is offered rather than one
-    /// invented from coarser data. Simulation/training only — a coarse sample of an
-    /// approximate radar image.
-    private func sampleLivePrecipitation() async {
-        radarOverlay.sampledCells = []
-        guard settings.noaaRadarOverlay == .autoWhereAvailable else { return }
+    /// Resample live precipitation as the aircraft moves, so the deviation line
+    /// tracks the weather instead of only updating on a manual refresh. Throttled by
+    /// time and distance, and single-flighted so fetches never overlap. Call it from
+    /// the telemetry loop; it re-runs the conflict detection once fresh cells land.
+    private func maybeResamplePrecipitation() {
+        guard !settings.mockMode, settings.noaaRadarOverlay == .autoWhereAvailable,
+              !isSamplingPrecip, let pos = aircraftState.coordinate, pos.isValid else { return }
+        let now = Date()
+        let movedFar = lastPrecipSamplePos.map { Geo.distanceNM(from: $0, to: pos) > 15 } ?? true
+        let stale = lastPrecipSampleAt.map { now.timeIntervalSince($0) > 45 } ?? true
+        guard movedFar || stale else { return }
+        isSamplingPrecip = true
+        Task { @MainActor in
+            await sampleLivePrecipitation()
+            isSamplingPrecip = false
+            // Re-run detection against the fresh cells so the mint line updates now.
+            recomputeWeatherHazards()
+        }
+    }
 
-        let positions = ([aircraftState.coordinate,
-                          airports.coordinate(for: flightPlan.departure),
-                          airports.coordinate(for: flightPlan.destination)]
-                         + flightPlan.waypoints.map { $0.coordinate })
-            .compactMap { $0 }
+    /// Sample the live radar image into moderate-or-greater precipitation cells for a
+    /// window **around the aircraft and the route ahead**. These cells are the sole
+    /// input to the weather-deviation flow, which threads the widest clear gap between
+    /// them (the "raster → cell" step in `docs/Weather.md`).
+    ///
+    /// Two properties keep the deviation line stable rather than blinking out:
+    /// 1. It samples a local corridor window (not the whole dep→dest bounding box), so
+    ///    resolution stays fine on any route length and a real storm reliably
+    ///    clusters — the coarse whole-route sample used to under-resolve storms and
+    ///    "clear" them while they were still dead ahead.
+    /// 2. On a fetch/decode failure it **keeps the last good cells** instead of
+    ///    wiping them, so a transient network hiccup doesn't drop the reroute. Cells
+    ///    are replaced only on a successful sample (which may legitimately be empty
+    ///    when the sky ahead really is clear).
+    ///
+    /// Best-effort and **true-radar only** (NOAA/OPERA); a satellite estimate or no
+    /// coverage yields no cells. Simulation/training only.
+    private func sampleLivePrecipitation() async {
+        guard settings.noaaRadarOverlay == .autoWhereAvailable else {
+            radarOverlay.sampledCells = []
+            return
+        }
+        guard let pos = aircraftState.coordinate ?? airports.coordinate(for: flightPlan.departure),
+              pos.isValid else { return }   // no position — keep the last good cells
+
+        // A corridor window: the aircraft, ~280 NM ahead on course (a little past the
+        // detector's 250 NM horizon so cells are ready before detection needs them), a
+        // little behind, and ±90 NM laterally so the gap-search band is covered.
+        let course = currentCourse(from: pos)
+        let aheadPt = Geo.destination(from: pos, bearingDegrees: course, distanceNM: 280)
+        let focus = [pos, aheadPt,
+                     Geo.destination(from: pos, bearingDegrees: course + 180, distanceNM: 25),
+                     Geo.destination(from: pos, bearingDegrees: course - 90, distanceNM: 90),
+                     Geo.destination(from: pos, bearingDegrees: course + 90, distanceNM: 90),
+                     Geo.destination(from: aheadPt, bearingDegrees: course - 90, distanceNM: 90),
+                     Geo.destination(from: aheadPt, bearingDegrees: course + 90, distanceNM: 90)]
             .filter { $0.isValid }
-        guard let region = PrecipitationOverlayService.region(enclosing: positions),
+
+        lastPrecipSampleAt = Date()
+        lastPrecipSamplePos = pos
+
+        guard let region = PrecipitationOverlayService.region(enclosing: focus),
               let provider = precipService.selectedProvider(for: region),
-              provider.supportsTrueRadar else { return }
+              provider.supportsTrueRadar else {
+            // No true-radar coverage for this window → genuinely no radar cells here.
+            radarOverlay.sampledCells = []
+            return
+        }
 
         let bbox = RadarBoundingBox(region: region)
         let sample = 160
@@ -2433,6 +2493,8 @@ final class AppModel: ObservableObject {
             for: bbox, size: CGSize(width: sample, height: sample), frame: frame)
         guard let data = fetched ?? nil,
               let cells = RadarImageSampler.cells(fromPNG: data, columns: sample, rows: sample, bbox: bbox) else {
+            // Fetch or decode failed — keep the last good cells so the deviation line
+            // doesn't blink out on a transient error.
             return
         }
         radarOverlay.sampledCells = cells
