@@ -69,6 +69,12 @@ struct RouteWeatherConflictDetector {
         /// this off-course angle. Any leg that would point further back is pulled in to
         /// this bound, so the line never reverses the aircraft.
         var maxDeviationTurnDegrees: Double = 100
+        /// The initial turn a deviation makes to establish its parallel offset (degrees).
+        /// Real weather deviations turn out ~20–30° and then parallel the weather, so the
+        /// hug reaches its offset over enough distance to make the first leg this angle
+        /// rather than a 90° sideways step. When the weather sits right at the aircraft a
+        /// steeper turn is used instead (the gentle start would cut back through the cell).
+        var initialDeviationTurnDegrees: Double = 30
     }
 
     var config = Config()
@@ -147,9 +153,18 @@ struct RouteWeatherConflictDetector {
         // deviation onto the shorter side wins. Nil when no route is supplied.
         let routeRejoin = routeRejoinCoord(position: position, routeAhead: routeAhead,
                                            hazards: hazards, lookahead: lookahead)
-        return detect(position: position, course: flyCourse, groundspeedKnots: groundspeedKnots,
-                      phase: phase, hazards: hazards, waypoints: waypoints, rejoinOverride: routeRejoin,
-                      rejoinCap: rejoinCap)
+        guard var conflict = detect(position: position, course: flyCourse, groundspeedKnots: groundspeedKnots,
+                                    phase: phase, hazards: hazards, waypoints: waypoints,
+                                    rejoinOverride: routeRejoin, rejoinCap: rejoinCap) else { return nil }
+        // Guarantee the drawn line ends exactly ON the filed route (the intercept):
+        // snap its final vertex to the nearest point on the upcoming route polyline, so
+        // capping/bounding can never leave the rejoin floating just off the flight plan.
+        let routePoly = ([position] + routeAhead).filter { $0.isValid }
+        if routePoly.count >= 2, conflict.deviationPath.count >= 2, let last = conflict.deviationPath.last,
+           let onRoute = nearestPointOnPolyline(last, routePoly) {
+            conflict.deviationPath[conflict.deviationPath.count - 1] = onRoute
+        }
+        return conflict
     }
 
     /// Aim the detection corridor along the route rather than a straight bearing to
@@ -370,18 +385,32 @@ struct RouteWeatherConflictDetector {
             return [position, apex, rejoinCoord]
         }
 
-        // A path that hugs one side of the line: step out to `offset` just before the
-        // near edge, hold it past the far edge, then close to the rejoin.
-        func hugPath(offset: Double) -> [CLLocationCoordinate2D] {
+        // A path that hugs one side of the line: turn out to `offset`, hold it parallel,
+        // then close to the rejoin. Two refinements keep it realistic:
+        //   • `minLead` is how far along course the turn-out reaches the offset, so the
+        //     first leg is a ~30° deviation rather than a 90° sideways step. When the
+        //     weather sits right at the aircraft the forward-angled start clips a cell
+        //     and validation drops it, leaving the steeper `minLead: 0` variant.
+        //   • the far turn-back is capped at the rejoin's along-distance, so the parallel
+        //     leg never runs past the intercept and doubles back when off-route cells
+        //     sit beyond where the route exits the weather.
+        func hugPath(offset: Double, minLead: Double) -> [CLLocationCoordinate2D] {
             let sideBearing = course + (offset >= 0 ? 90 : -90)
             let margin = config.lateralBufferNM
-            let nearOn = Geo.destination(from: position, bearingDegrees: course,
-                                         distanceNM: max(0, lineNear - margin))
-            let farOn = Geo.destination(from: position, bearingDegrees: course,
-                                        distanceNM: lineFar + margin)
+            let rejoinAlong = project(rejoinCoord, from: position, course: course).along
+            let nearAlong = max(max(0, lineNear - margin), minLead)
+            let farAlong = max(nearAlong, min(lineFar + margin, rejoinAlong))
+            let nearOn = Geo.destination(from: position, bearingDegrees: course, distanceNM: nearAlong)
+            let farOn = Geo.destination(from: position, bearingDegrees: course, distanceNM: farAlong)
             let pNear = Geo.destination(from: nearOn, bearingDegrees: sideBearing, distanceNM: abs(offset))
             let pFar = Geo.destination(from: farOn, bearingDegrees: sideBearing, distanceNM: abs(offset))
             return [position, pNear, pFar, rejoinCoord]
+        }
+
+        // Along-course distance to reach a lateral offset at the target initial-turn
+        // angle — the lead that keeps the first leg a realistic deviation, not 90°.
+        func gentleLead(_ offset: Double) -> Double {
+            abs(offset) / tan(config.initialDeviationTurnDegrees * .pi / 180)
         }
 
         // The tightest parallel-offset hug on one side (+1 right / −1 left): the
@@ -392,12 +421,15 @@ struct RouteWeatherConflictDetector {
         // which a far-off-course cell can drag way out — it stays close to the flight
         // plan, so the shortest-path selector picks it *early* instead of the aircraft
         // first diving wide and only tucking back in once the cluster thins downrange.
-        func tightHug(side: Double) -> (path: [CLLocationCoordinate2D], target: Double)? {
+        // `gentle` bounds the initial turn; a steep variant is offered too for when the
+        // gentle start would clip weather sitting at the aircraft.
+        func tightHug(side: Double, gentle: Bool) -> (path: [CLLocationCoordinate2D], target: Double)? {
             var offset = config.lateralBufferNM
             while offset <= config.searchHalfWidthNM {
-                let path = hugPath(offset: side * offset)
+                let target = side * offset
+                let path = hugPath(offset: target, minLead: gentle ? gentleLead(target) : 0)
                 if pathIsClear(path, cells: cellBerths, origin: position) {
-                    return (path, side * offset)
+                    return (path, target)
                 }
                 offset += 2
             }
@@ -406,12 +438,15 @@ struct RouteWeatherConflictDetector {
 
         var candidates: [(path: [CLLocationCoordinate2D], target: Double)] =
             solution.targets.map { (path: apexPath(for: $0), target: $0) }
-        candidates.append((path: hugPath(offset: solution.leftEdge), target: solution.leftEdge))
-        candidates.append((path: hugPath(offset: solution.rightEdge), target: solution.rightEdge))
-        // Offer the tight parallel hug on each side as well; the shortest-clear selector
-        // then flies it over a deep single apex when a line lies along course.
-        if let tight = tightHug(side: 1) { candidates.append(tight) }
-        if let tight = tightHug(side: -1) { candidates.append(tight) }
+        candidates.append((path: hugPath(offset: solution.leftEdge, minLead: 0), target: solution.leftEdge))
+        candidates.append((path: hugPath(offset: solution.rightEdge, minLead: 0), target: solution.rightEdge))
+        // Offer the tight parallel hug on each side (gentle initial turn preferred, steep
+        // as a fallback); the shortest-clear selector then flies it over a deep single
+        // apex when a line lies along course.
+        for gentle in [true, false] {
+            if let tight = tightHug(side: 1, gentle: gentle) { candidates.append(tight) }
+            if let tight = tightHug(side: -1, gentle: gentle) { candidates.append(tight) }
+        }
 
         // Validate the whole path against *every* precipitation cell, not just the
         // line being threaded — so we never avoid one storm and route into another.
@@ -625,6 +660,38 @@ struct RouteWeatherConflictDetector {
         let t = lenSq <= 0 ? 0 : max(0, min(1, ((px - ax) * dx + (py - ay) * dy) / lenSq))
         let cx = ax + t * dx, cy = ay + t * dy
         return hypot(px - cx, py - cy)
+    }
+
+    /// The point on a polyline nearest to `p` — used to snap the drawn deviation's final
+    /// vertex exactly onto the filed route so the mint line always ends on the flight plan.
+    private func nearestPointOnPolyline(_ p: CLLocationCoordinate2D,
+                                        _ line: [CLLocationCoordinate2D]) -> CLLocationCoordinate2D? {
+        guard line.count >= 2 else { return line.first }
+        var best: CLLocationCoordinate2D?
+        var bestD = Double.greatestFiniteMagnitude
+        for i in 0..<(line.count - 1) {
+            let c = closestPointOnSegment(p, line[i], line[i + 1])
+            let d = Geo.distanceNM(from: p, to: c)
+            if d < bestD { bestD = d; best = c }
+        }
+        return best
+    }
+
+    /// The closest point on segment a→b to `p`, in the same local NM plane as
+    /// `pointToSegmentNM` (which returns only the distance).
+    private func closestPointOnSegment(_ p: CLLocationCoordinate2D,
+                                       _ a: CLLocationCoordinate2D,
+                                       _ b: CLLocationCoordinate2D) -> CLLocationCoordinate2D {
+        let latScale = 60.0
+        let lonScale = 60.0 * cos(p.latitude * .pi / 180)
+        let ax = a.longitude * lonScale, ay = a.latitude * latScale
+        let bx = b.longitude * lonScale, by = b.latitude * latScale
+        let px = p.longitude * lonScale, py = p.latitude * latScale
+        let dx = bx - ax, dy = by - ay
+        let lenSq = dx * dx + dy * dy
+        let t = lenSq <= 0 ? 0 : max(0, min(1, ((px - ax) * dx + (py - ay) * dy) / lenSq))
+        let cx = ax + t * dx, cy = ay + t * dy
+        return CLLocationCoordinate2D(latitude: cy / latScale, longitude: cx / lonScale)
     }
 
     /// The spoken deviation amount: the initial turn from course to the through-

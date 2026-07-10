@@ -253,6 +253,10 @@ final class AppModel: ObservableObject {
     /// removed — long enough to span a radar resample cycle (~45 s) so a single
     /// empty sample never drops a storm that's really still there.
     private var weatherClearConfirmWindow: TimeInterval = 90
+    /// How close (NM) to the flight-plan intercept at the end of the mint line the
+    /// aircraft must get before the controller auto-resumes own navigation when the
+    /// pilot hasn't reported clear of weather.
+    private let autoResumeInterceptNM: Double = 15
     /// Timestamp of the last aviation-weather refresh, for the diagnostics panel.
     private var lastAviationWeatherUpdate: Date?
 
@@ -2401,8 +2405,13 @@ final class AppModel: ObservableObject {
 
         // Mock Mode auto-issues the advisory once so the offline demo plays out.
         maybeAutoIssueMockAdvisory(conflict: conflict)
-        // When vectoring, auto-issue the turn back to course at the deviation apex.
-        maybeIssueWeatherRejoinTurn()
+        // When vectoring, auto-issue the turn back to course at the deviation apex;
+        // otherwise, once the aircraft reaches the rejoin end of the mint line without
+        // reporting clear of weather, auto-resume own navigation. Skipping the resume
+        // on a tick that just issued the rejoin turn keeps the two from racing.
+        if !maybeIssueWeatherRejoinTurn() {
+            maybeAutoResumeAtRouteIntercept()
+        }
         updateWeatherDiagnostics(conflict: conflict)
     }
 
@@ -3031,13 +3040,16 @@ final class AppModel: ObservableObject {
     /// While vectoring around weather, once the aircraft reaches the turn in the
     /// deviation path (the apex of the mint line), the controller automatically turns
     /// it back to intercept the filed route. Called each telemetry tick.
-    private func maybeIssueWeatherRejoinTurn() {
+    /// Returns whether it issued the turn this tick, so the caller can skip the
+    /// auto-resume check on the same tick (they both key off the mint line's geometry).
+    @discardableResult
+    private func maybeIssueWeatherRejoinTurn() -> Bool {
         guard !companionStandby, weatherFlowAllowed,
               weatherDeviation.state == .vectoringAroundWeather,
               let heading = weatherDeviation.pendingRejoinHeading,
               let apexLat = weatherDeviation.vectorApexLatitude,
               let apexLon = weatherDeviation.vectorApexLongitude,
-              let pos = aircraftState.coordinate, pos.isValid else { return }
+              let pos = aircraftState.coordinate, pos.isValid else { return false }
         let apex = CLLocationCoordinate2D(latitude: apexLat, longitude: apexLon)
         let distance = Geo.distanceNM(from: pos, to: apex)
         // Fire when near the apex, or once the aircraft has passed abeam/beyond it
@@ -3057,10 +3069,50 @@ final class AppModel: ObservableObject {
         } else {
             reached = false
         }
-        guard reached else { return }
+        guard reached else { return false }
         applyDeviationResult(deviationEngine.rejoinTurn(
             cs: callsignNow(), heading: heading, rejoinFix: weatherDeviation.rejoinFix,
             context: weatherDeviation, facility: weatherFacility))
+        return true
+    }
+
+    /// Once the aircraft reaches the flight-plan intercept at the end of the mint line
+    /// without the pilot reporting clear of weather, the controller automatically
+    /// resumes own navigation and ends the deviation. Guarded to the final leg (at or
+    /// beyond the last turn) and within `autoResumeInterceptNM` of the intercept, so it
+    /// can't trip during the outbound or parallel legs.
+    private func maybeAutoResumeAtRouteIntercept() {
+        guard !companionStandby, weatherFlowAllowed else { return }
+        switch weatherDeviation.state {
+        case .deviationApproved, .vectoringAroundWeather: break
+        default: return
+        }
+        guard let pos = aircraftState.coordinate, pos.isValid,
+              let line = weatherDeviationLine, line.count >= 2,
+              let end = line.last, end.isValid else { return }
+        let lastTurn = line[line.count - 2]
+        guard lastTurn.isValid else { return }
+        // On the final leg to the intercept: at or beyond the last turn along that leg.
+        let legBearing = Geo.bearing(from: lastTurn, to: end)
+        let turnToAircraft = Geo.bearing(from: lastTurn, to: pos)
+        let alongNM = Geo.distanceNM(from: lastTurn, to: pos) * cos((turnToAircraft - legBearing) * .pi / 180)
+        guard alongNM >= 0, Geo.distanceNM(from: pos, to: end) <= autoResumeInterceptNM else { return }
+        autoResumeOwnNavigation()
+    }
+
+    /// End a lateral weather deviation by resuming own navigation, with no pilot
+    /// clear-of-weather call — the aircraft flew the mint line all the way to the
+    /// flight-plan intercept on its own. Mirrors the clear-of-weather cleanup.
+    private func autoResumeOwnNavigation() {
+        applyDeviationResult(deviationEngine.autoResumeOwnNavigation(
+            cs: callsignNow(), context: weatherDeviation, facility: weatherFacility))
+        if settings.mockMode { radarOverlay.mockCells = [] }
+        activeWeatherConflict = nil
+        weatherDeviation.reset()
+        weatherDeviation.state = .none
+        weatherHandled = false
+        mockWeatherAdvisoryIssued = false
+        lastConflictSeenAt = nil
     }
 
     func requestHigherForWeather() {

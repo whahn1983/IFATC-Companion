@@ -174,6 +174,16 @@ UI labels: NOAA and OPERA both show *"Radar precipitation"*; NASA shows
        close to the flight plan. Because it stays close, the shortest-clear selector
        picks it **early** — so the line hugs the weather from the start instead of the
        aircraft diving wide and only tucking back in once the cluster thins downrange.
+     - The **initial turn-out is a realistic ~30°**, not a 90° sideways step: the hug
+       reaches its offset over enough along-course distance (`initialDeviationTurnDegrees`)
+       to make the first leg a genuine deviation. When the weather sits right at the
+       aircraft (near edge ≈ 0) the forward-angled start would cut back through the cell,
+       so a steeper turn-out is offered as a fallback and validation picks whichever
+       stays clear.
+     - The parallel leg **turns back at the rejoin, never past it**: the far corner is
+       capped to the along-distance where the route exits the weather, so the line does
+       not run out to the far edge of distant off-route cells and then double back across
+       the intercept.
    - **Rejoin on the route just past the weather, not at a distant fix.** Every
      candidate returns to the route at the point where the route **exits the weather**
      — it does *not* stretch the drawn line to a far-downstream fix. Two things matter
@@ -235,6 +245,15 @@ UI labels: NOAA and OPERA both show *"Radar precipitation"*; NASA shows
 5. **Clear of weather.** When the pilot reports clear of weather, ATC clears direct
    the rejoin fix (or *"resume own navigation"* when already near the route), or
    rejoins the STAR.
+   - **The mint line always ends on the filed route.** The drawn deviation's final
+     vertex is snapped to the nearest point on the upcoming route polyline, so the line
+     intercepts the flight plan cleanly (capping/bounding can't leave it floating just
+     off course).
+   - **Auto-resume at the intercept.** If the pilot never reports clear of weather, the
+     controller automatically issues *"resume own navigation"* and ends the deviation
+     once the aircraft reaches within 15 NM of that intercept (measured on the final leg,
+     so it can't trip during the outbound or parallel legs). On a vector this fires the
+     tick after the automatic rejoin turn, so the two don't collide.
 
 **Stable, non-flickering display.** Radar resampling is noisy: a storm that is
 really still ahead can drop out of a single sample and return on the next. Read

@@ -280,6 +280,29 @@ final class WeatherDeviationFlowTests: XCTestCase {
                        "no automatic turn before the apex")
     }
 
+    /// Flying the mint line all the way to its end (the flight-plan intercept) without
+    /// reporting clear of weather auto-resumes own navigation and ends the deviation.
+    func testAutoResumesOwnNavigationNearRouteIntercept() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)
+        model.requestWeatherDeviation(.right)
+        XCTAssertEqual(model.weatherDeviationState, .deviationApproved)
+        guard let line = model.weatherDeviationLine, let end = line.last else {
+            return XCTFail("expected a committed mint line ending on the route")
+        }
+
+        // Reach the rejoin end of the mint line, never having reported clear of weather.
+        var atEnd = model.mock.state(for: .cruise)
+        atEnd.latitude = end.latitude
+        atEnd.longitude = end.longitude
+        model.ingestStateForTesting(atEnd)
+
+        XCTAssertTrue(atcContains(model, "resume own navigation"),
+                      "reaching the intercept without reporting clear auto-resumes own navigation")
+        XCTAssertEqual(model.weatherDeviationState, .none, "the deviation ends")
+        XCTAssertNil(model.activeWeatherConflict, "the conflict clears on auto-resume")
+    }
+
     // MARK: - Banner persists for a later reroute
 
     /// After the pilot contacts ATC and elects to continue on course, the weather
