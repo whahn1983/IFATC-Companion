@@ -97,35 +97,54 @@ UI labels: NOAA and OPERA both show *"Radar precipitation"*; NASA shows
   rather than implying a smooth ride. Missing reports never mean "smooth weather".
 - **G-AIRMET** is treated as **contiguous-U.S. only** and is never presented as
   global.
-- For non-U.S. flights, SIGMETs and the existing aviation advisories drive the
-  simulated weather-deviation calls. If no advisory data exists and radar is
-  unavailable, the app does **not** invent precipitation.
+- The simulated weather-deviation reroute (the mint line) is driven **only by
+  moderate-or-greater precipitation** from true radar (NOAA/OPERA). Where true radar
+  is unavailable there are no precipitation cells, so no reroute is offered — the app
+  does **not** invent precipitation, and does **not** substitute a coarse SIGMET
+  polygon for it. SIGMETs still shade the map, populate the SIGMET card, and raise
+  the ride index.
 
 ## How the flow works
 
-1. **Hazards.** Radar precipitation cells (where covered) and route-intersecting
-   SIGMET polygons are normalized into `WeatherHazard` values, tagged by `source`
-   so phraseology stays honest — radar is always spoken as *"precipitation"*, never
-   *"turbulence"*. Turbulence wording is reserved for PIREP / AIREP / SIGMET /
-   G-AIRMET / CWA / existing ride-report logic. Convective SIGMETs are phrased as
-   *"convective weather / thunderstorms"* only when the advisory supports it.
-   - **Precipitation-core focus.** A convective SIGMET often covers a very large
-     advisory area, most of which is precipitation-free. So the *deviation geometry*
-     for a convective SIGMET is tightened to the **moderate-or-greater precipitation
-     core** inside it, sampled from the live radar image by `RadarImageSampler`
-     (the "raster → cell" step): on refresh the app fetches a coarse NOAA/OPERA
-     base-reflectivity image for the route region, classifies pixels by the
-     reflectivity color ramp, and clusters the moderate-and-warmer returns into
-     cells. The reroute then hugs the actual precipitation rather than the whole
-     polygon; the SIGMET keeps its convective wording. This is **true-radar only**
-     and best-effort — outside NOAA/OPERA coverage, or on any sampling failure, the
-     deviation falls back to the full SIGMET area. The sampled cells drive geometry
-     only and are never drawn (the radar image overlay already shows precipitation).
-2. **Conflict detection.** `RouteWeatherConflictDetector` builds a corridor from the
-   aircraft through the upcoming route fixes (lookahead 25–75 NM in the terminal
-   area, 100–250 NM enroute, with a 30–120 minute groundspeed-based fallback) and
-   computes distance, clock position(s), estimated time, severity, a left/right
-   bypass score, a recommended deviation amount, and a downstream rejoin fix.
+1. **Hazards.** The weather-deviation flow (the mint reroute line) is driven
+   **only by moderate-or-greater precipitation cells** — the hand-authored cells in
+   Mock Mode, or the cells sampled from the live radar image by `RadarImageSampler`
+   (the "raster → cell" step): on refresh the app fetches a coarse NOAA/OPERA
+   base-reflectivity image for the route region, classifies pixels by the
+   reflectivity color ramp, and clusters the moderate-and-warmer returns into cells.
+   This is **true-radar only** and best-effort — outside NOAA/OPERA coverage, or on
+   any sampling failure, there are no cells and so no deviation is offered (rather
+   than one invented from coarser data). The sampled cells drive geometry only and
+   are never drawn (the radar image overlay already shows the precipitation). Radar
+   is always spoken as *"precipitation"*, never *"turbulence"*.
+   - **SIGMETs do not steer the reroute.** A SIGMET/AIRMET polygon is a coarse,
+     often huge advisory box, not a precipitation shape — routing around it produces
+     reroutes that ignore where the storms actually are. SIGMETs still shade the
+     route map, populate the SIGMET card, and raise the composite ride index
+     (`routeSigmets`); they just don't feed `buildWeatherHazards`. Turbulence
+     wording remains reserved for PIREP / AIREP / SIGMET / G-AIRMET / CWA / ride
+     reports elsewhere in the app.
+   - **Turbulence / icing → altitude, not a lateral reroute.** A turbulence or icing
+     SIGMET along the route has nothing to laterally route around — real ATC handles
+     it by facilitating a climb or descent (smoother air, or out of the icing), and
+     relaying ride reports. So when there is no precipitation conflict but a
+     turbulence / icing SIGMET lies along the route (`activeRideSigmet`), the app
+     raises an **altitude-change advisory** whose only response buttons are
+     higher / lower / continue — never deviate / vectors. Precipitation always takes
+     precedence when both are present.
+2. **Conflict detection + gap threading.** `RouteWeatherConflictDetector` builds a
+   corridor from the aircraft through the upcoming route fixes (lookahead 25–75 NM
+   in the terminal area, 100–250 NM enroute, with a 30–120 minute groundspeed-based
+   fallback) and finds the precipitation cells that block it. Rather than hopping
+   around a single cell, it projects every nearby cell onto the cross-track axis,
+   pads each by a lateral buffer, merges the overlaps, and **threads the widest
+   clear gap** between adjacent cells — picking the reachable gap that needs the
+   least deviation, and going around the near end of a solid line only when no gap
+   is wide enough. This mirrors how a controller vectors a pilot between cells,
+   whether they appear just after takeoff, enroute, or on approach. It also computes
+   distance, clock position(s), estimated time, severity, the spoken deviation
+   amount (the actual initial turn onto the threading path), and a downstream rejoin
+   fix.
 3. **Advisory.** When a conflict warrants prompting, ATCView shows a
    *"Weather ahead — contact ATC"* banner. Tapping **Contact ATC** (or, in the Mock
    demo, automatically) issues a simulated advisory ("area of heavy precipitation

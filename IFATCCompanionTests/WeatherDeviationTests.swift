@@ -117,6 +117,56 @@ final class WeatherDeviationTests: XCTestCase {
         XCTAssertEqual(leftConflict?.recommendedDirection, .right)
     }
 
+    // MARK: - Gap threading
+
+    /// The signed cross-track offset (+right) of a coordinate from the northbound
+    /// course line out of `usPosition`.
+    private func offsetFromCourse(_ point: CLLocationCoordinate2D) -> Double {
+        let end = Geo.destination(from: usPosition, bearingDegrees: course, distanceNM: 200)
+        return Geo.crossTrackDistanceNM(point: point, pathStart: usPosition, pathEnd: end)
+    }
+
+    func testThreadsGapBetweenAdjacentCells() throws {
+        // A line of two cells ~40 NM ahead: a large cell that just crosses the course
+        // to the left, and a cell to the right — leaving a clear gap on the right.
+        let leftCell = radarHazard(cell(alongNM: 40, crossNM: -24, halfCross: 26, from: usPosition))
+        let rightCell = radarHazard(cell(alongNM: 40, crossNM: 36, halfCross: 14, from: usPosition))
+        let conflict = try XCTUnwrap(detector.detectConflict(
+            position: usPosition, course: course, groundspeedKnots: 450, phase: .cruise,
+            hazards: [leftCell, rightCell], waypoints: []))
+
+        XCTAssertEqual(conflict.recommendedDirection, .right, "the clear gap is on the right")
+        // The apex should thread the gap (a modest offset), not fly around the whole
+        // line (which would be a much larger offset).
+        let offset = offsetFromCourse(conflict.deviationPath[1])
+        XCTAssertGreaterThan(offset, 4, "apex should sit right of course, inside the gap")
+        XCTAssertLessThan(offset, 30, "apex should thread the gap, not round the whole line")
+    }
+
+    func testGoesAroundNearEndOfSolidLine() throws {
+        // A single wide cell with no gap, biased left of course → the shorter way
+        // around is the right end.
+        let wide = radarHazard(cell(alongNM: 40, crossNM: -10, halfCross: 40, from: usPosition))
+        let conflict = try XCTUnwrap(detector.detectConflict(
+            position: usPosition, course: course, groundspeedKnots: 450, phase: .cruise,
+            hazards: [wide], waypoints: []))
+
+        XCTAssertEqual(conflict.recommendedDirection, .right)
+        let offset = offsetFromCourse(conflict.deviationPath[1])
+        XCTAssertGreaterThan(offset, 25, "no gap → route around the near (right) end, a large offset")
+    }
+
+    func testTerminalWeatherJustAfterDeparture() throws {
+        // A cell 30 NM off the departure end, on course, is caught by the terminal
+        // lookahead band (25–75 NM) while still on the ground / departing.
+        let hazard = radarHazard(cell(alongNM: 30, crossNM: 0, halfCross: 10, from: usPosition))
+        let conflict = try XCTUnwrap(detector.detectConflict(
+            position: usPosition, course: course, groundspeedKnots: 0, phase: .takeoff,
+            hazards: [hazard], waypoints: []))
+        XCTAssertEqual(conflict.severity, .heavy)
+        XCTAssertTrue(conflict.shouldPrompt)
+    }
+
     func testRejoinFixSelection() {
         let hazard = radarHazard(cell(alongNM: 40, crossNM: 0, from: usPosition))
         // A filed fix 100 NM ahead, downstream of the weather.
@@ -255,6 +305,41 @@ final class WeatherDeviationTests: XCTestCase {
         let tokyo = CLLocationCoordinate2D(latitude: 35.68, longitude: 139.77)
         XCTAssertFalse(NOAARadarPrecipitationProvider.covers(coordinate: tokyo))
         XCTAssertEqual(WeatherHazardSource.gairmet.label, "G-AIRMET")
+    }
+
+    // MARK: - Turbulence / icing ride advisory (altitude, not lateral)
+
+    func testSigmetRideAdvisoryTurbulenceOffersSmootherAir() {
+        let engine = PhraseologyEngine(digitStyle: .individual, mode: .faa)
+        let phr = WeatherDeviationPhraseology(engine: engine)
+        let cs = engine.callsign(airline: "United", flightNumber: "598", fallback: "")
+        let tx = phr.sigmetRideAdvisory(cs: cs, hazardLabel: "severe turbulence", icing: false)
+        XCTAssertTrue(tx.displayText.contains("severe turbulence"))
+        XCTAssertTrue(tx.displayText.contains("smoother air"))
+        XCTAssertTrue(tx.displayText.contains("Say intentions"))
+        // A turbulence advisory is resolved with altitude, never a lateral deviation.
+        XCTAssertFalse(tx.displayText.lowercased().contains("deviation"))
+        XCTAssertFalse(tx.displayText.lowercased().contains("vector"))
+    }
+
+    func testSigmetRideAdvisoryIcingFramesExit() {
+        let engine = PhraseologyEngine(digitStyle: .individual, mode: .faa)
+        let phr = WeatherDeviationPhraseology(engine: engine)
+        let cs = engine.callsign(airline: "United", flightNumber: "598", fallback: "")
+        let tx = phr.sigmetRideAdvisory(cs: cs, hazardLabel: "icing", icing: true)
+        XCTAssertTrue(tx.displayText.contains("icing"))
+        XCTAssertTrue(tx.displayText.contains("exit the icing"))
+    }
+
+    func testRideSigmetSituationAwaitsIntentions() {
+        let engine = PhraseologyEngine(digitStyle: .individual, mode: .faa)
+        let phr = WeatherDeviationPhraseology(engine: engine)
+        let dev = WeatherDeviationEngine(phraseology: phr)
+        let cs = phr.engine.callsign(airline: "United", flightNumber: "598", fallback: "")
+        let result = dev.issueAdvisory(cs: cs, situation: .rideSigmet(label: "severe turbulence", icing: false),
+                                       context: WeatherDeviationContext(), facility: .center)
+        XCTAssertEqual(result.context.state, .awaitingPilotIntentions)
+        XCTAssertTrue(result.atc.first?.displayText.contains("smoother air") ?? false)
     }
 
     // MARK: - Radar unavailable fallback

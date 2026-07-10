@@ -71,6 +71,20 @@ struct WeatherDeviationPhraseology {
                facility: facility)
     }
 
+    /// Advisory for a turbulence / icing SIGMET along the route. There is nothing to
+    /// laterally route around, so the controller frames it as an altitude decision —
+    /// smoother air for turbulence, or exiting the layer for icing — matching how ATC
+    /// actually handles these (facilitating a climb/descent, not a vector).
+    func sigmetRideAdvisory(cs: Callsign, hazardLabel: String, icing: Bool,
+                            facility: ATCFacility = .center) -> ATCTransmission {
+        let tail = icing
+            ? "a climb or descent may exit the icing"
+            : "smoother air may be available at a different altitude"
+        return center("\(cs.display), SIGMET indicates \(hazardLabel) along your route ahead, \(tail). Say intentions.",
+                      "\(cs.spoken), SIGMET indicates \(hazardLabel) along your route ahead, \(tail). Say intentions.",
+                      facility: facility)
+    }
+
     /// Outside NOAA radar coverage with no advisory data — do not invent weather.
     func noRadarNoAdvisory(cs: Callsign, facility: ATCFacility = .center) -> ATCTransmission {
         center("\(cs.display), radar precipitation is not available for this region. No significant aviation weather advisories are available along your route at this time.",

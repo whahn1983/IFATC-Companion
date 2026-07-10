@@ -2352,7 +2352,9 @@ final class AppModel: ObservableObject {
 
         // The weather ahead has cleared: forget the "handled" flag and roll back a
         // not-yet-committed deviation lifecycle so a new conflict prompts afresh.
-        if conflict == nil {
+        // A turbulence / icing ride advisory (no precip conflict) keeps its lifecycle,
+        // so it isn't torn down on every telemetry tick while it's still along route.
+        if conflict == nil, activeRideSigmet == nil {
             weatherHandled = false
             mockWeatherAdvisoryIssued = false
             switch weatherDeviation.state {
@@ -2370,83 +2372,43 @@ final class AppModel: ObservableObject {
         updateWeatherDiagnostics(conflict: conflict)
     }
 
-    /// Normalize the current weather into hazards for the conflict detector.
-    /// Precipitation cells are included only where the overlay is enabled and a
-    /// provider covers the region; SIGMETs along the route are always included
-    /// (SIGMET data can be global). A convective SIGMET's deviation geometry is
-    /// tightened to the moderate-or-greater precipitation core sampled from the
-    /// live radar image (`sampleLivePrecipitation()`), or the Mock-Mode cells,
-    /// so the reroute hugs the actual precipitation rather than the whole advisory.
+    /// Normalize the current weather into the hazards the conflict detector routes
+    /// around. The **only** driver of the weather-deviation flow (the mint line) is
+    /// moderate-or-greater precipitation: the hand-authored cells in Mock Mode, or
+    /// the cells sampled from the live NOAA/OPERA radar image otherwise. The
+    /// detector then threads the widest clear gap between those cells.
+    ///
+    /// SIGMET/AIRMET advisories are intentionally **not** fed here. A SIGMET polygon
+    /// is a coarse, often huge advisory box, not a precipitation shape, so routing
+    /// around it produces reroutes that ignore where the storms actually are.
+    /// SIGMETs still shade the route map, populate the SIGMET card, and raise the
+    /// composite ride index (`recomputeRideItems` / `routeSigmets`) — they just
+    /// don't steer the deviation.
     private func buildWeatherHazards(provider: RadarPrecipitationProvider?) -> [WeatherHazard] {
-        var hazards: [WeatherHazard] = []
-
-        if radarOverlay.isEnabled, radarOverlay.coverageAvailable {
-            let providerConfidence = provider?.confidence ?? .high
-            let providerLabel = provider?.uiLayerLabel ?? "Radar precipitation"
-            for cell in radarOverlay.mockCells {
-                hazards.append(WeatherHazard(
-                    source: .noaaRadar, providerID: provider?.id,
-                    phenomenon: .precipitation, intensity: cell.intensity,
-                    geometry: .polygon(cell.polygon), confidence: providerConfidence,
-                    movementDirectionDegrees: cell.movementDirectionDegrees,
-                    movementSpeedKnots: cell.movementSpeedKnots,
-                    notes: providerLabel))
-            }
-        }
-
-        // Moderate-or-greater precipitation cells used to focus a convective SIGMET
-        // deviation on the actual precipitation core: sampled from the live radar
-        // image, or the hand-authored cells in Mock Mode.
+        guard radarOverlay.isEnabled, radarOverlay.coverageAvailable else { return [] }
+        let providerConfidence = provider?.confidence ?? .high
+        let providerLabel = provider?.uiLayerLabel ?? "Radar precipitation"
         let precipCells = settings.mockMode ? radarOverlay.mockCells : radarOverlay.sampledCells
-
-        for sigmet in routeSigmets {
-            guard let area = sigmet.drawableArea else { continue }
-            let phenomenon: WeatherPhenomenon
-            let intensity: WeatherIntensity
-            switch sigmet.category {
-            case .convective:
-                phenomenon = .thunderstorm; intensity = .extreme
-            case .turbulence:
-                phenomenon = .turbulence
-                intensity = sigmet.turbulenceSeverity >= .severe ? .heavy : .moderate
-            case .icingOrMountainWave:
-                phenomenon = .icing; intensity = .moderate
-            case .other:
-                phenomenon = .unknown; intensity = .light
-            }
-
-            // A convective SIGMET is a precipitation hazard: when radar shows where
-            // the moderate-or-greater precipitation actually sits inside the advisory,
-            // route around that core rather than the entire (often huge) polygon.
-            // Each core keeps the SIGMET's convective wording; only the geometry
-            // tightens. With no sampled precipitation we fall back to the full area.
-            if sigmet.category == .convective {
-                let cores = RadarImageSampler.precipitationCores(in: area, cells: precipCells)
-                if !cores.isEmpty {
-                    for core in cores {
-                        hazards.append(WeatherHazard(
-                            source: .sigmet, phenomenon: phenomenon, intensity: intensity,
-                            geometry: .polygon(core), confidence: .medium,
-                            notes: sigmet.hazardLabel))
-                    }
-                    continue
-                }
-            }
-
-            hazards.append(WeatherHazard(source: .sigmet, phenomenon: phenomenon, intensity: intensity,
-                                         geometry: .polygon(area), confidence: .medium,
-                                         notes: sigmet.hazardLabel))
+        return precipCells.compactMap { cell in
+            guard cell.intensity >= .moderate else { return nil }
+            return WeatherHazard(
+                source: .noaaRadar, providerID: provider?.id,
+                phenomenon: .precipitation, intensity: cell.intensity,
+                geometry: .polygon(cell.polygon), confidence: providerConfidence,
+                movementDirectionDegrees: cell.movementDirectionDegrees,
+                movementSpeedKnots: cell.movementSpeedKnots,
+                notes: providerLabel)
         }
-        return hazards
     }
 
     /// Sample the live radar image into moderate-or-greater precipitation cells for
-    /// the current route region, so a convective SIGMET deviation routes around the
-    /// precipitation core instead of the whole advisory area (the "raster → cell"
-    /// step in `docs/Weather.md`). Best-effort and **true-radar only** (NOAA/OPERA):
-    /// a satellite estimate, no coverage, or any decode/fetch failure leaves the
-    /// sampled cells empty and the deviation falls back to the full SIGMET area.
-    /// Simulation/training only — a coarse sample of an approximate radar image.
+    /// the current route region. These cells are the sole input to the weather-
+    /// deviation flow, which threads the widest clear gap between them (the "raster →
+    /// cell" step in `docs/Weather.md`). Best-effort and **true-radar only**
+    /// (NOAA/OPERA): a satellite estimate, no coverage, or any decode/fetch failure
+    /// leaves the sampled cells empty, so no deviation is offered rather than one
+    /// invented from coarser data. Simulation/training only — a coarse sample of an
+    /// approximate radar image.
     private func sampleLivePrecipitation() async {
         radarOverlay.sampledCells = []
         guard settings.noaaRadarOverlay == .autoWhereAvailable else { return }
@@ -2532,6 +2494,34 @@ final class AppModel: ObservableObject {
         atcState == .final || atcState == .landing
     }
 
+    /// The most significant turbulence / icing SIGMET along the route, when there is
+    /// no precipitation conflict to thread. A turbulence or icing SIGMET has nothing
+    /// to laterally route around, so — as ATC does — it drives an *altitude-change*
+    /// advisory (smoother air / out of the icing) rather than a lateral reroute.
+    /// Precipitation (the mint line) always takes precedence when both are present.
+    var activeRideSigmet: SIGMET? {
+        guard activeWeatherConflict == nil else { return nil }
+        return routeSigmets
+            .filter { $0.category == .turbulence || $0.category == .icingOrMountainWave }
+            .max { $0.turbulenceSeverity < $1.turbulenceSeverity }
+    }
+
+    /// A short word for the active ride advisory's hazard, for the banner / status.
+    var rideAdvisoryWord: String {
+        guard let ride = activeRideSigmet else { return "Weather" }
+        let text = (ride.hazard ?? ride.raw).uppercased()
+        if text.contains("ICE") { return "Icing" }
+        if text.contains("MTW") { return "Mountain wave" }
+        return "Turbulence"
+    }
+
+    /// Whether the advisory currently in play is resolved with an altitude change
+    /// (turbulence / icing) rather than a lateral deviation (precipitation). Derived
+    /// live from the current weather so the response buttons always match reality.
+    private var currentAdvisoryIsAltitude: Bool {
+        activeWeatherConflict == nil && activeRideSigmet != nil
+    }
+
     /// Whether the "Weather ahead — contact ATC" banner should be shown in ATCView.
     ///
     /// The banner stays up for as long as weather is detected ahead and no
@@ -2542,13 +2532,17 @@ final class AppModel: ObservableObject {
     /// worked, the deviation card (not the banner) carries the controls.
     var weatherBannerVisible: Bool {
         guard settings.weatherDeviationAlerts.alertsEnabled, weatherFlowAllowed else { return false }
-        guard let conflict = activeWeatherConflict, conflict.shouldPrompt else { return false }
+        let hasPrecip = activeWeatherConflict?.shouldPrompt ?? false
+        guard hasPrecip || activeRideSigmet != nil else { return false }
         return weatherDeviation.state == .none || weatherDeviation.state == .weatherAheadDetected
     }
 
-    /// The banner text (advisory-only near final, else the contact-ATC prompt).
+    /// The banner text (advisory-only near final, else the contact-ATC prompt). Names
+    /// the hazard for a turbulence / icing ride advisory.
     var weatherBannerText: String {
-        establishedOnFinal ? "Weather near final — advisory only" : "Weather ahead — contact ATC"
+        if establishedOnFinal { return "Weather near final — advisory only" }
+        if currentAdvisoryIsAltitude { return "\(rideAdvisoryWord) advisory — contact ATC" }
+        return "Weather ahead — contact ATC"
     }
 
     /// Whether the weather-deviation response card should be shown in ATCView.
@@ -2564,11 +2558,16 @@ final class AppModel: ObservableObject {
     /// The current simulated weather-deviation state.
     var weatherDeviationState: WeatherDeviationState { weatherDeviation.state }
 
-    /// The weather response-buttons to surface, keyed off the deviation state.
+    /// The weather response-buttons to surface, keyed off the deviation state. A
+    /// turbulence / icing advisory offers only altitude changes (there is nothing to
+    /// laterally route around); a precipitation advisory offers the full set.
     var weatherActions: [WeatherDeviationAction] {
         switch weatherDeviation.state {
         case .advisoryIssued, .awaitingPilotIntentions, .deviationRequested:
             if establishedOnFinal { return [.sayAgain] }
+            if currentAdvisoryIsAltitude {
+                return [.requestHigher, .requestLower, .continueOnCourse, .sayAgain]
+            }
             return [.requestRightDeviation, .requestLeftDeviation, .requestVector,
                     .requestHigher, .requestLower, .continueOnCourse, .sayAgain]
         case .deviationApproved, .vectoringAroundWeather, .deviatingAroundWeather, .clearOfWeather:
@@ -2672,10 +2671,25 @@ final class AppModel: ObservableObject {
                 return .radarConflict(conflict)
             }
         }
+        // No precipitation to route around: a turbulence / icing SIGMET along the
+        // route is handled with an altitude change, not a lateral deviation.
+        if let ride = activeRideSigmet {
+            return rideSigmetSituation(ride)
+        }
         if !radarOverlay.coverageAvailable, routeSigmets.isEmpty {
             return .noRadarNoAdvisory
         }
         return nil
+    }
+
+    /// Map a turbulence / icing SIGMET to its altitude-oriented advisory. Icing gets
+    /// the "exit the icing" framing; mountain-wave and turbulence get "smoother air".
+    private func rideSigmetSituation(_ s: SIGMET) -> WeatherDeviationEngine.Situation {
+        let text = (s.hazard ?? s.raw).uppercased()
+        if text.contains("ICE") { return .rideSigmet(label: "icing", icing: true) }
+        if text.contains("MTW") { return .rideSigmet(label: "mountain wave turbulence", icing: false) }
+        let label = s.turbulenceSeverity == .severe ? "severe turbulence" : "turbulence"
+        return .rideSigmet(label: label, icing: false)
     }
 
     /// Auto-issue the advisory once for a fresh conflict in Mock Mode (the demo).

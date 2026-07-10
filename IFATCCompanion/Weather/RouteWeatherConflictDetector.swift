@@ -2,11 +2,11 @@ import Foundation
 import CoreLocation
 
 /// Pure, deterministic detection of route-weather conflicts. Builds a corridor
-/// from the aircraft along its course and finds the most significant weather
-/// hazard (radar precipitation cell, SIGMET polygon, or other hazard polygon) the
-/// corridor passes through, then computes the geometry the deviation flow needs:
-/// distance, clock position, left/right bypass, recommended deviation, and a
-/// rejoin fix. No AI, no I/O — fully unit-testable.
+/// from the aircraft along its course, finds the precipitation cells that block
+/// it, and — instead of hopping around a single cell — projects every nearby cell
+/// onto the cross-track axis and **threads the widest clear gap** between them
+/// (going around the near end of a solid line when no gap is usable), the way a
+/// controller vectors a pilot between cells. No AI, no I/O — fully unit-testable.
 struct RouteWeatherConflictDetector {
 
     struct Config {
@@ -26,6 +26,21 @@ struct RouteWeatherConflictDetector {
         var rejoinReachBeyondNM: Double = 150
         /// Minimum clearance past the far edge before a fix counts as "downstream".
         var rejoinDownstreamMarginNM: Double = 10
+
+        // MARK: Gap threading
+        /// Lateral clearance kept on each side of a precipitation cell (NM). Cells
+        /// are padded by this before gaps are measured, so a threaded gap keeps this
+        /// much room from the actual precipitation on both sides.
+        var lateralBufferNM: Double = 6
+        /// Minimum *clear* lateral width (after the buffers) for a gap between two
+        /// cells to count as threadable (NM).
+        var minGapWidthNM: Double = 4
+        /// How far off the course line to look for a threadable gap or an
+        /// around-the-end bypass (NM).
+        var searchHalfWidthNM: Double = 60
+        /// Cells whose along-track position is within this margin of the blocking
+        /// band are treated as part of the same line for gap analysis (NM).
+        var clusterAlongMarginNM: Double = 30
     }
 
     var config = Config()
@@ -38,16 +53,44 @@ struct RouteWeatherConflictDetector {
         var relBearing: Double
     }
 
+    /// A cell projected into the course-relative (along/cross) frame — the reduced
+    /// form the corridor and gap-threading logic reason about.
+    private struct Projection {
+        let hazard: WeatherHazard
+        let polygon: [CLLocationCoordinate2D]?
+        let center: CLLocationCoordinate2D?
+        let radiusBuffer: Double
+        /// Along-track extent over all samples.
+        let alongMin: Double
+        let alongMax: Double
+        /// Near/far edge along-track for the portion in front (clamped ≥ 0).
+        let nearAlong: Double
+        let farAlong: Double
+        /// Cross-track extent (signed, +right) of the portion ahead, buffered by any
+        /// point-radius. Used to build the lateral gap intervals.
+        let crossLo: Double
+        let crossHi: Double
+        let leftEdgeRel: Double
+        let rightEdgeRel: Double
+        let centerRel: Double
+        let leftExtent: Double
+        let rightExtent: Double
+        /// Whether this cell actually intersects the route corridor (a blocker).
+        let blocks: Bool
+    }
+
     // MARK: - Public API
 
-    /// Detect the most significant route-weather conflict ahead, if any.
+    /// Detect the most significant route-weather conflict ahead, if any, and the
+    /// recommended gap-threading deviation around it.
     /// - Parameters:
     ///   - position: current aircraft position.
     ///   - course: course/heading to fly (deg true) — bearing to the next fix or
     ///     the aircraft heading.
     ///   - groundspeedKnots: for the time-based lookahead + ETA (nil → phase band).
     ///   - phase: current flight phase (selects the lookahead band).
-    ///   - hazards: normalized weather hazards to test.
+    ///   - hazards: normalized weather hazards to test (moderate-or-greater
+    ///     precipitation cells — SIGMET polygons are not fed here).
     ///   - waypoints: filed route fixes, for rejoin-fix selection.
     func detectConflict(position: CLLocationCoordinate2D,
                         course: Double,
@@ -59,24 +102,148 @@ struct RouteWeatherConflictDetector {
         let lookahead = lookaheadNM(phase: phase, groundspeed: groundspeedKnots)
         let corridorEnd = Geo.destination(from: position, bearingDegrees: course, distanceNM: lookahead)
 
-        var best: RouteWeatherConflict?
-        for hazard in hazards {
-            guard let conflict = conflict(for: hazard, position: position, course: course,
-                                          lookahead: lookahead, corridorEnd: corridorEnd,
-                                          groundspeed: groundspeedKnots, waypoints: waypoints) else {
-                continue
-            }
-            if let current = best {
-                // Prefer higher severity, then the nearer conflict.
-                if conflict.severity > current.severity
-                    || (conflict.severity == current.severity && conflict.distanceAheadNM < current.distanceAheadNM) {
-                    best = conflict
-                }
+        // Project every hazard; keep those that sit ahead and near the route.
+        let projections = hazards.compactMap {
+            projectHazard($0, position: position, course: course,
+                          lookahead: lookahead, corridorEnd: corridorEnd)
+        }
+        let blockers = projections.filter { $0.blocks }
+        guard !blockers.isEmpty else { return nil }
+
+        // The most significant blocker anchors severity, distance, clock and rejoin.
+        let primary = blockers.dropFirst().reduce(blockers[0]) { best, cand in
+            if cand.hazard.intensity > best.hazard.intensity { return cand }
+            if cand.hazard.intensity == best.hazard.intensity, cand.nearAlong < best.nearAlong { return cand }
+            return best
+        }
+
+        // The blocking "line" the aircraft is about to cross (all blockers, by
+        // along-track extent), plus any nearby non-blocking cells that form part of
+        // the same line — these are what the gap solver threads between.
+        let bandNear = blockers.map { $0.nearAlong }.min() ?? primary.nearAlong
+        let bandFar = blockers.map { $0.farAlong }.max() ?? primary.farAlong
+        let lineCells = projections.filter {
+            $0.alongMax >= bandNear - config.clusterAlongMarginNM
+                && $0.alongMin <= bandFar + config.clusterAlongMarginNM
+        }
+        let gap = threadGap(cells: lineCells.isEmpty ? blockers : lineCells)
+
+        // Build the deviation path that threads the chosen gap:
+        //   position → through-point (abeam the middle of the line, offset into the
+        //   gap) → rejoin (downstream fix or a point past the far edge).
+        let midAlong = max(0, (bandNear + bandFar) / 2)
+        let onCourse = Geo.destination(from: position, bearingDegrees: course, distanceNM: midAlong)
+        let sideBearing = course + (gap.direction == .right ? 90 : -90)
+        let throughPoint = Geo.destination(from: onCourse, bearingDegrees: sideBearing,
+                                           distanceNM: abs(gap.target))
+
+        let rejoin = rejoinFix(waypoints: waypoints, position: position, course: course,
+                               farAlong: bandFar, lookahead: lookahead, polygon: primary.polygon)
+        let rejoinCoord = rejoin?.coordinate
+            ?? Geo.destination(from: position, bearingDegrees: course, distanceNM: bandFar + 20)
+        let path = [position, throughPoint, rejoinCoord]
+
+        // Speak the deviation the drawn line actually flies: the initial turn from
+        // course to the through-point, rounded to 5°, with a severity-based floor.
+        let degrees = deviationDegrees(position: position, course: course,
+                                       throughPoint: throughPoint, severity: primary.hazard.intensity)
+
+        let segment = originalSegment(waypoints: waypoints, position: position, course: course,
+                                      nearAlong: primary.nearAlong, rejoin: rejoin)
+        let distance = primary.nearAlong
+        let eta = groundspeedKnots.flatMap { $0 > 30 ? distance / $0 * 60 : nil }
+        let area = primary.polygon ?? boxAround(primary.center ?? corridorEnd)
+        let prompt = shouldPrompt(severity: primary.hazard.intensity,
+                                  convective: primary.hazard.isConvectiveSigmet,
+                                  distance: distance, centerRel: primary.centerRel)
+
+        return RouteWeatherConflict(
+            hazard: primary.hazard,
+            distanceAheadNM: distance,
+            relativeBearingDegrees: primary.centerRel,
+            leftClock: Self.clockPosition(relBearing: primary.leftEdgeRel),
+            centerClock: Self.clockPosition(relBearing: primary.centerRel),
+            rightClock: Self.clockPosition(relBearing: primary.rightEdgeRel),
+            estimatedTimeMinutes: eta,
+            severity: primary.hazard.intensity,
+            leftBypassScore: primary.leftExtent,
+            rightBypassScore: primary.rightExtent,
+            recommendedDirection: gap.direction,
+            recommendedDeviationDegrees: degrees,
+            rejoinFix: rejoin,
+            originalSegment: segment,
+            shouldPrompt: prompt,
+            intersectionArea: area,
+            deviationPath: path)
+    }
+
+    // MARK: - Gap threading
+
+    /// The lateral offset (signed cross-track NM, +right) to steer for, and which
+    /// side of course that is. Projects the cells onto the cross-track axis, pads
+    /// each by the lateral buffer, merges overlaps, and picks the reachable target
+    /// requiring the least deviation among clear gaps — threading between cells when
+    /// an adequately-wide gap exists, otherwise going around the nearer end of the
+    /// line. Ties break toward the wider gap, then to the right (the conventional
+    /// first offer).
+    private func threadGap(cells: [Projection]) -> (target: Double, direction: DeviationDirection) {
+        var intervals: [(lo: Double, hi: Double)] = cells.map {
+            let buf = config.lateralBufferNM + $0.radiusBuffer
+            return (lo: $0.crossLo - buf, hi: $0.crossHi + buf)
+        }
+        intervals.sort { $0.lo < $1.lo }
+
+        var merged: [(lo: Double, hi: Double)] = []
+        for iv in intervals {
+            if let last = merged.last, iv.lo <= last.hi {
+                merged[merged.count - 1].hi = max(last.hi, iv.hi)
             } else {
-                best = conflict
+                merged.append(iv)
             }
         }
-        return best
+        guard let first = merged.first, let last = merged.last else { return (0, .right) }
+
+        struct Candidate { var target: Double; var width: Double }
+        var candidates: [Candidate] = []
+        // Interior gaps between adjacent cells — only if wide enough to be flown.
+        for i in 0..<(merged.count - 1) {
+            let gapLo = merged[i].hi
+            let gapHi = merged[i + 1].lo
+            let width = gapHi - gapLo
+            if width >= config.minGapWidthNM {
+                candidates.append(Candidate(target: (gapLo + gapHi) / 2, width: width))
+            }
+        }
+        // Around either end of the whole line (open air outboard of the edges).
+        candidates.append(Candidate(target: first.lo, width: config.searchHalfWidthNM))
+        candidates.append(Candidate(target: last.hi, width: config.searchHalfWidthNM))
+
+        let reachable = candidates.filter { abs($0.target) <= config.searchHalfWidthNM }
+        let pool = reachable.isEmpty ? candidates : reachable
+
+        let best = pool.min { a, b in
+            if abs(a.target) != abs(b.target) { return abs(a.target) < abs(b.target) }
+            if a.width != b.width { return a.width > b.width }
+            return a.target >= 0 && b.target < 0   // prefer the right side on an exact tie
+        } ?? Candidate(target: last.hi, width: 0)
+
+        return (best.target, best.target >= 0 ? .right : .left)
+    }
+
+    /// The spoken deviation amount: the initial turn from course to the through-
+    /// point, rounded to 5° and clamped, with a severity-based floor so heavier
+    /// precipitation is never given a token offset.
+    private func deviationDegrees(position: CLLocationCoordinate2D, course: Double,
+                                  throughPoint: CLLocationCoordinate2D,
+                                  severity: WeatherIntensity) -> Int {
+        let turn = abs(normalizedSigned(Geo.bearing(from: position, to: throughPoint) - course))
+        var degrees = Int((turn / 5).rounded()) * 5
+        switch severity {
+        case .extreme: degrees = max(degrees, 30)
+        case .heavy, .moderate: degrees = max(degrees, 15)
+        case .light, .unknown: break
+        }
+        return min(45, max(10, degrees))
     }
 
     // MARK: - Lookahead
@@ -105,96 +272,58 @@ struct RouteWeatherConflictDetector {
         }
     }
 
-    // MARK: - Per-hazard conflict
+    // MARK: - Projection
 
-    private func conflict(for hazard: WeatherHazard,
-                          position: CLLocationCoordinate2D,
-                          course: Double,
-                          lookahead: Double,
-                          corridorEnd: CLLocationCoordinate2D,
-                          groundspeed: Double?,
-                          waypoints: [Waypoint]) -> RouteWeatherConflict? {
+    /// Project a hazard into the course-relative frame, or nil when it has no valid
+    /// geometry or sits entirely behind / beyond the searched band.
+    private func projectHazard(_ hazard: WeatherHazard,
+                               position: CLLocationCoordinate2D,
+                               course: Double,
+                               lookahead: Double,
+                               corridorEnd: CLLocationCoordinate2D) -> Projection? {
         let poly = hazard.geometry.polygonPoints
         let radiusBuffer = pointRadiusBuffer(hazard)
         let points = samplePoints(for: hazard)
         guard !points.isEmpty else { return nil }
-
         let samples = points.map { project($0, from: position, course: course) }
+
+        let alongMin = samples.map { $0.along }.min() ?? 0
+        let alongMax = samples.map { $0.along }.max() ?? 0
+        // Drop cells fully behind, or beyond the searched band.
+        guard alongMax > -5, alongMin < lookahead + config.clusterAlongMarginNM else { return nil }
+
+        // Corridor blocking test: a sample inside the corridor, or (for a wide cell
+        // whose vertices all straddle it) the route line passing through the polygon.
         let corridorHalf = config.corridorHalfWidthNM + radiusBuffer
         let inCorridor = samples.filter { $0.along >= -5 && $0.along <= lookahead && abs($0.cross) <= corridorHalf }
-
-        // A wide cell can straddle the corridor with every vertex outside it; catch
-        // that with a route-line-through-polygon test (endpoint inside, or an edge
-        // crossing), mirroring the SIGMET route test.
         let lineThrough = poly.map { routeLinePasses(through: $0, from: position, to: corridorEnd) } ?? false
-        guard !inCorridor.isEmpty || lineThrough else { return nil }
+        let blocks = !inCorridor.isEmpty || lineThrough
 
-        // Distance is measured to the near edge that actually lies in the corridor.
+        // Near/far edge measured from the in-corridor portion (or the whole cell).
         let relevant = inCorridor.isEmpty ? samples : inCorridor
         let nearAlong = max(0, (relevant.map { $0.along }.min() ?? 0) - radiusBuffer)
-        let farAlong = max(nearAlong, relevant.map { $0.along }.max() ?? nearAlong)
+        let farAlong = max(nearAlong, (relevant.map { $0.along }.max() ?? nearAlong) + radiusBuffer)
 
-        // Clock span and bypass extents come from the *whole* cell (not just the
-        // in-corridor sliver), so a cell mostly off to one side is bypassed on the
-        // cleaner side rather than steered into.
+        // Clock span + cross extents come from the whole cell's forward portion.
         let ahead = samples.filter { $0.along > -5 }
         let spanSamples = ahead.isEmpty ? samples : ahead
+        let crossLo = (spanSamples.map { $0.cross }.min() ?? 0)
+        let crossHi = (spanSamples.map { $0.cross }.max() ?? 0)
         let leftEdgeRel = spanSamples.map { $0.relBearing }.min() ?? 0
         let rightEdgeRel = spanSamples.map { $0.relBearing }.max() ?? 0
         let centerCoord = hazard.geometry.representativeCenter
         let centerRel = centerCoord.map { project($0, from: position, course: course).relBearing }
             ?? ((leftEdgeRel + rightEdgeRel) / 2)
-
-        // Bypass extents: how far the cell reaches to each side of course.
         let rightExtent = spanSamples.map { max(0, $0.cross) }.max() ?? 0
         let leftExtent = spanSamples.map { max(0, -$0.cross) }.max() ?? 0
-        // Deviate toward the side the cell reaches *less* (shorter, cleaner bypass);
-        // ties go right (the conventional first offer).
-        let direction: DeviationDirection = leftExtent < rightExtent ? .left : .right
 
-        let severity = hazard.intensity
-        let convective = hazard.isConvectiveSigmet
-        let distance = nearAlong
-        let eta = groundspeed.flatMap { $0 > 30 ? distance / $0 * 60 : nil }
-
-        let degrees = recommendedDegrees(severity: severity, convective: convective,
-                                         cellWidthNM: max(rightExtent, leftExtent))
-        let prompt = shouldPrompt(severity: severity, convective: convective,
-                                  distance: distance, centerRel: centerRel)
-
-        let rejoin = rejoinFix(waypoints: waypoints, position: position, course: course,
-                               farAlong: farAlong, lookahead: lookahead, polygon: poly)
-        let segment = originalSegment(waypoints: waypoints, position: position, course: course,
-                                      nearAlong: nearAlong, rejoin: rejoin)
-
-        let area = poly ?? boxAround(centerCoord ?? corridorEnd)
-        let path = deviationPath(position: position, course: course,
-                                 nearAlong: nearAlong, farAlong: farAlong,
-                                 direction: direction,
-                                 sideExtent: direction == .right ? rightExtent : leftExtent,
-                                 rejoin: rejoin?.coordinate)
-
-        return RouteWeatherConflict(
-            hazard: hazard,
-            distanceAheadNM: distance,
-            relativeBearingDegrees: centerRel,
-            leftClock: Self.clockPosition(relBearing: leftEdgeRel),
-            centerClock: Self.clockPosition(relBearing: centerRel),
-            rightClock: Self.clockPosition(relBearing: rightEdgeRel),
-            estimatedTimeMinutes: eta,
-            severity: severity,
-            leftBypassScore: leftExtent,
-            rightBypassScore: rightExtent,
-            recommendedDirection: direction,
-            recommendedDeviationDegrees: degrees,
-            rejoinFix: rejoin,
-            originalSegment: segment,
-            shouldPrompt: prompt,
-            intersectionArea: area,
-            deviationPath: path)
+        return Projection(hazard: hazard, polygon: poly, center: centerCoord, radiusBuffer: radiusBuffer,
+                          alongMin: alongMin, alongMax: alongMax, nearAlong: nearAlong, farAlong: farAlong,
+                          crossLo: crossLo, crossHi: crossHi, leftEdgeRel: leftEdgeRel, rightEdgeRel: rightEdgeRel,
+                          centerRel: centerRel, leftExtent: leftExtent, rightExtent: rightExtent, blocks: blocks)
     }
 
-    // MARK: - Severity → prompting / degrees
+    // MARK: - Severity → prompting
 
     private func shouldPrompt(severity: WeatherIntensity, convective: Bool,
                               distance: Double, centerRel: Double) -> Bool {
@@ -206,25 +335,6 @@ struct RouteWeatherConflictDetector {
         case .moderate, .heavy, .extreme:
             return true
         }
-    }
-
-    private func recommendedDegrees(severity: WeatherIntensity, convective: Bool,
-                                    cellWidthNM: Double) -> Int {
-        var degrees: Int
-        switch severity {
-        case .light, .unknown:
-            degrees = 10
-        case .moderate:
-            degrees = 20
-        case .heavy:
-            degrees = 20
-        case .extreme:
-            degrees = 30
-        }
-        // Small cells only need a slight offset.
-        if cellWidthNM < 8, severity <= .moderate { degrees = 10 }
-        if convective { degrees = max(degrees, 30) }
-        return degrees
     }
 
     // MARK: - Rejoin selection
@@ -328,22 +438,6 @@ struct RouteWeatherConflictDetector {
          CLLocationCoordinate2D(latitude: c.latitude - half, longitude: c.longitude + half),
          CLLocationCoordinate2D(latitude: c.latitude + half, longitude: c.longitude + half),
          CLLocationCoordinate2D(latitude: c.latitude + half, longitude: c.longitude - half)]
-    }
-
-    /// A recommended deviation path: current position → lateral apex on the chosen
-    /// side, abeam the middle of the weather → rejoin (fix or a downstream point).
-    private func deviationPath(position: CLLocationCoordinate2D, course: Double,
-                               nearAlong: Double, farAlong: Double,
-                               direction: DeviationDirection, sideExtent: Double,
-                               rejoin: CLLocationCoordinate2D?) -> [CLLocationCoordinate2D] {
-        let midAlong = (nearAlong + farAlong) / 2
-        let onCourse = Geo.destination(from: position, bearingDegrees: course, distanceNM: midAlong)
-        let sideBearing = course + (direction == .right ? 90 : -90)
-        let apex = Geo.destination(from: onCourse, bearingDegrees: sideBearing,
-                                   distanceNM: sideExtent + 12)
-        let rejoinCoord = rejoin
-            ?? Geo.destination(from: position, bearingDegrees: course, distanceNM: farAlong + 20)
-        return [position, apex, rejoinCoord]
     }
 
     // MARK: - Static formatting helpers

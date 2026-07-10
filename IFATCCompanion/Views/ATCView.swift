@@ -270,6 +270,9 @@ struct ATCView: View {
         case .deviationApproved, .vectoringAroundWeather, .deviatingAroundWeather:
             return "Deviating for weather — report clear of weather when able."
         default:
+            if model.activeRideSigmet != nil {
+                return "\(model.rideAdvisoryWord) along your route — a different altitude may give a smoother ride. Say intentions."
+            }
             return "Say intentions."
         }
     }
