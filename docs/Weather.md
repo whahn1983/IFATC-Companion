@@ -167,14 +167,25 @@ UI labels: NOAA and OPERA both show *"Radar precipitation"*; NASA shows
      parallel to course past the far end, then close to the rejoin. Because the
      parallel leg sits outside the widest excursion of the line, it clears every cell
      on that side.
+   - **Rejoin just past the weather, not at a distant fix.** Every candidate returns
+     to course at the point **just past the far edge** of the weather — it does *not*
+     stretch the drawn line to a far-downstream fix. Chasing a distant fix forces the
+     closing leg of a short one-side deviation to swing back across the storm, so that
+     candidate gets rejected and the reroute either loops the long way or, up close,
+     drives straight through a core. Returning to course right after the far edge
+     keeps each candidate compact, so a short jump to the open side wins. The nearest
+     downstream fix is still selected and named for the ATC rejoin call ("proceed
+     direct …") — it simply lies on ahead of where the drawn line rejoins.
    - **Shortest clear path wins.** All candidates — the gap/around-the-end doglegs
      and the two side-hugs — are validated end-to-end: the whole path is sampled
      against **every** cell polygon (so a reroute never avoids one storm and turns
      into another), and the one with the **shortest total length** that stays clear
      is flown. Ranking by true distance rather than smallest initial turn is what
      keeps the reroute from looping the long way around a line when the other side is
-     shorter. If the aircraft is genuinely boxed in with no clear candidate, it falls
-     back to the least-deviation dogleg.
+     shorter. If the aircraft is genuinely boxed in with no fully-clear candidate, it
+     falls back to the one that keeps the **most clearance** from the cells — never
+     the straight-through least-deviation dogleg — so the line always skirts the
+     weather on the most open side rather than cutting through it.
    It also computes distance, clock position(s), estimated time, severity, the spoken
    deviation amount (the actual initial turn onto the threading path), and a
    downstream rejoin fix.

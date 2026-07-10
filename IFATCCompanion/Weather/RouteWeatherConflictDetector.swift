@@ -247,10 +247,17 @@ struct RouteWeatherConflictDetector {
         let lineNear = lineSet.map { $0.nearAlong }.min() ?? bandNear
         let lineFar = max(lineNear, lineSet.map { $0.farAlong }.max() ?? bandFar)
 
+        // The named downstream fix drives the ATC rejoin call ("proceed direct …").
         let rejoin = rejoinFix(waypoints: waypoints, position: position, course: course,
                                farAlong: bandFar, lookahead: lookahead, polygon: primary.polygon)
-        let rejoinCoord = rejoin?.coordinate
-            ?? Geo.destination(from: position, bearingDegrees: course, distanceNM: bandFar + 20)
+        // The drawn deviation, however, rejoins the course **just past the weather** —
+        // never at a distant downstream fix. Chasing a far fix forces every candidate
+        // to swing back across the storms to reach it, so a short one-side deviation
+        // gets rejected and the reroute takes the long way round. Returning to course
+        // right after the far edge keeps each candidate compact, so the shortest clear
+        // side wins. (The pilot then proceeds direct the fix, which lies on ahead.)
+        let rejoinCoord = Geo.destination(from: position, bearingDegrees: course,
+                                          distanceNM: lineFar + 20)
 
         // A single dogleg abeam the middle of the line at a lateral offset.
         func apexPath(for target: Double) -> [CLLocationCoordinate2D] {
@@ -281,14 +288,18 @@ struct RouteWeatherConflictDetector {
 
         // Validate the whole path against *every* precipitation cell, not just the
         // line being threaded — so we never avoid one storm and route into another.
-        // Fly the shortest candidate whose path is clear; fall back to the least-
-        // deviation dogleg when none is clear (the aircraft may already be boxed in).
+        // Fly the shortest candidate whose path is clear. When none is clear (the
+        // aircraft is boxed in), fall back to the candidate that stays **farthest**
+        // from the cells — never the straight-through least-deviation one — so the
+        // drawn line skirts the weather on the open side instead of cutting through a
+        // core the way it did when it was jammed toward a distant rejoin.
         let allPolygons = hazards.compactMap { $0.geometry.polygonPoints }
         let clear = candidates.filter {
             pathIsClear($0.path, polygons: allPolygons, buffer: config.pathClearanceNM, origin: position)
         }
         let chosen = clear.min { pathLengthNM($0.path) < pathLengthNM($1.path) }
-            ?? candidates.first
+            ?? candidates.max { pathMinClearanceNM($0.path, polygons: allPolygons, origin: position)
+                                < pathMinClearanceNM($1.path, polygons: allPolygons, origin: position) }
             ?? (path: apexPath(for: 0), target: 0)
         let target = chosen.target
         let direction: DeviationDirection = target >= 0 ? .right : .left
@@ -419,6 +430,30 @@ struct RouteWeatherConflictDetector {
             total += Geo.distanceNM(from: path[i], to: path[i + 1])
         }
         return total
+    }
+
+    /// The smallest clearance (NM) from a path to any cell polygon along its whole
+    /// length (0 where it enters one), ignoring the immediate vicinity of the origin.
+    /// Used only as the boxed-in tie-breaker: with no fully-clear candidate, fly the
+    /// one that keeps the most room from the weather rather than the one that happens
+    /// to need the smallest turn (which can drive straight through a core).
+    private func pathMinClearanceNM(_ path: [CLLocationCoordinate2D],
+                                    polygons: [[CLLocationCoordinate2D]],
+                                    origin: CLLocationCoordinate2D) -> Double {
+        guard path.count >= 2, !polygons.isEmpty else { return .greatestFiniteMagnitude }
+        let startSkip = 8.0
+        var worst = Double.greatestFiniteMagnitude
+        for i in 0..<(path.count - 1) {
+            let a = path[i], b = path[i + 1]
+            let steps = max(1, Int(Geo.distanceNM(from: a, to: b) / 4))
+            for s in 0...steps {
+                let f = Double(s) / Double(steps)
+                let p = interpolate(a, b, f)
+                if Geo.distanceNM(from: origin, to: p) < startSkip { continue }
+                for poly in polygons { worst = min(worst, distanceToPolygonNM(p, poly)) }
+            }
+        }
+        return worst
     }
 
     /// Distance (NM) from a point to a polygon: 0 inside, else the nearest edge.

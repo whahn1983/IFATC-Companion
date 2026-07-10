@@ -254,6 +254,27 @@ final class WeatherDeviationTests: XCTestCase {
         XCTAssertEqual(routed?.severity, .heavy)
     }
 
+    func testDeviationRejoinsPromptlyNotAtADistantFix() throws {
+        // A cell dead ahead with the next filed fix far beyond it. The drawn deviation
+        // must return to course just past the weather (a compact reroute) rather than
+        // stretch all the way to that distant fix — chasing the far fix is what forced
+        // a short side deviation to swing back across the storm and get rejected, so
+        // the reroute took the long way (or drove straight through when boxed in). The
+        // fix is still named for the rejoin clearance; it simply lies on ahead.
+        let hazard = radarHazard(cell(alongNM: 40, crossNM: 0, from: usPosition))
+        let far = Geo.destination(from: usPosition, bearingDegrees: course, distanceNM: 150)
+        let wp = Waypoint(name: "FODAK", latitude: far.latitude, longitude: far.longitude)
+        let conflict = try XCTUnwrap(detector.detectConflict(
+            position: usPosition, course: course, groundspeedKnots: 450, phase: .cruise,
+            hazards: [hazard], waypoints: [wp]))
+
+        XCTAssertEqual(conflict.rejoinFix?.name, "FODAK", "the downstream fix is still named for the rejoin")
+        let end = try XCTUnwrap(conflict.deviationPath.last)
+        let endDist = Geo.distanceNM(from: usPosition, to: end)
+        XCTAssertLessThan(endDist, 90,
+                          "the drawn deviation rejoins course just past the weather, not at the 150 NM fix")
+    }
+
     func testTerminalWeatherJustAfterDeparture() throws {
         // A cell 30 NM off the departure end, on course, is caught by the terminal
         // lookahead band (25–75 NM) while still on the ground / departing.
