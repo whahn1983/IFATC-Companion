@@ -163,10 +163,17 @@ UI labels: NOAA and OPERA both show *"Radar precipitation"*; NASA shows
      shorter-side dogleg cuts back across the line to reach that rejoin and is
      rejected — leaving only the long loop around the far end. To pass such a line on
      the genuinely shorter side, the detector also offers **side-hug** candidates:
-     step out to the line's outboard edge just before the near end, hold that offset
-     parallel to course past the far end, then close to the rejoin. Because the
-     parallel leg sits outside the widest excursion of the line, it clears every cell
-     on that side.
+     step out to a lateral offset just before the near end, hold that offset parallel
+     to course past the far end, then close to the rejoin — the real-world weather
+     deviation (turn out, parallel the line, rejoin when clear).
+     - The hug offset is the **minimum offset that clears every cell** on that side —
+       found by searching outward from the base margin until the whole path is clear,
+       *not* the outboard edge of the entire clustered line. A cell well off to the
+       side (within the along-track cluster window but far cross-track) would otherwise
+       drag the parallel leg way out; taking the tightest clearing offset keeps the hug
+       close to the flight plan. Because it stays close, the shortest-clear selector
+       picks it **early** — so the line hugs the weather from the start instead of the
+       aircraft diving wide and only tucking back in once the cluster thins downrange.
    - **Rejoin on the route just past the weather, not at a distant fix.** Every
      candidate returns to the route at the point where the route **exits the weather**
      — it does *not* stretch the drawn line to a far-downstream fix. Two things matter
@@ -181,8 +188,8 @@ UI labels: NOAA and OPERA both show *"Radar precipitation"*; NASA shows
      The nearest downstream fix is still selected and named for the ATC rejoin call
      ("proceed direct …"); it simply lies on ahead of where the drawn line rejoins.
    - **Red cores get a wide berth.** Clearance is per-cell by intensity: a
-     red/extreme return demands a wide berth (`severeBerthNM`, 15 NM) while
-     moderate/heavy cells keep the base margin. That berth is applied both to path
+     red/extreme return demands a wide berth (`severeBerthNM`, ~20 NM per FAA AC
+     00-24C guidance for severe echoes) while moderate/heavy cells keep the base margin. That berth is applied both to path
      validation and to the gap/side-hug spacing, so a reroute rounds a convective core
      well clear instead of shaving past it — or threading a coarse-sampled gap
      straight through one. When boxed in, the fallback picks the path that intrudes
