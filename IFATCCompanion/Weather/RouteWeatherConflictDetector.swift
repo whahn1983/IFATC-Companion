@@ -6,7 +6,11 @@ import CoreLocation
 /// it, and — instead of hopping around a single cell — projects every nearby cell
 /// onto the cross-track axis and **threads the widest clear gap** between them
 /// (going around the near end of a solid line when no gap is usable), the way a
-/// controller vectors a pilot between cells. No AI, no I/O — fully unit-testable.
+/// controller vectors a pilot between cells. When a line lies roughly along course,
+/// it also offers **side-hug** reroutes down either edge and flies the **shortest
+/// path that stays clear of every cell**, so a long line is passed on the genuinely
+/// shorter side rather than the one that merely needs the smallest initial turn.
+/// No AI, no I/O — fully unit-testable.
 struct RouteWeatherConflictDetector {
 
     struct Config {
@@ -86,7 +90,8 @@ struct RouteWeatherConflictDetector {
     // MARK: - Public API
 
     /// Detect the most significant route-weather conflict ahead, if any, and the
-    /// recommended gap-threading deviation around it.
+    /// recommended deviation around it — the shortest gap-threading or side-hug path
+    /// that stays clear of every cell.
     /// - Parameters:
     ///   - position: current aircraft position.
     ///   - course: course/heading to fly (deg true) — bearing to the next fix or
@@ -130,34 +135,72 @@ struct RouteWeatherConflictDetector {
             $0.alongMax >= bandNear - config.clusterAlongMarginNM
                 && $0.alongMin <= bandFar + config.clusterAlongMarginNM
         }
-        // Candidate lateral offsets to thread/round the line, best (least deviation)
-        // first. The through-point sits abeam the middle of the line at that offset;
-        // the path is position → through-point → rejoin.
-        let candidates = orderedThreadTargets(cells: lineCells.isEmpty ? blockers : lineCells)
+        // Candidate reroutes around the line come in two shapes:
+        //   • single-apex doglegs (position → abeam-the-middle apex → rejoin) at each
+        //     threadable gap and around either end, least-deviation first; and
+        //   • side-hug paths (position → step out just before the near edge → hold
+        //     that offset past the far edge → rejoin) down the left and right edges.
+        // The hug is what lets a long line lying roughly along course be passed on the
+        // genuinely shorter side — a single dogleg to the shared rejoin would cut back
+        // across the line and be rejected. Every candidate is validated end-to-end and
+        // the shortest one that stays clear is flown.
+        let lineSet = lineCells.isEmpty ? blockers : lineCells
+        let solution = threadSolution(cells: lineSet)
         let midAlong = max(0, (bandNear + bandFar) / 2)
         let onCourse = Geo.destination(from: position, bearingDegrees: course, distanceNM: midAlong)
+
+        // The full along-track span of the whole line — its non-blocking cells can
+        // reach past the blocking band — so a side-hug runs parallel far enough to
+        // clear the entire line before closing back to the rejoin.
+        let lineNear = lineSet.map { $0.nearAlong }.min() ?? bandNear
+        let lineFar = max(lineNear, lineSet.map { $0.farAlong }.max() ?? bandFar)
 
         let rejoin = rejoinFix(waypoints: waypoints, position: position, course: course,
                                farAlong: bandFar, lookahead: lookahead, polygon: primary.polygon)
         let rejoinCoord = rejoin?.coordinate
             ?? Geo.destination(from: position, bearingDegrees: course, distanceNM: bandFar + 20)
 
-        func path(for target: Double) -> [CLLocationCoordinate2D] {
+        // A single dogleg abeam the middle of the line at a lateral offset.
+        func apexPath(for target: Double) -> [CLLocationCoordinate2D] {
             let sideBearing = course + (target >= 0 ? 90 : -90)
             let apex = Geo.destination(from: onCourse, bearingDegrees: sideBearing, distanceNM: abs(target))
             return [position, apex, rejoinCoord]
         }
 
+        // A path that hugs one side of the line: step out to `offset` just before the
+        // near edge, hold it past the far edge, then close to the rejoin. `offset` is
+        // the line's outboard edge on that side, so the parallel leg clears every cell.
+        func hugPath(offset: Double) -> [CLLocationCoordinate2D] {
+            let sideBearing = course + (offset >= 0 ? 90 : -90)
+            let margin = config.lateralBufferNM
+            let nearOn = Geo.destination(from: position, bearingDegrees: course,
+                                         distanceNM: max(0, lineNear - margin))
+            let farOn = Geo.destination(from: position, bearingDegrees: course,
+                                        distanceNM: lineFar + margin)
+            let pNear = Geo.destination(from: nearOn, bearingDegrees: sideBearing, distanceNM: abs(offset))
+            let pFar = Geo.destination(from: farOn, bearingDegrees: sideBearing, distanceNM: abs(offset))
+            return [position, pNear, pFar, rejoinCoord]
+        }
+
+        var candidates: [(path: [CLLocationCoordinate2D], target: Double)] =
+            solution.targets.map { (path: apexPath(for: $0), target: $0) }
+        candidates.append((path: hugPath(offset: solution.leftEdge), target: solution.leftEdge))
+        candidates.append((path: hugPath(offset: solution.rightEdge), target: solution.rightEdge))
+
         // Validate the whole path against *every* precipitation cell, not just the
         // line being threaded — so we never avoid one storm and route into another.
-        // Pick the least-deviation candidate whose path is clear; fall back to the
-        // best gap when none is fully clear (the aircraft may already be boxed in).
+        // Fly the shortest candidate whose path is clear; fall back to the least-
+        // deviation dogleg when none is clear (the aircraft may already be boxed in).
         let allPolygons = hazards.compactMap { $0.geometry.polygonPoints }
-        let target = candidates.first { pathIsClear(path(for: $0), polygons: allPolygons,
-                                                    buffer: config.pathClearanceNM, origin: position) }
-            ?? candidates.first ?? 0
+        let clear = candidates.filter {
+            pathIsClear($0.path, polygons: allPolygons, buffer: config.pathClearanceNM, origin: position)
+        }
+        let chosen = clear.min { pathLengthNM($0.path) < pathLengthNM($1.path) }
+            ?? candidates.first
+            ?? (path: apexPath(for: 0), target: 0)
+        let target = chosen.target
         let direction: DeviationDirection = target >= 0 ? .right : .left
-        let deviationPath = path(for: target)
+        let deviationPath = chosen.path
         let throughPoint = deviationPath[1]
 
         // Speak the deviation the drawn line actually flies: the initial turn from
@@ -196,14 +239,14 @@ struct RouteWeatherConflictDetector {
 
     // MARK: - Gap threading
 
-    /// Candidate lateral offsets (signed cross-track NM, +right) to steer for,
-    /// ordered best-first. Projects the cells onto the cross-track axis, pads each by
-    /// the lateral buffer, merges overlaps, and offers the interior gaps between
-    /// adjacent cells (wide enough to fly) plus going around either end of the line.
-    /// Ordered by least deviation, then wider gap, then to the right (the
-    /// conventional first offer). The caller validates each candidate's full path and
-    /// takes the first that is actually clear.
-    private func orderedThreadTargets(cells: [Projection]) -> [Double] {
+    /// The candidate lateral offsets to steer for (signed cross-track NM, +right),
+    /// ordered best-first, plus the line's outboard `leftEdge`/`rightEdge` used to
+    /// build the side-hug paths. Projects the cells onto the cross-track axis, pads
+    /// each by the lateral buffer, merges overlaps, and offers the interior gaps
+    /// between adjacent cells (wide enough to fly) plus going around either end.
+    /// `targets` is ordered by least deviation, then wider gap, then to the right (the
+    /// conventional first offer); the caller validates each candidate's full path.
+    private func threadSolution(cells: [Projection]) -> (targets: [Double], leftEdge: Double, rightEdge: Double) {
         var intervals: [(lo: Double, hi: Double)] = cells.map {
             let buf = config.lateralBufferNM + $0.radiusBuffer
             return (lo: $0.crossLo - buf, hi: $0.crossHi + buf)
@@ -218,7 +261,9 @@ struct RouteWeatherConflictDetector {
                 merged.append(iv)
             }
         }
-        guard let first = merged.first, let last = merged.last else { return [0] }
+        guard let first = merged.first, let last = merged.last else {
+            return (targets: [0], leftEdge: 0, rightEdge: 0)
+        }
 
         struct Candidate { var target: Double; var width: Double }
         var candidates: [Candidate] = []
@@ -238,11 +283,13 @@ struct RouteWeatherConflictDetector {
         let reachable = candidates.filter { abs($0.target) <= config.searchHalfWidthNM }
         let pool = reachable.isEmpty ? candidates : reachable
 
-        return pool.sorted { a, b in
+        let targets = pool.sorted { a, b in
             if abs(a.target) != abs(b.target) { return abs(a.target) < abs(b.target) }
             if a.width != b.width { return a.width > b.width }
             return a.target >= 0 && b.target < 0   // prefer the right side on an exact tie
         }.map { $0.target }
+
+        return (targets: targets, leftEdge: first.lo, rightEdge: last.hi)
     }
 
     // MARK: - Path clearance
@@ -269,6 +316,17 @@ struct RouteWeatherConflictDetector {
             }
         }
         return true
+    }
+
+    /// Total great-circle length (NM) of a multi-leg path — the objective the
+    /// selector minimizes over the candidate reroutes that stay clear.
+    private func pathLengthNM(_ path: [CLLocationCoordinate2D]) -> Double {
+        guard path.count >= 2 else { return 0 }
+        var total = 0.0
+        for i in 0..<(path.count - 1) {
+            total += Geo.distanceNM(from: path[i], to: path[i + 1])
+        }
+        return total
     }
 
     /// Distance (NM) from a point to a polygon: 0 inside, else the nearest edge.

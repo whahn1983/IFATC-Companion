@@ -144,17 +144,27 @@ UI labels: NOAA and OPERA both show *"Radar precipitation"*; NASA shows
    fallback) and finds the precipitation cells that block it. Rather than hopping
    around a single cell, it projects every nearby cell onto the cross-track axis,
    pads each by a lateral buffer, merges the overlaps, and **threads the widest
-   clear gap** between adjacent cells — picking the reachable gap that needs the
-   least deviation, and going around the near end of a solid line only when no gap
-   is wide enough. This mirrors how a controller vectors a pilot between cells,
-   whether they appear just after takeoff, enroute, or on approach.
-   - **Path clearance.** Because the cross-track projection collapses along-track
-     structure, a diagonal into a clean-looking gap could still clip a *different*
-     cell. So each candidate gap is validated end-to-end: the whole path (outbound
-     leg, abeam point, and rejoin leg) is sampled against **every** cell polygon, and
-     the least-deviation candidate that stays clear of all of them is chosen — so a
-     reroute never avoids one storm and turns into another. If the aircraft is
-     genuinely boxed in with no clear candidate, it falls back to the best gap.
+   clear gap** between adjacent cells — offering the reachable gaps and going around
+   either end of a solid line. This mirrors how a controller vectors a pilot between
+   cells, whether they appear just after takeoff, enroute, or on approach.
+   - **Side-hug for lines along course.** A single dogleg abeam the middle of the
+     line always aims at the same downstream rejoin, so when a long line lies roughly
+     *along* the course (each end near the aircraft and near the destination), the
+     shorter-side dogleg cuts back across the line to reach that rejoin and is
+     rejected — leaving only the long loop around the far end. To pass such a line on
+     the genuinely shorter side, the detector also offers **side-hug** candidates:
+     step out to the line's outboard edge just before the near end, hold that offset
+     parallel to course past the far end, then close to the rejoin. Because the
+     parallel leg sits outside the widest excursion of the line, it clears every cell
+     on that side.
+   - **Shortest clear path wins.** All candidates — the gap/around-the-end doglegs
+     and the two side-hugs — are validated end-to-end: the whole path is sampled
+     against **every** cell polygon (so a reroute never avoids one storm and turns
+     into another), and the one with the **shortest total length** that stays clear
+     is flown. Ranking by true distance rather than smallest initial turn is what
+     keeps the reroute from looping the long way around a line when the other side is
+     shorter. If the aircraft is genuinely boxed in with no clear candidate, it falls
+     back to the least-deviation dogleg.
    It also computes distance, clock position(s), estimated time, severity, the spoken
    deviation amount (the actual initial turn onto the threading path), and a
    downstream rejoin fix.

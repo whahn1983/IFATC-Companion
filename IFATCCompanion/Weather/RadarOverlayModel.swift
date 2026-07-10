@@ -200,8 +200,9 @@ struct RouteWeatherConflict: Identifiable {
     var shouldPrompt: Bool
     /// The polygon the route passes through, for shading on the map.
     var intersectionArea: [CLLocationCoordinate2D]
-    /// A recommended deviation path (current position → deviation apex → rejoin),
-    /// for drawing on the map.
+    /// A recommended deviation path for drawing on the map: `position → turn(s) →
+    /// rejoin`. A single-apex dogleg has three points; a side-hug down one edge of a
+    /// long line has four (step-out, run parallel, then close to the rejoin).
     var deviationPath: [CLLocationCoordinate2D]
 
     var isConvectiveSigmet: Bool { hazard.isConvectiveSigmet }
