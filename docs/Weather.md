@@ -167,15 +167,19 @@ UI labels: NOAA and OPERA both show *"Radar precipitation"*; NASA shows
      parallel to course past the far end, then close to the rejoin. Because the
      parallel leg sits outside the widest excursion of the line, it clears every cell
      on that side.
-   - **Rejoin just past the weather, not at a distant fix.** Every candidate returns
-     to course at the point **just past the far edge** of the weather — it does *not*
-     stretch the drawn line to a far-downstream fix. Chasing a distant fix forces the
-     closing leg of a short one-side deviation to swing back across the storm, so that
-     candidate gets rejected and the reroute either loops the long way or, up close,
-     drives straight through a core. Returning to course right after the far edge
-     keeps each candidate compact, so a short jump to the open side wins. The nearest
-     downstream fix is still selected and named for the ATC rejoin call ("proceed
-     direct …") — it simply lies on ahead of where the drawn line rejoins.
+   - **Rejoin on the route just past the weather, not at a distant fix.** Every
+     candidate returns to the route at the point where the route **exits the weather**
+     — it does *not* stretch the drawn line to a far-downstream fix. Two things matter
+     here. First, chasing a distant fix forces the closing leg of a short one-side
+     deviation to swing back across the storm, so that candidate gets rejected and the
+     reroute either loops the long way or, up close, drives straight through a core.
+     Second, the rejoin follows the route's **bends**: if the route turns (say south)
+     just past the storm, the intercept is on that turn, so the reroute's length is
+     measured to the real rejoin and the shorter (southern) side wins — rather than
+     measuring to a straight-ahead point that makes both sides look equal. When no
+     route is supplied it falls back to returning to course just past the far edge.
+     The nearest downstream fix is still selected and named for the ATC rejoin call
+     ("proceed direct …"); it simply lies on ahead of where the drawn line rejoins.
    - **Shortest clear path wins.** All candidates — the gap/around-the-end doglegs
      and the two side-hugs — are validated end-to-end: the whole path is sampled
      against **every** cell polygon (so a reroute never avoids one storm and turns

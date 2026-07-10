@@ -275,6 +275,27 @@ final class WeatherDeviationTests: XCTestCase {
                           "the drawn deviation rejoins course just past the weather, not at the 150 NM fix")
     }
 
+    func testRejoinFollowsTheRouteSouthThroughATurn() throws {
+        // The route runs east, then turns south just past the weather. The intercept
+        // back onto the route is therefore to the south — so the deviation length must
+        // be measured to that southward turn (not a straight-ahead point), which makes
+        // the southern deviation the shortest. Verify the drawn line rejoins on the
+        // route's southward leg: its endpoint is well south of the aircraft.
+        let f1 = Geo.destination(from: usPosition, bearingDegrees: 90, distanceNM: 50)   // east
+        let f2 = Geo.destination(from: f1, bearingDegrees: 180, distanceNM: 80)          // then south
+        let storm = radarHazard(cell(alongNM: 45, crossNM: 0, halfCross: 12, course: 90, from: usPosition))
+        let wps = [Waypoint(name: "F1", latitude: f1.latitude, longitude: f1.longitude),
+                   Waypoint(name: "F2", latitude: f2.latitude, longitude: f2.longitude)]
+        let conflict = try XCTUnwrap(detector.detectConflict(
+            position: usPosition, course: Geo.bearing(from: usPosition, to: f1),
+            groundspeedKnots: 450, phase: .cruise, hazards: [storm], waypoints: wps,
+            routeAhead: [f1, f2]))
+
+        let end = try XCTUnwrap(conflict.deviationPath.last)
+        XCTAssertLessThan(end.latitude, usPosition.latitude - 0.3,
+                          "the deviation should rejoin on the route's southward leg, not straight ahead")
+    }
+
     func testTerminalWeatherJustAfterDeparture() throws {
         // A cell 30 NM off the departure end, on course, is caught by the terminal
         // lookahead band (25–75 NM) while still on the ground / departing.

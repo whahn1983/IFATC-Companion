@@ -117,8 +117,13 @@ struct RouteWeatherConflictDetector {
         let lookahead = lookaheadNM(phase: phase, groundspeed: groundspeedKnots)
         let flyCourse = routeAwareCourse(position: position, fallback: course, routeAhead: routeAhead,
                                          hazards: hazards, lookahead: lookahead)
+        // Rejoin on the route where it exits the weather — so when the route turns
+        // (e.g. south) past the storm, the intercept is measured to that turn and a
+        // deviation onto the shorter side wins. Nil when no route is supplied.
+        let routeRejoin = routeRejoinCoord(position: position, routeAhead: routeAhead,
+                                           hazards: hazards, lookahead: lookahead)
         return detect(position: position, course: flyCourse, groundspeedKnots: groundspeedKnots,
-                      phase: phase, hazards: hazards, waypoints: waypoints)
+                      phase: phase, hazards: hazards, waypoints: waypoints, rejoinOverride: routeRejoin)
     }
 
     /// Aim the detection corridor along the route rather than a straight bearing to
@@ -172,6 +177,62 @@ struct RouteWeatherConflictDetector {
         return Geo.bearing(from: position, to: point)
     }
 
+    /// The point on the route where the deviation should rejoin: just past the far
+    /// extent of the weather **along the route**. Because it follows the route's
+    /// bends, a route that turns (say south) past the storm puts the rejoin on that
+    /// turn — so the reroute's length is measured to the real intercept and the
+    /// shorter-side deviation wins. Nil when no route is supplied or nothing on it is
+    /// within the corridor (detection then rejoins straight ahead, as before).
+    private func routeRejoinCoord(position: CLLocationCoordinate2D,
+                                  routeAhead: [CLLocationCoordinate2D],
+                                  hazards: [WeatherHazard], lookahead: Double) -> CLLocationCoordinate2D? {
+        let ahead = routeAhead.filter { $0.isValid }
+        guard !ahead.isEmpty else { return nil }
+        let route = [position] + ahead
+        guard route.count >= 2 else { return nil }
+
+        // The farthest point along the route still within a corridor half-width of a
+        // cell — where the route finally exits the weather.
+        var weatherFarAlong: Double?
+        var cumulative = 0.0
+        for i in 0..<(route.count - 1) {
+            if cumulative > lookahead { break }
+            let a = route[i], b = route[i + 1]
+            let segLen = Geo.distanceNM(from: a, to: b)
+            let steps = max(1, Int(segLen / 5))
+            for s in 0...steps {
+                let t = Double(s) / Double(steps)
+                let along = cumulative + segLen * t
+                if along > lookahead { break }
+                let p = interpolate(a, b, t)
+                for hazard in hazards {
+                    let half = config.corridorHalfWidthNM + pointRadiusBuffer(hazard)
+                    if distanceHazardToPointNM(hazard, p) <= half {
+                        weatherFarAlong = max(weatherFarAlong ?? 0, along)
+                    }
+                }
+            }
+            cumulative += segLen
+        }
+        guard let far = weatherFarAlong else { return nil }
+        return pointOnRoute(route, atAlong: far + 20)
+    }
+
+    /// The coordinate a given distance along a route polyline (clamped to its end).
+    private func pointOnRoute(_ route: [CLLocationCoordinate2D], atAlong target: Double) -> CLLocationCoordinate2D {
+        var cumulative = 0.0
+        for i in 0..<(route.count - 1) {
+            let a = route[i], b = route[i + 1]
+            let segLen = Geo.distanceNM(from: a, to: b)
+            if cumulative + segLen >= target {
+                let t = segLen <= 0 ? 0 : (target - cumulative) / segLen
+                return interpolate(a, b, min(1, max(0, t)))
+            }
+            cumulative += segLen
+        }
+        return route.last ?? route[0]
+    }
+
     /// Distance (NM) from a hazard's shape to a point: 0 inside a polygon, else the
     /// nearest edge / sample point.
     private func distanceHazardToPointNM(_ hazard: WeatherHazard, _ p: CLLocationCoordinate2D) -> Double {
@@ -198,7 +259,8 @@ struct RouteWeatherConflictDetector {
                         groundspeedKnots: Double?,
                         phase: FlightPhase,
                         hazards: [WeatherHazard],
-                        waypoints: [Waypoint]) -> RouteWeatherConflict? {
+                        waypoints: [Waypoint],
+                        rejoinOverride: CLLocationCoordinate2D? = nil) -> RouteWeatherConflict? {
         guard position.isValid, !hazards.isEmpty else { return nil }
         let lookahead = lookaheadNM(phase: phase, groundspeed: groundspeedKnots)
         let corridorEnd = Geo.destination(from: position, bearingDegrees: course, distanceNM: lookahead)
@@ -250,14 +312,15 @@ struct RouteWeatherConflictDetector {
         // The named downstream fix drives the ATC rejoin call ("proceed direct …").
         let rejoin = rejoinFix(waypoints: waypoints, position: position, course: course,
                                farAlong: bandFar, lookahead: lookahead, polygon: primary.polygon)
-        // The drawn deviation, however, rejoins the course **just past the weather** —
-        // never at a distant downstream fix. Chasing a far fix forces every candidate
-        // to swing back across the storms to reach it, so a short one-side deviation
-        // gets rejected and the reroute takes the long way round. Returning to course
-        // right after the far edge keeps each candidate compact, so the shortest clear
-        // side wins. (The pilot then proceeds direct the fix, which lies on ahead.)
-        let rejoinCoord = Geo.destination(from: position, bearingDegrees: course,
-                                          distanceNM: lineFar + 20)
+        // The drawn deviation, however, rejoins **just past the weather** — never at a
+        // distant downstream fix. Chasing a far fix forces every candidate to swing
+        // back across the storms to reach it, so a short one-side deviation gets
+        // rejected and the reroute takes the long way round. Prefer the point where
+        // the route itself exits the weather (so a route that turns past the storm
+        // puts the intercept on that turn and the shorter side wins); otherwise return
+        // to course right past the far edge. Either keeps each candidate compact.
+        let rejoinCoord = rejoinOverride
+            ?? Geo.destination(from: position, bearingDegrees: course, distanceNM: lineFar + 20)
 
         // A single dogleg abeam the middle of the line at a lateral offset.
         func apexPath(for target: Double) -> [CLLocationCoordinate2D] {
