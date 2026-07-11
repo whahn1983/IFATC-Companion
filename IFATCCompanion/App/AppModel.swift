@@ -658,9 +658,13 @@ final class AppModel: ObservableObject {
     /// foreground forces a fresh Connect link.
     private var wasBackgrounded = false
 
+    /// Whether the app is currently in the foreground. Gates network polling (radar
+    /// resampling) so we don't fetch from public weather services while backgrounded.
+    private var appActive = true
+
     /// Record that the app went to the background (the OS may have torn down or
     /// silently stalled the Infinite Flight TCP link while we were away).
-    func markBackgrounded() { wasBackgrounded = true }
+    func markBackgrounded() { wasBackgrounded = true; appActive = false }
 
     /// When the app returns to the foreground after being backgrounded, force a
     /// reconnect so live flight details resume updating immediately. (Infinite Flight
@@ -668,6 +672,7 @@ final class AppModel: ObservableObject {
     /// otherwise required a manual Reconnect.) The in-progress session is restored on
     /// reconnect, so the conversation picks up where it left off. No-op in Mock Mode.
     func handleReturnToForeground() {
+        appActive = true
         guard started, wasBackgrounded else { return }
         wasBackgrounded = false
         guard !settings.mockMode else { return }
@@ -2483,7 +2488,7 @@ final class AppModel: ObservableObject {
     /// time and distance, and single-flighted so fetches never overlap. Call it from
     /// the telemetry loop; it re-runs the conflict detection once fresh cells land.
     private func maybeResamplePrecipitation() {
-        guard !settings.mockMode, settings.noaaRadarOverlay == .autoWhereAvailable,
+        guard appActive, !settings.mockMode, settings.noaaRadarOverlay == .autoWhereAvailable,
               !isSamplingPrecip, let pos = aircraftState.coordinate, pos.isValid else { return }
         let now = Date()
         let movedFar = lastPrecipSamplePos.map { Geo.distanceNM(from: $0, to: pos) > 15 } ?? true

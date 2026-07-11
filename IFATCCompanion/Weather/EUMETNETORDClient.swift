@@ -140,43 +140,71 @@ struct EUMETNETORDClient: Sendable {
             .0
     }
 
-    // MARK: - Network (thin, defensive)
+    // MARK: - Network (thin, defensive; well-behaved public client)
 
-    /// Fetch the latest cloud-optimized GeoTIFF composite object URL for `product`,
-    /// scanning today's and yesterday's UTC prefixes (the 24-hour cache straddles the
-    /// day boundary). Returns nil on any listing failure or when nothing matches.
-    func latestCompositeObjectURL(product: Product,
-                                  now: Date,
-                                  session: URLSession = .shared) async -> URL? {
+    /// Shared revalidating-cache session (honors ETag/Last-Modified/Cache-Control) with
+    /// the app's descriptive User-Agent. The ORD bucket is a **shared public resource**
+    /// with low anonymous limits, so requests are minimized and cache-revalidated.
+    static let cachingSession = AppHTTP.makeCachingSession(cacheName: "ord-http-cache")
+
+    /// Outcome of an object fetch, distinguishing a retryable throttle/transient error
+    /// (429/503/5xx/network — back off) from a non-retryable "gone" (keep last good).
+    enum ObjectOutcome: Sendable {
+        case success(Data)
+        case retry(after: TimeInterval?)
+        case unavailable
+    }
+
+    /// The latest cloud-optimized GeoTIFF composite (object URL + its product
+    /// timestamp) for `product`, scanning today's and yesterday's UTC prefixes (the
+    /// 24-hour cache straddles the day boundary). Returns the timestamp too so the
+    /// caller can **skip the expensive download when the product hasn't changed**. Nil
+    /// on a listing failure / no match, so the caller keeps its last-good data.
+    func latestComposite(product: Product, now: Date,
+                         session: URLSession = EUMETNETORDClient.cachingSession) async -> (url: URL, timestamp: Date)? {
         let day: TimeInterval = 86_400
         let prefixes = [Self.compositePrefix(for: now),
                         Self.compositePrefix(for: now.addingTimeInterval(-day))]
         var keys: [String] = []
         for prefix in prefixes {
-            guard let url = listURL(prefix: prefix) else { continue }
-            guard let xml = await fetchText(url: url, session: session) else { continue }
+            guard let url = listURL(prefix: prefix),
+                  let xml = await fetchText(url: url, session: session) else { continue }
             keys.append(contentsOf: Self.parseKeys(fromListXML: xml))
         }
-        guard let key = Self.latestGeoTIFFKey(from: keys, product: product) else { return nil }
-        return objectURL(key: key)
+        guard let key = Self.latestGeoTIFFKey(from: keys, product: product),
+              let ts = Self.compositeTimestamp(fromKey: key),
+              let url = objectURL(key: key) else { return nil }
+        return (url, ts)
     }
 
-    /// GET the raw bytes of an object (the composite GeoTIFF). Nil on any HTTP/URL
-    /// error so the caller degrades gracefully.
-    func fetchObject(url: URL, session: URLSession = .shared) async -> Data? {
+    /// GET the composite bytes with **conditional revalidation** — the caching session
+    /// sends `If-None-Match` / `If-Modified-Since` from the stored validators and serves
+    /// the cached body on `304 Not Modified`. Throttling / transient errors are reported
+    /// as `.retry` (with any `Retry-After`) so the caller backs off; other 4xx are
+    /// `.unavailable` (keep last good, no aggressive retry).
+    func fetchObject(url: URL, session: URLSession = EUMETNETORDClient.cachingSession) async -> ObjectOutcome {
         var request = URLRequest(url: url)
+        request.cachePolicy = .reloadRevalidatingCacheData
         request.timeoutInterval = 20
-        request.setValue("IFATCCompanion/1.0", forHTTPHeaderField: "User-Agent")
-        guard let (data, response) = try? await session.data(for: request) else { return nil }
-        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) { return nil }
-        return data.isEmpty ? nil : data
+        request.setValue(AppHTTP.userAgent, forHTTPHeaderField: "User-Agent")
+        guard let (data, response) = try? await session.data(for: request) else {
+            return .retry(after: nil)   // network / timeout → back off
+        }
+        if let http = response as? HTTPURLResponse {
+            if AppHTTP.isRetryableStatus(http.statusCode) {
+                return .retry(after: AppHTTP.parseRetryAfter(http.value(forHTTPHeaderField: "Retry-After")))
+            }
+            guard (200...299).contains(http.statusCode) else { return .unavailable }
+        }
+        return data.isEmpty ? .unavailable : .success(data)
     }
 
-    /// GET a text (XML) body, decoded as UTF-8. Nil on any HTTP/URL error.
+    /// GET a text (XML) body, decoded as UTF-8, with the app User-Agent. Nil on any
+    /// HTTP/URL error.
     private func fetchText(url: URL, session: URLSession) async -> String? {
         var request = URLRequest(url: url)
         request.timeoutInterval = 15
-        request.setValue("IFATCCompanion/1.0", forHTTPHeaderField: "User-Agent")
+        request.setValue(AppHTTP.userAgent, forHTTPHeaderField: "User-Agent")
         guard let (data, response) = try? await session.data(for: request) else { return nil }
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) { return nil }
         return String(data: data, encoding: .utf8)

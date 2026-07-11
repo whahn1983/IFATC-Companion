@@ -91,6 +91,39 @@ provider architecture ships exactly these conformers:
 `NASAGIBSPrecipitationProvider`, and `MockRadarPrecipitationProvider` (Mock
 Mode/tests).
 
+## Responsible use of the public services (no backend)
+
+The app has **no backend** — every device talks to these free public services
+directly — so all clients are written to be **well-behaved shared-resource
+citizens** (`AppHTTP` centralizes the common bits):
+
+- **Descriptive User-Agent with contact.** Every request identifies the app and a
+  contact URL: `IFATCCompanion/<version> (+https://github.com/whahn1983/IFATC-Companion)`.
+- **Poll no faster than the data updates, and not off-screen.** Aviation weather is
+  **event-driven** (on connect / manual refresh — there is no periodic poll). The
+  radar overlay renders only while the weather map is on screen; radar *sampling*
+  runs only while airborne **and in the foreground** (gated on app-active), never on a
+  background tick.
+- **Cache, and revalidate conditionally.** Responses are cached (in-memory TTL +
+  an on-disk `URLCache`), and network revalidation uses **ETag / If-None-Match** and
+  **Last-Modified / If-Modified-Since** (`.reloadRevalidatingCacheData`), so a `304`
+  reuses cached bytes.
+- **OPERA/ORD specifics.** The CIRRUS composite updates every ~5 min, so the client
+  refreshes on a **5–8 minute jittered interval** (de-synchronizing devices), does the
+  **cheap listing first and skips the multi-MB GeoTIFF download when the product
+  timestamp is unchanged**, and shares one decoded composite across all overlay/sampling
+  renders. The ORD docs note anonymous access has *low query limits* and *is not
+  recommended for permanent usage*, which is exactly why these limits are enforced.
+- **Back off on throttling/outages; prefer stale over failing.** On `429`/`503`/`5xx`
+  or a network error the clients **back off exponentially** and honor **`Retry-After`**,
+  and they **serve the last good cached data** rather than blanking. Non-retryable
+  errors (e.g. `400`) don't trigger backoff. Missing products, partial responses, and
+  temporary outages degrade gracefully (OPERA falls through to the NASA estimate).
+- **Not `api.weather.gov`.** Aviation weather uses the **AWC Data API**
+  (`aviationweather.gov/api/data`), so the app makes **no** `/points`, forecast-office,
+  gridpoint, station-list, or alerts-metadata calls that would need separate long-lived
+  caching.
+
 ## Provider selection order
 
 `PrecipitationOverlayService` selects one provider for the current route/region:

@@ -300,35 +300,96 @@ enum OPERACompositeRenderer {
 
 /// Caches the latest decoded whole-Europe OPERA composite so the many per-bbox
 /// renders (overlay display + route-corridor sampling) reuse a single anonymous ORD
-/// fetch/decode rather than re-downloading the multi-megabyte GeoTIFF each time. The
-/// composite updates every ~5 minutes, so the cache TTL matches; on a fetch/decode
-/// failure the last good raster is kept.
+/// fetch/decode instead of re-downloading the multi-megabyte GeoTIFF each time.
+///
+/// A **well-behaved public client** of a shared, low-limit anonymous service:
+///  - refreshes on a **5–8 minute jittered interval** (CIRRUS updates every 5 min),
+///    de-synchronizing requests across devices;
+///  - at each interval it does the **cheap listing first** and **skips the expensive
+///    GeoTIFF download when the product timestamp is unchanged**;
+///  - the download itself is **conditionally revalidated** (ETag/Last-Modified) by the
+///    client's caching session;
+///  - on a 429/503/network error it **backs off exponentially** (honoring
+///    `Retry-After`) and keeps serving the last good raster;
+///  - it never downloads while a fresh raster is cached, and never on a background
+///    telemetry tick that arrives inside the interval.
 actor OPERACompositeStore {
     static let shared = OPERACompositeStore()
 
     private var raster: OPERARaster?
     private var product: EUMETNETORDClient.Product?
-    private var fetchedAt: Date?
-    private let ttl: TimeInterval = 300
+    private var currentTimestamp: Date?     // product timestamp of the loaded raster
+    private var nextRefreshAt: Date?
+    private var nextRetryAt: Date?
+    private var failureCount = 0
 
-    /// The current decoded composite for `product`, fetched anonymously via `client`
-    /// when the cache is empty/stale/for a different product. Returns the last good
-    /// raster on a transient failure, or nil if none has ever been fetched.
+    /// Minimum refresh interval and jitter (→ 5–8 min); the composite updates every
+    /// ~5 min, so checking more often just wastes the shared service's capacity.
+    private let baseInterval: TimeInterval = 300
+    private let maxJitter: TimeInterval = 180
+
+    /// The current decoded composite for `product`. Fetches anonymously via `client`
+    /// only when due (interval elapsed, not backing off) and only downloads when the
+    /// product timestamp actually advanced. Returns the last good raster otherwise, or
+    /// nil if none has ever been fetched.
     func current(product: EUMETNETORDClient.Product,
                  client: EUMETNETORDClient,
                  now: Date) async -> OPERARaster? {
-        if let raster, self.product == product, let fetchedAt,
-           now.timeIntervalSince(fetchedAt) < ttl {
+        if self.product != product { resetState(for: product) }
+
+        // Backing off after failures, or still within the refresh interval → serve
+        // what we have without touching the network.
+        if let retry = nextRetryAt, now < retry { return raster }
+        if let next = nextRefreshAt, now < next, raster != nil { return raster }
+
+        // Due for a check. List (cheap) and compare the latest product timestamp.
+        guard let latest = await client.latestComposite(product: product, now: now) else {
+            registerFailure(now: now, retryAfter: nil)   // listing failed / no product
             return raster
         }
-        guard let url = await client.latestCompositeObjectURL(product: product, now: now),
-              let data = await client.fetchObject(url: url),
-              let decoded = OPERACompositeRenderer.decodeRaster(from: data) else {
-            return self.product == product ? raster : nil   // keep last good for same product
+        if let ts = currentTimestamp, ts == latest.timestamp, raster != nil {
+            scheduleNextRefresh(now: now)                // unchanged → skip the download
+            return raster
         }
-        raster = decoded
+
+        // New product → download (conditionally revalidated) and decode.
+        switch await client.fetchObject(url: latest.url) {
+        case .success(let data):
+            if let decoded = OPERACompositeRenderer.decodeRaster(from: data) {
+                raster = decoded
+                currentTimestamp = latest.timestamp
+                scheduleNextRefresh(now: now)
+            } else {
+                registerFailure(now: now, retryAfter: nil)   // decode failed → keep last good
+            }
+        case .retry(let after):
+            registerFailure(now: now, retryAfter: after)
+        case .unavailable:
+            scheduleNextRefresh(now: now)                    // object gone → try next interval
+        }
+        return raster
+    }
+
+    private func resetState(for product: EUMETNETORDClient.Product) {
         self.product = product
-        fetchedAt = now
-        return decoded
+        raster = nil
+        currentTimestamp = nil
+        nextRefreshAt = nil
+        nextRetryAt = nil
+        failureCount = 0
+    }
+
+    private func scheduleNextRefresh(now: Date) {
+        failureCount = 0
+        nextRetryAt = nil
+        nextRefreshAt = now.addingTimeInterval(baseInterval + Double.random(in: 0...maxJitter))
+    }
+
+    private func registerFailure(now: Date, retryAfter: TimeInterval?) {
+        failureCount += 1
+        let backoff = AppHTTP.backoffDelay(failureCount: failureCount)
+        let delay = max(backoff, retryAfter ?? 0) + Double.random(in: 0...15)   // small jitter
+        nextRetryAt = now.addingTimeInterval(delay)
+        nextRefreshAt = nextRetryAt
     }
 }

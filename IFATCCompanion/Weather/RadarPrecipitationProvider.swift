@@ -133,7 +133,7 @@ struct NOAARadarPrecipitationProvider: RadarPrecipitationProvider {
         guard let url = exportImageURL(for: bbox, size: size, frame: frame) else { return nil }
         var request = URLRequest(url: url)
         request.timeoutInterval = 12
-        request.setValue("IFATCCompanion/1.0", forHTTPHeaderField: "User-Agent")
+        request.setValue(AppHTTP.userAgent, forHTTPHeaderField: "User-Agent")
         let (data, response) = try await URLSession.shared.data(for: request)
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) { return nil }
         return data.isEmpty ? nil : data
