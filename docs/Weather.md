@@ -513,6 +513,17 @@ at the resample cadence. So once a conflict is shown, `resolveConflictWithHyster
 clean route — rather than removing it the instant one sample comes back empty. The
 window resets when the pilot resolves the prompt (continue / clear of weather).
 
+The **faint strategic previews** get the *same* hold (`resolvePreviewsWithHysteresis`).
+They recompute straight off the sampled `weatherHazards` every tick, so without it a
+noisy resample — or a marginal on-route cell dropping below the coarse whole-route
+sampling threshold — would blink a preview line out even though the storm is still
+along the route (a faint line that "appears for a bit then goes away while the hazard
+is still there"). The last non-empty preview set is held until the route tests
+continuously clear for the same window; each re-detection re-arms the hold, so an
+intermittently sampled system shows a **steady** line rather than a flicker. The hold
+is dropped on the lifecycle reset (`resetWeatherDeviation`) so stale previews never
+carry across flights.
+
 **The committed line is locked.** Once the pilot commits to a vector or deviation,
 the mint line is **frozen** into `WeatherDeviationContext.committedDeviationPath` and
 the map draws that fixed path (`weatherDeviationLine`) — it no longer shifts or

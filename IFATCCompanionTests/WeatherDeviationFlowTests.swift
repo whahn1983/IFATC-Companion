@@ -584,6 +584,40 @@ final class WeatherDeviationFlowTests: XCTestCase {
         }
     }
 
+    /// The faint previews get the same confirm-clear hold as the solid line: a single
+    /// noisy resample that momentarily samples the route clear must not blink them out
+    /// while the storms are still there (the reported "faint line appeared then went away,
+    /// but the hazard is still there"). They clear only once the route is confirmed clear.
+    func testStrategicPreviewsHoldThroughTransientRadarClear() {
+        let model = makeModel()
+        model.flightPlan.waypoints = []   // straight dep→dest so the cells sit on the corridor
+
+        let dep = model.mock.route.depCoord
+        let dest = model.mock.route.destCoord
+        let course = Geo.bearing(from: dep, to: dest)
+        func cellAt(_ nm: Double) -> RadarCell {
+            RadarCell(polygon: box(around: Geo.destination(from: dep, bearingDegrees: course, distanceNM: nm),
+                                   half: 0.2),
+                      intensity: .heavy)
+        }
+        model.radarOverlay.mockCells = [cellAt(110), cellAt(230)]
+        model.recomputeWeatherHazards()
+        let shown = model.weatherDeviationPreviews.count
+        XCTAssertGreaterThanOrEqual(shown, 2, "previews drawn for each system ahead")
+
+        // A noisy resample momentarily reports the sky clear (the storms are still there).
+        model.radarOverlay.mockCells = []
+        model.recomputeWeatherHazards()
+        XCTAssertEqual(model.weatherDeviationPreviews.count, shown,
+                       "a single empty sample must not blink the faint previews out")
+
+        // Once the route has tested clear past the confirm window, the previews clear.
+        model.expireWeatherClearWindowForTesting()
+        model.recomputeWeatherHazards()
+        XCTAssertTrue(model.weatherDeviationPreviews.isEmpty,
+                      "confirmed clear removes the strategic previews")
+    }
+
     /// Mock mode seeds several storm systems down the route, and the strategic preview
     /// scans the whole route (past clear gaps) to draw a line for each — visible from the
     /// departure gate, with no telemetry yet, so scenarios can be eyeballed before flying.
