@@ -278,11 +278,16 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
    clear gap** between adjacent cells — offering the reachable gaps and going around
    either end of a solid line. This mirrors how a controller vectors a pilot between
    cells, whether they appear just after takeoff, enroute, or on approach.
-   - **Only for weather *on* the flight path.** A cell counts as a conflict only when it
-     is genuinely on the route — within the ±6 NM corridor half-width of the course
-     centerline, or crossed by it. Weather merely *near* the route (off to one side) no
-     longer draws a mint line or raises the banner: "nearby but not on top of the route"
-     → nothing.
+   - **Only for weather *on* the flight path — with an intensity-scaled corridor.** A cell
+     counts as a conflict only when it is on the route — within the corridor half-width of
+     the course centerline, or crossed by it. The half-width **scales with intensity**, so it
+     matches how much room the reroute keeps from each: **moderate ±6 NM** (kept tight — a
+     yellow cell off to one side isn't worth a deviation), **heavy ±12 NM**, and **extreme
+     ±18 NM** (a red core the route skirts is rounded by a ~20 NM berth anyway, so flagging it
+     from that far off is what stops a live "clear red hazard on the route, but diagnostics say
+     no conflict"). A cell that actually straddles the centerline is caught regardless of its
+     intensity. Weather merely *near* the route stays off-path: a **moderate** cell off to one
+     side still draws nothing — only the tight moderate corridor governs it.
    - **Mint line a little ahead, banner only close in — far weather monitored.** Three
      ranges, from close to far:
      - **Tactical (`deviationTriggerNM`, ~60 NM).** The near edge is close enough to work
@@ -303,8 +308,9 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
 
      The conflict carries `withinTacticalRange` and `withinDrawRange`; Diagnostics shows a
      conflict outside the tactical range as "… — monitoring" rather than "No conflict".
-   - **The corridor follows the route.** The detection band is only ±6 NM wide, so a
-     straight corridor aimed at the *bearing to the next fix* misses weather that sits
+   - **The corridor follows the route.** The detection band is narrow (±6–18 NM by
+     intensity), so a straight corridor aimed at the *bearing to the next fix* misses weather
+     that sits
      on the route **after a turn** — the aircraft's wide sampling window still finds
      the cells (so Diagnostics shows hazards), but the narrow band slides past them
      and reports "no conflict". So the detector walks the **upcoming route polyline**
@@ -440,8 +446,20 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      and the whole maneuver spans at least `minDeviationExtentNM` (15 NM) end-to-end
      (`enforceMinExtent`) so it never renders as a twitch. The reshaping only ever touches
      the lead-in / lead-out on the course line ahead of and behind the (already-clear)
-     offset legs, and is re-validated against the intense cores — if the steeper geometry
-     would clip one, the validated original is kept.
+     offset legs.
+     - **Clip-aware, so a wide core doesn't force the transition square.** The ideal ~30°
+       turn-out reaches the offset right at the weather's near edge; a red/extreme core needs
+       a wider berth than that vertex sits at, so the diagonal onto the offset (or off it at
+       the rejoin) can clip the core a few miles before/after the weather. Rather than
+       collapse back to a square 90° step, `startAtTurnOut`/`endAtTurnBack` **pull the
+       turn-out earlier / push the turn-back later into clear air** — holding the ~30° angle
+       and extending the parallel leg to meet it — until the transition leg clears the cores.
+       They stop only at the real limits: the turn-out can't begin behind the aircraft (the
+       "pilot turned late" close-aboard case) and the turn-back can't push past the rejoin cap
+       (weather near the destination) — the two cases where a steeper turn is genuinely
+       unavoidable. As a final guard the whole reshaped line is re-validated against the
+       intense cores, and only if no clear ~30° transition could be fitted is the validated
+       original kept.
    - **Must actually engage the weather (`pathEngagesWeather`).** Clearance validation
      (`pathIsClear`) only proves a candidate stays *clear* of every cell — a line drawn out
      in clear air, nowhere near the storm, passes it trivially (and can even rank as the
@@ -512,6 +530,17 @@ at the resample cadence. So once a conflict is shown, `resolveConflictWithHyster
 (`weatherClearConfirmWindow`, ~90 s — longer than a resample cycle) — a *confirmed*
 clean route — rather than removing it the instant one sample comes back empty. The
 window resets when the pilot resolves the prompt (continue / clear of weather).
+
+The **faint strategic previews** get the *same* hold (`resolvePreviewsWithHysteresis`).
+They recompute straight off the sampled `weatherHazards` every tick, so without it a
+noisy resample — or a marginal on-route cell dropping below the coarse whole-route
+sampling threshold — would blink a preview line out even though the storm is still
+along the route (a faint line that "appears for a bit then goes away while the hazard
+is still there"). The last non-empty preview set is held until the route tests
+continuously clear for the same window; each re-detection re-arms the hold, so an
+intermittently sampled system shows a **steady** line rather than a flicker. The hold
+is dropped on the lifecycle reset (`resetWeatherDeviation`) so stale previews never
+carry across flights.
 
 **The committed line is locked.** Once the pilot commits to a vector or deviation,
 the mint line is **frozen** into `WeatherDeviationContext.committedDeviationPath` and

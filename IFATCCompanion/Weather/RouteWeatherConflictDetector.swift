@@ -56,14 +56,24 @@ struct RouteWeatherConflictDetector {
         /// reroute still appears a little before the "contact ATC" banner, but never at
         /// the far edge of the enroute lookahead where it reads as a runaway line.
         var mintLineDrawNM: Double = 75
-        /// Half-width of the route corridor around the course line (NM). A precipitation
-        /// cell only counts as a conflict (draws a mint line / can raise the advisory)
-        /// when it is genuinely **on the flight path** — within this half-width of the
-        /// course centerline, or crossed by it. Kept tight so weather merely *near* the
-        /// route (off to one side) no longer triggers a deviation; a cell that actually
-        /// straddles the course is still caught by the centerline-through-polygon test
-        /// regardless of this value.
+        /// Half-width of the route corridor around the course line (NM) for **moderate**
+        /// precipitation. A cell only counts as a conflict (draws a mint line / can raise the
+        /// advisory) when it is genuinely **on the flight path** — within this half-width of the
+        /// course centerline, or crossed by it. Kept tight for moderate returns so weather merely
+        /// *near* the route (off to one side) doesn't trigger a deviation; a cell that actually
+        /// straddles the course is still caught by the centerline-through-polygon test regardless
+        /// of this value. Heavier returns widen it (below), since the reroute rounds them by a
+        /// wider berth — so a red core skirting the route is caught, not reported "no conflict".
         var corridorHalfWidthNM: Double = 6
+        /// Corridor half-width for **heavy** (orange) precipitation (NM). Wider than moderate:
+        /// a heavy cell the route passes close to is worth flagging even when its edge sits a
+        /// little off the centerline.
+        var corridorHalfWidthHeavyNM: Double = 12
+        /// Corridor half-width for **extreme** (red) precipitation (NM). Widest, matching the
+        /// wide berth the reroute keeps from a convective core (~20 NM, FAA AC 00-24C) — a red
+        /// core skirting the route is caught here instead of slipping past the tight moderate
+        /// corridor and reporting "no conflict".
+        var corridorHalfWidthExtremeNM: Double = 18
         /// Minutes of travel used for the time-based lookahead fallback.
         var timeLookaheadMinutes: ClosedRange<Double> = 20...45
         /// Light precipitation only prompts when this close and near-dead-ahead.
@@ -279,7 +289,7 @@ struct RouteWeatherConflictDetector {
                 if along > lookahead { break }
                 let p = interpolate(a, b, t)
                 for hazard in hazards {
-                    let half = config.corridorHalfWidthNM + pointRadiusBuffer(hazard)
+                    let half = corridorHalfWidth(for: hazard.intensity) + pointRadiusBuffer(hazard)
                     if distanceHazardToPointNM(hazard, p) <= half, along < bestAlong {
                         bestAlong = along
                         bestPoint = p
@@ -335,7 +345,7 @@ struct RouteWeatherConflictDetector {
                 let p = interpolate(a, b, t)
                 var inWeather = false
                 for hazard in hazards {
-                    let half = config.corridorHalfWidthNM + pointRadiusBuffer(hazard)
+                    let half = corridorHalfWidth(for: hazard.intensity) + pointRadiusBuffer(hazard)
                     if distanceHazardToPointNM(hazard, p) <= half { inWeather = true; break }
                 }
                 if inWeather {
@@ -716,14 +726,17 @@ struct RouteWeatherConflictDetector {
         // before the weather — and rejoining with a ~30° turn-back, rather than a long
         // shallow drift from the aircraft. Both only reshape the lead-in / lead-out on the
         // course line ahead of / behind the (already-clear) offset legs, and both leave a
-        // reroute close aboard starting at the aircraft. Then guarantee the whole
-        // maneuver spans at least the minimum extent.
-        var deviationPath = startAtTurnOut(chosen.path, position: position, course: course)
-        deviationPath = endAtTurnBack(deviationPath, position: position, course: course, capAlong: capAlong)
+        // reroute close aboard starting at the aircraft. They are given the intense cores so
+        // that when the ideal ~30° transition would clip a wide-berth (red/extreme) core they
+        // pull the turn-out earlier / push the turn-back later into clear air rather than
+        // collapsing back to a square 90° step. Then guarantee the minimum extent.
+        var deviationPath = startAtTurnOut(chosen.path, position: position, course: course, cores: intenseBerths)
+        deviationPath = endAtTurnBack(deviationPath, position: position, course: course,
+                                      capAlong: capAlong, cores: intenseBerths)
         deviationPath = enforceMinExtent(deviationPath, position: position, course: course, capAlong: capAlong)
-        // Safety: the reshaped lead-in / lead-out must still clear the intense cores. If
-        // the steeper turn-out geometry would clip one (e.g. a tight gap-thread), keep the
-        // validated original path instead.
+        // Safety: the reshaped lead-in / lead-out must still clear the intense cores. If a
+        // smooth ~30° transition could not be fitted clear of them (weather close aboard, or
+        // no room before the cap), keep the validated original path instead.
         if !pathIsClear(deviationPath, cells: intenseBerths, origin: position) {
             deviationPath = chosen.path
         }
@@ -833,6 +846,19 @@ struct RouteWeatherConflictDetector {
     /// just its abeam point — gives convective cores real room.
     private func berthNM(for intensity: WeatherIntensity) -> Double {
         intensity == .extreme ? config.severeBerthNM : config.pathClearanceNM
+    }
+
+    /// The corridor half-width (NM) for a cell of the given intensity — how far off the
+    /// course centerline the cell may sit and still count as **on the flight path**. Scaled
+    /// by intensity (moderate tight, heavy wider, extreme widest) so a red/orange core the
+    /// route skirts is flagged rather than slipping past the tight moderate corridor, while
+    /// moderate precip off to the side still doesn't trigger a deviation.
+    private func corridorHalfWidth(for intensity: WeatherIntensity) -> Double {
+        switch intensity {
+        case .extreme: return config.corridorHalfWidthExtremeNM
+        case .heavy:   return config.corridorHalfWidthHeavyNM
+        default:       return config.corridorHalfWidthNM
+        }
     }
 
     /// Whether a deviation path stays clear of every cell along its whole length,
@@ -1064,20 +1090,48 @@ struct RouteWeatherConflictDetector {
     /// offset — instead of a long shallow drift all the way from the aircraft. For
     /// weather drawn far ahead this moves the mint line's start up to just before the
     /// weather; for weather close aboard the lead collapses and the line still starts at
-    /// the aircraft (a necessarily steeper turn). Only reshapes the lead-in on the course
-    /// line ahead of the (already-clear) first offset leg.
+    /// the aircraft (a necessarily steeper turn).
+    ///
+    /// The turn-out completes where the parallel leg already begins (`path[1]`) — the offset
+    /// reached right at the weather's near edge. But a wide-berth (red/extreme) core needs
+    /// more room than the tight lateral buffer that vertex sits at, so the ~30° diagonal onto
+    /// the offset can clip the core a few miles before the near edge. When it would, reach the
+    /// offset **earlier** — slide the turn-out (and the parallel-leg start) back along course
+    /// into clear air ahead of the weather, holding the same ~30° angle and extending the
+    /// parallel leg back to meet it — until the turn-out leg is clear. Stop once the turn-out
+    /// would begin behind the aircraft: the weather is then close aboard and a steeper turn is
+    /// unavoidable (the "pilot turned late" exception), so keep the original. A triangle's
+    /// single apex can't be slid without changing the detour, so it only gets the lead-in.
     private func startAtTurnOut(_ path: [CLLocationCoordinate2D], position: CLLocationCoordinate2D,
-                                course: Double) -> [CLLocationCoordinate2D] {
+                                course: Double,
+                                cores: [(polygon: [CLLocationCoordinate2D], clearance: Double)] = []) -> [CLLocationCoordinate2D] {
         guard path.count >= 2, let first = path.first else { return path }
         let s1 = project(path[1], from: position, course: course)
         guard abs(s1.cross) > 0.5 else { return path }   // no offset to turn onto
-        let startAlong = s1.along - turnOutLead(forOffset: s1.cross)
+        let lead = turnOutLead(forOffset: s1.cross)
         let curStart = project(first, from: position, course: course).along
-        // Only pull the start forward (ahead of the aircraft); keep it at the aircraft
-        // when the weather is close enough that a 30° turn-out would begin behind it.
-        guard startAlong > max(2, curStart + 2) else { return path }
-        let v0 = Geo.destination(from: position, bearingDegrees: course, distanceNM: startAlong)
-        return [v0] + Array(path.dropFirst())
+        let sideBearing = course + (s1.cross >= 0 ? 90 : -90)
+        // A hug's parallel leg can start earlier (the leg from the moved near-point to the far
+        // point stays on the offset); a triangle's apex can't move without reshaping the detour.
+        let canSlideNear = path.count >= 4
+        var offsetAlong = s1.along
+        while true {
+            let startAlong = offsetAlong - lead
+            // Only pull the start forward (ahead of the aircraft); keep it at the aircraft
+            // when the weather is close enough that a 30° turn-out would begin behind it.
+            guard startAlong > max(2, curStart + 2) else { return path }
+            let v0 = Geo.destination(from: position, bearingDegrees: course, distanceNM: startAlong)
+            let nearOn = Geo.destination(from: position, bearingDegrees: course, distanceNM: offsetAlong)
+            let pNear = canSlideNear
+                ? Geo.destination(from: nearOn, bearingDegrees: sideBearing, distanceNM: abs(s1.cross))
+                : path[1]
+            if pathIsClear([v0, pNear], cells: cores, origin: position) {
+                return canSlideNear ? [v0, pNear] + Array(path.dropFirst(2))
+                                    : [v0] + Array(path.dropFirst())
+            }
+            guard canSlideNear else { return path }   // apex can't slide — keep the original
+            offsetAlong -= 5   // reach the offset earlier, in clear air before the weather
+        }
     }
 
     /// Rejoin with a ~`initialDeviationTurnDegrees`° **turn-back** — symmetric with the
@@ -1095,7 +1149,8 @@ struct RouteWeatherConflictDetector {
     ///    downstream system in the way is the packed-systems case, handled by extending
     ///    the parallel leg past it.
     private func endAtTurnBack(_ path: [CLLocationCoordinate2D], position: CLLocationCoordinate2D,
-                               course: Double, capAlong: Double?) -> [CLLocationCoordinate2D] {
+                               course: Double, capAlong: Double?,
+                               cores: [(polygon: [CLLocationCoordinate2D], clearance: Double)] = []) -> [CLLocationCoordinate2D] {
         guard path.count >= 3, let last = path.last else { return path }
         let sLast = project(last, from: position, course: course)
         guard abs(sLast.cross) < 3 else { return path }   // bent-route rejoin — leave to truncation
@@ -1103,19 +1158,36 @@ struct RouteWeatherConflictDetector {
         guard abs(sFar.cross) > 0.5 else { return path }
         let lead = turnOutLead(forOffset: sFar.cross)
         let closingAlong = sLast.along - sFar.along
+        func rejoinAt(_ along: Double) -> CLLocationCoordinate2D {
+            Geo.destination(from: position, bearingDegrees: course, distanceNM: along)
+        }
+        // Whether the closing leg from the parallel-leg end to a rejoin at `along` stays clear
+        // of the intense cores. Pushing the rejoin further out only shallows the leg and holds
+        // the offset longer, so it moves the turn-back into clear air past the weather.
+        func closingClears(_ along: Double) -> Bool {
+            pathIsClear([path[path.count - 2], rejoinAt(along)], cells: cores, origin: position)
+        }
         if closingAlong > lead + 2 {
-            // Too shallow → steepen to the target by pulling the rejoin back.
-            let v = Geo.destination(from: position, bearingDegrees: course, distanceNM: sFar.along + lead)
-            return Array(path.dropLast()) + [v]
+            // Too shallow → steepen toward the target by pulling the rejoin back, but never so
+            // far it re-enters the weather (keep the closing leg clear of the cores).
+            let along = sFar.along + lead
+            guard closingClears(along) else { return path }
+            return Array(path.dropLast()) + [rejoinAt(along)]
         }
         if closingAlong < lead - 2 {
             // Too steep → give the closing leg room by rejoining a matching lead beyond the
-            // parallel-leg end, bounded by the rejoin cap.
-            var rejoinAlong = sFar.along + lead
-            if let capAlong { rejoinAlong = min(rejoinAlong, capAlong) }
-            guard rejoinAlong > sLast.along + 2 else { return path }   // cap leaves no room
-            let v = Geo.destination(from: position, bearingDegrees: course, distanceNM: rejoinAlong)
-            return Array(path.dropLast()) + [v]
+            // parallel-leg end, pushing it further out if a wide-berth core would still be
+            // clipped, all bounded by the rejoin cap (never past the destination / approach).
+            var along = sFar.along + lead
+            if let capAlong { along = min(along, capAlong) }
+            var steps = 0
+            while !closingClears(along), steps < 40 {
+                along += 5
+                steps += 1
+                if let capAlong, along > capAlong { return path }   // no room within the cap — forced steep
+            }
+            guard along > sLast.along + 2 else { return path }   // cap leaves no room
+            return Array(path.dropLast()) + [rejoinAt(along)]
         }
         return path
     }
@@ -1254,8 +1326,10 @@ struct RouteWeatherConflictDetector {
         guard alongMax > -5, alongMin < lookahead + config.clusterAlongMarginNM else { return nil }
 
         // Corridor blocking test: a sample inside the corridor, or (for a wide cell
-        // whose vertices all straddle it) the route line passing through the polygon.
-        let corridorHalf = config.corridorHalfWidthNM + radiusBuffer
+        // whose vertices all straddle it) the route line passing through the polygon. The
+        // corridor half-width scales with intensity, so a red/orange core skirting the route
+        // is caught while moderate precip off to the side is not.
+        let corridorHalf = corridorHalfWidth(for: hazard.intensity) + radiusBuffer
         let inCorridor = samples.filter { $0.along >= -5 && $0.along <= lookahead && abs($0.cross) <= corridorHalf }
         let lineThrough = poly.map { routeLinePasses(through: $0, from: position, to: corridorEnd) } ?? false
         let blocks = !inCorridor.isEmpty || lineThrough

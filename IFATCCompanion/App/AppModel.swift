@@ -277,6 +277,16 @@ final class AppModel: ObservableObject {
     /// removed — long enough to span a radar resample cycle (~45 s) so a single
     /// empty sample never drops a storm that's really still there.
     private var weatherClearConfirmWindow: TimeInterval = 90
+    /// The last non-empty strategic previews and when they were computed — the
+    /// confirm-clear hold for the *faint* preview lines, mirroring `lastConflictSeenAt`
+    /// for the solid line. The previews recompute straight off `weatherHazards`, so a
+    /// noisy resample that momentarily samples the route clear (or drops a marginal
+    /// on-route cell below the sampling threshold) would otherwise blink them out even
+    /// though the storms are still there. Holding the last non-empty set for
+    /// `weatherClearConfirmWindow` keeps them steady — each re-detection re-arms the
+    /// hold — and they clear only once the route is confirmed clear.
+    private var lastPreviewsSeenAt: Date?
+    private var heldWeatherDeviationPreviews: [[CLLocationCoordinate2D]] = []
     /// How close (NM) to the flight-plan intercept at the end of the mint line the
     /// aircraft must get before the controller auto-resumes own navigation when the
     /// pilot hasn't reported clear of weather.
@@ -758,9 +768,12 @@ final class AppModel: ObservableObject {
     func applySnapshotForTesting(_ snapshot: SessionSnapshot) { apply(snapshot: snapshot) }
 
     /// Test hook: force the confirm-clear window to have elapsed, so the next
-    /// recompute drops a held (no-longer-detected) conflict instead of waiting out
-    /// the real hysteresis window.
-    func expireWeatherClearWindowForTesting() { lastConflictSeenAt = .distantPast }
+    /// recompute drops a held (no-longer-detected) conflict and its held strategic
+    /// previews instead of waiting out the real hysteresis window.
+    func expireWeatherClearWindowForTesting() {
+        lastConflictSeenAt = .distantPast
+        lastPreviewsSeenAt = .distantPast
+    }
     #endif
 
     private func handle(state: AircraftState) {
@@ -2543,6 +2556,9 @@ final class AppModel: ObservableObject {
         weatherHandled = false
         mockWeatherAdvisoryIssued = false
         lastConflictSeenAt = nil
+        weatherDeviationPreviews = []
+        heldWeatherDeviationPreviews = []
+        lastPreviewsSeenAt = nil
         lastPrecipSampleAt = nil
         lastPrecipSamplePos = nil
     }
@@ -2629,8 +2645,9 @@ final class AppModel: ObservableObject {
                 maybeAutoResumeAtRouteIntercept()
             }
         }
-        // Faint preview lines for the systems ahead beyond the one drawn solid.
-        weatherDeviationPreviews = computeWeatherDeviationPreviews()
+        // Faint preview lines for the systems ahead beyond the one drawn solid, held
+        // through a transient clear the same way the solid line is (see below).
+        weatherDeviationPreviews = resolvePreviewsWithHysteresis(fresh: computeWeatherDeviationPreviews())
         updateWeatherDiagnostics(conflict: conflict)
     }
 
@@ -2663,6 +2680,32 @@ final class AppModel: ObservableObject {
         }
         lastConflictSeenAt = nil
         return nil
+    }
+
+    /// Apply the same confirm-clear hysteresis to the faint strategic previews that
+    /// `resolveConflictWithHysteresis` applies to the solid line. The previews are
+    /// recomputed straight off `weatherHazards` every tick, so a noisy resample that
+    /// momentarily samples the route clear — or drops a marginal on-route cell below the
+    /// coarse whole-route sampling threshold — would blink them out even though the storms
+    /// are still along the route (the reported "faint line appeared for a bit then went
+    /// away, but the hazard is still there"). Holding the last non-empty set until the
+    /// route has tested continuously clear for `weatherClearConfirmWindow` keeps them
+    /// steady: each re-detection within the window re-arms the hold, so an intermittently
+    /// sampled system shows a continuous line rather than a flicker. The lifecycle resets
+    /// (`resetWeatherDeviation`) drop the hold so it never lingers across flights.
+    private func resolvePreviewsWithHysteresis(fresh: [[CLLocationCoordinate2D]]) -> [[CLLocationCoordinate2D]] {
+        if !fresh.isEmpty {
+            lastPreviewsSeenAt = Date()
+            heldWeatherDeviationPreviews = fresh
+            return fresh
+        }
+        // Nothing this tick: hold the last non-empty previews until clear is confirmed.
+        if let since = lastPreviewsSeenAt, Date().timeIntervalSince(since) < weatherClearConfirmWindow {
+            return heldWeatherDeviationPreviews
+        }
+        lastPreviewsSeenAt = nil
+        heldWeatherDeviationPreviews = []
+        return []
     }
 
     /// Normalize the current weather into the hazards the conflict detector routes
