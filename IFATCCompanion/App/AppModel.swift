@@ -2855,12 +2855,13 @@ final class AppModel: ObservableObject {
 
     /// The heading to fly for a vector around weather.
     ///
-    /// Prefer the bearing from the current position to the apex of the recommended
-    /// deviation path (the mint line drawn on the map, `deviationPath = [position,
-    /// apex, rejoin]`). Deriving the vector from that path keeps the assigned heading
-    /// consistent with the map and anchored to where the aircraft *is now* — so a
-    /// second vector requested while already deviated turns toward the suggested
-    /// reroute rather than stacking another offset on top of the current heading.
+    /// Prefer the bearing from the current position to the first turn vertex of the
+    /// recommended deviation path (the mint line drawn on the map — `[position, …,
+    /// rejoin]`, whose second point is the initial turn-out). Deriving the vector from
+    /// that path keeps the assigned heading consistent with the map and anchored to
+    /// where the aircraft *is now* — so a second vector requested while already
+    /// deviated turns toward the suggested reroute rather than stacking another offset
+    /// on top of the current heading.
     ///
     /// Falls back to offsetting the current heading (or the filed course) by the
     /// recommended amount when no usable deviation path is available.
@@ -3070,52 +3071,88 @@ final class AppModel: ObservableObject {
         weatherDeviation.committedDeviationPath = path.map(WeatherDeviationContext.PathPoint.init)
     }
 
-    /// Capture the turn point (apex) of the recommended deviation path and the
-    /// heading to fly from there back to intercept the filed route, so the telemetry
-    /// loop can auto-issue the rejoin turn when the aircraft reaches that turn in the
-    /// mint line. The deviation path is `[position, apex, rejoin]`.
-    private func captureWeatherRejoinTurn() {
+    /// The committed mint line the aircraft is flying, as coordinates. Prefers the
+    /// frozen committed path (stable across radar resamples) and falls back to the
+    /// live conflict's path, so the turn tracking keys off the exact line drawn.
+    private func committedMintLineCoordinates() -> [CLLocationCoordinate2D] {
+        if let frozen = weatherDeviation.committedDeviationPath {
+            return frozen.map { $0.coordinate }
+        }
+        return activeWeatherConflict?.deviationPath ?? []
+    }
+
+    /// Clear any armed auto-turn (no turn pending).
+    private func clearPendingRejoinTurn() {
+        weatherDeviation.pendingTurnIndex = nil
         weatherDeviation.pendingRejoinHeading = nil
         weatherDeviation.vectorApexLatitude = nil
         weatherDeviation.vectorApexLongitude = nil
         weatherDeviation.vectorLegBearing = nil
-        guard weatherDeviation.state == .vectoringAroundWeather,
-              let path = activeWeatherConflict?.deviationPath, path.count >= 3,
-              path[0].isValid, path[1].isValid, path[2].isValid else { return }
-        let start = path[0], apex = path[1], rejoin = path[2]
-        weatherDeviation.vectorApexLatitude = apex.latitude
-        weatherDeviation.vectorApexLongitude = apex.longitude
-        weatherDeviation.vectorLegBearing = Geo.bearing(from: start, to: apex)
-        weatherDeviation.pendingRejoinHeading =
-            ApproachIntercept.normalizedHeading(Geo.bearing(from: apex, to: rejoin))
     }
 
-    /// While vectoring around weather, once the aircraft reaches the turn in the
-    /// deviation path (the apex of the mint line), the controller automatically turns
-    /// it back to intercept the filed route. Called each telemetry tick.
-    /// Returns whether it issued the turn this tick, so the caller can skip the
+    /// Arm the interior turn at `index` in the mint line: store the turn vertex, the
+    /// bearing of the leg leading into it (to detect the aircraft passing abeam), and
+    /// the heading to fly out of it toward the next vertex — so the telemetry loop can
+    /// auto-issue the turn once the aircraft reaches it. Only interior vertices
+    /// (1…count-2) are turns; the endpoints are the start and the rejoin.
+    private func armRejoinTurn(at index: Int, path: [CLLocationCoordinate2D]) {
+        guard index >= 1, index <= path.count - 2,
+              path[index - 1].isValid, path[index].isValid, path[index + 1].isValid else {
+            clearPendingRejoinTurn()
+            return
+        }
+        let apex = path[index]
+        weatherDeviation.pendingTurnIndex = index
+        weatherDeviation.vectorApexLatitude = apex.latitude
+        weatherDeviation.vectorApexLongitude = apex.longitude
+        weatherDeviation.vectorLegBearing = Geo.bearing(from: path[index - 1], to: apex)
+        weatherDeviation.pendingRejoinHeading =
+            ApproachIntercept.normalizedHeading(Geo.bearing(from: apex, to: path[index + 1]))
+    }
+
+    /// Capture the turn points of the committed mint line and arm the **first**
+    /// interior turn, so the telemetry loop can auto-issue a turn call at each vertex
+    /// as the aircraft reaches it. A single dogleg (`[position, apex, rejoin]`) has one
+    /// turn; a side-hug (`[position, turnOut, turnBack, rejoin]`) has two — out onto the
+    /// parallel leg, then back down to the route — and each firing arms the next.
+    private func captureWeatherRejoinTurn() {
+        clearPendingRejoinTurn()
+        guard weatherDeviation.state == .vectoringAroundWeather else { return }
+        let path = committedMintLineCoordinates()
+        // Need at least one interior turn vertex: [start, v1, …, rejoin].
+        guard path.count >= 3, path.allSatisfy({ $0.isValid }) else { return }
+        armRejoinTurn(at: 1, path: path)
+    }
+
+    /// While vectoring around weather, once the aircraft reaches the next turn in the
+    /// mint line, the controller automatically issues the turn onto the following leg
+    /// — an intermediate turn (onto the parallel leg) keeps vectoring, the final turn
+    /// rejoins the filed route. After a non-final turn it arms the next interior turn,
+    /// so a side-hug line gets both its turns called. Called each telemetry tick.
+    /// Returns whether it issued a turn this tick, so the caller can skip the
     /// auto-resume check on the same tick (they both key off the mint line's geometry).
     @discardableResult
     private func maybeIssueWeatherRejoinTurn() -> Bool {
         guard !companionStandby, weatherFlowAllowed,
               weatherDeviation.state == .vectoringAroundWeather,
+              let index = weatherDeviation.pendingTurnIndex,
               let heading = weatherDeviation.pendingRejoinHeading,
               let apexLat = weatherDeviation.vectorApexLatitude,
               let apexLon = weatherDeviation.vectorApexLongitude,
               let pos = aircraftState.coordinate, pos.isValid else { return false }
         let apex = CLLocationCoordinate2D(latitude: apexLat, longitude: apexLon)
         let distance = Geo.distanceNM(from: pos, to: apex)
-        // Fire when near the apex, or once the aircraft has passed abeam/beyond it
-        // along the outbound leg (so flying wide of the apex still triggers the turn).
-        // The capture radius scales with groundspeed (~30 s of travel), min 2 NM, so
-        // a fast aircraft does not skip past the turn between telemetry ticks.
+        // Fire when near the turn vertex, or once the aircraft has passed abeam/beyond
+        // it along the leg into it (so flying wide of it still triggers the turn). The
+        // capture radius scales with groundspeed (~30 s of travel), min 2 NM, so a fast
+        // aircraft does not skip past the turn between telemetry ticks.
         let captureNM = max(2.0, (aircraftState.groundSpeed ?? 300) / 120)
         let reached: Bool
         if distance <= captureNM {
             reached = true
         } else if let legBearing = weatherDeviation.vectorLegBearing {
-            // Along-track distance from the apex in the outbound leg direction; ≥ 0
-            // means the aircraft is at or beyond the apex's abeam line.
+            // Along-track distance from the vertex in the inbound leg direction; ≥ 0
+            // means the aircraft is at or beyond the vertex's abeam line.
             let apexToAircraft = Geo.bearing(from: apex, to: pos)
             let alongNM = distance * cos((apexToAircraft - legBearing) * .pi / 180)
             reached = alongNM >= 0
@@ -3123,9 +3160,18 @@ final class AppModel: ObservableObject {
             reached = false
         }
         guard reached else { return false }
+        // The turn onto the last leg (toward the rejoin, the final point) is the final
+        // turn; earlier interior vertices are intermediate turns that keep vectoring.
+        let path = committedMintLineCoordinates()
+        let isFinalTurn = index >= path.count - 2
         applyDeviationResult(deviationEngine.rejoinTurn(
             cs: callsignNow(), heading: heading, rejoinFix: weatherDeviation.rejoinFix,
-            context: weatherDeviation, facility: weatherFacility))
+            finalTurn: isFinalTurn, context: weatherDeviation, facility: weatherFacility))
+        // Arm the next interior turn if the mint line has one (a side-hug has two).
+        // The engine cleared the fired turn, so this re-arms on the fresh context.
+        if !isFinalTurn {
+            armRejoinTurn(at: index + 1, path: path)
+        }
         return true
     }
 

@@ -177,15 +177,21 @@ struct WeatherDeviationContext: Codable {
     var assignedHeading: Int?
     var maintainAltitude: Int?
     var rejoinFix: String?
-    /// The turn point in the recommended deviation path (the apex of the mint line)
-    /// and the heading to fly from there back to intercept the filed route. Captured
-    /// when a weather vector is issued so the telemetry loop can auto-issue the
-    /// rejoin turn once the aircraft reaches that turn. Cleared when the turn fires.
+    /// The next turn point in the committed mint line (the vertex the aircraft is
+    /// flying toward) and the heading to fly out of it toward the following vertex,
+    /// so the telemetry loop can auto-issue the turn once the aircraft reaches it. A
+    /// side-hug line (`[start, turnOut, turnBack, rejoin]`) has **two** such turns —
+    /// out onto the parallel leg, then back down to the route — so these advance from
+    /// one interior vertex to the next each time a turn fires, rather than clearing
+    /// after a single turn. `pendingTurnIndex` is the index (into the committed line)
+    /// of the vertex being turned at; all are cleared when the final turn fires.
+    var pendingTurnIndex: Int?
     var vectorApexLatitude: Double?
     var vectorApexLongitude: Double?
     var pendingRejoinHeading: Int?
-    /// Bearing of the outbound deviation leg (start → apex), so the loop can detect
-    /// the aircraft passing abeam/past the apex even if it flies wide of it.
+    /// Bearing of the leg leading into the pending turn vertex (previous → apex), so
+    /// the loop can detect the aircraft passing abeam/past the vertex even if it flies
+    /// wide of it.
     var vectorLegBearing: Double?
     var originalRouteSegment: RouteSegmentRef?
     var timeDeviationStarted: Date?

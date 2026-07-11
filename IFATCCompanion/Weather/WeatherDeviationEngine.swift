@@ -138,15 +138,20 @@ struct WeatherDeviationEngine {
         return Result(pilot: pilotTx, atc: [approval], context: ctx)
     }
 
-    /// At the turn in the deviation path the controller automatically turns the
-    /// aircraft back to intercept and rejoin the filed route. Keeps the vectoring
-    /// state (the pilot still advises clear of weather) and clears the armed turn.
-    func rejoinTurn(cs: Callsign, heading: Int, rejoinFix: String?,
+    /// At a turn in the deviation path the controller automatically turns the
+    /// aircraft to the next leg of the mint line. An intermediate turn keeps
+    /// vectoring around the weather (the parallel leg of a side-hug); the `finalTurn`
+    /// intercepts and rejoins the filed route. Keeps the vectoring state (the pilot
+    /// still advises clear of weather) and clears the armed turn — the caller re-arms
+    /// the next interior turn when the line has one.
+    func rejoinTurn(cs: Callsign, heading: Int, rejoinFix: String?, finalTurn: Bool = true,
                     context: WeatherDeviationContext, facility: ATCFacility) -> Result {
         var ctx = context
         let tx = phraseology.rejoinInterceptVector(cs: cs, heading: heading,
-                                                   rejoinFix: rejoinFix, facility: facility)
+                                                   rejoinFix: rejoinFix, finalTurn: finalTurn,
+                                                   facility: facility)
         ctx.assignedHeading = heading
+        ctx.pendingTurnIndex = nil
         ctx.pendingRejoinHeading = nil
         ctx.vectorApexLatitude = nil
         ctx.vectorApexLongitude = nil

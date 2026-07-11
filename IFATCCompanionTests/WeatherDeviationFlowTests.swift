@@ -193,63 +193,87 @@ final class WeatherDeviationFlowTests: XCTestCase {
                           "vector must not stack a fresh left offset on the deviated heading")
     }
 
-    /// The deviation path has a turn in it — deviate around the weather, then turn
-    /// back to intercept the filed route. When the aircraft reaches that turn (the
-    /// apex of the mint line), the controller must automatically issue the turn to
-    /// the rejoin heading, without the pilot asking.
-    func testWeatherVectorAutoTurnsBackAtDeviationApex() async {
+    /// The deviation path has one or more turns in it — deviate around the weather,
+    /// then turn back to intercept the filed route. When the aircraft reaches **each**
+    /// turn (every interior vertex of the mint line), the controller must automatically
+    /// issue the turn onto the next leg, without the pilot asking. The final turn
+    /// rejoins the filed course; a side-hug line has an earlier intermediate turn (out
+    /// onto the parallel leg) that must be called too.
+    func testWeatherVectorAutoTurnsBackAtEachDeviationTurn() async {
         let model = makeModel()
         await driveToCruiseConflict(model)
-        guard let conflict = model.activeWeatherConflict, conflict.deviationPath.count >= 3 else {
-            return XCTFail("expected a conflict with a deviation path")
-        }
-        let apex = conflict.deviationPath[1]
-        let rejoin = conflict.deviationPath[2]
-        let expectedRejoinHeading = ApproachIntercept.normalizedHeading(Geo.bearing(from: apex, to: rejoin))
 
-        // Pilot requests the vector; the rejoin turn is armed for the apex.
+        // Pilot requests the vector; the first turn is armed at the first interior vertex.
         model.requestVectorAroundWeather()
         XCTAssertEqual(model.weatherDeviationState, .vectoringAroundWeather)
-        XCTAssertEqual(model.weatherDeviation.pendingRejoinHeading, expectedRejoinHeading,
-                       "issuing the vector should arm the rejoin turn at the apex")
+        guard let line = model.weatherDeviationLine, line.count >= 3 else {
+            return XCTFail("expected a committed mint line with at least one turn")
+        }
+        // The interior vertices (all but the start and the rejoin) are the turns.
+        let interiorTurns = Array(1...(line.count - 2))
+        XCTAssertNotNil(model.weatherDeviation.pendingRejoinHeading,
+                        "issuing the vector should arm the first turn")
 
-        let atcBefore = model.transcript.filter { $0.sender == .atc }.count
+        var sawIntermediateTurn = false
+        for (n, i) in interiorTurns.enumerated() {
+            let apex = line[i]
+            let expectedHeading = ApproachIntercept.normalizedHeading(Geo.bearing(from: apex, to: line[i + 1]))
+            XCTAssertEqual(model.weatherDeviation.pendingRejoinHeading, expectedHeading,
+                           "the turn at vertex \(i) should be armed toward the next vertex")
 
-        // Fly to the turn in the mint line (the apex of the deviation path).
-        var atApex = model.mock.state(for: .cruise)
-        atApex.latitude = apex.latitude
-        atApex.longitude = apex.longitude
-        model.ingestStateForTesting(atApex)
+            let atcBefore = model.transcript.filter { $0.sender == .atc }.count
 
-        // The controller automatically turns the aircraft back to intercept course.
-        XCTAssertNil(model.weatherDeviation.pendingRejoinHeading, "the rejoin turn should fire once")
-        XCTAssertEqual(model.weatherDeviation.assignedHeading, expectedRejoinHeading,
-                       "the auto-turn assigns the rejoin heading")
-        XCTAssertTrue(atcContains(model, "rejoin course"),
-                      "controller should issue an automatic turn to rejoin course")
-        XCTAssertGreaterThan(model.transcript.filter { $0.sender == .atc }.count, atcBefore)
-        XCTAssertEqual(model.weatherDeviationState, .vectoringAroundWeather,
-                       "still advising clear of weather after the rejoin turn")
+            // Fly to this turn vertex; the controller auto-issues the turn.
+            var atApex = model.mock.state(for: .cruise)
+            atApex.latitude = apex.latitude
+            atApex.longitude = apex.longitude
+            model.ingestStateForTesting(atApex)
+
+            XCTAssertGreaterThan(model.transcript.filter { $0.sender == .atc }.count, atcBefore,
+                                 "reaching turn \(i) must issue an automatic turn call")
+            XCTAssertEqual(model.weatherDeviation.assignedHeading, expectedHeading,
+                           "the auto-turn assigns the heading onto the next leg")
+            XCTAssertEqual(model.weatherDeviationState, .vectoringAroundWeather,
+                           "still advising clear of weather after each turn")
+
+            let isFinal = (n == interiorTurns.count - 1)
+            if isFinal {
+                XCTAssertTrue(atcContains(model, "rejoin course"),
+                              "the final turn rejoins the filed course")
+                XCTAssertNil(model.weatherDeviation.pendingRejoinHeading,
+                             "no turn stays armed after the final rejoin turn")
+            } else {
+                sawIntermediateTurn = true
+                XCTAssertNotNil(model.weatherDeviation.pendingRejoinHeading,
+                                "an intermediate turn re-arms the next turn (a side-hug has two)")
+            }
+        }
+
+        // The mock's single large close cell forces a side-hug, so there is an
+        // intermediate turn before the rejoin — the one that used to be missed.
+        XCTAssertTrue(sawIntermediateTurn,
+                      "the side-hug mint line has an intermediate turn out onto the parallel leg")
     }
 
-    /// Flying wide of the apex (never within the capture radius) must still trigger
-    /// the rejoin turn once the aircraft passes abeam/beyond the apex along the
-    /// outbound leg.
+    /// Flying wide of a turn vertex (never within the capture radius) must still
+    /// trigger the turn once the aircraft passes abeam/beyond it along the leg into it.
     func testRejoinTurnFiresWhenPassingAbeamApexBeyondRadius() async {
         let model = makeModel()
         await driveToCruiseConflict(model)
-        guard let conflict = model.activeWeatherConflict, conflict.deviationPath.count >= 3 else {
-            return XCTFail("expected a conflict with a deviation path")
-        }
-        let start = conflict.deviationPath[0]
-        let apex = conflict.deviationPath[1]
-        let legBearing = Geo.bearing(from: start, to: apex)
-
         model.requestVectorAroundWeather()
-        XCTAssertNotNil(model.weatherDeviation.pendingRejoinHeading)
+        guard let line = model.weatherDeviationLine, line.count >= 3 else {
+            return XCTFail("expected a committed mint line with at least one turn")
+        }
+        let start = line[0]
+        let apex = line[1]
+        let legBearing = Geo.bearing(from: start, to: apex)
+        let armedHeading = model.weatherDeviation.pendingRejoinHeading
+        XCTAssertNotNil(armedHeading)
 
-        // A point 8 NM beyond the apex along the outbound leg — outside the capture
-        // radius, but past the apex's abeam line.
+        let atcBefore = model.transcript.filter { $0.sender == .atc }.count
+
+        // A point 8 NM beyond the first turn vertex along the leg into it — outside the
+        // capture radius, but past its abeam line.
         let beyondApex = Geo.destination(from: apex, bearingDegrees: legBearing, distanceNM: 8)
         XCTAssertGreaterThan(Geo.distanceNM(from: beyondApex, to: apex), 4,
                              "the test point must be outside the capture radius")
@@ -258,9 +282,13 @@ final class WeatherDeviationFlowTests: XCTestCase {
         atBeyond.longitude = beyondApex.longitude
         model.ingestStateForTesting(atBeyond)
 
-        XCTAssertNil(model.weatherDeviation.pendingRejoinHeading,
-                     "passing abeam the apex fires the rejoin turn even outside the radius")
-        XCTAssertTrue(atcContains(model, "rejoin course"))
+        // Passing abeam fires the turn even outside the radius: it's issued onto the
+        // armed heading (a "fly heading" turn call).
+        XCTAssertGreaterThan(model.transcript.filter { $0.sender == .atc }.count, atcBefore,
+                             "passing abeam the turn vertex fires the turn even outside the radius")
+        XCTAssertEqual(model.weatherDeviation.assignedHeading, armedHeading,
+                       "the turn is issued onto the armed heading")
+        XCTAssertTrue(atcContains(model, "fly heading"))
     }
 
     /// The rejoin turn is only armed for the vectoring flow, and does not fire
@@ -345,6 +373,23 @@ final class WeatherDeviationFlowTests: XCTestCase {
         XCTAssertTrue(rb?.displayText.contains("Heading 090") ?? false, rb?.displayText ?? "")
         XCTAssertTrue(rb?.displayText.contains("maintain FL370") ?? false, rb?.displayText ?? "")
         XCTAssertTrue(rb?.displayText.contains("United 598") ?? false, rb?.displayText ?? "")
+    }
+
+    /// An intermediate turn (onto the parallel leg of a side-hug) keeps vectoring and
+    /// must NOT claim to rejoin course; the final turn does rejoin, naming the fix.
+    func testRejoinInterceptVectorDistinguishesIntermediateFromFinalTurn() {
+        let phr = WeatherDeviationPhraseology(engine: PhraseologyEngine(digitStyle: .individual, mode: .faa))
+        let cs = phr.engine.callsign(airline: "United", flightNumber: "598", fallback: "")
+
+        let intermediate = phr.rejoinInterceptVector(cs: cs, heading: 120, rejoinFix: "WAGON", finalTurn: false)
+        XCTAssertTrue(intermediate.displayText.contains("fly heading 120"), intermediate.displayText)
+        XCTAssertTrue(intermediate.displayText.contains("vectors around precipitation"), intermediate.displayText)
+        XCTAssertFalse(intermediate.displayText.contains("rejoin course"),
+                       "an intermediate turn is not yet rejoining course")
+
+        let final = phr.rejoinInterceptVector(cs: cs, heading: 150, rejoinFix: "WAGON", finalTurn: true)
+        XCTAssertTrue(final.displayText.contains("fly heading 150"), final.displayText)
+        XCTAssertTrue(final.displayText.contains("rejoin course direct WAGON"), final.displayText)
     }
 
     /// "Resume own navigation" (with and without a rejoin fix) is echoed in the read-back.

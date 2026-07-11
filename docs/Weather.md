@@ -373,11 +373,22 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      loop back to intercept a second time. (When it never re-crosses — it ends alongside
      the route — its final vertex is snapped to the nearest route point instead, so the
      line still ends cleanly on the flight plan.)
+   - **Auto-turns at every vertex of the mint line.** On a vector, the controller
+     automatically issues a turn as the aircraft reaches **each** turn in the drawn
+     line — not just the last one. A single dogleg (`[position, apex, rejoin]`) has one
+     turn; a **side-hug** (`[position, turnOut, turnBack, rejoin]`) has **two** — out
+     onto the parallel leg, then back down to the route. The turn onto the parallel leg
+     is an *intermediate* turn (*"fly heading …, vectors around precipitation"*); the
+     turn onto the last leg is the *final* one (*"fly heading … to rejoin course direct
+     …"*). Each firing arms the next interior turn (`pendingTurnIndex` walks the frozen
+     `committedDeviationPath`), so the second turn back down to the flight path is called
+     just like the first. The turn fires when the aircraft is near the vertex or has
+     passed abeam it along the leg into it, so flying wide of it still triggers it.
    - **Auto-resume at the intercept.** If the pilot never reports clear of weather, the
      controller automatically issues *"resume own navigation"* and ends the deviation
      once the aircraft reaches within 15 NM of that intercept (measured on the final leg,
      so it can't trip during the outbound or parallel legs). On a vector this fires the
-     tick after the automatic rejoin turn, so the two don't collide.
+     tick after the final automatic rejoin turn, so the two don't collide.
 
 **Stable, non-flickering display.** Radar resampling is noisy: a storm that is
 really still ahead can drop out of a single sample and return on the next. Read
