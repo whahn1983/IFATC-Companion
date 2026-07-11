@@ -10,22 +10,45 @@ enum PIREPParser {
             if let lat = JSONLenient.double(obj["lat"]), let lon = JSONLenient.double(obj["lon"]) {
                 p.coordinate = CLLocationCoordinate2D(latitude: lat, longitude: lon)
             }
-            // Altitude may be in hundreds of feet or full feet depending on field.
-            if let fl = JSONLenient.int(obj["fltlvl"]) ?? JSONLenient.int(obj["altitude"]) {
+            // Flight level in hundreds of feet (AWC `fltLvl`, e.g. 190 → 19000 ft). A
+            // value of 0 goes with a during-climb/descent type (`fltLvlType` DURC/DURD)
+            // and means "level unknown", so leave altitude nil rather than clamping it to
+            // sea level — otherwise the ±band relevance filter would wrongly reject it.
+            // `fltlvl` / `altitude` are kept as tolerant fallbacks.
+            if let fl = JSONLenient.int(obj["fltLvl"]) ?? JSONLenient.int(obj["fltlvl"])
+                ?? JSONLenient.int(obj["altitude"]), fl > 0 {
                 p.altitudeFt = fl < 1000 ? fl * 100 : fl
             }
             p.time = JSONLenient.date(obj["obsTime"]) ?? JSONLenient.date(obj["receiptTime"])
             p.aircraftType = JSONLenient.string(obj["acType"]) ?? JSONLenient.string(obj["actype"])
-            // Turbulence: explicit field, then turbulence object, then raw text.
-            if let tbInt = JSONLenient.int(obj["tbInt1"]) {
-                p.turbulence = TurbulenceSeverity(rawValue: min(4, max(0, tbInt)))
-            } else if let tb = JSONLenient.string(obj["turbulence"]) {
-                p.turbulence = TurbulenceSeverity.parse(tb)
+            // Turbulence intensity is a *code string* ("LGT" / "MOD" / "SEV" / "NEG" / ""),
+            // not a number, and up to two layers may be reported — take the worse. Fall
+            // back to a generic field, then to scraping the raw text.
+            let tb1 = turbulence(obj["tbInt1"])
+            let tb2 = turbulence(obj["tbInt2"])
+            if let worst = [tb1, tb2].compactMap({ $0 }).max() {
+                p.turbulence = worst
+            } else if let tb = turbulence(obj["turbulence"]) {
+                p.turbulence = tb
             } else {
                 p.turbulence = TurbulenceSeverity.parse(p.raw)
             }
-            p.icing = JSONLenient.string(obj["icing"]) ?? JSONLenient.string(obj["icgInt1"])
+            p.icing = nonEmpty(obj["icgInt1"]) ?? nonEmpty(obj["icgInt2"]) ?? nonEmpty(obj["icing"])
             return p
         }
+    }
+
+    /// Parse a turbulence intensity code, treating empty/whitespace as "not reported".
+    private static func turbulence(_ value: Any?) -> TurbulenceSeverity? {
+        guard let code = nonEmpty(value) else { return nil }
+        return TurbulenceSeverity.parse(code)
+    }
+
+    /// The trimmed string value when it is non-empty, else nil (AWC returns `""` for
+    /// absent coded fields, which must not be treated as a real value).
+    private static func nonEmpty(_ value: Any?) -> String? {
+        guard let s = JSONLenient.string(value)?.trimmingCharacters(in: .whitespaces),
+              !s.isEmpty else { return nil }
+        return s
     }
 }

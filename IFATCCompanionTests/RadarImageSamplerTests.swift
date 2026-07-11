@@ -21,6 +21,29 @@ final class RadarImageSamplerTests: XCTestCase {
         XCTAssertEqual(RadarImageSampler.intensity(r: 255, g: 0, b: 255, a: 255), .extreme)
     }
 
+    func testIMERGRatePaletteMapsColorsToIntensity() {
+        let imerg = RadarImageSampler.Palette.imergRate
+        // Blue and green (the broad low-rate satellite wash) stay light so a stratiform
+        // field doesn't blob the whole route into one giant deviation.
+        XCTAssertEqual(RadarImageSampler.intensity(r: 0, g: 120, b: 255, a: 255, palette: imerg), .light)
+        XCTAssertEqual(RadarImageSampler.intensity(r: 0, g: 255, b: 0, a: 255, palette: imerg), .light)
+        // Yellow-green (chartreuse) is promoted to moderate — satellite averaging paints
+        // convective cores paler than radar, so this band is where meaningful cells show.
+        XCTAssertEqual(RadarImageSampler.intensity(r: 150, g: 255, b: 0, a: 255, palette: imerg), .moderate)
+        // Yellow → moderate, orange → heavy, red / magenta → extreme, as with radar.
+        XCTAssertEqual(RadarImageSampler.intensity(r: 255, g: 255, b: 0, a: 255, palette: imerg), .moderate)
+        XCTAssertEqual(RadarImageSampler.intensity(r: 255, g: 150, b: 0, a: 255, palette: imerg), .heavy)
+        XCTAssertEqual(RadarImageSampler.intensity(r: 255, g: 0, b: 0, a: 255, palette: imerg), .extreme)
+        XCTAssertEqual(RadarImageSampler.intensity(r: 255, g: 0, b: 255, a: 255, palette: imerg), .extreme)
+    }
+
+    func testChartreuseIsTheRampDifferentiator() {
+        // The one band the two ramps disagree on: yellow-green reads light on the
+        // reflectivity ramp (default) but moderate on the IMERG rate ramp.
+        XCTAssertEqual(RadarImageSampler.intensity(r: 150, g: 255, b: 0, a: 255), .light)
+        XCTAssertEqual(RadarImageSampler.intensity(r: 150, g: 255, b: 0, a: 255, palette: .imergRate), .moderate)
+    }
+
     func testTransparentAndAchromaticPixelsAreNotPrecipitation() {
         XCTAssertNil(RadarImageSampler.intensity(r: 255, g: 0, b: 0, a: 0), "transparent → no precip")
         XCTAssertNil(RadarImageSampler.intensity(r: 128, g: 128, b: 128, a: 255), "gray → no precip")

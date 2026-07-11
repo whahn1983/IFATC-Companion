@@ -89,12 +89,101 @@ final class WeatherTests: XCTestCase {
         XCTAssertEqual(TurbulenceSeverity.parse("CHOP"), .lightChop)
     }
 
+    /// Real AWC `pirep?format=json` shape: flight level is `fltLvl` (camelCase) and
+    /// turbulence is a code *string* in `tbInt1` (not an Int). Locks the parser to it.
+    func testPIREPParserMatchesRealAWCJSON() {
+        let json = """
+        [
+          {"obsTime":1783796520,"lat":38.04,"lon":-87.53,"fltLvl":0,"fltLvlType":"DURD",
+           "tbInt1":"","acType":"E55P","rawOb":"EVV UA /OV EVV/TM 1902/FLDURD/TP E55P/SK BKN020"},
+          {"obsTime":1783796460,"lat":27.03,"lon":-81.80,"fltLvl":190,"fltLvlType":"OTHER",
+           "tbInt1":"NEG","acType":"E50P","rawOb":"RSW UA /OV RSW360030/TM 1901/FL190/TP E50P/SK SKC/TB NEG"},
+          {"obsTime":1783796400,"lat":43.55,"lon":-116.19,"fltLvl":110,"fltLvlType":"OTHER",
+           "tbInt1":"MOD","acType":"E75L","rawOb":"BOI UA /OV SPUUD4 STAR/TM 1900/FL110/TP E75L/TB MOD TURB 110-090 DURD"}
+        ]
+        """.data(using: .utf8)!
+
+        let pireps = PIREPParser.parseJSON(json)
+        XCTAssertEqual(pireps.count, 3)
+
+        // fltLvl (camelCase) → feet; a 0 / during-descent level stays unknown (nil).
+        XCTAssertNil(pireps[0].altitudeFt, "fltLvl 0 (DURD) is unknown, not sea level")
+        XCTAssertEqual(pireps[1].altitudeFt, 19000)
+        XCTAssertEqual(pireps[2].altitudeFt, 11000)
+
+        // tbInt1 is a code string: NEG → smooth (filtered out), MOD → moderate.
+        XCTAssertEqual(pireps[1].turbulence, .smooth)
+        XCTAssertEqual(pireps[2].turbulence, .moderate)
+
+        XCTAssertEqual(pireps[2].coordinate?.latitude ?? 0, 43.55, accuracy: 1e-6)
+        XCTAssertNotNil(pireps[2].time, "obsTime epoch parses to a date")
+    }
+
     func testRideReportEngineNoReports() {
         let engine = PhraseologyEngine(digitStyle: .individual)
         let ride = RideReportEngine(engine: engine)
         let cs = engine.callsign(airline: "United", flightNumber: "598", fallback: "")
         let tx = ride.rideReport(items: [], callsign: cs)
         XCTAssertTrue(tx.displayText.contains("no significant ride reports"))
+    }
+
+    private func rideItem(_ sev: TurbulenceSeverity, altFt: Int, type: String = "B738") -> RideReportItem {
+        RideReportItem(severity: sev, altitudeBand: nil, distanceAheadNM: 30, bearing: 0,
+                       nearFix: nil, sourceRaw: "", reportedAltitudeFt: altFt, aircraftType: type)
+    }
+
+    func testSmootherAltitudePicksSmoothestReachableLevelInBand() {
+        let analyzer = WeatherRouteAnalyzer()
+        // Moderate at FL350; a smooth report at FL390 and a light one at FL330.
+        let items = [rideItem(.moderate, altFt: 35000),
+                     rideItem(.smooth, altFt: 39000),
+                     rideItem(.light, altFt: 33000)]
+        let s = analyzer.smootherAltitude(items: items, referenceAltFt: 35000, currentSeverity: .moderate)
+        XCTAssertEqual(s?.altitudeFt, 39000, "prefers the smoothest reachable level")
+        XCTAssertEqual(s?.higher, true)
+    }
+
+    func testSmootherAltitudeIsDataDrivenAndBandBounded() {
+        let analyzer = WeatherRouteAnalyzer()
+        // Nothing smoother than the current level → no suggestion (never invented).
+        XCTAssertNil(analyzer.smootherAltitude(items: [rideItem(.moderate, altFt: 35000)],
+                                               referenceAltFt: 35000, currentSeverity: .moderate))
+        // A smooth report above the cruise band (FL450) is out of range → not suggested.
+        XCTAssertNil(analyzer.smootherAltitude(items: [rideItem(.smooth, altFt: 45000)],
+                                               referenceAltFt: 35000, currentSeverity: .moderate))
+        // Smooth at your own level isn't a level change.
+        XCTAssertNil(analyzer.smootherAltitude(items: [rideItem(.smooth, altFt: 35000)],
+                                               referenceAltFt: 35000, currentSeverity: .moderate))
+    }
+
+    func testRideReportRelaysPIREPAtAltitudeAndNamesSmootherLevel() {
+        let engine = PhraseologyEngine(digitStyle: .individual)
+        let ride = RideReportEngine(engine: engine)
+        let cs = engine.callsign(airline: "United", flightNumber: "598", fallback: "")
+        let lead = RideReportItem(severity: .moderate, altitudeBand: 33000...37000, distanceAheadNM: 40,
+                                  bearing: 0, nearFix: "DSM", sourceRaw: "", ageMinutes: 15,
+                                  reportedAltitudeFt: 35000, aircraftType: "B738")
+        let assessment = RideAssessment(index: 0.6, severity: .moderate, contributors: ["pilot reports"])
+        let smoother = SmootherAltitude(altitudeFt: 39000, severity: .smooth, aircraftType: "A320", higher: true)
+        let tx = ride.rideReport(assessment: assessment, items: [lead],
+                                 referenceAltitudeFt: 35000, smoother: smoother, callsign: cs)
+        XCTAssertTrue(tx.displayText.contains("moderate turbulence"))
+        XCTAssertTrue(tx.displayText.contains("FL350"), "relays the report's own altitude")
+        XCTAssertTrue(tx.displayText.contains("near DSM"))
+        XCTAssertTrue(tx.displayText.contains("FL390"), "names the specific smoother level")
+        XCTAssertTrue(tx.displayText.lowercased().contains("climb"))
+    }
+
+    func testRideReportFallsBackToGenericOfferWithoutSmootherData() {
+        let engine = PhraseologyEngine(digitStyle: .individual)
+        let ride = RideReportEngine(engine: engine)
+        let cs = engine.callsign(airline: "United", flightNumber: "598", fallback: "")
+        let lead = RideReportItem(severity: .moderate, altitudeBand: nil, distanceAheadNM: 25,
+                                  bearing: 0, nearFix: nil, sourceRaw: "", reportedAltitudeFt: 35000)
+        let assessment = RideAssessment(index: 0.6, severity: .moderate, contributors: [])
+        let tx = ride.rideReport(assessment: assessment, items: [lead],
+                                 referenceAltitudeFt: 35000, smoother: nil, callsign: cs)
+        XCTAssertTrue(tx.displayText.contains("higher or lower"), "generic offer when no level is supported")
     }
 
     func testDestinationWeatherSpoken() {

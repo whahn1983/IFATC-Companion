@@ -15,6 +15,9 @@ enum PilotAction: CaseIterable {
     case clearance, pushback, engineStart, taxi, ready, takeoff
     case requestHigher, requestLower, vectors, approach, rideReport, destWx, checkIn
     case toGate
+    /// Accept the smoother cruise altitude the last ride report suggested (shown only
+    /// while such a suggestion is active).
+    case acceptSmootherAltitude
 }
 
 /// A pilot response-button action for the simulated weather-deviation flow. Kept
@@ -186,7 +189,11 @@ final class AppModel: ObservableObject {
         case .departure:
             return [.checkIn, .requestHigher, .requestLower]
         case .center:
-            return [.requestHigher, .requestLower, .rideReport, .destWx, .checkIn]
+            var actions: Set<PilotAction> = [.requestHigher, .requestLower, .rideReport, .destWx, .checkIn]
+            // Surface the accept button only while a ride report's smoother-altitude
+            // suggestion is active.
+            if suggestedSmootherAltitude != nil { actions.insert(.acceptSmootherAltitude) }
+            return actions
         case .approach:
             return [.checkIn, .vectors, .approach, .requestLower, .destWx]
         case .ramp:
@@ -223,6 +230,17 @@ final class AppModel: ObservableObject {
     @Published var rideReportItems: [RideReportItem] = []
     @Published var rideAssessment: RideAssessment = .smooth
     @Published var weatherStatus: String = "Not loaded"
+    /// A specific smoother cruise altitude surfaced by the last ride report, for the
+    /// dedicated accept button (and the next higher/lower request) to target directly.
+    /// Nil when no PIREP supports one. Published so the button can appear/label itself.
+    @Published private(set) var suggestedSmootherAltitude: SmootherAltitude?
+
+    /// The accept button's label for the active suggestion, e.g. "Climb FL390". Nil when
+    /// there is no suggestion, so the button is hidden.
+    var smootherAltitudeActionTitle: String? {
+        guard let s = suggestedSmootherAltitude else { return nil }
+        return "\(s.higher ? "Climb" : "Descend") \(engine.formatAltDisplay(s.altitudeFt))"
+    }
 
     // Radar precipitation + simulated weather-deviation state.
     /// Descriptive state for the Weather View radar layer (coverage, opacity,
@@ -2024,6 +2042,7 @@ final class AppModel: ObservableObject {
             tx.readback = altitudeReadback("Climb", altitude: target, callsign: c.callsign, facility: currentFacility)
             post(tx, speak: true)
         }
+        suggestedSmootherAltitude = nil   // one-shot hint from the last ride report
     }
 
     func requestLower() {
@@ -2034,6 +2053,25 @@ final class AppModel: ObservableObject {
         tx.readback = altitudeReadback("Descend", altitude: target, callsign: c.callsign, facility: currentFacility)
         post(tx, speak: true)
         assignedAltitude = target
+        suggestedSmootherAltitude = nil   // one-shot hint from the last ride report
+    }
+
+    /// Accept the smoother altitude the last ride report suggested — a direct climb or
+    /// descent to that specific level (the suggestion is already a smooth/lighter level in
+    /// the cruise band, so no traffic/turbulence block applies). Clears the suggestion.
+    func acceptSmootherAltitude() {
+        guard let s = suggestedSmootherAltitude else { return }
+        let c = buildContext(for: atcState)
+        let target = s.altitudeFt
+        postPilot(s.higher ? pilotEngine.requestHigher(context: c, target: target)
+                           : pilotEngine.requestLower(context: c, target: target))
+        var tx = s.higher ? engine.climbMaintain(cs: c.callsign, altitude: target)
+                          : engine.descendPilotsDiscretion(cs: c.callsign, altitude: target)
+        tx.readback = altitudeReadback(s.higher ? "Climb" : "Descend", altitude: target,
+                                       callsign: c.callsign, facility: currentFacility)
+        post(tx, speak: true)
+        assignedAltitude = target
+        suggestedSmootherAltitude = nil
     }
 
     /// A pilot read-back of an assigned altitude, attached to a controller call so the
@@ -2235,10 +2273,39 @@ final class AppModel: ObservableObject {
         Task {
             await refreshWeather()
             recomputeRideItems()
-            post(rideEngine.rideReport(assessment: rideAssessment, items: rideReportItems, callsign: c.callsign), speak: true)
+            let refAlt = rideReferenceAltitudeFt()
+            let smoother = computeSmootherAltitude(referenceAltFt: refAlt)
+            // Remember the suggestion so the accept button appears and the next
+            // higher/lower request targets it.
+            suggestedSmootherAltitude = smoother
+            post(rideEngine.rideReport(assessment: rideAssessment, items: rideReportItems,
+                                       referenceAltitudeFt: refAlt, smoother: smoother,
+                                       callsign: c.callsign), speak: true)
             // Acknowledge the report — an informational reply, so a courtesy "Roger".
             postPilot(pilotEngine.roger(context: c, facility: facility))
         }
+    }
+
+    /// The altitude (ft) ride reports are evaluated against: the filed cruise level, or
+    /// the live altitude before one is set (matching `recomputeRideItems`).
+    private func rideReferenceAltitudeFt() -> Int {
+        flightPlan.cruiseAltitude > 0 ? flightPlan.cruiseAltitude : aircraftAltInt()
+    }
+
+    /// A data-backed smoother altitude from PIREPs at *other* levels along the route,
+    /// bounded to the commercial cruise band. Nil when nothing supports one.
+    private func computeSmootherAltitude(referenceAltFt: Int) -> SmootherAltitude? {
+        guard let pos = aircraftState.coordinate ?? airports.coordinate(for: flightPlan.departure) else { return nil }
+        let end = airports.coordinate(for: flightPlan.destination) ?? flightPlan.nextWaypoint(from: pos)?.coordinate
+        let nearestFix = flightPlan.nextWaypoint(from: pos)?.name
+        // All route-corridor PIREPs regardless of altitude — the ±band filter would hide
+        // the very levels a smoother-ride suggestion is drawn from.
+        let allItems = routeAnalyzer.relevantReports(pireps: pireps, position: pos, routeEnd: end,
+                                                     altitudeFt: Double(referenceAltFt),
+                                                     nearestFix: nearestFix, ignoreAltitudeBand: true)
+        let currentSeverity = rideReportItems.map { $0.severity }.max() ?? .smooth
+        return routeAnalyzer.smootherAltitude(items: allItems, referenceAltFt: referenceAltFt,
+                                              currentSeverity: currentSeverity)
     }
 
     func requestDestinationWeather() {
@@ -2277,6 +2344,11 @@ final class AppModel: ObservableObject {
     }
 
     private func nextAltitude(from current: Int, up: Bool) -> Int {
+        // Prefer a data-backed smoother level from the last ride report when it lies in
+        // the requested direction (it is already bounded to the cruise band).
+        if let s = suggestedSmootherAltitude?.altitudeFt, (up && s > current) || (!up && s < current) {
+            return s
+        }
         let step = 2000
         let base = current <= 0 ? (flightPlan.cruiseAltitude > 0 ? flightPlan.cruiseAltitude : 35000) : current
         let target = up ? base + step : base - step
@@ -2284,6 +2356,28 @@ final class AppModel: ObservableObject {
     }
 
     private func aircraftAltInt() -> Int { Int(aircraftState.altitudeMSL ?? 0) }
+
+    /// A `minLat,minLon,maxLat,maxLon` box enclosing the aircraft and the route
+    /// airports, padded so PIREPs just off the route are still returned (then narrowed
+    /// to the corridor by `relevantReports`). The AWC pirep endpoint requires a box;
+    /// nil when no position/route is known yet, in which case the caller skips the query.
+    private func pirepBoundingBox(padDegrees: Double = 2.0) -> String? {
+        var coords: [CLLocationCoordinate2D] = []
+        if let c = aircraftState.coordinate, c.isValid { coords.append(c) }
+        for icao in [flightPlan.departure, flightPlan.destination, flightPlan.alternate] {
+            if let c = airports.coordinate(for: icao), c.isValid { coords.append(c) }
+        }
+        if let near = aircraftState.nearestAirport, let c = airports.coordinate(for: near), c.isValid {
+            coords.append(c)
+        }
+        guard !coords.isEmpty else { return nil }
+        let lats = coords.map { $0.latitude }, lons = coords.map { $0.longitude }
+        let minLat = max(-90, (lats.min() ?? 0) - padDegrees)
+        let maxLat = min(90, (lats.max() ?? 0) + padDegrees)
+        let minLon = max(-180, (lons.min() ?? 0) - padDegrees)
+        let maxLon = min(180, (lons.max() ?? 0) + padDegrees)
+        return String(format: "%.3f,%.3f,%.3f,%.3f", minLat, minLon, maxLat, maxLon)
+    }
 
     // MARK: - Weather refresh
 
@@ -2318,7 +2412,13 @@ final class AppModel: ObservableObject {
             destinationMETAR = metars.first { $0.icao == flightPlan.destination }
             alternateMETAR = metars.first { $0.icao == flightPlan.alternate }
             destinationTAF = try? await weatherService.taf(for: flightPlan.destination)
-            pireps = (try? await weatherService.pireps()) ?? []
+            // The AWC pirep endpoint requires a bounding box (else HTTP 400), so query the
+            // route/area box and let `relevantReports` narrow it to the corridor afterwards.
+            if let bbox = pirepBoundingBox() {
+                pireps = (try? await weatherService.pireps(bbox: bbox)) ?? []
+            } else {
+                pireps = []
+            }
             sigmets = (try? await weatherService.airSigmets()) ?? []
             await sampleLivePrecipitation()
             lastAviationWeatherUpdate = Date()
@@ -2540,16 +2640,35 @@ final class AppModel: ObservableObject {
         guard radarOverlay.isEnabled, radarOverlay.coverageAvailable else { return [] }
         let providerConfidence = provider?.confidence ?? .high
         let providerLabel = provider?.uiLayerLabel ?? "Radar precipitation"
+        // Tag satellite-estimate cells as their own source (not radar) so diagnostics /
+        // phraseology never present the estimate as radar-grade.
+        let isSatelliteEstimate = provider.map { $0.layerType == .satelliteEstimate } ?? false
+        let hazardSource: WeatherHazardSource = isSatelliteEstimate ? .satelliteEstimate : .noaaRadar
         let precipCells = settings.mockMode ? radarOverlay.mockCells : radarOverlay.sampledCells
         return precipCells.compactMap { cell in
             guard cell.intensity >= .moderate else { return nil }
             return WeatherHazard(
-                source: .noaaRadar, providerID: provider?.id,
+                source: hazardSource, providerID: provider?.id,
                 phenomenon: .precipitation, intensity: cell.intensity,
                 geometry: .polygon(cell.polygon), confidence: providerConfidence,
                 movementDirectionDegrees: cell.movementDirectionDegrees,
                 movementSpeedKnots: cell.movementSpeedKnots,
                 notes: providerLabel)
+        }
+    }
+
+    /// Re-evaluate live precipitation after the satellite-estimate deviation setting is
+    /// toggled. Bypasses the staleness throttle and forces a fresh sample so the mint
+    /// line appears (turned on) or clears (turned off) at once, correctly *keeping* NOAA
+    /// radar cells either way — the resample re-populates them and only the NASA cells
+    /// come or go. In Mock Mode there is nothing live to sample, so it just recomputes.
+    func applySatelliteDeviationSettingChange() {
+        guard !settings.mockMode else { recomputeWeatherHazards(); return }
+        lastPrecipSampleAt = nil
+        lastPrecipSamplePos = nil
+        Task { @MainActor in
+            await sampleLivePrecipitation()
+            recomputeWeatherHazards()
         }
     }
 
@@ -2599,8 +2718,11 @@ final class AppModel: ObservableObject {
     /// 3. The region is route-relative (not aircraft-relative), so it barely changes as
     ///    the aircraft flies — resampling is driven mainly by staleness, not movement.
     ///
-    /// Best-effort and **true-radar only** (NOAA/OPERA); a satellite estimate or no
-    /// coverage yields no cells. Simulation/training only.
+    /// Best-effort. Radar (NOAA/OPERA) always samples; the NASA global satellite
+    /// estimate samples only when the user opts in via `satelliteDeviationsEnabled` —
+    /// then decoded with the IMERG rate palette and tagged low-confidence, so the mint
+    /// line is drawn around satellite-estimated precipitation but never presented as
+    /// radar. With neither, no cells. Simulation/training only.
     private func sampleLivePrecipitation() async {
         guard settings.noaaRadarOverlay == .autoWhereAvailable else {
             radarOverlay.sampledCells = []
@@ -2632,9 +2754,15 @@ final class AppModel: ObservableObject {
         region.span.latitudeDelta += 2 * padLat
         region.span.longitudeDelta += 2 * padLon
 
-        guard let provider = precipService.selectedProvider(for: region),
-              provider.supportsTrueRadar else {
-            // No true-radar coverage for this route → genuinely no radar cells here.
+        guard let provider = precipService.selectedProvider(for: region) else {
+            radarOverlay.sampledCells = []
+            return
+        }
+        // Radar (NOAA/OPERA) always samples. The NASA satellite estimate samples only
+        // when the user opts in (`satelliteDeviationsEnabled`); otherwise satellite
+        // coverage shows the overlay image but never drives a deviation.
+        let isSatelliteEstimate = provider.layerType == .satelliteEstimate
+        guard provider.supportsTrueRadar || (isSatelliteEstimate && settings.satelliteDeviationsEnabled) else {
             radarOverlay.sampledCells = []
             return
         }
@@ -2664,7 +2792,8 @@ final class AppModel: ObservableObject {
         let fetched = try? await provider.exportImage(
             for: bbox, size: CGSize(width: grid.columns, height: grid.rows), frame: frame)
         guard let data = fetched ?? nil,
-              let cells = RadarImageSampler.cells(fromPNG: data, columns: grid.columns, rows: grid.rows, bbox: bbox) else {
+              let cells = RadarImageSampler.cells(fromPNG: data, columns: grid.columns, rows: grid.rows, bbox: bbox,
+                                                  palette: isSatelliteEstimate ? .imergRate : .reflectivity) else {
             // Fetch or decode failed — keep the last good cells so the deviation line
             // doesn't blink out on a transient error.
             return

@@ -24,12 +24,32 @@ enum RadarImageSampler {
 
     // MARK: - Color → intensity
 
-    /// Classify one radar pixel into a precipitation intensity, or `nil` when the
-    /// pixel is transparent / gray / a light-blue-or-green return below the
-    /// moderate threshold we care about. Green and blue map to `.light` (ignored by
-    /// the moderate-plus filter); yellow-and-warmer map to the graded bands.
-    static func intensity(r: UInt8, g: UInt8, b: UInt8, a: UInt8) -> WeatherIntensity? {
-        // Transparent background of the radar overlay → no precipitation here.
+    /// The color ramp a rendered precipitation image uses, which determines how a
+    /// pixel's hue maps to an intensity band.
+    enum Palette {
+        /// Standard radar base-reflectivity ramp (NOAA/NWS, EUMETNET OPERA):
+        /// green/blue = light, yellow = moderate, orange = heavy, red/magenta = extreme.
+        case reflectivity
+        /// NASA GPM IMERG / GIBS precipitation-*rate* ramp (mm/hr) — the global
+        /// satellite estimate. Structurally similar to the reflectivity ramp, but two
+        /// things differ and are handled here: its low end is a broad blue→green wash
+        /// (kept as `.light` so a stratiform rain field doesn't blob the whole map into
+        /// one giant deviation), and satellite averaging (~10 km) *understates*
+        /// convective cores, so the yellow-green (chartreuse) band that reflectivity
+        /// treats as light is promoted to `.moderate` to catch cells the estimate paints
+        /// paler than radar would. **Best-effort: the exact rate breakpoints are intended
+        /// to be verified/tuned on device against live GIBS IMERG tiles**, consistent
+        /// with the other overlay color scalings in this app.
+        case imergRate
+    }
+
+    /// Classify one precipitation pixel into an intensity for the given color ramp, or
+    /// `nil` when the pixel is transparent / gray / below the moderate threshold we care
+    /// about. For both ramps green and blue map to `.light` (ignored by the moderate-plus
+    /// filter); the ramps differ only in where the moderate band begins (see `Palette`).
+    static func intensity(r: UInt8, g: UInt8, b: UInt8, a: UInt8,
+                          palette: Palette = .reflectivity) -> WeatherIntensity? {
+        // Transparent background of the overlay → no precipitation here.
         guard a >= 40 else { return nil }
         let rf = Double(r), gf = Double(g), bf = Double(b)
         let maxc = max(rf, max(gf, bf))
@@ -37,17 +57,30 @@ enum RadarImageSampler {
         let value = maxc / 255.0
         let sat = maxc <= 0 ? 0 : (maxc - minc) / maxc
         // Near-black, near-white, or washed-out gray pixels are map furniture /
-        // borders bleeding through, not a colored reflectivity return.
+        // borders bleeding through, not a colored precipitation return.
         guard value >= 0.25, sat >= 0.30 else { return nil }
 
         let hue = hueDegrees(r: rf, g: gf, b: bf, maxc: maxc, minc: minc)
-        switch hue {
-        case 78...175:            return .light    // green / green-cyan
-        case 175..<290:           return .light    // blue / cyan (lightest returns)
-        case 46..<78:             return .moderate // yellow
-        case 20..<46:             return .heavy    // orange
-        case 290..<330:           return .extreme  // magenta / violet (very heavy)
-        default:                  return .extreme  // red (hue < 20 or >= 330)
+        switch palette {
+        case .reflectivity:
+            switch hue {
+            case 78...175:            return .light    // green / green-cyan
+            case 175..<290:           return .light    // blue / cyan (lightest returns)
+            case 46..<78:             return .moderate // yellow
+            case 20..<46:             return .heavy    // orange
+            case 290..<330:           return .extreme  // magenta / violet (very heavy)
+            default:                  return .extreme  // red (hue < 20 or >= 330)
+            }
+        case .imergRate:
+            switch hue {
+            case 100...175:           return .light    // green (low-moderate estimated rate)
+            case 175..<290:           return .light    // blue / cyan (lightest estimate)
+            case 70..<100:            return .moderate // yellow-green — promoted; satellite understates cores
+            case 46..<70:             return .moderate // yellow
+            case 20..<46:             return .heavy    // orange
+            case 290..<330:           return .extreme  // magenta / violet (very heavy)
+            default:                  return .extreme  // red (hue < 20 or >= 330)
+            }
         }
     }
 
@@ -167,9 +200,10 @@ enum RadarImageSampler {
     // MARK: - PNG decode
 
     /// Decode a radar PNG into a `rows × cols` intensity grid by drawing it into a
-    /// small RGBA buffer and classifying each sampled pixel. Returns `nil` when the
-    /// bytes can't be decoded. The only impure step in this type.
-    static func grid(fromPNG data: Data, columns: Int, rows: Int) -> [[WeatherIntensity?]]? {
+    /// small RGBA buffer and classifying each sampled pixel with the given color ramp.
+    /// Returns `nil` when the bytes can't be decoded. The only impure step in this type.
+    static func grid(fromPNG data: Data, columns: Int, rows: Int,
+                     palette: Palette = .reflectivity) -> [[WeatherIntensity?]]? {
         guard columns > 0, rows > 0,
               let source = CGImageSourceCreateWithData(data as CFData, nil),
               let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
@@ -197,17 +231,19 @@ enum RadarImageSampler {
             let bufferRow = rows - 1 - row
             for col in 0..<columns {
                 let i = bufferRow * bytesPerRow + col * bytesPerPixel
-                out[row][col] = intensity(r: buffer[i], g: buffer[i + 1], b: buffer[i + 2], a: buffer[i + 3])
+                out[row][col] = intensity(r: buffer[i], g: buffer[i + 1], b: buffer[i + 2], a: buffer[i + 3],
+                                          palette: palette)
             }
         }
         return out
     }
 
     /// Decode `data` and cluster it into moderate-or-greater precipitation cells for
-    /// the region `bbox`, at the given sample resolution. Returns `nil` on decode
-    /// failure so the caller can fall back to the full SIGMET area.
-    static func cells(fromPNG data: Data, columns: Int, rows: Int, bbox: RadarBoundingBox) -> [RadarCell]? {
-        guard let grid = grid(fromPNG: data, columns: columns, rows: rows) else { return nil }
+    /// the region `bbox`, at the given sample resolution and color ramp. Returns `nil`
+    /// on decode failure so the caller can fall back to the full SIGMET area.
+    static func cells(fromPNG data: Data, columns: Int, rows: Int, bbox: RadarBoundingBox,
+                      palette: Palette = .reflectivity) -> [RadarCell]? {
+        guard let grid = grid(fromPNG: data, columns: columns, rows: rows, palette: palette) else { return nil }
         return cells(from: grid, bbox: bbox)
     }
 

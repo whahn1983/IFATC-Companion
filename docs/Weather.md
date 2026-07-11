@@ -191,11 +191,19 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
 - **G-AIRMET** is treated as **contiguous-U.S. only** and is never presented as
   global.
 - The simulated weather-deviation reroute (the mint line) is driven **only by
-  moderate-or-greater precipitation** from true radar (NOAA/OPERA). Where true radar
-  is unavailable there are no precipitation cells, so no reroute is offered — the app
-  does **not** invent precipitation, and does **not** substitute a coarse SIGMET
-  polygon for it. SIGMETs still shade the map, populate the SIGMET card, and raise
-  the ride index.
+  moderate-or-greater precipitation** from true radar (NOAA/OPERA) by default. Where
+  true radar is unavailable there are normally no precipitation cells, so no reroute is
+  offered — the app does **not** invent precipitation, and does **not** substitute a
+  coarse SIGMET polygon for it. SIGMETs still shade the map, populate the SIGMET card,
+  and raise the ride index.
+  - **Opt-in exception — satellite-estimate deviations.** A Weather Data setting,
+    *"Deviations from satellite estimate"* (`satelliteDeviationsEnabled`, **off by
+    default**), lets the deviation flow also run from the **NASA global satellite
+    estimate** where there is no radar. It is off by default because the estimate is
+    coarse (~10 km), latent (hours), and cannot reliably grade severity, so its cells
+    are decoded with the **IMERG rate palette** (§How the flow works) and tagged
+    **low-confidence** and sourced as `.satelliteEstimate` — never presented as radar.
+    When off, satellite coverage still shows the overlay image but draws no deviation.
 
 ## How the flow works
 
@@ -206,7 +214,10 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
    for the **whole flight-plan corridor** (the aircraft and every fix ahead through the
    destination — the entire route from the gate, the remaining route in flight — widened
    ~60 NM on every side), classifies pixels by the reflectivity color
-   ramp, and clusters the moderate-and-warmer returns into cells. Sampling the entire
+   ramp (or, for an opted-in NASA satellite estimate, the IMERG rate palette, which keeps
+   the broad blue/green low-rate wash as light but promotes the yellow-green band to
+   moderate to offset satellite under-estimation of cores), and clusters the
+   moderate-and-warmer returns into cells. Sampling the entire
    route — not just a window ahead — is what lets every system's reroute be seen at once,
    including the faint strategic previews **from the gate before takeoff**. To avoid the
    old whole-route problem (a fixed grid over a long route under-resolved storms and
@@ -218,9 +229,11 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
    `maybeResamplePrecipitation` is driven mainly by staleness (~60 s) with a large
    movement backstop rather than re-fetching the bigger image every mile. On a
    fetch/decode failure it **keeps the last good cells** instead of wiping them, so a
-   transient hiccup doesn't blink the mint line out. This is
-   **true-radar only** and best-effort — outside NOAA/OPERA coverage there are no
-   cells and no deviation is offered (rather than one invented from coarser data).
+   transient hiccup doesn't blink the mint line out. This is **true-radar only** by
+   default and best-effort — outside NOAA/OPERA coverage there are no cells and no
+   deviation is offered (rather than one invented from coarser data), unless the user
+   opts in to satellite-estimate deviations (see Coverage limitations), in which case
+   the NASA estimate is sampled with the IMERG palette and tagged low-confidence.
    The sampled cells drive geometry only and are never drawn (the radar image overlay
    already shows the precipitation). Radar is always spoken as *"precipitation"*,
    never *"turbulence"*.
