@@ -225,6 +225,7 @@ enum OPERACompositeRenderer {
         case .moderate: return (235, 220, 40, 190)
         case .heavy:    return (245, 140, 20, 205)
         case .extreme:  return (220, 30, 30, 220)
+        case .unknown:  return (0, 0, 0, 0)     // no classified return → paint nothing
         }
     }
 
