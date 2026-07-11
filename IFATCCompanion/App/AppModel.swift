@@ -2278,11 +2278,15 @@ final class AppModel: ObservableObject {
             // Remember the suggestion so the accept button appears and the next
             // higher/lower request targets it.
             suggestedSmootherAltitude = smoother
-            post(rideEngine.rideReport(assessment: rideAssessment, items: rideReportItems,
-                                       referenceAltitudeFt: refAlt, smoother: smoother,
-                                       callsign: c.callsign), speak: true)
-            // Acknowledge the report — an informational reply, so a courtesy "Roger".
-            postPilot(pilotEngine.roger(context: c, facility: facility))
+            var report = rideEngine.rideReport(assessment: rideAssessment, items: rideReportItems,
+                                               referenceAltitudeFt: refAlt, smoother: smoother,
+                                               callsign: c.callsign)
+            // Don't auto-acknowledge. The pilot answers on their own terms — accepting a
+            // suggested smoother altitude (the "next response" for the new-altitude logic),
+            // or tapping Read Back for the courtesy "Roger" attached here so that button
+            // acknowledges the report rather than re-deriving a stale state read-back.
+            report.readback = pilotEngine.roger(context: c, facility: facility).asReadback(facility: facility)
+            post(report, speak: true)
         }
     }
 
@@ -2315,9 +2319,11 @@ final class AppModel: ObservableObject {
         postPilot(pilotEngine.requestWeather(context: c, airport: dest.isEmpty ? "destination" : dest))
         Task {
             await refreshWeather()
-            post(rideEngine.destinationWeather(metar: destinationMETAR, callsign: c.callsign, icao: dest), speak: true)
-            // Acknowledge the weather read-out with a courtesy "Roger".
-            postPilot(pilotEngine.roger(context: c, facility: facility))
+            var wx = rideEngine.destinationWeather(metar: destinationMETAR, callsign: c.callsign, icao: dest)
+            // Don't auto-acknowledge — attach the courtesy "Roger" as the read-back so the
+            // pilot acknowledges the read-out explicitly with Read Back.
+            wx.readback = pilotEngine.roger(context: c, facility: facility).asReadback(facility: facility)
+            post(wx, speak: true)
         }
     }
 
