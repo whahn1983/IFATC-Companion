@@ -2821,6 +2821,13 @@ final class AppModel: ObservableObject {
         // the line is held until the aircraft closes in.
         guard let conflict = activeWeatherConflict, conflict.withinDrawRange,
               conflict.deviationPath.count >= 2 else { return nil }
+        // Protection: never draw a recommended line that doesn't actually engage the
+        // weather. A degenerate reroute drawn out in clear air (e.g. stretched past the
+        // storm toward a distant rejoin) is suppressed rather than shown as a mint line
+        // with no weather near it.
+        guard conflictDetector.pathEngagesWeather(conflict.deviationPath, hazards: weatherHazards) else {
+            return nil
+        }
         return conflict.deviationPath
     }
 
@@ -2859,6 +2866,9 @@ final class AppModel: ObservableObject {
                     phase: .cruise, hazards: weatherHazards, waypoints: flightPlan.waypoints,
                     routeAhead: ahead, rejoinCap: cap),
                conflict.deviationPath.count >= 2,
+               // Same protection as the solid line: only preview a reroute that actually
+               // engages weather, so a degenerate line in clear air is never drawn.
+               conflictDetector.pathEngagesWeather(conflict.deviationPath, hazards: weatherHazards),
                let end = conflict.deviationPath.last, end.isValid,
                Geo.distanceNM(from: startPoint, to: end) > 1 {
                 lines.append(conflict.deviationPath)

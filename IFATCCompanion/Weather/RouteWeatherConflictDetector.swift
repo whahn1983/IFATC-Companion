@@ -103,6 +103,16 @@ struct RouteWeatherConflictDetector {
         /// Cells whose along-track position is within this margin of the blocking
         /// band are treated as part of the same line for gap analysis (NM).
         var clusterAlongMarginNM: Double = 30
+        /// The along-route clear gap (NM) that separates two **distinct weather systems**.
+        /// Cells strung together by clear gaps *smaller* than this count as one system —
+        /// the reroute hugs past all of them and rejoins beyond the last (the packed-systems
+        /// case); a *larger* gap ends the system, so the reroute rejoins at its exit and the
+        /// next system is worked separately. This is the single tuned knob for "how packed
+        /// is one system": it governs both the along-track cluster window the hug parallels
+        /// and where the route-following rejoin lands, so the parallel leg and the rejoin
+        /// always agree on the system's extent (the closing leg can't cut through a system
+        /// the parallel leg stopped short of). ~30–50 NM is the realistic band; tune here.
+        var systemSeparationNM: Double = 40
         /// A candidate deviation path must stay at least this far from every
         /// precipitation cell to be accepted, so a reroute never threads a gap in one
         /// storm only to cut through another (NM). This is the base margin for
@@ -287,11 +297,14 @@ struct RouteWeatherConflictDetector {
     }
 
     /// The point on the route where the deviation should rejoin: just past the far
-    /// extent of the weather **along the route**. Because it follows the route's
-    /// bends, a route that turns (say south) past the storm puts the rejoin on that
-    /// turn — so the reroute's length is measured to the real intercept and the
-    /// shorter-side deviation wins. Nil when no route is supplied or nothing on it is
-    /// within the corridor (detection then rejoins straight ahead, as before).
+    /// extent of the **first weather system** along the route (a contiguous run of cells,
+    /// merged across clear gaps smaller than `systemSeparationNM`) — *not* the farthest
+    /// weather anywhere on the route, which would stretch the line to a distant rejoin near
+    /// a downstream system. Because it follows the route's bends, a route that turns (say
+    /// south) past the storm puts the rejoin on that turn — so the reroute's length is
+    /// measured to the real intercept and the shorter-side deviation wins. Nil when no
+    /// route is supplied or nothing on it is within the corridor (detection then rejoins
+    /// straight ahead, as before).
     private func routeRejoinCoord(position: CLLocationCoordinate2D,
                                   routeAhead: [CLLocationCoordinate2D],
                                   hazards: [WeatherHazard], lookahead: Double) -> CLLocationCoordinate2D? {
@@ -300,11 +313,17 @@ struct RouteWeatherConflictDetector {
         let route = [position] + ahead
         guard route.count >= 2 else { return nil }
 
-        // The farthest point along the route still within a corridor half-width of a
-        // cell — where the route finally exits the weather.
-        var weatherFarAlong: Double?
+        // Walk the route and find the far edge of the **first system** — the first
+        // contiguous run of weather, where cells separated by a clear gap smaller than
+        // `systemSeparationNM` count as one system and a larger gap ends it. Rejoining at
+        // the first system's exit — rather than the farthest weather anywhere on the route —
+        // keeps the drawn line compact around that system instead of stretching it to a
+        // distant rejoin near a downstream system or the destination (the "line drawn past
+        // the weather, ending near the airport" failure). Systems beyond the gap are worked
+        // separately (the preview walker steps to each in turn).
+        var firstSystemFarAlong: Double?
         var cumulative = 0.0
-        for i in 0..<(route.count - 1) {
+        walk: for i in 0..<(route.count - 1) {
             if cumulative > lookahead { break }
             let a = route[i], b = route[i + 1]
             let segLen = Geo.distanceNM(from: a, to: b)
@@ -314,16 +333,20 @@ struct RouteWeatherConflictDetector {
                 let along = cumulative + segLen * t
                 if along > lookahead { break }
                 let p = interpolate(a, b, t)
+                var inWeather = false
                 for hazard in hazards {
                     let half = config.corridorHalfWidthNM + pointRadiusBuffer(hazard)
-                    if distanceHazardToPointNM(hazard, p) <= half {
-                        weatherFarAlong = max(weatherFarAlong ?? 0, along)
-                    }
+                    if distanceHazardToPointNM(hazard, p) <= half { inWeather = true; break }
+                }
+                if inWeather {
+                    firstSystemFarAlong = along
+                } else if let far = firstSystemFarAlong, along - far >= config.systemSeparationNM {
+                    break walk   // a full clear gap — the first system has ended; rejoin here
                 }
             }
             cumulative += segLen
         }
-        guard let far = weatherFarAlong else { return nil }
+        guard let far = firstSystemFarAlong else { return nil }
         return pointOnRoute(route, atAlong: far + 20)
     }
 
@@ -408,9 +431,12 @@ struct RouteWeatherConflictDetector {
         // otherwise the straight-corridor line, aimed across the route's bends at distant
         // weather, shoots off across the map ("crazy mint line").
         let withinDrawRange = bandNear <= config.mintLineDrawNM
+        // Cluster by the system-separation gap (not the tighter `clusterAlongMarginNM`),
+        // so the line the hug parallels spans exactly the cells the route-following rejoin
+        // treats as one system — the parallel leg then always reaches the rejoin.
         let lineCells = projections.filter {
-            $0.alongMax >= bandNear - config.clusterAlongMarginNM
-                && $0.alongMin <= bandFar + config.clusterAlongMarginNM
+            $0.alongMax >= bandNear - config.systemSeparationNM
+                && $0.alongMin <= bandFar + config.systemSeparationNM
         }
         // Candidate reroutes around the line come in two shapes:
         //   • single-apex doglegs (position → abeam-the-middle apex → rejoin) at each
@@ -502,6 +528,52 @@ struct RouteWeatherConflictDetector {
             abs(offset) / tan(config.initialDeviationTurnDegrees * .pi / 180)
         }
 
+        // A variable-offset hug that follows the **outboard silhouette** of the clustered
+        // line on one side (+1 right / −1 left): the convex upper hull of every cell's
+        // projected corners in the (along, cross) frame, offset outboard by the berth.
+        // Unlike the fixed-offset hugs, this traces a staggered / complex edge with **as
+        // many legs as the shape needs** — turn out to the near offset just before the
+        // weather, follow the edge in/out, then rejoin — so a line whose near cells sit
+        // close to course and far cells bulge wide is hugged tightly instead of paralleled
+        // at the single widest offset. Being convex it never zig-zags inboard, so it always
+        // stays outboard of every (convex) cell; `pathIsClear` still validates it, and the
+        // shortest-clear selector adopts it only when it beats the fixed-offset hugs.
+        func hullHugPath(side: Double) -> (path: [CLLocationCoordinate2D], target: Double)? {
+            let rejoinAlong = project(rejoinCoord, from: position, course: course).along
+            let margin = config.lateralBufferNM
+            var berth = config.pathClearanceNM
+            var pts: [(x: Double, y: Double)] = []       // x = along, y = outboard cross on `side`
+            for cell in lineSet {
+                guard let poly = cell.polygon else { continue }
+                berth = max(berth, berthNM(for: cell.hazard.intensity))
+                for v in poly {
+                    let s = project(v, from: position, course: course)
+                    guard s.along > 0, s.along <= rejoinAlong else { continue }
+                    pts.append((x: s.along, y: side * s.cross))
+                }
+            }
+            guard pts.count >= 2 else { return nil }
+            let hull = upperHull(pts)
+            guard let first = hull.first else { return nil }
+            func offsetFor(_ y: Double) -> Double { max(margin, y + berth) }
+            func point(along: Double, offset: Double) -> CLLocationCoordinate2D {
+                let onC = Geo.destination(from: position, bearingDegrees: course, distanceNM: max(0, along))
+                return Geo.destination(from: onC, bearingDegrees: course + side * 90, distanceNM: offset)
+            }
+            var path = [position]
+            var maxOff = offsetFor(first.y)
+            // Reach the near offset just *before* the first hull vertex so the turn-out
+            // doesn't clip the near cell, then trace each hull vertex.
+            path.append(point(along: max(0, first.x - margin), offset: maxOff))
+            for h in hull {
+                let off = offsetFor(h.y)
+                maxOff = max(maxOff, off)
+                path.append(point(along: h.x, offset: off))
+            }
+            path.append(rejoinCoord)
+            return (path, side * maxOff)
+        }
+
         // The finally-drawn geometry of a candidate: capped to the rejoin limit (never
         // past the destination / approach) and bounded to the max off-course turn (never
         // reversing the aircraft). Validation and selection run on THIS — the line
@@ -562,6 +634,15 @@ struct RouteWeatherConflictDetector {
                 }
             }
         }
+        // Variable-offset edge-following hugs (the multi-leg path for staggered / complex
+        // shapes). Added on top of the fixed-offset hugs; the shortest-clear selector picks
+        // whichever is shorter, so this only wins where following the edge genuinely beats
+        // paralleling at the widest offset.
+        for side in [1.0, -1.0] {
+            if let hull = hullHugPath(side: side), abs(hull.target) <= config.searchHalfWidthNM {
+                candidates.append((path: finalize(hull.path), target: hull.target))
+            }
+        }
 
         // The shortest of a candidate set (by total drawn length), or nil when empty.
         func shortest(_ set: [(path: [CLLocationCoordinate2D], target: Double)])
@@ -612,7 +693,7 @@ struct RouteWeatherConflictDetector {
         // reroute close aboard starting at the aircraft. Then guarantee the whole
         // maneuver spans at least the minimum extent.
         var deviationPath = startAtTurnOut(chosen.path, position: position, course: course)
-        deviationPath = endAtTurnBack(deviationPath, position: position, course: course)
+        deviationPath = endAtTurnBack(deviationPath, position: position, course: course, capAlong: capAlong)
         deviationPath = enforceMinExtent(deviationPath, position: position, course: course, capAlong: capAlong)
         // Safety: the reshaped lead-in / lead-out must still clear the intense cores. If
         // the steeper turn-out geometry would clip one (e.g. a tight gap-thread), keep the
@@ -789,6 +870,54 @@ struct RouteWeatherConflictDetector {
         return worst
     }
 
+    /// Whether a drawn deviation actually **engages** the weather it claims to route
+    /// around: some interior point comes within `maxDistanceNM` of a moderate-or-greater
+    /// precipitation cell. A line that stays far from every cell — a degenerate reroute
+    /// drawn out in clear air (e.g. one stretched past the storm toward a distant rejoin,
+    /// which validates as "clear" precisely because it is nowhere near the weather) — does
+    /// **not** engage, so callers suppress drawing it rather than show a mint line with no
+    /// weather anywhere near it. Ignores the immediate vicinity of the start (the aircraft
+    /// may sit in light precip) and only the moderate+ cells that actually drive a
+    /// deviation. This is the guard that catches a line that isn't surrounding any weather.
+    func pathEngagesWeather(_ path: [CLLocationCoordinate2D], hazards: [WeatherHazard],
+                            maxDistanceNM: Double = 45) -> Bool {
+        guard path.count >= 2, let start = path.first else { return false }
+        let polys = hazards.compactMap { h -> [CLLocationCoordinate2D]? in
+            guard h.intensity >= .moderate, let p = h.geometry.polygonPoints, p.count >= 3 else { return nil }
+            return p
+        }
+        guard !polys.isEmpty else { return false }
+        for i in 0..<(path.count - 1) {
+            let a = path[i], b = path[i + 1]
+            let steps = max(1, Int(Geo.distanceNM(from: a, to: b) / 5))
+            for s in 0...steps {
+                let p = interpolate(a, b, Double(s) / Double(steps))
+                if Geo.distanceNM(from: start, to: p) < 5 { continue }
+                for poly in polys where distanceToPolygonNM(p, poly) <= maxDistanceNM { return true }
+            }
+        }
+        return false
+    }
+
+    /// The upper convex hull (the maximal-`y` envelope) of points in an (x, y) plane,
+    /// left to right — used to trace the outboard silhouette of a clustered weather line
+    /// so a hug can follow a staggered edge with as many legs as the shape needs. Standard
+    /// monotone chain: sort by x (ties: higher y first), then keep only right turns so the
+    /// kept vertices bulge upward (outboard). Internal for direct unit testing.
+    func upperHull(_ input: [(x: Double, y: Double)]) -> [(x: Double, y: Double)] {
+        let sorted = input.sorted { $0.x != $1.x ? $0.x < $1.x : $0.y > $1.y }
+        var hull: [(x: Double, y: Double)] = []
+        for p in sorted {
+            while hull.count >= 2 {
+                let a = hull[hull.count - 2], b = hull[hull.count - 1]
+                let cross = (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)
+                if cross >= 0 { hull.removeLast() } else { break }   // drop left turns / collinear
+            }
+            hull.append(p)
+        }
+        return hull
+    }
+
     /// Distance (NM) from a point to a polygon: 0 inside, else the nearest edge.
     private func distanceToPolygonNM(_ p: CLLocationCoordinate2D, _ poly: [CLLocationCoordinate2D]) -> Double {
         guard poly.count >= 3 else { return .greatestFiniteMagnitude }
@@ -925,22 +1054,44 @@ struct RouteWeatherConflictDetector {
         return [v0] + Array(path.dropFirst())
     }
 
-    /// Rejoin with a ~`initialDeviationTurnDegrees`° **turn-back** rather than a long
-    /// shallow intercept, by ending the maneuver a matching lead past the last offset
-    /// vertex. Applied only when the rejoin sits essentially on the course line (a
-    /// straight route); a bent-route rejoin (off course) is left to the route-intercept
-    /// truncation. Only ever shortens the maneuver (steepening a too-shallow rejoin).
+    /// Rejoin with a ~`initialDeviationTurnDegrees`° **turn-back** — symmetric with the
+    /// turn-out, so the closing leg is neither a long shallow intercept nor a ~90°
+    /// sideways jog back onto the route. Applied only when the rejoin sits essentially on
+    /// the course line (a straight route); a bent-route rejoin is left to the
+    /// route-intercept truncation. Only the rejoin (last) vertex is moved, so the turn-out
+    /// and parallel legs are untouched:
+    ///  • **Too shallow** → pull the rejoin *back* so the closing leg steepens to the
+    ///    target angle (only shortens the maneuver).
+    ///  • **Too steep** (the ~90° squeeze) → push the rejoin *forward*, a matching lead
+    ///    beyond the parallel-leg end, so the closing leg has the along-distance to
+    ///    intercept at the target angle — bounded by `capAlong` (never past the
+    ///    destination / approach). Where the cap leaves no room the step stays steep; a
+    ///    downstream system in the way is the packed-systems case, handled by extending
+    ///    the parallel leg past it.
     private func endAtTurnBack(_ path: [CLLocationCoordinate2D], position: CLLocationCoordinate2D,
-                               course: Double) -> [CLLocationCoordinate2D] {
+                               course: Double, capAlong: Double?) -> [CLLocationCoordinate2D] {
         guard path.count >= 3, let last = path.last else { return path }
         let sLast = project(last, from: position, course: course)
         guard abs(sLast.cross) < 3 else { return path }   // bent-route rejoin — leave to truncation
         let sFar = project(path[path.count - 2], from: position, course: course)
         guard abs(sFar.cross) > 0.5 else { return path }
-        let endAlong = sFar.along + turnOutLead(forOffset: sFar.cross)
-        guard endAlong < sLast.along - 2 else { return path }   // current rejoin already steep enough
-        let v = Geo.destination(from: position, bearingDegrees: course, distanceNM: endAlong)
-        return Array(path.dropLast()) + [v]
+        let lead = turnOutLead(forOffset: sFar.cross)
+        let closingAlong = sLast.along - sFar.along
+        if closingAlong > lead + 2 {
+            // Too shallow → steepen to the target by pulling the rejoin back.
+            let v = Geo.destination(from: position, bearingDegrees: course, distanceNM: sFar.along + lead)
+            return Array(path.dropLast()) + [v]
+        }
+        if closingAlong < lead - 2 {
+            // Too steep → give the closing leg room by rejoining a matching lead beyond the
+            // parallel-leg end, bounded by the rejoin cap.
+            var rejoinAlong = sFar.along + lead
+            if let capAlong { rejoinAlong = min(rejoinAlong, capAlong) }
+            guard rejoinAlong > sLast.along + 2 else { return path }   // cap leaves no room
+            let v = Geo.destination(from: position, bearingDegrees: course, distanceNM: rejoinAlong)
+            return Array(path.dropLast()) + [v]
+        }
+        return path
     }
 
     /// Guarantee the drawn maneuver spans at least `minDeviationExtentNM` from start to

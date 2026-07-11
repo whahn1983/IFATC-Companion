@@ -314,19 +314,40 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
        capped to the along-distance where the route exits the weather, so the line does
        not run out to the far edge of distant off-route cells and then double back across
        the intercept.
-   - **Rejoin on the route just past the weather, not at a distant fix.** Every
-     candidate returns to the route at the point where the route **exits the weather**
-     — it does *not* stretch the drawn line to a far-downstream fix. Two things matter
-     here. First, chasing a distant fix forces the closing leg of a short one-side
-     deviation to swing back across the storm, so that candidate gets rejected and the
-     reroute either loops the long way or, up close, drives straight through a core.
-     Second, the rejoin follows the route's **bends**: if the route turns (say south)
-     just past the storm, the intercept is on that turn, so the reroute's length is
-     measured to the real rejoin and the shorter (southern) side wins — rather than
-     measuring to a straight-ahead point that makes both sides look equal. When no
-     route is supplied it falls back to returning to course just past the far edge.
-     The nearest downstream fix is still selected and named for the ATC rejoin call
-     ("proceed direct …"); it simply lies on ahead of where the drawn line rejoins.
+     - **Variable-offset, multi-leg hug for complex shapes.** The fixed-offset hug
+       parallels the line at one width (the tightest that clears the whole side), which is
+       wider than necessary when the line is *staggered* — near cells close to course, far
+       cells bulging wide. So the detector also offers an **edge-following** hug: the convex
+       upper hull (`upperHull`) of every clustered cell's projected corners on that side,
+       offset outboard by the berth, traced as **as many legs as the shape needs** (turn
+       out to the near offset just before the weather, follow the edge in/out, rejoin).
+       Being convex it never zig-zags inboard, so it always stays outboard of every (convex)
+       cell. It is added on top of the fixed hugs and validated by `pathIsClear` like every
+       candidate, so the shortest-clear selector adopts it only where following the edge
+       genuinely beats paralleling at the single widest offset — a tighter reroute around a
+       complex line, without ever going wider than the fixed hug it replaces.
+   - **Rejoin past the first system, not the farthest weather on the route.** Every
+     candidate returns to the route at the point where the route exits the **first weather
+     system** — the first contiguous run of cells, merged across clear gaps smaller than
+     `systemSeparationNM` (the tuned packed-systems knob, ~30–50 NM) and ended by a larger
+     gap. It does *not* stretch the drawn line to the farthest weather anywhere on the
+     route: with precip scattered down a long route, taking "the farthest cell + 20" put
+     the rejoin near a downstream system or the destination, so the single line was drawn
+     *past* the first storm and ended near the airport — surrounding nothing. Rejoining at
+     the first system's exit keeps the line compact around it; each later system is worked
+     separately (the preview walker steps to each in turn). The same `systemSeparationNM`
+     governs the along-track cluster window the hug parallels, so the parallel leg and the
+     rejoin always agree on the system's extent — the closing leg can't be pulled past a
+     system the parallel leg stopped short of. Three further points still hold. First,
+     chasing a distant fix forces the closing leg of a short one-side deviation to swing
+     back across the storm, so that candidate gets rejected and the reroute either loops
+     the long way or, up close, drives straight through a core. Second, the rejoin follows
+     the route's **bends**: if the route turns (say south) just past the storm, the
+     intercept is on that turn, so the reroute's length is measured to the real rejoin and
+     the shorter (southern) side wins. When no route is supplied it falls back to returning
+     to course just past the far edge. The nearest downstream fix is still selected and
+     named for the ATC rejoin call ("proceed direct …"); it simply lies on ahead of where
+     the drawn line rejoins.
    - **Red cores get a wide berth.** Clearance is per-cell by intensity: a
      red/extreme return demands a wide berth (`severeBerthNM`, ~20 NM per FAA AC
      00-24C guidance for severe echoes) while moderate/heavy cells keep the base margin. That berth is applied both to path
@@ -373,13 +394,28 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      a lead-in just before the weather sized so the first leg is a ~30° turn onto the
      offset (`initialDeviationTurnDegrees`), rather than starting at the aircraft
      (`startAtTurnOut`) — and **rejoins with a matching ~30° turn-back** on a straight
-     route (`endAtTurnBack`). Weather close aboard keeps the start at the aircraft with a
-     necessarily steeper turn. Every turn on the drawn line is therefore at least ~30°,
+     route (`endAtTurnBack`). The turn-back is **symmetric**: only the rejoin vertex moves
+     — pulled back to steepen a too-shallow intercept, or pushed forward (a matching lead
+     beyond the parallel-leg end, within the rejoin cap) to open up a too-steep one, so the
+     closing leg is never the ~90° sideways jog back onto the route that a compressed rejoin
+     used to produce. Where the cap (or a downstream system) leaves no room the step stays
+     steep — the packed-systems case, handled by extending the parallel leg past the next
+     system. Weather close aboard keeps the start at the aircraft with a necessarily steeper
+     turn. Every turn on the drawn line is therefore at least ~30°,
      and the whole maneuver spans at least `minDeviationExtentNM` (15 NM) end-to-end
      (`enforceMinExtent`) so it never renders as a twitch. The reshaping only ever touches
      the lead-in / lead-out on the course line ahead of and behind the (already-clear)
      offset legs, and is re-validated against the intense cores — if the steeper geometry
      would clip one, the validated original is kept.
+   - **Must actually engage the weather (`pathEngagesWeather`).** Clearance validation
+     (`pathIsClear`) only proves a candidate stays *clear* of every cell — a line drawn out
+     in clear air, nowhere near the storm, passes it trivially (and can even rank as the
+     "shortest"). So before a recommended line is drawn (the solid active line and the faint
+     previews, in `AppModel`), it is re-checked: some interior point must come within
+     `maxDistanceNM` (~45 NM) of a moderate-or-greater cell. A line that stays far from every
+     cell does **not** engage the weather and is **suppressed** rather than shown as a mint
+     line with no weather near it. A committed (frozen) line the pilot is already flying is
+     never suppressed.
    It also computes distance, clock position(s), estimated time, severity, the spoken
    deviation amount (the actual initial turn onto the threading path), and a
    downstream rejoin fix.

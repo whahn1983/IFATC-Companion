@@ -267,6 +267,45 @@ final class WeatherDeviationTests: XCTestCase {
         }
     }
 
+    // MARK: - Turn-back symmetry (gradual rejoin, not a 90° squeeze)
+
+    /// A wide wall of precipitation squarely on course forces a side-hug down one edge.
+    /// The closing leg back onto course must be a gradual (~30°) turn-back, not a ~90°
+    /// sideways jog — the compressed-rejoin bug. The turn-out and parallel legs are
+    /// unaffected; only the rejoin is pushed forward far enough to intercept gently.
+    func testTurnBackIsGradualNotNinetyDegrees() throws {
+        let wall = radarHazard(cell(alongNM: 60, crossNM: 0, halfAlong: 30, halfCross: 25, from: usPosition))
+        let downstream = Geo.destination(from: usPosition, bearingDegrees: course, distanceNM: 260)
+        let wp = Waypoint(name: "RJOIN", latitude: downstream.latitude, longitude: downstream.longitude)
+        let conflict = try XCTUnwrap(detector.detectConflict(
+            position: usPosition, course: course, groundspeedKnots: 450, phase: .cruise,
+            hazards: [wall], waypoints: [wp]))
+        let path = conflict.deviationPath
+        XCTAssertGreaterThanOrEqual(path.count, 3, "a wall on course must produce a hug")
+        let n = path.count
+        let lastLeg = Geo.headingDifference(Geo.bearing(from: path[n - 2], to: path[n - 1]), course)
+        XCTAssertLessThanOrEqual(lastLeg, 45, "the turn-back onto course must be gradual, not a ~90° squeeze")
+        assertPathClear(path, of: [wall.geometry.polygonPoints ?? []])
+    }
+
+    // MARK: - Engages-weather protection (no mint line in clear air)
+
+    /// A reroute that runs entirely in clear air, far from every cell, must be recognized
+    /// as *not* engaging the weather, so callers can suppress drawing it. A path that hugs
+    /// the storm does engage. This is the guard against a mint line with no weather near it.
+    func testPathEngagesWeatherDistinguishesClearAirFromAHug() throws {
+        let storm = radarHazard(cell(alongNM: 40, crossNM: 0, from: usPosition))
+        let east0 = Geo.destination(from: usPosition, bearingDegrees: 90, distanceNM: 200)
+        let east1 = Geo.destination(from: usPosition, bearingDegrees: 90, distanceNM: 300)
+        XCTAssertFalse(detector.pathEngagesWeather([east0, east1], hazards: [storm]),
+                       "a line far from every cell does not engage the weather")
+        let conflict = try XCTUnwrap(detector.detectConflict(
+            position: usPosition, course: course, groundspeedKnots: 450, phase: .cruise,
+            hazards: [storm], waypoints: []))
+        XCTAssertTrue(detector.pathEngagesWeather(conflict.deviationPath, hazards: [storm]),
+                      "the drawn reroute around the storm engages it")
+    }
+
     // MARK: - Rejoin cap (never route past the destination / approach)
 
     /// The along-course component (NM) of a point relative to the northbound course.
@@ -610,6 +649,65 @@ final class WeatherDeviationTests: XCTestCase {
         let end = try XCTUnwrap(conflict.deviationPath.last)
         XCTAssertLessThan(end.latitude, usPosition.latitude - 0.3,
                           "the deviation should rejoin on the route's southward leg, not straight ahead")
+    }
+
+    func testRejoinsAtFirstSystemNotStretchedToADistantSecondSystem() throws {
+        // Two systems on a northbound route: one ~40 NM ahead, another ~150 NM ahead with
+        // a wide clear gap between them. The drawn line must rejoin just past the FIRST
+        // system — compact around it — not stretch all the way to the second system near
+        // the destination (the mislocated "line past the weather, ending near the airport").
+        let storm1 = radarHazard(cell(alongNM: 40, crossNM: 0, halfCross: 12, from: usPosition))
+        let storm2 = radarHazard(cell(alongNM: 150, crossNM: 0, halfCross: 12, from: usPosition))
+        let f1 = Geo.destination(from: usPosition, bearingDegrees: 0, distanceNM: 100)
+        let f2 = Geo.destination(from: usPosition, bearingDegrees: 0, distanceNM: 200)
+        let wps = [Waypoint(name: "F1", latitude: f1.latitude, longitude: f1.longitude),
+                   Waypoint(name: "F2", latitude: f2.latitude, longitude: f2.longitude)]
+        let conflict = try XCTUnwrap(detector.detectConflict(
+            position: usPosition, course: 0, groundspeedKnots: 450, phase: .cruise,
+            hazards: [storm1, storm2], waypoints: wps, routeAhead: [f1, f2]))
+        let end = try XCTUnwrap(conflict.deviationPath.last)
+        XCTAssertLessThan(alongFromCourse(end), 120,
+                          "the line rejoins past the first system, not stretched to the second ~150 NM away")
+        assertPathClear(conflict.deviationPath, of: [storm1.geometry.polygonPoints ?? [],
+                                                     storm2.geometry.polygonPoints ?? []])
+    }
+
+    // MARK: - Complex shapes (variable-offset, multi-leg hug)
+
+    func testUpperHullTracesOutboardEnvelope() {
+        // A staggered set of points: the hull keeps the outward-bulging envelope and drops
+        // interior points that lie below it.
+        let pts: [(x: Double, y: Double)] = [(0, 0), (1, 5), (2, 3), (3, 8), (4, 2), (5, 0)]
+        let hull = detector.upperHull(pts)
+        XCTAssertEqual(hull.first?.x, 0, "the leftmost point is always on the hull")
+        XCTAssertEqual(hull.last?.x, 5, "the rightmost point is always on the hull")
+        for i in 1..<hull.count {
+            XCTAssertGreaterThan(hull[i].x, hull[i - 1].x, "the hull is monotonic in x")
+        }
+        XCTAssertTrue(hull.contains { $0.x == 3 && $0.y == 8 }, "the outward peak is kept")
+        XCTAssertFalse(hull.contains { $0.x == 2 }, "an interior point below the envelope is dropped")
+    }
+
+    func testComplexStaggeredLineStaysTightAndClear() throws {
+        // A line that straddles course near the aircraft and bulges hard to the right
+        // downrange — a shape a single fixed-offset parallel would have to swing wide for.
+        // The reroute must stay clear of every cell and take the tight (left) side rather
+        // than loop around the far-right bulge.
+        let polys = [
+            cell(alongNM: 35,  crossNM: 0,  halfCross: 14, from: usPosition),   // straddles course
+            cell(alongNM: 70,  crossNM: 20, halfCross: 12, from: usPosition),   // right
+            cell(alongNM: 105, crossNM: 45, halfCross: 12, from: usPosition),   // far right
+        ]
+        let downstream = Geo.destination(from: usPosition, bearingDegrees: course, distanceNM: 220)
+        let wp = Waypoint(name: "RJOIN", latitude: downstream.latitude, longitude: downstream.longitude)
+        let conflict = try XCTUnwrap(detector.detectConflict(
+            position: usPosition, course: course, groundspeedKnots: 450, phase: .cruise,
+            hazards: polys.map { radarHazard($0) }, waypoints: [wp]))
+        assertPathClear(conflict.deviationPath, of: polys)
+        for p in conflict.deviationPath {
+            XCTAssertLessThan(abs(offsetFromCourse(p)), 40,
+                              "the reroute hugs the near/left edge, never loops around the far-right bulge")
+        }
     }
 
     func testGivesRedCellsAWiderBerthThanLighterCells() throws {
