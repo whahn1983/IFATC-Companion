@@ -419,6 +419,29 @@ final class WeatherDeviationTests: XCTestCase {
                                     "the drawn deviation must span at least the minimum extent")
     }
 
+    /// A wide red/extreme core well ahead — one needing the wide (~20 NM) berth — must still be
+    /// entered and left with gradual ~30° legs, not a square 90° step. The turn-out is pulled
+    /// earlier and the turn-back pushed out into clear air (rather than collapsing to a square
+    /// when the ideal transition would clip the bermed core), while the whole line stays clear.
+    func testWideCoreStillGetsGradualTurnOutAndTurnBack() throws {
+        // Extreme wall ~95 NM ahead on course (near edge well beyond the ~30° turn-out lead, so
+        // a gradual turn onto the offset fits ahead of it — not the close-aboard exception).
+        let wall = radarHazard(cell(alongNM: 120, crossNM: 0, halfAlong: 25, halfCross: 20, from: usPosition),
+                               intensity: .extreme)
+        let conflict = try XCTUnwrap(detector.detectConflict(
+            position: usPosition, course: course, groundspeedKnots: 450, phase: .cruise,
+            hazards: [wall], waypoints: []))
+        let path = conflict.deviationPath
+        XCTAssertGreaterThanOrEqual(path.count, 4, "a wide core on course must produce a parallel hug")
+        let n = path.count
+        let turnOut = Geo.headingDifference(Geo.bearing(from: path[0], to: path[1]), course)
+        XCTAssertLessThanOrEqual(turnOut, 55, "the turn-out onto the offset must be gradual, not a ~90° step")
+        XCTAssertGreaterThanOrEqual(turnOut, 20, "the turn-out is still a genuine deviation turn")
+        let turnBack = Geo.headingDifference(Geo.bearing(from: path[n - 2], to: path[n - 1]), course)
+        XCTAssertLessThanOrEqual(turnBack, 55, "the turn-back onto course must be gradual, not a ~90° squeeze")
+        assertPathClear(path, of: [wall.geometry.polygonPoints ?? []])
+    }
+
     func testWeatherOffToTheSideDoesNotDrawADeviation() {
         // A moderate cell ~16 NM to the side of course, not crossing the centerline:
         // "nearby but not on top of the route" → no conflict, no mint line, no banner.
