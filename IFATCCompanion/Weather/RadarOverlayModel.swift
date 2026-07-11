@@ -193,6 +193,16 @@ struct WeatherDeviationContext: Codable {
     /// the loop can detect the aircraft passing abeam/past the vertex even if it flies
     /// wide of it.
     var vectorLegBearing: Double?
+    /// A deviation approved while the mint line is still drawn ahead: the turn-out
+    /// (start of the mint line) the aircraft is flying toward, the heading to fly out of
+    /// it onto the reroute, and the bearing of the leg into it (to detect passing abeam).
+    /// While these are set the controller has approved the deviation but is **holding the
+    /// turn** — the pilot continues on course until reaching the turn-out, then the
+    /// beginning turn is issued. Cleared once the turn fires (or on reset).
+    var deviationStartLatitude: Double?
+    var deviationStartLongitude: Double?
+    var deviationStartHeading: Int?
+    var deviationStartLegBearing: Double?
     var originalRouteSegment: RouteSegmentRef?
     var timeDeviationStarted: Date?
     var lastATCWeatherCall: String?
@@ -237,13 +247,18 @@ struct RouteWeatherConflict: Identifiable {
     var originalSegment: RouteSegmentRef?
     /// Whether to raise the "contact ATC" banner and (in Mock Mode) auto-issue the
     /// advisory. True only for genuinely on-path weather that is also within the
-    /// tactical deviation range — so far-ahead weather draws the mint line (see
-    /// `withinTacticalRange`) without yet triggering the banner.
+    /// tactical deviation range (`withinTacticalRange`); far-ahead weather is detected
+    /// and monitored without yet triggering the banner.
     var shouldPrompt: Bool
     /// Whether the weather is close enough (near edge within `deviationTriggerNM`) to
-    /// work the deviation now. The mint line is drawn whenever a conflict exists, even
-    /// far ahead; the banner / ATC advisory hold off until this is true.
+    /// work the deviation now. The banner / ATC advisory hold off until this is true.
     var withinTacticalRange: Bool = true
+    /// Whether the weather is close enough (near edge within `mintLineDrawNM`) to draw
+    /// the recommended reroute line on the map. A conflict is still detected out to the
+    /// full lookahead — so Diagnostics can report far weather as "monitoring" — but the
+    /// mint line is held until this is true, so a straight-corridor deviation aimed at
+    /// distant weather (across the route's bends) doesn't render as a runaway line.
+    var withinDrawRange: Bool = true
     /// The polygon the route passes through, for shading on the map.
     var intersectionArea: [CLLocationCoordinate2D]
     /// A recommended deviation path for drawing on the map: `position → turn(s) →

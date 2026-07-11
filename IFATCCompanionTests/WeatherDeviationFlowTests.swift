@@ -516,6 +516,159 @@ final class WeatherDeviationFlowTests: XCTestCase {
         XCTAssertEqual(model.weatherDeviationState, .none, "lifecycle rolls back after a confirmed clear")
     }
 
+    // MARK: - Far weather is monitored but not drawn ("no weather, crazy mint line")
+
+    /// A conflict whose weather is beyond the draw range must NOT put a mint line (or its
+    /// rejoin marker) on the map — the reported "no weather nearby, crazy mint line
+    /// shooting across the map" case. The same conflict inside the draw range does draw.
+    func testFarConflictDrawsNoMintLine() {
+        // weatherDeviationLine keys off the active conflict (no committed path yet), so a
+        // synthesized conflict exercises the draw gate directly.
+        let model = makeModel()
+        let pos = CLLocationCoordinate2D(latitude: 40, longitude: -95)
+        let apex = Geo.destination(from: pos, bearingDegrees: 20, distanceNM: 60)
+        let end = Geo.destination(from: pos, bearingDegrees: 0, distanceNM: 160)
+        let hazard = WeatherHazard(source: .noaaRadar, phenomenon: .precipitation, intensity: .heavy,
+                                   geometry: .polygon(box(around: apex, half: 0.3)), confidence: .high)
+        func conflict(drawable: Bool) -> RouteWeatherConflict {
+            RouteWeatherConflict(
+                hazard: hazard, distanceAheadNM: drawable ? 70 : 140, relativeBearingDegrees: 0,
+                leftClock: 12, centerClock: 12, rightClock: 12, estimatedTimeMinutes: nil,
+                severity: .heavy, leftBypassScore: 0, rightBypassScore: 0,
+                recommendedDirection: .right, recommendedDeviationDegrees: 20,
+                rejoinFix: Waypoint(name: "RJOIN", latitude: end.latitude, longitude: end.longitude),
+                originalSegment: nil, shouldPrompt: false, withinTacticalRange: false,
+                withinDrawRange: drawable, intersectionArea: [], deviationPath: [pos, apex, end])
+        }
+
+        model.activeWeatherConflict = conflict(drawable: false)
+        XCTAssertNil(model.weatherDeviationLine, "far weather must not draw a mint line")
+        XCTAssertNil(model.weatherRejoinMarker, "far weather must not draw a rejoin marker")
+
+        model.activeWeatherConflict = conflict(drawable: true)
+        XCTAssertNotNil(model.weatherDeviationLine, "weather in the draw range draws the mint line")
+        XCTAssertNotNil(model.weatherRejoinMarker, "weather in the draw range draws the rejoin marker")
+    }
+
+    // MARK: - Strategic preview (faint lines for each system ahead, incl. from the gate)
+
+    /// The whole route's deviations can be eyeballed at once: a faint preview reroute is
+    /// produced for **each** distinct weather system ahead along the filed route — even
+    /// on the ground, with no aircraft telemetry yet — so lines can be verified from the
+    /// gate before takeoff.
+    func testStrategicPreviewDrawsALineForEachSystemAhead() {
+        let model = makeModel()
+        model.flightPlan.waypoints = []   // straight dep→dest so the cells sit on the corridor
+
+        let dep = model.mock.route.depCoord
+        let dest = model.mock.route.destCoord
+        let course = Geo.bearing(from: dep, to: dest)
+        func cellAt(_ nm: Double) -> RadarCell {
+            RadarCell(polygon: box(around: Geo.destination(from: dep, bearingDegrees: course, distanceNM: nm),
+                                   half: 0.2),
+                      intensity: .heavy)
+        }
+        // Two systems well apart (beyond the 30 NM cluster margin) along the route, both
+        // beyond the ~75 NM draw range so neither is drawn solid — both preview faint.
+        model.radarOverlay.mockCells = [cellAt(110), cellAt(230)]
+        model.recomputeWeatherHazards()   // no ingest: still at the departure gate
+
+        XCTAssertNil(model.aircraftState.coordinate, "this is the on-the-ground case")
+        XCTAssertGreaterThanOrEqual(model.weatherDeviationPreviews.count, 2,
+                                    "a faint preview line is drawn for each distinct system ahead")
+        if model.weatherDeviationPreviews.count >= 2 {
+            let a = model.weatherDeviationPreviews[0].first!
+            let b = model.weatherDeviationPreviews[1].first!
+            XCTAssertGreaterThan(Geo.distanceNM(from: a, to: b), 30,
+                                 "each system's preview is a separate line further down the route")
+        }
+    }
+
+    /// Mock mode seeds several storm systems down the route, and the strategic preview
+    /// scans the whole route (past clear gaps) to draw a line for each — visible from the
+    /// departure gate, with no telemetry yet, so scenarios can be eyeballed before flying.
+    func testMockModeSeedsMultipleSystemsVisibleFromTheGate() async {
+        let model = makeModel()
+        await model.refreshWeather()   // mock loads its sample storm systems + recomputes
+        XCTAssertGreaterThanOrEqual(model.radarOverlay.mockCells.count, 3,
+                                    "mock mode seeds several storm systems along the route")
+        XCTAssertNil(model.aircraftState.coordinate, "no telemetry yet — still at the gate")
+        XCTAssertGreaterThanOrEqual(model.weatherDeviationPreviews.count, 2,
+                                    "systems spread down the route each preview from the gate")
+    }
+
+    /// Once a system is being worked (drawn solid), the preview lines are the systems
+    /// *beyond* it — the solid one is not duplicated as a faint line.
+    func testPreviewExcludesTheSystemDrawnSolid() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)   // the close demo cell becomes the solid active line
+        guard model.weatherDeviationLine != nil else {
+            return XCTFail("expected the near system drawn solid")
+        }
+        model.flightPlan.waypoints = []   // straight dep→dest so the added far cell sits on the corridor
+        // Add a second, far system beyond the demo cell.
+        guard let pos = model.aircraftState.coordinate else { return XCTFail("no cruise position") }
+        let course = Geo.bearing(from: model.mock.route.depCoord, to: model.mock.route.destCoord)
+        let far = Geo.destination(from: pos, bearingDegrees: course, distanceNM: 200)
+        model.radarOverlay.mockCells = model.radarOverlay.mockCells
+            + [RadarCell(polygon: box(around: far, half: 0.2), intensity: .heavy)]
+        model.recomputeWeatherHazards()
+
+        // The solid line is the near cell; the far cell previews faint. The preview set
+        // must not include a line starting back at the (solid) near system.
+        guard let solidStart = model.weatherDeviationLine?.first else { return XCTFail() }
+        for preview in model.weatherDeviationPreviews {
+            guard let s = preview.first else { continue }
+            XCTAssertGreaterThan(Geo.distanceNM(from: s, to: solidStart), 20,
+                                 "previews are the upcoming systems, not the one drawn solid")
+        }
+    }
+
+    // MARK: - Deferred deviation (reroute drawn ahead → hold the turn, issue it at the turn-out)
+
+    /// When the reroute is drawn ahead, requesting a deviation approves it but holds the
+    /// turn: the controller says "continue, expect the turn in X miles". Only once the
+    /// aircraft reaches the turn-out point at the start of the mint line does the
+    /// controller issue the beginning turn.
+    func testDeferredDeviationHoldsTurnThenIssuesItAtTheTurnOut() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)   // settles cruise/enroute state (weather flow allowed)
+        guard let pos = model.aircraftState.coordinate else { return XCTFail("no cruise position") }
+
+        // Replace the demo cell with a narrow one ~60 NM ahead on the filed course, so its
+        // reroute is drawn ahead with the turn-out well in front of the aircraft.
+        let course = Geo.bearing(from: model.mock.route.depCoord, to: model.mock.route.destCoord)
+        let center = Geo.destination(from: pos, bearingDegrees: course, distanceNM: 60)
+        model.radarOverlay.mockCells = [RadarCell(polygon: box(around: center, half: 0.15), intensity: .moderate)]
+        model.recomputeWeatherHazards()
+        guard let v0 = model.activeWeatherConflict?.deviationPath.first else {
+            return XCTFail("expected a drawn-ahead conflict")
+        }
+        XCTAssertGreaterThan(Geo.distanceNM(from: pos, to: v0), 6,
+                             "the turn-out point must be drawn ahead of the aircraft")
+
+        // Request the deviation: approved, but the turn is held.
+        model.requestWeatherDeviation(.right)
+        XCTAssertEqual(model.weatherDeviationState, .deviationApproved)
+        XCTAssertTrue(atcContains(model, "expect the turn"),
+                      "a deviation drawn ahead is approved with the turn held")
+        XCTAssertNotNil(model.weatherDeviation.deviationStartLatitude,
+                        "the beginning turn is armed at the turn-out point")
+        XCTAssertNil(model.weatherDeviation.assignedHeading, "no turn is assigned while held")
+        XCTAssertNotNil(model.weatherDeviationLine, "the mint line is drawn while the turn is held")
+
+        // Fly to the turn-out; the controller now issues the beginning turn.
+        var atV0 = model.mock.state(for: .cruise)
+        atV0.latitude = v0.latitude
+        atV0.longitude = v0.longitude
+        model.ingestStateForTesting(atV0)
+        XCTAssertEqual(model.weatherDeviationState, .vectoringAroundWeather,
+                       "reaching the turn-out begins the deviation")
+        XCTAssertTrue(atcContains(model, "fly heading"), "the beginning turn is issued at the turn-out")
+        XCTAssertNil(model.weatherDeviation.deviationStartLatitude,
+                     "the held turn is consumed once issued")
+    }
+
     // MARK: - Committed mint line is locked
 
     /// Once the pilot commits to a vector, the mint line freezes to the path being

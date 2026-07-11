@@ -167,6 +167,24 @@ struct WeatherDeviationPhraseology {
         return tx
     }
 
+    /// Deviation approved but the turn is held: the mint line is drawn ahead, so the
+    /// controller has the pilot continue on course and expect the turn in `distanceNM`
+    /// miles. The beginning turn itself is issued (via `vectorApproval`) once the aircraft
+    /// reaches the turn-out point at the start of the mint line.
+    func expectDeviation(cs: Callsign, direction: DeviationDirection, distanceNM: Int,
+                         maintainAltitude: Int, facility: ATCFacility = .center) -> ATCTransmission {
+        let milesD = distancePhrase(Double(distanceNM), spoken: false)
+        let milesS = distancePhrase(Double(distanceNM), spoken: true)
+        var tx = center("\(cs.display), roger, deviation \(direction.word) of course approved, maintain \(altDisplay(maintainAltitude)), continue present heading, expect the turn in \(milesD) for weather.",
+                        "\(cs.spoken), roger, deviation \(direction.word) of course approved, maintain \(altSpoken(maintainAltitude)), continue present heading, expect the turn in \(milesS) for weather.",
+                        facility: facility)
+        tx.readback = ATCTransmission.Readback(
+            displayText: "Deviation \(direction.word) approved, maintain \(altDisplay(maintainAltitude)), continue present heading, \(cs.display).",
+            spokenText: "Deviation \(direction.word) approved, maintain \(altSpoken(maintainAltitude)), continue present heading, \(cs.spoken).",
+            facility: facility)
+        return tx
+    }
+
     /// Vectors around precipitation.
     func vectorApproval(cs: Callsign, heading: Int, maintainAltitude: Int,
                         facility: ATCFacility = .approach) -> ATCTransmission {

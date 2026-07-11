@@ -124,6 +124,48 @@ struct WeatherDeviationEngine {
         return Result(pilot: pilotTx, atc: [approval], context: ctx)
     }
 
+    /// Pilot requests a deviation while the reroute is still drawn ahead (the aircraft
+    /// has not yet reached the turn-out point at the start of the mint line). The
+    /// controller approves the deviation but **holds the turn**: the pilot continues on
+    /// course and is told to expect the turn in `distanceNM` miles. The beginning turn is
+    /// issued later by `beginDeviationTurn` once the aircraft reaches the turn-out.
+    func deferDeviation(cs: Callsign, conflict: RouteWeatherConflict?, direction: DeviationDirection,
+                        distanceNM: Int, inputs: Inputs, context: WeatherDeviationContext,
+                        facility: ATCFacility) -> Result {
+        var ctx = context
+        let pilotTx = phraseology.pilotRequestDirectDeviation(cs: cs, direction: direction, facility: facility)
+        let atc = phraseology.expectDeviation(cs: cs, direction: direction, distanceNM: distanceNM,
+                                              maintainAltitude: inputs.maintainAltitude, facility: facility)
+        ctx.state = .deviationApproved
+        ctx.requestedDeviationDirection = direction
+        ctx.approvedDeviationDegrees = conflict?.recommendedDeviationDegrees
+        ctx.maintainAltitude = inputs.maintainAltitude
+        ctx.rejoinFix = conflict?.rejoinFix?.name ?? context.rejoinFix
+        ctx.assignedHeading = nil
+        ctx.lastATCWeatherCall = atc.displayText
+        return Result(pilot: pilotTx, atc: [atc], context: ctx)
+    }
+
+    /// Issue the held beginning turn once the aircraft reaches the turn-out point at the
+    /// start of the drawn mint line. Vectors the aircraft onto the reroute; the interior
+    /// turns then follow automatically (`rejoinTurn`). No pilot line — the controller
+    /// initiates it as the aircraft arrives at the turn.
+    func beginDeviationTurn(cs: Callsign, heading: Int, maintainAltitude: Int,
+                            context: WeatherDeviationContext, facility: ATCFacility) -> Result {
+        var ctx = context
+        let atc = phraseology.vectorApproval(cs: cs, heading: heading,
+                                             maintainAltitude: maintainAltitude, facility: facility)
+        ctx.state = .vectoringAroundWeather
+        ctx.assignedHeading = heading
+        ctx.maintainAltitude = maintainAltitude
+        ctx.deviationStartLatitude = nil
+        ctx.deviationStartLongitude = nil
+        ctx.deviationStartHeading = nil
+        ctx.deviationStartLegBearing = nil
+        ctx.lastATCWeatherCall = atc.displayText
+        return Result(pilot: nil, atc: [atc], context: ctx)
+    }
+
     /// Pilot requests vectors; controller assigns a heading around precipitation.
     func requestVectors(cs: Callsign, inputs: Inputs, context: WeatherDeviationContext,
                         facility: ATCFacility) -> Result {

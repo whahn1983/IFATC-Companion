@@ -203,14 +203,22 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
    **only by moderate-or-greater precipitation cells** — the hand-authored cells in
    Mock Mode, or the cells sampled from the live radar image by `RadarImageSampler`
    (the "raster → cell" step): the app fetches a NOAA/OPERA base-reflectivity image
-   for a **window around the aircraft and the route ahead** (~280 NM ahead, ±90 NM
-   wide — not the whole dep→dest box, which under-resolves storms on long routes),
-   classifies pixels by the reflectivity color ramp, and clusters the
-   moderate-and-warmer returns into cells. Sampling is **continuous** — it resamples
-   as the aircraft flies (throttled by time/distance in `maybeResamplePrecipitation`),
-   not only on a manual refresh, so the reroute tracks the weather rather than going
-   stale. On a fetch/decode failure it **keeps the last good cells** instead of
-   wiping them, so a transient hiccup doesn't blink the mint line out. This is
+   for the **whole flight-plan corridor** (the aircraft and every fix ahead through the
+   destination — the entire route from the gate, the remaining route in flight — widened
+   ~60 NM on every side), classifies pixels by the reflectivity color
+   ramp, and clusters the moderate-and-warmer returns into cells. Sampling the entire
+   route — not just a window ahead — is what lets every system's reroute be seen at once,
+   including the faint strategic previews **from the gate before takeoff**. To avoid the
+   old whole-route problem (a fixed grid over a long route under-resolved storms and
+   "cleared" weather still dead ahead), the **sample resolution scales with the corridor
+   size** to hold ~2 NM per pixel, floored for short routes and capped for transcon ones
+   (`RadarImageSampler.sampleGrid`). Sampling is **continuous** — it resamples so the
+   reroutes track the weather rather than going stale; because the region is the whole
+   route (not aircraft-relative) it barely changes as the aircraft flies, so
+   `maybeResamplePrecipitation` is driven mainly by staleness (~60 s) with a large
+   movement backstop rather than re-fetching the bigger image every mile. On a
+   fetch/decode failure it **keeps the last good cells** instead of wiping them, so a
+   transient hiccup doesn't blink the mint line out. This is
    **true-radar only** and best-effort — outside NOAA/OPERA coverage there are no
    cells and no deviation is offered (rather than one invented from coarser data).
    The sampled cells drive geometry only and are never drawn (the radar image overlay
@@ -249,15 +257,26 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      centerline, or crossed by it. Weather merely *near* the route (off to one side) no
      longer draws a mint line or raises the banner: "nearby but not on top of the route"
      → nothing.
-   - **Mint line far ahead, banner only close in.** The mint line is drawn as soon as
-     on-path weather is detected anywhere within the lookahead, so the pilot sees the
-     suggested reroute early. Distance only gates whether it is worked *tactically* now:
-     the "contact ATC" banner and the auto-issued advisory hold off until the near edge
-     is within `deviationTriggerNM` (~60 NM) — the realistic range for a tactical
-     convective deviation (pilots avoid severe echoes by ~20 NM laterally per FAA
-     AC 00-24C and start deviating ~20–40 NM out, with ATC coordinating a little
-     earlier). The conflict carries `withinTacticalRange`; Diagnostics shows a far
-     on-path conflict as "… — monitoring" rather than "No conflict".
+   - **Mint line a little ahead, banner only close in — far weather monitored.** Three
+     ranges, from close to far:
+     - **Tactical (`deviationTriggerNM`, ~60 NM).** The near edge is close enough to work
+       the deviation now: the mint line is drawn, the "contact ATC" banner is raised, and
+       (in Mock Mode) the advisory auto-issues. This is the realistic range for a tactical
+       convective deviation (pilots avoid severe echoes by ~20 NM laterally per FAA
+       AC 00-24C and start deviating ~20–40 NM out, with ATC coordinating a little earlier).
+     - **Draw range (`mintLineDrawNM`, ~75 NM).** A little beyond tactical: the mint line
+       is drawn as advance notice so the pilot sees the suggested reroute a bit before the
+       banner, but the banner / advisory hold off.
+     - **Beyond the draw range, out to the lookahead.** The conflict is still *detected*
+       and monitored, but the mint line is **not drawn**. The reroute is a straight-corridor
+       offset aimed at the blockage; for weather far ahead — typically past one or more of
+       the route's bends — drawing it produced a long line that shot across the map toward
+       distant weather (the "crazy mint line" with no weather nearby). Holding the line
+       until the aircraft is roughly committed toward the weather keeps the drawn geometry
+       meaningful.
+
+     The conflict carries `withinTacticalRange` and `withinDrawRange`; Diagnostics shows a
+     conflict outside the tactical range as "… — monitoring" rather than "No conflict".
    - **The corridor follows the route.** The detection band is only ±6 NM wide, so a
      straight corridor aimed at the *bearing to the next fix* misses weather that sits
      on the route **after a turn** — the aircraft's wide sampling window still finds
@@ -348,6 +367,19 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      Even with weather sitting right on the field, the mint line intercepts the route
      at or before that cap instead of routing past it. Every vertex past the cap's
      along-course distance is pulled back to it (`clampPathToAlong`).
+   - **Starts at the turn-out, not the aircraft — a ~30° dogleg out and back.** A reroute
+     drawn far ahead must not drift shallowly from the aircraft across the whole distance
+     to the weather. The chosen path is reshaped so it **begins at the turn-out point** —
+     a lead-in just before the weather sized so the first leg is a ~30° turn onto the
+     offset (`initialDeviationTurnDegrees`), rather than starting at the aircraft
+     (`startAtTurnOut`) — and **rejoins with a matching ~30° turn-back** on a straight
+     route (`endAtTurnBack`). Weather close aboard keeps the start at the aircraft with a
+     necessarily steeper turn. Every turn on the drawn line is therefore at least ~30°,
+     and the whole maneuver spans at least `minDeviationExtentNM` (15 NM) end-to-end
+     (`enforceMinExtent`) so it never renders as a twitch. The reshaping only ever touches
+     the lead-in / lead-out on the course line ahead of and behind the (already-clear)
+     offset legs, and is re-validated against the intense cores — if the steeper geometry
+     would clip one, the validated original is kept.
    It also computes distance, clock position(s), estimated time, severity, the spoken
    deviation amount (the actual initial turn onto the threading path), and a
    downstream rejoin fix.
@@ -364,6 +396,17 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
    30° for extreme/convective) and either a downstream rejoin fix or, when none is
    suitable, *"advise clear of weather"*. On a STAR the altitude restriction is
    preserved with *"maintain …"* and the rejoin is framed as rejoining the arrival.
+   - **The beginning turn is issued at the start of the mint line — held when drawn
+     ahead.** Because the reroute is drawn beginning at its turn-out point (which sits
+     ahead of the aircraft when the weather is still some distance off), requesting a
+     deviation there does not turn the aircraft immediately. ATC approves but **holds the
+     turn**: *"deviation right of course approved, maintain …, continue present heading,
+     expect the turn in X miles"* (`deferDeviation` / `expectDeviation`). The aircraft
+     flies the filed course to the turn-out; once it reaches it the controller issues the
+     beginning turn (*"fly heading …, vectors around precipitation"*) and the interior
+     auto-turns follow (`maybeIssueDeviationStartTurn` → `beginDeviationTurn` →
+     `captureWeatherRejoinTurn`). Weather close aboard (the turn-out within
+     `deviationTurnHoldNM`) is worked immediately, as before.
 5. **Clear of weather.** When the pilot reports clear of weather, ATC clears direct
    the rejoin fix (or *"resume own navigation"* when already near the route), or
    rejoins the STAR.
@@ -448,11 +491,16 @@ the cap isn't disk-cached at all — it's just streamed, decoded, and discarded)
 
 ## Mock Mode demo
 
-Mock Mode loads a deterministic precipitation cell that crosses the filed route
-~40 NM ahead of cruise. The map shows the cell, ATCView shows the advisory, and the
-pilot can request a right deviation, get an approval with a downstream rejoin fix,
-then report clear of weather and be cleared direct/own-navigation — all offline,
-with no live APIs and regardless of subscription state.
+Mock Mode loads several deterministic precipitation systems along the filed route: a
+primary heavy cell ~40 NM ahead of cruise (the one the demo works as an active
+deviation), plus a moderate system early on and a heavy system near the arrival, spaced
+well over a lookahead apart so each is a distinct deviation. The map shows the cells and
+the faint strategic-preview reroutes for every system down the route (visible from the
+gate), ATCView shows the advisory for the primary, and the pilot can request a right
+deviation, get an approval with a downstream rejoin fix, then report clear of weather
+and be cleared direct/own-navigation — all offline, with no live APIs and regardless of
+subscription state. Because the extra systems are spaced beyond the cruise lookahead,
+only the primary is in range at cruise, so the worked-deviation flow is unchanged.
 
 ## Future-only discovery task (do not implement without verification)
 

@@ -128,6 +128,17 @@ struct RouteMapView: View {
                     .stroke(sigmetColor(sigmet), lineWidth: 2)
             }
 
+            // Faint preview reroutes for the weather systems ahead beyond the one being
+            // worked — one per distinct system, so the whole route's deviations can be
+            // eyeballed (including from the gate before takeoff). Drawn first/thinner so
+            // the solid active line reads on top. Display only.
+            ForEach(Array(model.weatherDeviationPreviews.enumerated()), id: \.offset) { item in
+                if item.element.count >= 2 {
+                    MapPolyline(coordinates: item.element)
+                        .stroke(.mint.opacity(0.35), style: StrokeStyle(lineWidth: 2, lineCap: .round, dash: [3, 6]))
+                }
+            }
+
             // Recommended (or committed) deviation path + rejoin fix. The precipitation
             // itself is shown full-size by the radar overlay and the SIGMET/AIRMET
             // shading, so we no longer outline the single conflicting cell — that

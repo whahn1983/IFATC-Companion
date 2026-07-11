@@ -131,4 +131,28 @@ final class RadarImageSamplerTests: XCTestCase {
         let vertical = square(latMin: 39, latMax: 42, lonMin: -98.1, lonMax: -97.9)
         XCTAssertTrue(RadarImageSampler.polygonsOverlap(horizontal, vertical))
     }
+
+    // MARK: - Sample resolution (whole-flight-plan sampling)
+
+    func testSampleGridScalesWithSpanAndClamps() {
+        // A short route floors at the minimum grid (no over-sampling a tiny image).
+        let small = RadarImageSampler.sampleGrid(latSpanNM: 40, lonSpanNM: 40)
+        XCTAssertEqual(small.rows, 160)
+        XCTAssertEqual(small.columns, 160)
+
+        // In the scaling band the grid holds ~2 NM per pixel on each axis, so an
+        // elongated route stays fine on its long axis while the short axis floors.
+        let mid = RadarImageSampler.sampleGrid(latSpanNM: 600, lonSpanNM: 200)
+        XCTAssertEqual(mid.rows, 300, "600 NM / 2 NM per pixel")
+        XCTAssertEqual(mid.columns, 160, "200 NM / 2 → 100, floored to the minimum")
+
+        let scaled = RadarImageSampler.sampleGrid(latSpanNM: 900, lonSpanNM: 900)
+        XCTAssertEqual(scaled.rows, 450)
+        XCTAssertEqual(scaled.columns, 450)
+
+        // A transcon route caps the grid rather than requesting a giant image.
+        let big = RadarImageSampler.sampleGrid(latSpanNM: 4000, lonSpanNM: 4000)
+        XCTAssertEqual(big.rows, 640)
+        XCTAssertEqual(big.columns, 640)
+    }
 }
