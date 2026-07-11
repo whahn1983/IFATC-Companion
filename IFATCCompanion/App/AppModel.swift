@@ -233,6 +233,11 @@ final class AppModel: ObservableObject {
     @Published var weatherHazards: [WeatherHazard] = []
     /// The most significant route-weather conflict currently detected (nil = none).
     @Published var activeWeatherConflict: RouteWeatherConflict?
+    /// Faint "preview" reroute lines for the weather systems ahead along the route,
+    /// beyond the one drawn solid — one per distinct system. Display only (never drives
+    /// ATC), and computed even on the ground, so the whole route's deviations can be
+    /// eyeballed from the gate before takeoff.
+    @Published var weatherDeviationPreviews: [[CLLocationCoordinate2D]] = []
     /// The active simulated weather-deviation interaction (state + assignments).
     @Published var weatherDeviation = WeatherDeviationContext()
     /// A read-only snapshot for the Weather Diagnostics panel.
@@ -263,6 +268,9 @@ final class AppModel: ObservableObject {
     /// reaches the turn-out ("continue, expect the turn in X miles"). Within this the
     /// aircraft is essentially at the turn-out, so the turn is worked immediately.
     private let deviationTurnHoldNM: Double = 6
+    /// The most weather systems to draw faint preview mint lines for down the route, so
+    /// the strategic preview can never run away (one detection per system).
+    private let maxWeatherPreviewSystems = 6
     /// Timestamp of the last aviation-weather refresh, for the diagnostics panel.
     private var lastAviationWeatherUpdate: Date?
 
@@ -2413,6 +2421,7 @@ final class AppModel: ObservableObject {
         guard let pos = aircraftState.coordinate ?? airports.coordinate(for: flightPlan.departure),
               pos.isValid else {
             activeWeatherConflict = nil
+            weatherDeviationPreviews = []
             updateWeatherDiagnostics(conflict: nil)
             return
         }
@@ -2456,6 +2465,8 @@ final class AppModel: ObservableObject {
                 maybeAutoResumeAtRouteIntercept()
             }
         }
+        // Faint preview lines for the systems ahead beyond the one drawn solid.
+        weatherDeviationPreviews = computeWeatherDeviationPreviews()
         updateWeatherDiagnostics(conflict: conflict)
     }
 
@@ -2786,6 +2797,42 @@ final class AppModel: ObservableObject {
         guard let conflict = activeWeatherConflict, conflict.withinDrawRange,
               conflict.deviationPath.count >= 2 else { return nil }
         return conflict.deviationPath
+    }
+
+    /// Build the faint strategic preview lines: a recommended reroute for each distinct
+    /// weather system along the filed route **beyond** the one currently drawn solid.
+    /// Purely for display / tuning — it never drives ATC or the active deviation. Walks
+    /// the route, detecting each successive system from just past the previous system's
+    /// rejoin, so a broken line clustered close still counts as one system while systems
+    /// farther apart each get their own preview. Uses the cruise lookahead so the whole
+    /// route is covered from a standstill (the gate), where the tactical lookahead is
+    /// short. Bounded by `maxWeatherPreviewSystems`.
+    private func computeWeatherDeviationPreviews() -> [[CLLocationCoordinate2D]] {
+        guard radarOverlay.isEnabled, radarOverlay.coverageAvailable, !weatherHazards.isEmpty else { return [] }
+        guard let origin = aircraftState.coordinate
+                ?? airports.coordinate(for: flightPlan.departure)
+                ?? flightPlan.firstWaypointCoordinate, origin.isValid else { return [] }
+        let cap = weatherRejoinCap()
+        // Start past the deviation drawn solid (committed / active), so the faint lines
+        // are the UPCOMING systems rather than a duplicate of the one being worked.
+        var startPoint = weatherDeviationLine?.last ?? origin
+        var lines: [[CLLocationCoordinate2D]] = []
+        for _ in 0..<maxWeatherPreviewSystems {
+            let ahead = upcomingRouteCoordinates(from: startPoint)
+            guard !ahead.isEmpty else { break }
+            let course = ahead.first { Geo.distanceNM(from: startPoint, to: $0) > 1 }
+                .map { Geo.bearing(from: startPoint, to: $0) } ?? currentCourse(from: startPoint)
+            guard let conflict = conflictDetector.detectConflict(
+                    position: startPoint, course: course, groundspeedKnots: aircraftState.groundSpeed,
+                    phase: .cruise, hazards: weatherHazards, waypoints: flightPlan.waypoints,
+                    routeAhead: ahead, rejoinCap: cap),
+                  conflict.deviationPath.count >= 2,
+                  let end = conflict.deviationPath.last, end.isValid,
+                  Geo.distanceNM(from: startPoint, to: end) > 1 else { break }
+            lines.append(conflict.deviationPath)
+            startPoint = end   // walk on past this system's rejoin; its cells are now behind
+        }
+        return lines
     }
 
     /// The rejoin fix marker for the mint line: its name and coordinate. Uses the

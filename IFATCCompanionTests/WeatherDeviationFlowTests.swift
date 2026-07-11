@@ -550,6 +550,67 @@ final class WeatherDeviationFlowTests: XCTestCase {
         XCTAssertNotNil(model.weatherRejoinMarker, "weather in the draw range draws the rejoin marker")
     }
 
+    // MARK: - Strategic preview (faint lines for each system ahead, incl. from the gate)
+
+    /// The whole route's deviations can be eyeballed at once: a faint preview reroute is
+    /// produced for **each** distinct weather system ahead along the filed route — even
+    /// on the ground, with no aircraft telemetry yet — so lines can be verified from the
+    /// gate before takeoff.
+    func testStrategicPreviewDrawsALineForEachSystemAhead() {
+        let model = makeModel()
+        model.flightPlan.waypoints = []   // straight dep→dest so the cells sit on the corridor
+
+        let dep = model.mock.route.depCoord
+        let dest = model.mock.route.destCoord
+        let course = Geo.bearing(from: dep, to: dest)
+        func cellAt(_ nm: Double) -> RadarCell {
+            RadarCell(polygon: box(around: Geo.destination(from: dep, bearingDegrees: course, distanceNM: nm),
+                                   half: 0.2),
+                      intensity: .heavy)
+        }
+        // Two systems well apart (beyond the 30 NM cluster margin) along the route, both
+        // beyond the ~75 NM draw range so neither is drawn solid — both preview faint.
+        model.radarOverlay.mockCells = [cellAt(110), cellAt(230)]
+        model.recomputeWeatherHazards()   // no ingest: still at the departure gate
+
+        XCTAssertNil(model.aircraftState.coordinate, "this is the on-the-ground case")
+        XCTAssertGreaterThanOrEqual(model.weatherDeviationPreviews.count, 2,
+                                    "a faint preview line is drawn for each distinct system ahead")
+        if model.weatherDeviationPreviews.count >= 2 {
+            let a = model.weatherDeviationPreviews[0].first!
+            let b = model.weatherDeviationPreviews[1].first!
+            XCTAssertGreaterThan(Geo.distanceNM(from: a, to: b), 30,
+                                 "each system's preview is a separate line further down the route")
+        }
+    }
+
+    /// Once a system is being worked (drawn solid), the preview lines are the systems
+    /// *beyond* it — the solid one is not duplicated as a faint line.
+    func testPreviewExcludesTheSystemDrawnSolid() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)   // the close demo cell becomes the solid active line
+        guard model.weatherDeviationLine != nil else {
+            return XCTFail("expected the near system drawn solid")
+        }
+        model.flightPlan.waypoints = []   // straight dep→dest so the added far cell sits on the corridor
+        // Add a second, far system beyond the demo cell.
+        guard let pos = model.aircraftState.coordinate else { return XCTFail("no cruise position") }
+        let course = Geo.bearing(from: model.mock.route.depCoord, to: model.mock.route.destCoord)
+        let far = Geo.destination(from: pos, bearingDegrees: course, distanceNM: 200)
+        model.radarOverlay.mockCells = model.radarOverlay.mockCells
+            + [RadarCell(polygon: box(around: far, half: 0.2), intensity: .heavy)]
+        model.recomputeWeatherHazards()
+
+        // The solid line is the near cell; the far cell previews faint. The preview set
+        // must not include a line starting back at the (solid) near system.
+        guard let solidStart = model.weatherDeviationLine?.first else { return XCTFail() }
+        for preview in model.weatherDeviationPreviews {
+            guard let s = preview.first else { continue }
+            XCTAssertGreaterThan(Geo.distanceNM(from: s, to: solidStart), 20,
+                                 "previews are the upcoming systems, not the one drawn solid")
+        }
+    }
+
     // MARK: - Deferred deviation (reroute drawn ahead → hold the turn, issue it at the turn-out)
 
     /// When the reroute is drawn ahead, requesting a deviation approves it but holds the
