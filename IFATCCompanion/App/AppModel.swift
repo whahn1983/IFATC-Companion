@@ -2322,7 +2322,11 @@ final class AppModel: ObservableObject {
         let nearMETAR = arrivalPhase ? (destinationMETAR ?? departureMETAR) : (departureMETAR ?? destinationMETAR)
         // Only SIGMETs whose area lies along the route may raise the ride index — a
         // nationwide turbulence advisory far from the route must not read as "severe".
-        routeSigmets = routeAnalyzer.relevantSigmets(sigmets, position: pos, routeEnd: end)
+        // Test the full route ahead (aircraft → remaining fixes → destination) so an
+        // advisory on a later leg past a turn is caught, not just one on the straight
+        // line to the destination.
+        let routePolyline = [pos] + upcomingRouteCoordinates(from: pos)
+        routeSigmets = routeAnalyzer.relevantSigmets(sigmets, routePolyline: routePolyline)
         // Wind shear is a low-level, surface-driven effect, so it keys off the live
         // altitude; the PIREP altitude band above keys off the cruise reference.
         rideAssessment = turbulenceModel.assess(items: rideReportItems, sigmets: routeSigmets,
@@ -2653,7 +2657,10 @@ final class AppModel: ObservableObject {
         d.lastAviationUpdate = lastAviationWeatherUpdate
         d.hazardCount = weatherHazards.count
         if let c = conflict {
-            d.routeConflictStatus = "\(c.severity.displayLabel) \(c.hazard.source.label), \(Int(c.distanceAheadNM.rounded())) NM"
+            // Distinguish an on-path conflict being monitored far ahead (mint line drawn,
+            // banner not yet raised) from one close enough to be worked now.
+            let stage = c.withinTacticalRange ? "" : " — monitoring"
+            d.routeConflictStatus = "\(c.severity.displayLabel) \(c.hazard.source.label), \(Int(c.distanceAheadNM.rounded())) NM\(stage)"
         } else {
             d.routeConflictStatus = "No conflict"
         }

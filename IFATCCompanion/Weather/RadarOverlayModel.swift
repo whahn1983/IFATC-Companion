@@ -229,7 +229,15 @@ struct RouteWeatherConflict: Identifiable {
     var recommendedDeviationDegrees: Int
     var rejoinFix: Waypoint?
     var originalSegment: RouteSegmentRef?
+    /// Whether to raise the "contact ATC" banner and (in Mock Mode) auto-issue the
+    /// advisory. True only for genuinely on-path weather that is also within the
+    /// tactical deviation range — so far-ahead weather draws the mint line (see
+    /// `withinTacticalRange`) without yet triggering the banner.
     var shouldPrompt: Bool
+    /// Whether the weather is close enough (near edge within `deviationTriggerNM`) to
+    /// work the deviation now. The mint line is drawn whenever a conflict exists, even
+    /// far ahead; the banner / ATC advisory hold off until this is true.
+    var withinTacticalRange: Bool = true
     /// The polygon the route passes through, for shading on the map.
     var intersectionArea: [CLLocationCoordinate2D]
     /// A recommended deviation path for drawing on the map: `position → turn(s) →

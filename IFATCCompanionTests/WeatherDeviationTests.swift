@@ -291,23 +291,51 @@ final class WeatherDeviationTests: XCTestCase {
         }
     }
 
-    // MARK: - Proximity gate (only reroute for genuinely upcoming weather)
+    // MARK: - On-path gate + tactical-range gating
 
-    func testNoDeviationWhenWeatherIsFarAhead() {
-        // Weather well beyond the tactical deviation range: the route ahead is still
-        // clear for a long way, so no reroute is surfaced even though the cell is within
-        // the (wider) detection lookahead. The same cell up close does prompt one.
+    func testFarOnPathWeatherDrawsMintLineButHoldsTheBanner() throws {
+        // On-path weather well beyond the tactical range still draws the mint line — so
+        // the pilot sees the suggested reroute far ahead — but must NOT raise the banner
+        // / advisory yet: shouldPrompt stays false until the aircraft closes in.
         let farCell = radarHazard(cell(alongNM: 140, crossNM: 0, from: usPosition))
+        let far = try XCTUnwrap(detector.detectConflict(position: usPosition, course: course,
+                                                        groundspeedKnots: 450, phase: .cruise,
+                                                        hazards: [farCell], waypoints: []),
+                                "far on-path weather should still produce a conflict + mint line")
+        XCTAssertGreaterThanOrEqual(far.deviationPath.count, 2, "the mint line is drawn far ahead")
+        XCTAssertFalse(far.withinTacticalRange, "far weather is out of tactical range")
+        XCTAssertFalse(far.shouldPrompt, "the banner / advisory must not fire for far weather")
+
+        // The same cell up close is within tactical range and prompts.
+        let nearCell = radarHazard(cell(alongNM: 45, crossNM: 0, from: usPosition))
+        let near = try XCTUnwrap(detector.detectConflict(position: usPosition, course: course,
+                                                         groundspeedKnots: 450, phase: .cruise,
+                                                         hazards: [nearCell], waypoints: []))
+        XCTAssertTrue(near.withinTacticalRange, "near weather is within tactical range")
+        XCTAssertTrue(near.shouldPrompt, "near weather raises the banner / advisory")
+    }
+
+    func testWeatherOffToTheSideDoesNotDrawADeviation() {
+        // A moderate cell ~16 NM to the side of course, not crossing the centerline:
+        // "nearby but not on top of the route" → no conflict, no mint line, no banner.
+        let sideCell = radarHazard(cell(alongNM: 45, crossNM: 16, halfCross: 6, from: usPosition),
+                                   intensity: .moderate)
         XCTAssertNil(detector.detectConflict(position: usPosition, course: course,
                                              groundspeedKnots: 450, phase: .cruise,
-                                             hazards: [farCell], waypoints: []),
-                     "weather far ahead must not trigger a reroute while the near path is clear")
+                                             hazards: [sideCell], waypoints: []),
+                     "weather off to the side of the route must not draw a deviation")
+    }
 
-        let nearCell = radarHazard(cell(alongNM: 45, crossNM: 0, from: usPosition))
-        XCTAssertNotNil(detector.detectConflict(position: usPosition, course: course,
-                                                groundspeedKnots: 450, phase: .cruise,
-                                                hazards: [nearCell], waypoints: []),
-                        "weather within the tactical deviation range must trigger a reroute")
+    func testWeatherStraddlingTheCourseStillDraws() throws {
+        // The same cell moved onto the flight path (its near edge crosses the centerline)
+        // must still be caught — tightening the corridor only excludes off-to-the-side cells.
+        let onPath = radarHazard(cell(alongNM: 45, crossNM: 4, halfCross: 6, from: usPosition),
+                                 intensity: .moderate)
+        let conflict = try XCTUnwrap(detector.detectConflict(
+            position: usPosition, course: course, groundspeedKnots: 450, phase: .cruise,
+            hazards: [onPath], waypoints: []),
+            "a cell straddling the course is on the flight path and must draw a deviation")
+        XCTAssertTrue(conflict.shouldPrompt)
     }
 
     // MARK: - Tight to the storm (no giant last-resort detours)
