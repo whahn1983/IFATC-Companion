@@ -81,8 +81,10 @@ struct WeatherRouteAnalyzer {
     /// the route, or nil when none supports one (the caller then keeps the generic "advise
     /// higher or lower"). Considers reports within `band` that are strictly smoother than
     /// `currentSeverity` and at a level at least `minSeparationFt` from `referenceAltFt`;
-    /// prefers the smoothest, then the nearest such level, snapped to 1000 ft. **Data-driven
-    /// only** — it never invents a smooth level with no report behind it. Pure/testable.
+    /// prefers the level needing the **least altitude change** (fewest feet of climb or
+    /// descent from `referenceAltFt`), using the smoother ride only to break ties between
+    /// two equally-near levels, snapped to 1000 ft. **Data-driven only** — it never invents
+    /// a smooth level with no report behind it. Pure/testable.
     func smootherAltitude(items: [RideReportItem],
                           referenceAltFt: Int,
                           currentSeverity: TurbulenceSeverity,
@@ -97,10 +99,12 @@ struct WeatherRouteAnalyzer {
                   abs(alt - referenceAltFt) >= minSeparationFt else { return nil }
             return (alt, item)
         }
+        // Least altitude change first — the smallest climb/descent that reaches a smoother
+        // reported ride — and only when two levels are equally near does the smoother of the
+        // two win. (A far-off but perfectly smooth level no longer beats a nearer light one.)
         let best = candidates.min { a, b in
-            a.item.severity != b.item.severity
-                ? a.item.severity < b.item.severity
-                : abs(a.alt - referenceAltFt) < abs(b.alt - referenceAltFt)
+            let da = abs(a.alt - referenceAltFt), db = abs(b.alt - referenceAltFt)
+            return da != db ? da < db : a.item.severity < b.item.severity
         }
         guard let best else { return nil }
         return SmootherAltitude(altitudeFt: best.alt, severity: best.item.severity,

@@ -124,10 +124,14 @@ citizens** (`AppHTTP` centralizes the common bits):
 - **Descriptive User-Agent with contact.** Every request identifies the app and a
   contact URL: `IFATCCompanion/<version> (+https://github.com/whahn1983/IFATC-Companion)`.
 - **Poll no faster than the data updates, and not off-screen.** Aviation weather is
-  **event-driven** (on connect / manual refresh — there is no periodic poll). The
-  radar overlay renders only while the weather map is on screen; radar *sampling*
-  runs only while airborne **and in the foreground** (gated on app-active), never on a
-  background tick.
+  event-driven (on connect / route change / manual refresh / a ride-report or
+  destination-weather request) **plus a slow periodic refresh on a 5-minute interval
+  while a feed is active**, so the PIREP/ride-report pool stays current through a long
+  flight instead of freezing at the connect-time snapshot. The interval matches the
+  in-memory TTL, so each tick revalidates rather than re-serving cached bytes, and the
+  network is never hit faster than the data updates. The radar overlay renders only
+  while the weather map is on screen; radar *sampling* runs only while airborne **and in
+  the foreground** (gated on app-active), never on a background tick.
 - **Cache, and revalidate conditionally.** Responses are cached (in-memory TTL +
   an on-disk `URLCache`), and network revalidation uses **ETag / If-None-Match** and
   **Last-Modified / If-Modified-Since** (`.reloadRevalidatingCacheData`), so a `304`

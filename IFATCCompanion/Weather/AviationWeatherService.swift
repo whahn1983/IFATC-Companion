@@ -4,9 +4,10 @@ import Foundation
 /// (`aviationweather.gov/api/data`). No API keys, no account. A **well-behaved
 /// direct-to-public-service client** (the app has no backend, so every device calls
 /// the service itself):
-///  - an **in-memory TTL cache** (5 min) fronts the network so repeated reads and the
-///    event-driven refreshes (on connect / manual pull-to-refresh — there is no
-///    periodic poll) don't re-fetch within a product's update window;
+///  - an **in-memory TTL cache** (5 min) fronts the network so repeated reads, the
+///    event-driven refreshes (connect / route change / manual pull-to-refresh), and the
+///    caller's slow periodic refresh (also 5 min, aligned to this TTL) don't re-fetch
+///    within a product's update window;
 ///  - the shared session **revalidates conditionally** (ETag / Last-Modified) beyond
 ///    the TTL, and carries a **descriptive User-Agent with contact info**;
 ///  - concurrent identical requests are **coalesced** into one fetch;
