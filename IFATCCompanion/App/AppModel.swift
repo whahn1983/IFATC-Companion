@@ -2530,16 +2530,19 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Resample live precipitation as the aircraft moves, so the deviation line
-    /// tracks the weather instead of only updating on a manual refresh. Throttled by
-    /// time and distance, and single-flighted so fetches never overlap. Call it from
-    /// the telemetry loop; it re-runs the conflict detection once fresh cells land.
+    /// Resample live precipitation so the deviation lines track evolving weather instead
+    /// of only updating on a manual refresh. Single-flighted so fetches never overlap.
+    /// Call it from the telemetry loop; it re-runs the conflict detection once fresh
+    /// cells land. The sampled region is the whole route (not a window ahead of the
+    /// aircraft), so it barely changes as the aircraft flies — resampling is driven
+    /// mainly by staleness, with a large movement threshold as a backstop, to avoid
+    /// re-fetching the bigger whole-route image on every mile flown.
     private func maybeResamplePrecipitation() {
         guard appActive, !settings.mockMode, settings.noaaRadarOverlay == .autoWhereAvailable,
               !isSamplingPrecip, let pos = aircraftState.coordinate, pos.isValid else { return }
         let now = Date()
-        let movedFar = lastPrecipSamplePos.map { Geo.distanceNM(from: $0, to: pos) > 15 } ?? true
-        let stale = lastPrecipSampleAt.map { now.timeIntervalSince($0) > 45 } ?? true
+        let movedFar = lastPrecipSamplePos.map { Geo.distanceNM(from: $0, to: pos) > 100 } ?? true
+        let stale = lastPrecipSampleAt.map { now.timeIntervalSince($0) > 60 } ?? true
         guard movedFar || stale else { return }
         isSamplingPrecip = true
         Task { @MainActor in
@@ -2552,20 +2555,26 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Sample the live radar image into moderate-or-greater precipitation cells for a
-    /// window **around the aircraft and the route ahead**. These cells are the sole
-    /// input to the weather-deviation flow, which threads the widest clear gap between
-    /// them (the "raster → cell" step in `docs/Weather.md`).
+    /// Sample the live radar image into moderate-or-greater precipitation cells over the
+    /// **whole flight-plan corridor** (the aircraft and every fix ahead through the
+    /// destination — the entire route from the gate, the remaining route in flight —
+    /// widened laterally). These cells are the sole input to the weather-
+    /// deviation flow and the strategic preview, which thread the widest clear gap
+    /// between them (the "raster → cell" step in `docs/Weather.md`). Sampling the entire
+    /// route — not just a window ahead — is what lets every system's reroute be seen at
+    /// once, including from the gate before takeoff.
     ///
-    /// Two properties keep the deviation line stable rather than blinking out:
-    /// 1. It samples a local corridor window (not the whole dep→dest bounding box), so
-    ///    resolution stays fine on any route length and a real storm reliably
-    ///    clusters — the coarse whole-route sample used to under-resolve storms and
-    ///    "clear" them while they were still dead ahead.
-    /// 2. On a fetch/decode failure it **keeps the last good cells** instead of
-    ///    wiping them, so a transient network hiccup doesn't drop the reroute. Cells
-    ///    are replaced only on a successful sample (which may legitimately be empty
-    ///    when the sky ahead really is clear).
+    /// Three properties keep it usable rather than coarse or flickery:
+    /// 1. The sample **resolution scales with the corridor's size** (`RadarImageSampler
+    ///    .sampleGrid`, ~2 NM/pixel, capped), so a long route still resolves individual
+    ///    storms near the aircraft instead of the old fixed-grid whole-route sample that
+    ///    under-resolved them and "cleared" weather that was still dead ahead.
+    /// 2. On a fetch/decode failure it **keeps the last good cells** instead of wiping
+    ///    them, so a transient network hiccup doesn't drop the reroute. Cells are
+    ///    replaced only on a successful sample (which may legitimately be empty when the
+    ///    route really is clear).
+    /// 3. The region is route-relative (not aircraft-relative), so it barely changes as
+    ///    the aircraft flies — resampling is driven mainly by staleness, not movement.
     ///
     /// Best-effort and **true-radar only** (NOAA/OPERA); a satellite estimate or no
     /// coverage yields no cells. Simulation/training only.
@@ -2577,26 +2586,32 @@ final class AppModel: ObservableObject {
         guard let pos = aircraftState.coordinate ?? airports.coordinate(for: flightPlan.departure),
               pos.isValid else { return }   // no position — keep the last good cells
 
-        // A corridor window: the aircraft, ~280 NM ahead on course (a little past the
-        // detector's 250 NM horizon so cells are ready before detection needs them), a
-        // little behind, and ±90 NM laterally so the gap-search band is covered.
-        let course = currentCourse(from: pos)
-        let aheadPt = Geo.destination(from: pos, bearingDegrees: course, distanceNM: 280)
-        let focus = [pos, aheadPt,
-                     Geo.destination(from: pos, bearingDegrees: course + 180, distanceNM: 25),
-                     Geo.destination(from: pos, bearingDegrees: course - 90, distanceNM: 90),
-                     Geo.destination(from: pos, bearingDegrees: course + 90, distanceNM: 90),
-                     Geo.destination(from: aheadPt, bearingDegrees: course - 90, distanceNM: 90),
-                     Geo.destination(from: aheadPt, bearingDegrees: course + 90, distanceNM: 90)]
-            .filter { $0.isValid }
+        // The whole flight plan ahead: the aircraft plus every located fix still in front
+        // of it, through the destination. At the gate this is the entire route; in flight
+        // it's the remaining route (so resolution isn't spent on the leg already flown).
+        // `region(enclosing:)` boxes it; the box is widened below so the corridor — not
+        // just the route centerline — is captured.
+        var focus: [CLLocationCoordinate2D] = [pos]
+        focus.append(contentsOf: upcomingRouteCoordinates(from: pos).filter { $0.isValid })
 
         lastPrecipSampleAt = Date()
         lastPrecipSamplePos = pos
 
-        guard let region = PrecipitationOverlayService.region(enclosing: focus),
-              let provider = precipService.selectedProvider(for: region),
+        guard var region = PrecipitationOverlayService.region(enclosing: focus) else {
+            radarOverlay.sampledCells = []
+            return
+        }
+        // Widen the box by ~`corridorPadNM` on every side so weather whose body sits off
+        // the centerline (but whose edge crosses the route) is still captured.
+        let corridorPadNM = 60.0
+        let padLat = corridorPadNM / 60.0
+        let padLon = corridorPadNM / (60.0 * max(0.2, cos(region.center.latitude * .pi / 180)))
+        region.span.latitudeDelta += 2 * padLat
+        region.span.longitudeDelta += 2 * padLon
+
+        guard let provider = precipService.selectedProvider(for: region),
               provider.supportsTrueRadar else {
-            // No true-radar coverage for this window → genuinely no radar cells here.
+            // No true-radar coverage for this route → genuinely no radar cells here.
             radarOverlay.sampledCells = []
             return
         }
@@ -2613,15 +2628,20 @@ final class AppModel: ObservableObject {
         }
 
         let bbox = RadarBoundingBox(region: region)
-        let sample = 160
+        // Scale the sample grid to the corridor so NM/pixel stays roughly constant on any
+        // route length (fine for short routes, capped for transcon ones).
+        let midLat = (bbox.minLatitude + bbox.maxLatitude) / 2
+        let latSpanNM = (bbox.maxLatitude - bbox.minLatitude) * 60
+        let lonSpanNM = (bbox.maxLongitude - bbox.minLongitude) * 60 * max(0.2, cos(midLat * .pi / 180))
+        let grid = RadarImageSampler.sampleGrid(latSpanNM: latSpanNM, lonSpanNM: lonSpanNM)
         let frames = (try? await provider.availableFrames(for: region)) ?? []
         let frame = frames.first ?? RadarFrame(id: "sample", timestamp: Date(), label: "Current")
         // `exportImage` itself returns an optional Data, so flatten the `try?`
         // double-optional before decoding.
         let fetched = try? await provider.exportImage(
-            for: bbox, size: CGSize(width: sample, height: sample), frame: frame)
+            for: bbox, size: CGSize(width: grid.columns, height: grid.rows), frame: frame)
         guard let data = fetched ?? nil,
-              let cells = RadarImageSampler.cells(fromPNG: data, columns: sample, rows: sample, bbox: bbox) else {
+              let cells = RadarImageSampler.cells(fromPNG: data, columns: grid.columns, rows: grid.rows, bbox: bbox) else {
             // Fetch or decode failed — keep the last good cells so the deviation line
             // doesn't blink out on a transient error.
             return

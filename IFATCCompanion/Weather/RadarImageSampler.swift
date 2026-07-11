@@ -67,6 +67,24 @@ enum RadarImageSampler {
         return hue < 0 ? hue + 360 : hue
     }
 
+    // MARK: - Sample resolution
+
+    /// The `columns × rows` sample grid for a radar image covering a bbox of the given
+    /// span (NM), sized to hold roughly `targetNMPerPixel` NM per pixel on each axis so a
+    /// **whole-flight-plan** sample still resolves individual storms near the aircraft
+    /// (finer for short routes, capped for very long ones). Bounded to `[minDim, maxDim]`
+    /// per axis — the floor keeps a short route from over-sampling a tiny image, the cap
+    /// keeps a transcon route from requesting a giant one. Pure and unit-tested.
+    static func sampleGrid(latSpanNM: Double, lonSpanNM: Double,
+                           targetNMPerPixel: Double = 2, minDim: Int = 160, maxDim: Int = 640)
+        -> (columns: Int, rows: Int) {
+        func dim(_ nm: Double) -> Int {
+            let n = nm.isFinite ? Int((nm / max(0.1, targetNMPerPixel)).rounded()) : minDim
+            return Swift.min(maxDim, Swift.max(minDim, n))
+        }
+        return (columns: dim(lonSpanNM), rows: dim(latSpanNM))
+    }
+
     // MARK: - Grid → cells
 
     /// Cluster a grid of per-pixel intensities into moderate-or-greater

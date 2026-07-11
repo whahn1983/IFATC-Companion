@@ -203,14 +203,22 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
    **only by moderate-or-greater precipitation cells** — the hand-authored cells in
    Mock Mode, or the cells sampled from the live radar image by `RadarImageSampler`
    (the "raster → cell" step): the app fetches a NOAA/OPERA base-reflectivity image
-   for a **window around the aircraft and the route ahead** (~280 NM ahead, ±90 NM
-   wide — not the whole dep→dest box, which under-resolves storms on long routes),
-   classifies pixels by the reflectivity color ramp, and clusters the
-   moderate-and-warmer returns into cells. Sampling is **continuous** — it resamples
-   as the aircraft flies (throttled by time/distance in `maybeResamplePrecipitation`),
-   not only on a manual refresh, so the reroute tracks the weather rather than going
-   stale. On a fetch/decode failure it **keeps the last good cells** instead of
-   wiping them, so a transient hiccup doesn't blink the mint line out. This is
+   for the **whole flight-plan corridor** (the aircraft and every fix ahead through the
+   destination — the entire route from the gate, the remaining route in flight — widened
+   ~60 NM on every side), classifies pixels by the reflectivity color
+   ramp, and clusters the moderate-and-warmer returns into cells. Sampling the entire
+   route — not just a window ahead — is what lets every system's reroute be seen at once,
+   including the faint strategic previews **from the gate before takeoff**. To avoid the
+   old whole-route problem (a fixed grid over a long route under-resolved storms and
+   "cleared" weather still dead ahead), the **sample resolution scales with the corridor
+   size** to hold ~2 NM per pixel, floored for short routes and capped for transcon ones
+   (`RadarImageSampler.sampleGrid`). Sampling is **continuous** — it resamples so the
+   reroutes track the weather rather than going stale; because the region is the whole
+   route (not aircraft-relative) it barely changes as the aircraft flies, so
+   `maybeResamplePrecipitation` is driven mainly by staleness (~60 s) with a large
+   movement backstop rather than re-fetching the bigger image every mile. On a
+   fetch/decode failure it **keeps the last good cells** instead of wiping them, so a
+   transient hiccup doesn't blink the mint line out. This is
    **true-radar only** and best-effort — outside NOAA/OPERA coverage there are no
    cells and no deviation is offered (rather than one invented from coarser data).
    The sampled cells drive geometry only and are never drawn (the radar image overlay
