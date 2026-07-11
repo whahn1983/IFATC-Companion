@@ -1517,6 +1517,7 @@ final class AppModel: ObservableObject {
         var plan = flightPlan
         let manual = plan.manualOverride
         let before = (plan.departure, plan.destination)
+        let beforeWaypoints = plan.waypoints.map(\.name)
 
         // For each field: take the live value when the pilot has not pinned it with
         // a manual override, or when the field is still empty.
@@ -1543,9 +1544,16 @@ final class AppModel: ObservableObject {
         }
         flightPlan = plan
 
-        // Refresh weather only when the endpoints actually changed.
+        // Refresh weather (re-fetch + re-sample the corridor) when the endpoints changed.
+        // When only the *route* (waypoints) changed, the endpoints-triggered refresh
+        // doesn't fire, so force the radar to re-sample the new corridor on the next tick
+        // — otherwise the mint-line geometry re-runs against cells still covering the old
+        // route. Detection itself re-runs every telemetry tick, so no explicit recompute
+        // is needed here.
         if before != (plan.departure, plan.destination) {
             Task { await refreshWeather() }
+        } else if plan.waypoints.map(\.name) != beforeWaypoints {
+            lastPrecipSampleAt = nil
         }
     }
 
@@ -1843,7 +1851,17 @@ final class AppModel: ObservableObject {
         plan.arrivalGate = settings.arrivalGate
         plan.manualOverride = !settings.departure.isEmpty || !settings.destination.isEmpty
         if settings.mockMode { plan.waypoints = mock.route.waypoints }
+        let routeChanged = plan.departure != flightPlan.departure
+            || plan.destination != flightPlan.destination
+            || plan.waypoints.map(\.name) != flightPlan.waypoints.map(\.name)
         flightPlan = plan
+        // A manual plan edit must re-evaluate the weather deviation immediately: the
+        // telemetry tick also recomputes, but an edit made while disconnected / paused (or
+        // before connecting) would otherwise leave a stale mint line and previews. When the
+        // route corridor changed, also invalidate the radar sample so the next sample
+        // covers the new corridor rather than the old one.
+        if routeChanged { lastPrecipSampleAt = nil }
+        recomputeWeatherHazards()
     }
 
     func applyManualOverrides() {

@@ -224,6 +224,15 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
    The sampled cells drive geometry only and are never drawn (the radar image overlay
    already shows the precipitation). Radar is always spoken as *"precipitation"*,
    never *"turbulence"*.
+   - **Re-evaluated on a flight-plan change.** Detection reads the live flight plan
+     (waypoints, upcoming route, rejoin cap) fresh on every telemetry tick, so a plan
+     change in flight is reflected on the next tick. A change made while disconnected /
+     paused wouldn't otherwise re-run, so the manual-edit path (`syncFlightPlanFromSettings`
+     → `applyManualOverrides`) recomputes immediately, and a change to the **route**
+     (endpoints or waypoints) invalidates the radar sample so the next sample covers the new
+     corridor rather than the old one — the mint line and previews follow the new plan
+     rather than the old one. A *committed* deviation stays locked until clear-of-weather or
+     a fresh vectors request.
    - **SIGMETs do not steer the reroute.** A SIGMET/AIRMET polygon is a coarse,
      often huge advisory box, not a precipitation shape — routing around it produces
      reroutes that ignore where the storms actually are. SIGMETs still shade the
