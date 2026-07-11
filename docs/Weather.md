@@ -37,15 +37,41 @@ subscription** — for the user or for the app publisher.
    and NOAA-covered radar regions. **True radar.** Labeled *"Radar precipitation"*;
    source *NOAA/NWS radar precipitation*. No NOAA/NWS logos or endorsement implied;
    attribution is a plain text label ("Radar precipitation data: NOAA/NWS").
-2. **EUMETNET OPERA (ODC/ORD) radar composite** — Europe, where OPERA data is
+2. **EUMETNET OPERA (ORD / CIRRUS) radar composite** — Europe, where OPERA data is
    available. **True radar.** Labeled *"Radar precipitation"*; source *EUMETNET
    OPERA radar precipitation*. Honors **CC BY 4.0** attribution ("Radar
-   precipitation data: EUMETNET OPERA (CC BY 4.0)"). Prefers OPERA composite
-   products in order — **maximum reflectivity → instantaneous rain rate → 1-hour
-   accumulation** — and cloud-optimized GeoTIFF over ODIM HDF5 for easier iOS
+   precipitation data: EUMETNET OPERA / CIRRUS composite (CC BY 4.0)"). Prefers OPERA
+   composite products in order — **maximum reflectivity → instantaneous rain rate →
+   1-hour accumulation** — and cloud-optimized GeoTIFF over ODIM HDF5 for easier iOS
    rendering. Coverage is best-effort: **not every European country necessarily has
-   usable ORD coverage**, and rendering **fails gracefully** where it does not.
+   usable composite coverage**, and rendering **fails gracefully** where it does not.
    Check product metadata for any license/source exceptions before display.
+
+   **How it renders (ORD / CIRRUS).** ODYSSEY was retired in 2024; the current
+   pan-European composite is produced by **CIRRUS** and published through the
+   **EUMETNET Open Radar Data (ORD)** programme. There is **no public keyless
+   *rendered* WMS/WMTS** for the composite — only the raw ODIM-HDF5 and
+   cloud-optimized GeoTIFF data files — so the app renders the overlay itself:
+   - `EUMETNETORDClient` reads the ORD **24-hour cache** *anonymously* — a public S3
+     bucket (`s3://openradar-24h/YYYY/MM/DD/OPERA/COMP/…@DBZH.tif` at
+     `s3.waw3-1.cloudferro.com`) requiring **no account, API key, or credentials**
+     (the AWS-CLI `--no-sign-request` equivalent — plain unsigned HTTPS GETs). It
+     lists the latest composite GeoTIFF for the product and fetches it.
+   - `OPERACompositeRenderer` decodes the composite (ImageIO), reprojects it from the
+     OPERA **Lambert Azimuthal Equal Area** grid (origin 55° N/10° E; projected
+     extent derived from the documented corners) into a Web-Mercator PNG for the map
+     bounding box — the same form the NOAA/NASA overlays use, so the existing image
+     sampler and overlay renderer consume it unchanged. Precipitation intensity is
+     classified conservatively (the standard reflectivity color ramp for colorized
+     pixels; ODIM `DBZH` scaling for near-gray data pixels) so the overlay never
+     *invents* precipitation from ambiguous data.
+   - **On-device verification note.** The exact composite GeoTIFF encoding, the
+     `DBZH`→intensity scaling, and the LAEA georeferencing are **best-effort and meant
+     to be verified/tuned against real ORD composites on device** (the ORD S3 host is
+     not reachable from CI). Every fetch/decode step **fails to `nil`**, and after a
+     few consecutive render failures the OPERA provider is put in a short cooldown so
+     selection **falls through to the NASA satellite estimate** rather than leaving
+     the map blank while claiming OPERA coverage.
 3. **NASA GPM IMERG via NASA GIBS** — global fallback outside NOAA and OPERA
    coverage. This is a **satellite precipitation estimate — NOT radar** — always
    labeled *"Satellite precipitation estimate"* and treated as **lower confidence**

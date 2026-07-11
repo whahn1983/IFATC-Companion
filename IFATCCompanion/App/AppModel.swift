@@ -407,6 +407,9 @@ final class AppModel: ObservableObject {
         connect.configure(diagnostics: diagnostics)
         Task { await weatherService.configure(baseURL: settings.weatherBaseURL, diagnostics: diagnostics) }
         precipService.configure(diagnostics: diagnostics)
+        // An async OPERA/ORD overlay render finished — nudge the map to re-request the
+        // now-cached image (touch the published overlay model without recomputing).
+        precipService.onOverlayUpdated = { [weak self] in self?.radarOverlay.lastUpdated = Date() }
         applyRadarProvider()
 
         // Route state from whichever feed is active.

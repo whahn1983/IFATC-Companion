@@ -5,18 +5,26 @@ import MapKit
 
 // MARK: - EUMETNET OPERA (Europe, true radar)
 
-/// EUMETNET OPERA ODC/ORD radar composite provider for Europe. True radar
-/// precipitation. Honors CC BY 4.0 attribution and prefers cloud-optimized
-/// GeoTIFF composites (easier to render on iOS than ODIM HDF5). Coverage is
-/// best-effort over Europe — the app does **not** assume every European country
-/// has usable ORD coverage, and fails gracefully where data is unavailable.
+/// EUMETNET OPERA radar composite provider for Europe. True radar precipitation,
+/// sourced from the **EUMETNET Open Radar Data (ORD)** 24-hour cache — the keyless,
+/// anonymous public S3 bucket that distributes the pan-European OPERA composite
+/// (produced by **CIRRUS**, which replaced ODYSSEY in 2024). Honors **CC BY 4.0**
+/// attribution and uses the cloud-optimized GeoTIFF composite (renderable on iOS via
+/// ImageIO) rather than ODIM HDF5. Coverage is best-effort over Europe — the app
+/// does **not** assume every country has usable composite coverage, and fails
+/// gracefully (falling through to the NASA satellite estimate) where the render
+/// can't be produced.
 ///
-/// Rendering note: OPERA is distributed as ORD data files (GeoTIFF / ODIM HDF5),
-/// not as a universal keyless GetMap tile service. `exportImageURL` builds a WMS
-/// GetMap only when a compatible ORD/WMS endpoint is configured (`wmsBaseURL`);
-/// otherwise it returns nil and the overlay is simply absent (graceful) while the
-/// EUMETNET OPERA source label, coverage, and attribution still apply. Check
-/// product metadata for any license/source exceptions before display.
+/// Rendering: there is no public keyless *rendered* WMS/WMTS for the composite, so
+/// the provider fetches the latest ORD composite GeoTIFF anonymously
+/// (`EUMETNETORDClient`, `--no-sign-request` equivalent) and reprojects/colorizes it
+/// itself (`OPERACompositeRenderer`) into the same PNG form the NOAA/NASA overlays
+/// use. A configured `wmsBaseURL` still overrides this with a WMS GetMap when a
+/// compatible ORD/WMS service is available. `exportImageURL` (the synchronous
+/// `AsyncImage` path) only returns a URL for the WMS case; the ORD render is
+/// asynchronous, so the overlay display is served from `PrecipitationOverlayService`'s
+/// render cache. **The ORD decode/colorize scaling is best-effort and intended to be
+/// verified/tuned on device against real composites.**
 struct EUMETNETOPERARadarProvider: RadarPrecipitationProvider {
 
     /// OPERA composite products, in preference order.
@@ -34,6 +42,15 @@ struct EUMETNETOPERARadarProvider: RadarPrecipitationProvider {
             case .oneHourAccumulation: return "opera_1h_accumulation"
             }
         }
+
+        /// The ORD composite product code (`DBZH` / `RATE` / `ACRR`).
+        var ordProduct: EUMETNETORDClient.Product {
+            switch self {
+            case .maximumReflectivity: return .maximumReflectivity
+            case .instantaneousRainRate: return .instantaneousRainRate
+            case .oneHourAccumulation: return .oneHourAccumulation
+            }
+        }
     }
 
     /// Preferred product order: max reflectivity → instantaneous rain rate → 1-hour
@@ -44,20 +61,28 @@ struct EUMETNETOPERARadarProvider: RadarPrecipitationProvider {
     static let preferredFormats: [String] = ["cog-geotiff", "geotiff", "odim-hdf5"]
 
     /// Optional WMS GetMap endpoint for a compatible OPERA/ORD composite service.
-    /// Empty by default (no verified universal keyless GetMap) → graceful no-render.
+    /// When set it overrides the anonymous ORD GeoTIFF render path.
     var wmsBaseURL: String
     /// The product to request (defaults to the top preference).
     var product: Product
+    /// Whether to render from the anonymous ORD composite GeoTIFF when no WMS
+    /// endpoint is configured. Default on — this is the live European radar source.
+    var useORD: Bool
+    /// The anonymous ORD client (keyless public S3).
+    var ordClient: EUMETNETORDClient
 
-    init(wmsBaseURL: String = "", product: Product = .maximumReflectivity) {
+    init(wmsBaseURL: String = "", product: Product = .maximumReflectivity,
+         useORD: Bool = true, ordClient: EUMETNETORDClient = EUMETNETORDClient()) {
         self.wmsBaseURL = wmsBaseURL
         self.product = product
+        self.useORD = useORD
+        self.ordClient = ordClient
     }
 
     let id = "eumetnet-opera-radar"
     let displayName = "EUMETNET OPERA radar precipitation"
     let coverageDescription = "Available where EUMETNET OPERA radar data is provided (Europe)"
-    let attributionText: String? = "Radar precipitation data: EUMETNET OPERA (CC BY 4.0)"
+    let attributionText: String? = "Radar precipitation data: EUMETNET OPERA / CIRRUS composite (CC BY 4.0)"
     let supportsTrueRadar = true
     let layerType: PrecipitationLayerType = .radar
     let confidence: HazardConfidence = .high
@@ -76,6 +101,16 @@ struct EUMETNETOPERARadarProvider: RadarPrecipitationProvider {
         coverageBox.contains(coordinate)
     }
 
+    /// OPERA can render where it covers the region **and** it has a working source —
+    /// the anonymous ORD composite (default) or a configured WMS endpoint. With
+    /// neither, it can't produce imagery, so it must not win selection (the service
+    /// then falls through to the NASA satellite estimate) rather than claiming
+    /// coverage it can't draw.
+    func canRenderOverlay(for region: MKCoordinateRegion) -> Bool {
+        guard covers(region: region) else { return false }
+        return useORD || !wmsBaseURL.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
     func availableFrames(for region: MKCoordinateRegion) async throws -> [RadarFrame] {
         guard covers(region: region) else { return [] }
         return [RadarFrame(id: "opera-current", timestamp: Date(), isForecast: false, label: "Current (OPERA)")]
@@ -84,18 +119,38 @@ struct EUMETNETOPERARadarProvider: RadarPrecipitationProvider {
     func overlayTileURL(z: Int, x: Int, y: Int, frame: RadarFrame) async throws -> URL? { nil }
 
     func exportImage(for bbox: RadarBoundingBox, size: CGSize, frame: RadarFrame) async throws -> Data? {
-        guard let url = exportImageURL(for: bbox, size: size, frame: frame) else { return nil }
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 12
-        request.setValue("IFATCCompanion/1.0", forHTTPHeaderField: "User-Agent")
-        let (data, response) = try await URLSession.shared.data(for: request)
-        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) { return nil }
-        return data.isEmpty ? nil : data
+        // Prefer a configured WMS GetMap (rendered server-side) when present.
+        if let url = exportImageURL(for: bbox, size: size, frame: frame) {
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 12
+            request.setValue("IFATCCompanion/1.0", forHTTPHeaderField: "User-Agent")
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) { return nil }
+            return data.isEmpty ? nil : data
+        }
+        // Otherwise render the anonymous ORD composite GeoTIFF ourselves.
+        guard useORD else { return nil }
+        return await renderORDComposite(for: bbox, size: size)
+    }
+
+    /// Fetch the latest anonymous ORD composite GeoTIFF and reproject/colorize it into
+    /// a Web-Mercator PNG for `bbox` (the same layout the NOAA/NASA overlays use, so
+    /// the existing sampler and overlay renderer consume it unchanged). Nil on any
+    /// listing/fetch/decode failure so the caller degrades gracefully.
+    func renderORDComposite(for bbox: RadarBoundingBox, size: CGSize) async -> Data? {
+        guard size.width > 0, size.height > 0,
+              let raster = await OPERACompositeStore.shared.current(
+                product: product.ordProduct, client: ordClient, now: Date()) else { return nil }
+        return OPERACompositeRenderer.renderMercatorPNG(
+            from: raster, bbox: bbox,
+            width: Int(size.width.rounded()), height: Int(size.height.rounded()))
     }
 
     /// Build a WMS 1.1.1 GetMap for the configured OPERA/ORD service (EPSG:3857).
-    /// Returns nil when no endpoint is configured — the caller then renders nothing
-    /// (graceful) rather than displaying satellite/forecast data as radar.
+    /// Returns nil when no WMS endpoint is configured — the overlay is then produced
+    /// asynchronously from the anonymous ORD composite GeoTIFF (see `exportImage` /
+    /// `renderORDComposite`) and served from the overlay render cache, rather than
+    /// displaying satellite/forecast data as radar.
     func exportImageURL(for bbox: RadarBoundingBox, size: CGSize, frame: RadarFrame?) -> URL? {
         let base = wmsBaseURL.trimmingCharacters(in: .whitespaces)
         guard !base.isEmpty, size.width > 0, size.height > 0 else { return nil }
