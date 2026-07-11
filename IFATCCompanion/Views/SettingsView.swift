@@ -23,7 +23,7 @@ struct SettingsView: View {
                 pilotVoiceSection
                 phraseologySection
                 automationSection
-                weatherSection
+                sigmetPirepSection
                 weatherDataSection
                 etiquetteSection
                 advancedSection
@@ -237,10 +237,10 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - Weather
+    // MARK: - SIGMET / PIREP
 
-    private var weatherSection: some View {
-        Section("Weather") {
+    private var sigmetPirepSection: some View {
+        Section {
             VStack(alignment: .leading) {
                 Text("Route corridor: \(Int(settings.routeCorridorNM)) NM")
                 Slider(value: $settings.routeCorridorNM, in: 25...250, step: 25)
@@ -258,6 +258,10 @@ struct SettingsView: View {
                     .textInputAutocapitalization(.never)
                     .font(.caption)
             }
+        } header: {
+            Text("SIGMET / PIREP")
+        } footer: {
+            Text("Route corridor and altitude band set how close to your route — laterally and by altitude — a PIREP must be to count toward the ride report. SIGMETs are matched to your route by their area, so they aren't affected by these sliders. Neither affects the radar precipitation reroute, which uses its own corridor. Endpoint is the aviation weather data source (METAR, TAF, PIREP, SIGMET).")
         }
     }
 
