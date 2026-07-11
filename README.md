@@ -42,7 +42,7 @@ IFATC Companion is organized into five tabs:
 ### Weather and weather routing
 - **Aviation weather briefings** — METAR, TAF, PIREP, and SIGMET, sourced from free public NOAA data (no keys, no subscriptions to weather services).
 - **Route weather analysis** and a **composite ride-quality / turbulence outlook** that blends pilot reports, advisories, and surface winds into a continuous ride index.
-- **Route map with a radar precipitation overlay.** See your route, your live aircraft position, and precipitation where coverage is available (NOAA/NWS radar in the U.S., EUMETNET OPERA radar in Europe — the CIRRUS composite, read anonymously from the free EUMETNET Open Radar Data cache and licensed CC BY 4.0 — and a NASA satellite precipitation estimate elsewhere), with clear data-source labels and coverage notes.
+- **Route map with a radar precipitation overlay.** See your route, your live aircraft position, and precipitation where coverage is available (NOAA/NWS radar in the U.S., and a NASA satellite precipitation estimate elsewhere), with clear data-source labels and coverage notes. (EUMETNET OPERA radar for Europe is temporarily **disabled** — see the weather note below.)
 - **Simulated weather-deviation flow.** When weather is detected along your route, ATC gives an advisory and you can request a deviation ("twenty degrees right for weather"), get a suggested heading and a rejoin point, then report clear of weather and be cleared back on course — all simulated, for immersion only.
 
 ### Convenience
@@ -105,7 +105,7 @@ IFATC Companion aims for realism, but a few things are worth setting expectation
 - Taxi routing and procedure references use built-in datasets that cover the demo airports in detail and fall back to sensible defaults elsewhere.
 - Push-to-talk accuracy depends on your device and microphone.
 
-**About the weather:** it comes from free public sources (NOAA aviation weather, and radar/precipitation imagery from NOAA/NWS, EUMETNET OPERA, and NASA GIBS), so availability depends on their coverage and uptime, some fields are best-effort, and data may be a few minutes old or unavailable offline. Radar precipitation is only true radar where NOAA (U.S.) or EUMETNET OPERA (Europe, CIRRUS composite, CC BY 4.0) provide it; elsewhere it's a lower-confidence satellite estimate, and above roughly ±60° latitude it may be unavailable. **All weather, radar, and deviation features are for simulation, training, and entertainment only — never for real-world flight.**
+**About the weather:** it comes from free public sources (NOAA aviation weather, and radar/precipitation imagery from NOAA/NWS and NASA GIBS), so availability depends on their coverage and uptime, some fields are best-effort, and data may be a few minutes old or unavailable offline. Radar precipitation is only true radar where NOAA (U.S.) provides it; elsewhere — including Europe — it's a lower-confidence satellite estimate, and above roughly ±60° latitude it may be unavailable. **EUMETNET OPERA radar (the CIRRUS composite for Europe) is currently disabled:** rendering it reliably from the raw open-data composite proved unreliable on-device, and no cleanly-licensed, keyless, already-rendered European radar source is available yet — so OPERA stays off until a more reliable source can be found, and Europe falls back to the NASA satellite estimate in the meantime. **All weather, radar, and deviation features are for simulation, training, and entertainment only — never for real-world flight.**
 
 ---
 
