@@ -126,7 +126,13 @@ struct RouteWeatherConflictDetector {
         /// hug reaches its offset over enough distance to make the first leg this angle
         /// rather than a 90° sideways step. When the weather sits right at the aircraft a
         /// steeper turn is used instead (the gentle start would cut back through the cell).
+        /// The same angle shapes the turn-out at the start of the drawn line and the
+        /// turn-back at the rejoin, so the mint line makes a nice ~30° dogleg out and back.
         var initialDeviationTurnDegrees: Double = 30
+        /// The minimum end-to-end extent of the drawn maneuver (NM). A deviation shorter
+        /// than this reads as a twitch on the map, so a compact cell's reroute is stretched
+        /// (its rejoin pushed forward, within the cap) to at least this length.
+        var minDeviationExtentNM: Double = 15
     }
 
     var config = Config()
@@ -598,14 +604,27 @@ struct RouteWeatherConflictDetector {
             ?? (path: finalize(apexPath(for: 0)), target: 0)
         let target = chosen.target
         let direction: DeviationDirection = target >= 0 ? .right : .left
-        // The chosen path is already finalized (capped + turn-bounded), so the drawn line
-        // is exactly what was validated for clearance.
-        let deviationPath = chosen.path
+        // The chosen path is already finalized (capped + turn-bounded) and validated for
+        // clearance. Draw the maneuver starting at the turn-out point — a ~30° lead
+        // before the weather — and rejoining with a ~30° turn-back, rather than a long
+        // shallow drift from the aircraft. Both only reshape the lead-in / lead-out on the
+        // course line ahead of / behind the (already-clear) offset legs, and both leave a
+        // reroute close aboard starting at the aircraft. Then guarantee the whole
+        // maneuver spans at least the minimum extent.
+        var deviationPath = startAtTurnOut(chosen.path, position: position, course: course)
+        deviationPath = endAtTurnBack(deviationPath, position: position, course: course)
+        deviationPath = enforceMinExtent(deviationPath, position: position, course: course, capAlong: capAlong)
+        // Safety: the reshaped lead-in / lead-out must still clear the intense cores. If
+        // the steeper turn-out geometry would clip one (e.g. a tight gap-thread), keep the
+        // validated original path instead.
+        if !pathIsClear(deviationPath, cells: intenseBerths, origin: position) {
+            deviationPath = chosen.path
+        }
         let throughPoint = deviationPath.count >= 2 ? deviationPath[1] : chosen.path[1]
 
-        // Speak the deviation the drawn line actually flies: the initial turn from
-        // course to the through-point, rounded to 5°, with a severity-based floor.
-        let degrees = deviationDegrees(position: position, course: course,
+        // Speak the deviation the drawn line actually flies: the initial turn from the
+        // turn-out point to the through-point, rounded to 5°, with a severity-based floor.
+        let degrees = deviationDegrees(from: deviationPath.first ?? position, course: course,
                                        throughPoint: throughPoint, severity: primary.hazard.intensity)
 
         let segment = originalSegment(waypoints: waypoints, position: position, course: course,
@@ -875,10 +894,76 @@ struct RouteWeatherConflictDetector {
         return CLLocationCoordinate2D(latitude: cy / latScale, longitude: cx / lonScale)
     }
 
-    /// The spoken deviation amount: the initial turn from course to the through-
-    /// point, rounded to 5° and clamped, with a severity-based floor so heavier
+    // MARK: - Turn-out / turn-back shaping
+
+    /// The along-course lead for a turn of `initialDeviationTurnDegrees` (capped by the
+    /// max off-course bound) to reach a lateral `offset` — how far ahead the turn must
+    /// begin so the leg onto the offset is that angle rather than a shallow drift.
+    private func turnOutLead(forOffset offset: Double) -> Double {
+        let angle = min(config.initialDeviationTurnDegrees, config.maxDeviationTurnDegrees)
+        return abs(offset) / tan(max(1, angle) * .pi / 180)
+    }
+
+    /// Start the drawn maneuver at its **turn-out point** — a lead-in just before the
+    /// weather that makes the first leg a ~`initialDeviationTurnDegrees`° turn onto the
+    /// offset — instead of a long shallow drift all the way from the aircraft. For
+    /// weather drawn far ahead this moves the mint line's start up to just before the
+    /// weather; for weather close aboard the lead collapses and the line still starts at
+    /// the aircraft (a necessarily steeper turn). Only reshapes the lead-in on the course
+    /// line ahead of the (already-clear) first offset leg.
+    private func startAtTurnOut(_ path: [CLLocationCoordinate2D], position: CLLocationCoordinate2D,
+                                course: Double) -> [CLLocationCoordinate2D] {
+        guard path.count >= 2, let first = path.first else { return path }
+        let s1 = project(path[1], from: position, course: course)
+        guard abs(s1.cross) > 0.5 else { return path }   // no offset to turn onto
+        let startAlong = s1.along - turnOutLead(forOffset: s1.cross)
+        let curStart = project(first, from: position, course: course).along
+        // Only pull the start forward (ahead of the aircraft); keep it at the aircraft
+        // when the weather is close enough that a 30° turn-out would begin behind it.
+        guard startAlong > max(2, curStart + 2) else { return path }
+        let v0 = Geo.destination(from: position, bearingDegrees: course, distanceNM: startAlong)
+        return [v0] + Array(path.dropFirst())
+    }
+
+    /// Rejoin with a ~`initialDeviationTurnDegrees`° **turn-back** rather than a long
+    /// shallow intercept, by ending the maneuver a matching lead past the last offset
+    /// vertex. Applied only when the rejoin sits essentially on the course line (a
+    /// straight route); a bent-route rejoin (off course) is left to the route-intercept
+    /// truncation. Only ever shortens the maneuver (steepening a too-shallow rejoin).
+    private func endAtTurnBack(_ path: [CLLocationCoordinate2D], position: CLLocationCoordinate2D,
+                               course: Double) -> [CLLocationCoordinate2D] {
+        guard path.count >= 3, let last = path.last else { return path }
+        let sLast = project(last, from: position, course: course)
+        guard abs(sLast.cross) < 3 else { return path }   // bent-route rejoin — leave to truncation
+        let sFar = project(path[path.count - 2], from: position, course: course)
+        guard abs(sFar.cross) > 0.5 else { return path }
+        let endAlong = sFar.along + turnOutLead(forOffset: sFar.cross)
+        guard endAlong < sLast.along - 2 else { return path }   // current rejoin already steep enough
+        let v = Geo.destination(from: position, bearingDegrees: course, distanceNM: endAlong)
+        return Array(path.dropLast()) + [v]
+    }
+
+    /// Guarantee the drawn maneuver spans at least `minDeviationExtentNM` from start to
+    /// end. In practice construction already exceeds it (the rejoin sits well past the
+    /// turn-out), but a compact cell can fall short — then the rejoin end is pushed
+    /// forward along course (within the cap), which only lengthens the final leg.
+    private func enforceMinExtent(_ path: [CLLocationCoordinate2D], position: CLLocationCoordinate2D,
+                                  course: Double, capAlong: Double?) -> [CLLocationCoordinate2D] {
+        guard path.count >= 2, let first = path.first, let last = path.last else { return path }
+        let a0 = project(first, from: position, course: course).along
+        let sLast = project(last, from: position, course: course)
+        guard abs(sLast.cross) < 3, sLast.along - a0 < config.minDeviationExtentNM else { return path }
+        var target = a0 + config.minDeviationExtentNM
+        if let capAlong { target = min(target, capAlong) }
+        guard target > sLast.along else { return path }
+        let v = Geo.destination(from: position, bearingDegrees: course, distanceNM: target)
+        return Array(path.dropLast()) + [v]
+    }
+
+    /// The spoken deviation amount: the initial turn from the turn-out point to the
+    /// through-point, rounded to 5° and clamped, with a severity-based floor so heavier
     /// precipitation is never given a token offset.
-    private func deviationDegrees(position: CLLocationCoordinate2D, course: Double,
+    private func deviationDegrees(from position: CLLocationCoordinate2D, course: Double,
                                   throughPoint: CLLocationCoordinate2D,
                                   severity: WeatherIntensity) -> Int {
         let turn = abs(normalizedSigned(Geo.bearing(from: position, to: throughPoint) - course))

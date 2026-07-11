@@ -193,6 +193,16 @@ struct WeatherDeviationContext: Codable {
     /// the loop can detect the aircraft passing abeam/past the vertex even if it flies
     /// wide of it.
     var vectorLegBearing: Double?
+    /// A deviation approved while the mint line is still drawn ahead: the turn-out
+    /// (start of the mint line) the aircraft is flying toward, the heading to fly out of
+    /// it onto the reroute, and the bearing of the leg into it (to detect passing abeam).
+    /// While these are set the controller has approved the deviation but is **holding the
+    /// turn** — the pilot continues on course until reaching the turn-out, then the
+    /// beginning turn is issued. Cleared once the turn fires (or on reset).
+    var deviationStartLatitude: Double?
+    var deviationStartLongitude: Double?
+    var deviationStartHeading: Int?
+    var deviationStartLegBearing: Double?
     var originalRouteSegment: RouteSegmentRef?
     var timeDeviationStarted: Date?
     var lastATCWeatherCall: String?

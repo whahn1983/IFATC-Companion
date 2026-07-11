@@ -550,6 +550,51 @@ final class WeatherDeviationFlowTests: XCTestCase {
         XCTAssertNotNil(model.weatherRejoinMarker, "weather in the draw range draws the rejoin marker")
     }
 
+    // MARK: - Deferred deviation (reroute drawn ahead → hold the turn, issue it at the turn-out)
+
+    /// When the reroute is drawn ahead, requesting a deviation approves it but holds the
+    /// turn: the controller says "continue, expect the turn in X miles". Only once the
+    /// aircraft reaches the turn-out point at the start of the mint line does the
+    /// controller issue the beginning turn.
+    func testDeferredDeviationHoldsTurnThenIssuesItAtTheTurnOut() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)   // settles cruise/enroute state (weather flow allowed)
+        guard let pos = model.aircraftState.coordinate else { return XCTFail("no cruise position") }
+
+        // Replace the demo cell with a narrow one ~60 NM ahead on the filed course, so its
+        // reroute is drawn ahead with the turn-out well in front of the aircraft.
+        let course = Geo.bearing(from: model.mock.route.depCoord, to: model.mock.route.destCoord)
+        let center = Geo.destination(from: pos, bearingDegrees: course, distanceNM: 60)
+        model.radarOverlay.mockCells = [RadarCell(polygon: box(around: center, half: 0.15), intensity: .moderate)]
+        model.recomputeWeatherHazards()
+        guard let v0 = model.activeWeatherConflict?.deviationPath.first else {
+            return XCTFail("expected a drawn-ahead conflict")
+        }
+        XCTAssertGreaterThan(Geo.distanceNM(from: pos, to: v0), 6,
+                             "the turn-out point must be drawn ahead of the aircraft")
+
+        // Request the deviation: approved, but the turn is held.
+        model.requestWeatherDeviation(.right)
+        XCTAssertEqual(model.weatherDeviationState, .deviationApproved)
+        XCTAssertTrue(atcContains(model, "expect the turn"),
+                      "a deviation drawn ahead is approved with the turn held")
+        XCTAssertNotNil(model.weatherDeviation.deviationStartLatitude,
+                        "the beginning turn is armed at the turn-out point")
+        XCTAssertNil(model.weatherDeviation.assignedHeading, "no turn is assigned while held")
+        XCTAssertNotNil(model.weatherDeviationLine, "the mint line is drawn while the turn is held")
+
+        // Fly to the turn-out; the controller now issues the beginning turn.
+        var atV0 = model.mock.state(for: .cruise)
+        atV0.latitude = v0.latitude
+        atV0.longitude = v0.longitude
+        model.ingestStateForTesting(atV0)
+        XCTAssertEqual(model.weatherDeviationState, .vectoringAroundWeather,
+                       "reaching the turn-out begins the deviation")
+        XCTAssertTrue(atcContains(model, "fly heading"), "the beginning turn is issued at the turn-out")
+        XCTAssertNil(model.weatherDeviation.deviationStartLatitude,
+                     "the held turn is consumed once issued")
+    }
+
     // MARK: - Committed mint line is locked
 
     /// Once the pilot commits to a vector, the mint line freezes to the path being

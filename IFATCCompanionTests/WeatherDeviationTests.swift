@@ -343,6 +343,43 @@ final class WeatherDeviationTests: XCTestCase {
         XCTAssertFalse(hz.withinDrawRange, "weather at the horizon is monitored, not drawn")
     }
 
+    // MARK: - Drawn-ahead geometry (turn-out before the weather, 30° turns, min extent)
+
+    func testMintLineStartsAheadWithAThirtyDegreeTurnOut() throws {
+        // A moderate cell ~60 NM ahead on course. The drawn line must not drift shallowly
+        // from the aircraft: it starts at a turn-out point ahead (on the course line) and
+        // makes a ~30° turn onto the offset there.
+        let cellPoly = cell(alongNM: 70, crossNM: 0, halfAlong: 10, halfCross: 8, from: usPosition)
+        let conflict = try XCTUnwrap(detector.detectConflict(
+            position: usPosition, course: course, groundspeedKnots: 450, phase: .cruise,
+            hazards: [radarHazard(cellPoly, intensity: .moderate)], waypoints: []))
+        let path = conflict.deviationPath
+        XCTAssertGreaterThanOrEqual(path.count, 2)
+        // The start is ahead of the aircraft, on the course line (not a drift from the nose).
+        XCTAssertGreaterThan(alongFromCourse(path[0]), 10,
+                             "the mint line must start ahead of the aircraft, before the weather")
+        XCTAssertLessThan(abs(offsetFromCourse(path[0])), 3,
+                          "the turn-out point sits on the route, not off to one side")
+        // The first leg is a real ~30° turn onto the offset, never a shallow drift.
+        let turnOut = Geo.headingDifference(Geo.bearing(from: path[0], to: path[1]), course)
+        XCTAssertGreaterThanOrEqual(turnOut, 22, "the turn-out must be a genuine turn (~30°), not a drift")
+        XCTAssertLessThanOrEqual(turnOut, 50, "the turn-out must not overshoot a normal deviation turn")
+    }
+
+    func testMintLineSpansAtLeastTheMinimumExtent() throws {
+        // Even a compact cell must produce a maneuver at least the minimum extent long,
+        // so the mint line never renders as a twitch on the map.
+        let cellPoly = cell(alongNM: 55, crossNM: 0, halfAlong: 5, halfCross: 5, from: usPosition)
+        let conflict = try XCTUnwrap(detector.detectConflict(
+            position: usPosition, course: course, groundspeedKnots: 450, phase: .cruise,
+            hazards: [radarHazard(cellPoly, intensity: .moderate)], waypoints: []))
+        let path = conflict.deviationPath
+        let start = try XCTUnwrap(path.first)
+        let end = try XCTUnwrap(path.last)
+        XCTAssertGreaterThanOrEqual(Geo.distanceNM(from: start, to: end), 15 - 0.5,
+                                    "the drawn deviation must span at least the minimum extent")
+    }
+
     func testWeatherOffToTheSideDoesNotDrawADeviation() {
         // A moderate cell ~16 NM to the side of course, not crossing the centerline:
         // "nearby but not on top of the route" → no conflict, no mint line, no banner.
@@ -459,12 +496,16 @@ final class WeatherDeviationTests: XCTestCase {
         let end = try XCTUnwrap(path.last)
         XCTAssertLessThan(minDistanceToPolyline(end, route), 1.0,
                           "the deviation must end on the filed route")
-        // It intercepts the route exactly once (its endpoint) — never a second time.
+        // The line now begins at its turn-out point, which sits on the route ahead of the
+        // aircraft; crossings within the departure skip of that start are the shared
+        // origin, not a re-intercept. It must then intercept the route exactly once (its
+        // endpoint) — never crossing it and looping back to intercept a second time.
+        let start = try XCTUnwrap(path.first)
         var hits: [CLLocationCoordinate2D] = []
         for i in 0..<(path.count - 1) {
             for r in 0..<(route.count - 1) {
                 guard let x = segmentIntersectionPoint(path[i], path[i + 1], route[r], route[r + 1]),
-                      Geo.distanceNM(from: usPosition, to: x) > 3 else { continue }
+                      Geo.distanceNM(from: start, to: x) > 3 else { continue }
                 if !hits.contains(where: { Geo.distanceNM(from: $0, to: x) < 1 }) { hits.append(x) }
             }
         }
@@ -647,6 +688,44 @@ final class WeatherDeviationTests: XCTestCase {
         let tx = phr.approvalNoRejoin(cs: cs, direction: .right, degrees: 20, maintainAltitude: 37000)
         XCTAssertTrue(tx.displayText.contains("advise clear of weather"))
         XCTAssertFalse(tx.displayText.contains("proceed direct"))
+    }
+
+    // MARK: - Deferred deviation (reroute drawn ahead: hold the turn, then issue it)
+
+    func testDeferDeviationApprovesButHoldsTheTurn() {
+        let engine = PhraseologyEngine(digitStyle: .individual, mode: .faa)
+        let phr = WeatherDeviationPhraseology(engine: engine)
+        let dev = WeatherDeviationEngine(phraseology: phr)
+        let cs = engine.callsign(airline: "United", flightNumber: "598", fallback: "")
+        let inputs = WeatherDeviationEngine.Inputs(maintainAltitude: 37000, heading: 90)
+        let result = dev.deferDeviation(cs: cs, conflict: nil, direction: .right, distanceNM: 30,
+                                        inputs: inputs, context: WeatherDeviationContext(), facility: .center)
+        XCTAssertEqual(result.context.state, .deviationApproved, "the deviation is approved…")
+        XCTAssertNil(result.context.assignedHeading, "…but the turn is held — no heading assigned yet")
+        XCTAssertNotNil(result.pilot, "the pilot's request is posted")
+        let atc = result.atc.first?.displayText ?? ""
+        XCTAssertTrue(atc.contains("deviation right of course approved"), atc)
+        XCTAssertTrue(atc.contains("continue present heading"), atc)
+        XCTAssertTrue(atc.contains("expect the turn"), atc)
+    }
+
+    func testBeginDeviationTurnVectorsOntoTheReroute() {
+        let engine = PhraseologyEngine(digitStyle: .individual, mode: .faa)
+        let phr = WeatherDeviationPhraseology(engine: engine)
+        let dev = WeatherDeviationEngine(phraseology: phr)
+        let cs = engine.callsign(airline: "United", flightNumber: "598", fallback: "")
+        var ctx = WeatherDeviationContext()
+        ctx.state = .deviationApproved
+        ctx.deviationStartLatitude = 40
+        ctx.deviationStartLongitude = -95
+        ctx.deviationStartHeading = 100
+        let result = dev.beginDeviationTurn(cs: cs, heading: 110, maintainAltitude: 37000,
+                                            context: ctx, facility: .center)
+        XCTAssertEqual(result.context.state, .vectoringAroundWeather, "reaching the turn-out begins the vector")
+        XCTAssertEqual(result.context.assignedHeading, 110)
+        XCTAssertNil(result.context.deviationStartLatitude, "the held turn is consumed once issued")
+        XCTAssertTrue(result.atc.first?.displayText.contains("fly heading 110") ?? false,
+                      result.atc.first?.displayText ?? "")
     }
 
     // MARK: - STAR handling

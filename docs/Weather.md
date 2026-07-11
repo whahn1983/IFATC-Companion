@@ -359,6 +359,19 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      Even with weather sitting right on the field, the mint line intercepts the route
      at or before that cap instead of routing past it. Every vertex past the cap's
      along-course distance is pulled back to it (`clampPathToAlong`).
+   - **Starts at the turn-out, not the aircraft — a ~30° dogleg out and back.** A reroute
+     drawn far ahead must not drift shallowly from the aircraft across the whole distance
+     to the weather. The chosen path is reshaped so it **begins at the turn-out point** —
+     a lead-in just before the weather sized so the first leg is a ~30° turn onto the
+     offset (`initialDeviationTurnDegrees`), rather than starting at the aircraft
+     (`startAtTurnOut`) — and **rejoins with a matching ~30° turn-back** on a straight
+     route (`endAtTurnBack`). Weather close aboard keeps the start at the aircraft with a
+     necessarily steeper turn. Every turn on the drawn line is therefore at least ~30°,
+     and the whole maneuver spans at least `minDeviationExtentNM` (15 NM) end-to-end
+     (`enforceMinExtent`) so it never renders as a twitch. The reshaping only ever touches
+     the lead-in / lead-out on the course line ahead of and behind the (already-clear)
+     offset legs, and is re-validated against the intense cores — if the steeper geometry
+     would clip one, the validated original is kept.
    It also computes distance, clock position(s), estimated time, severity, the spoken
    deviation amount (the actual initial turn onto the threading path), and a
    downstream rejoin fix.
@@ -375,6 +388,17 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
    30° for extreme/convective) and either a downstream rejoin fix or, when none is
    suitable, *"advise clear of weather"*. On a STAR the altitude restriction is
    preserved with *"maintain …"* and the rejoin is framed as rejoining the arrival.
+   - **The beginning turn is issued at the start of the mint line — held when drawn
+     ahead.** Because the reroute is drawn beginning at its turn-out point (which sits
+     ahead of the aircraft when the weather is still some distance off), requesting a
+     deviation there does not turn the aircraft immediately. ATC approves but **holds the
+     turn**: *"deviation right of course approved, maintain …, continue present heading,
+     expect the turn in X miles"* (`deferDeviation` / `expectDeviation`). The aircraft
+     flies the filed course to the turn-out; once it reaches it the controller issues the
+     beginning turn (*"fly heading …, vectors around precipitation"*) and the interior
+     auto-turns follow (`maybeIssueDeviationStartTurn` → `beginDeviationTurn` →
+     `captureWeatherRejoinTurn`). Weather close aboard (the turn-out within
+     `deviationTurnHoldNM`) is worked immediately, as before.
 5. **Clear of weather.** When the pilot reports clear of weather, ATC clears direct
    the rejoin fix (or *"resume own navigation"* when already near the route), or
    rejoins the STAR.

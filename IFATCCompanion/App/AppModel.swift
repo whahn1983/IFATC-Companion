@@ -258,6 +258,11 @@ final class AppModel: ObservableObject {
     /// aircraft must get before the controller auto-resumes own navigation when the
     /// pilot hasn't reported clear of weather.
     private let autoResumeInterceptNM: Double = 15
+    /// How far ahead (NM) the mint line's turn-out point must sit for a deviation request
+    /// to be *held* — approved now, but the beginning turn deferred until the aircraft
+    /// reaches the turn-out ("continue, expect the turn in X miles"). Within this the
+    /// aircraft is essentially at the turn-out, so the turn is worked immediately.
+    private let deviationTurnHoldNM: Double = 6
     /// Timestamp of the last aviation-weather refresh, for the diagnostics panel.
     private var lastAviationWeatherUpdate: Date?
 
@@ -2440,12 +2445,16 @@ final class AppModel: ObservableObject {
 
         // Mock Mode auto-issues the advisory once so the offline demo plays out.
         maybeAutoIssueMockAdvisory(conflict: conflict)
-        // When vectoring, auto-issue the turn back to course at the deviation apex;
-        // otherwise, once the aircraft reaches the rejoin end of the mint line without
-        // reporting clear of weather, auto-resume own navigation. Skipping the resume
-        // on a tick that just issued the rejoin turn keeps the two from racing.
-        if !maybeIssueWeatherRejoinTurn() {
-            maybeAutoResumeAtRouteIntercept()
+        // Drive the deviation turns off the aircraft's progress, most-imminent first:
+        //   1. a held beginning turn fires once the aircraft reaches the mint line's
+        //      turn-out (a deviation approved while drawn ahead — "expect the turn …");
+        //   2. else, while vectoring, the interior turns fire at each deviation vertex;
+        //   3. else, reaching the rejoin end without a clear-of-weather auto-resumes.
+        // At most one fires per tick, so they never race.
+        if !maybeIssueDeviationStartTurn() {
+            if !maybeIssueWeatherRejoinTurn() {
+                maybeAutoResumeAtRouteIntercept()
+            }
         }
         updateWeatherDiagnostics(conflict: conflict)
     }
@@ -2985,9 +2994,25 @@ final class AppModel: ObservableObject {
     }
 
     /// Pilot requests a left/right weather deviation; the controller approves.
+    ///
+    /// When the reroute is still drawn ahead — the aircraft has not yet reached the
+    /// turn-out point at the start of the mint line — the controller approves the
+    /// deviation but **holds the turn**: the pilot continues on course and is told to
+    /// expect the turn in X miles. The beginning turn is issued automatically once the
+    /// aircraft reaches the turn-out (`maybeIssueDeviationStartTurn`). Close aboard, the
+    /// turn is worked immediately, as before.
     func requestWeatherDeviation(_ direction: DeviationDirection) {
         guard !companionStandby, weatherFlowAllowed, !establishedOnFinal else { return }
         let cs = callsignNow()
+        if let ahead = deviationTurnOutAhead() {
+            applyDeviationResult(deviationEngine.deferDeviation(
+                cs: cs, conflict: activeWeatherConflict, direction: direction, distanceNM: ahead.distanceNM,
+                inputs: deviationInputs(direction: direction), context: weatherDeviation,
+                facility: weatherFacility))
+            freezeCommittedDeviationPath()
+            armDeviationStart()
+            return
+        }
         applyDeviationResult(deviationEngine.requestDeviation(
             cs: cs, conflict: activeWeatherConflict, direction: direction,
             inputs: deviationInputs(direction: direction), context: weatherDeviation,
@@ -3005,7 +3030,11 @@ final class AppModel: ObservableObject {
     /// aircraft was already following, rather than the original filed course.
     func requestVectorAroundWeather() {
         guard !companionStandby, weatherFlowAllowed, !establishedOnFinal else { return }
-        if weatherDeviation.state.isCommittedDeviation,
+        // A deviation whose turn is still held (drawn ahead) is committed but not yet
+        // being flown, so a fresh request re-holds rather than re-vectoring in place.
+        let held = weatherDeviation.deviationStartLatitude != nil
+        let alreadyCommitted = weatherDeviation.state.isCommittedDeviation && !held
+        if alreadyCommitted,
            let pos = aircraftState.coordinate, pos.isValid,
            let fresh = detectConflictAlong(route: revectorRouteAhead(from: pos)) {
             activeWeatherConflict = fresh
@@ -3013,6 +3042,19 @@ final class AppModel: ObservableObject {
         }
         let cs = callsignNow()
         let side = activeWeatherConflict?.recommendedDirection ?? .right
+        // A fresh request with the reroute still drawn ahead holds the turn, exactly like
+        // a lateral deviation request — continue on course, expect the turn in X miles —
+        // then vectors onto the reroute at the turn-out. A re-vector while already
+        // committed (new weather ahead of the line being flown) turns now.
+        if !alreadyCommitted, let ahead = deviationTurnOutAhead() {
+            applyDeviationResult(deviationEngine.deferDeviation(
+                cs: cs, conflict: activeWeatherConflict, direction: side, distanceNM: ahead.distanceNM,
+                inputs: deviationInputs(direction: side), context: weatherDeviation,
+                facility: weatherFacility))
+            freezeCommittedDeviationPath()
+            armDeviationStart()
+            return
+        }
         applyDeviationResult(deviationEngine.requestVectors(
             cs: cs, inputs: deviationInputs(direction: side), context: weatherDeviation,
             facility: weatherFacility))
@@ -3099,6 +3141,78 @@ final class AppModel: ObservableObject {
         weatherDeviation.vectorApexLatitude = nil
         weatherDeviation.vectorApexLongitude = nil
         weatherDeviation.vectorLegBearing = nil
+    }
+
+    // MARK: - Weather deviation — held beginning turn (reroute drawn ahead)
+
+    /// The turn-out point at the start of the drawn mint line and its distance ahead
+    /// (NM, rounded to 5), when it sits meaningfully ahead of the aircraft — i.e. the
+    /// reroute is drawn ahead and the beginning turn should be held until the aircraft
+    /// reaches it. Nil when the aircraft is already at/through the turn-out, so the
+    /// deviation is worked immediately.
+    private func deviationTurnOutAhead() -> (start: CLLocationCoordinate2D, distanceNM: Int)? {
+        guard let pos = aircraftState.coordinate, pos.isValid,
+              let v0 = activeWeatherConflict?.deviationPath.first, v0.isValid else { return nil }
+        let d = Geo.distanceNM(from: pos, to: v0)
+        guard d > deviationTurnHoldNM else { return nil }
+        return (v0, max(5, Int((d / 5).rounded()) * 5))
+    }
+
+    /// Arm the held beginning turn at the mint line's turn-out point: store the turn-out
+    /// (start of the committed line), the heading to fly out of it onto the reroute, and
+    /// the bearing of the leg into it (to detect the aircraft passing abeam), so the
+    /// telemetry loop can issue the turn once the aircraft reaches the turn-out.
+    private func armDeviationStart() {
+        let path = committedMintLineCoordinates()
+        guard path.count >= 2, let v0 = path.first, v0.isValid,
+              let v1 = path.dropFirst().first, v1.isValid,
+              let pos = aircraftState.coordinate, pos.isValid else { clearDeviationStart(); return }
+        weatherDeviation.deviationStartLatitude = v0.latitude
+        weatherDeviation.deviationStartLongitude = v0.longitude
+        weatherDeviation.deviationStartHeading = ApproachIntercept.normalizedHeading(Geo.bearing(from: v0, to: v1))
+        weatherDeviation.deviationStartLegBearing = Geo.bearing(from: pos, to: v0)
+    }
+
+    /// Clear the held beginning turn (no deviation-start pending).
+    private func clearDeviationStart() {
+        weatherDeviation.deviationStartLatitude = nil
+        weatherDeviation.deviationStartLongitude = nil
+        weatherDeviation.deviationStartHeading = nil
+        weatherDeviation.deviationStartLegBearing = nil
+    }
+
+    /// While a deviation is approved with its turn held (reroute drawn ahead), issue the
+    /// beginning turn once the aircraft reaches the turn-out point — near it, or once it
+    /// passes abeam/beyond along the leg into it. Vectors the aircraft onto the reroute
+    /// and arms the interior turns. Returns whether it issued the turn this tick, so the
+    /// caller can skip the other turn checks (they'd race on the same geometry).
+    @discardableResult
+    private func maybeIssueDeviationStartTurn() -> Bool {
+        guard !companionStandby, weatherFlowAllowed,
+              weatherDeviation.state == .deviationApproved,
+              let sLat = weatherDeviation.deviationStartLatitude,
+              let sLon = weatherDeviation.deviationStartLongitude,
+              let heading = weatherDeviation.deviationStartHeading,
+              let pos = aircraftState.coordinate, pos.isValid else { return false }
+        let v0 = CLLocationCoordinate2D(latitude: sLat, longitude: sLon)
+        let captureNM = max(2.0, (aircraftState.groundSpeed ?? 300) / 120)
+        let dist = Geo.distanceNM(from: pos, to: v0)
+        let reached: Bool
+        if dist <= captureNM {
+            reached = true
+        } else if let leg = weatherDeviation.deviationStartLegBearing {
+            let v0ToAircraft = Geo.bearing(from: v0, to: pos)
+            reached = dist * cos((v0ToAircraft - leg) * .pi / 180) >= 0
+        } else {
+            reached = false
+        }
+        guard reached else { return false }
+        applyDeviationResult(deviationEngine.beginDeviationTurn(
+            cs: callsignNow(), heading: heading, maintainAltitude: weatherMaintainAltitude(),
+            context: weatherDeviation, facility: weatherFacility))
+        // Now vectoring onto the reroute — arm the interior turns of the committed line.
+        captureWeatherRejoinTurn()
+        return true
     }
 
     /// Arm the interior turn at `index` in the mint line: store the turn vertex, the
