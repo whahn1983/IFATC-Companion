@@ -381,9 +381,23 @@ state when established on final.
 - **Weather deviation alerts** — *Off*, *Advisory only*, or *Advisory + suggested
   deviation*.
 - **Show data-source labels** and **Show coverage warnings**.
+- **Reduce cellular data** (default **on**) — on a cellular / hotspot / Low-Data-Mode
+  connection, skips the background EUMETNET OPERA composite downloads that drive the
+  automatic reroute (the only megabyte-scale weather source; NOAA/NASA are small
+  server-cropped PNGs). The radar overlay still loads when you open the Weather map
+  (user-initiated). Turn it off to run live OPERA radar on any connection.
 
 No user-entered API keys, provider subscriptions, or commercial weather-provider
 configuration are offered — by design.
+
+### On-device storage / cache growth
+
+Nothing accumulates without bound. The **one composite the app actually uses is held
+in memory** (a single decoded raster, ~a few MB, replaced on each 5-min update and
+freed when the app exits). The HTTP layer's on-disk cache is a **bounded LRU**, hard-
+capped per client (**OPERA composite ≤ 64 MB**, aviation JSON ≤ 32 MB): new products
+evict old ones, so it can never grow past the cap (and a composite larger than ~5 % of
+the cap isn't disk-cached at all — it's just streamed, decoded, and discarded).
 
 ## Mock Mode demo
 

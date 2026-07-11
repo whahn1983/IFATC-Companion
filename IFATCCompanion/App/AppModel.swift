@@ -3,6 +3,7 @@ import Combine
 import CoreLocation
 import CoreGraphics
 import MapKit
+import Network
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -401,6 +402,7 @@ final class AppModel: ObservableObject {
         guard !started else { return }
         started = true
 
+        startNetworkMonitor()
         diagnostics.verbose = settings.debugLogging
         applyKeepScreenAwake()
         speech.configure(settings: settings)
@@ -662,6 +664,12 @@ final class AppModel: ObservableObject {
     /// resampling) so we don't fetch from public weather services while backgrounded.
     private var appActive = true
 
+    /// Watches the network path so the "Reduce cellular data" setting can suppress the
+    /// megabyte-scale OPERA composite downloads on a cellular / expensive connection.
+    private let networkMonitor = NWPathMonitor()
+    /// True on a cellular / personal-hotspot / Low-Data-Mode connection.
+    private(set) var isExpensiveNetwork = false
+
     /// Record that the app went to the background (the OS may have torn down or
     /// silently stalled the Infinite Flight TCP link while we were away).
     func markBackgrounded() { wasBackgrounded = true; appActive = false }
@@ -679,6 +687,16 @@ final class AppModel: ObservableObject {
         diagnostics.log(.app, "Returned to foreground — forcing an Infinite Flight reconnect.")
         connect.disconnect()
         startLive()
+    }
+
+    /// Start watching the network path so `isExpensiveNetwork` reflects a cellular /
+    /// hotspot / Low-Data-Mode connection (drives the "Reduce cellular data" setting).
+    private func startNetworkMonitor() {
+        networkMonitor.pathUpdateHandler = { [weak self] path in
+            let expensive = path.isExpensive || path.isConstrained
+            Task { @MainActor in self?.isExpensiveNetwork = expensive }
+        }
+        networkMonitor.start(queue: DispatchQueue(label: "ifatc.network.monitor"))
     }
 
     // MARK: - State handling
@@ -2554,6 +2572,15 @@ final class AppModel: ObservableObject {
               provider.supportsTrueRadar else {
             // No true-radar coverage for this window → genuinely no radar cells here.
             radarOverlay.sampledCells = []
+            return
+        }
+
+        // "Reduce cellular data": on a cellular / expensive link, skip the background
+        // download of the megabyte-scale EUMETNET OPERA composite that this sampling
+        // triggers. The map overlay still loads when the user opens the Weather view
+        // (user-initiated); NOAA/NASA (small server-cropped PNGs) keep sampling. Keep
+        // the last good cells so the reroute doesn't blink out.
+        if settings.reduceCellularData, isExpensiveNetwork, provider.id == "eumetnet-opera-radar" {
             return
         }
 

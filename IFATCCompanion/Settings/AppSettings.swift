@@ -150,6 +150,10 @@ final class AppSettings: ObservableObject {
     @Published var showWeatherDataSourceLabels: Bool { didSet { save(showWeatherDataSourceLabels, .showWeatherDataSourceLabels) } }
     /// Show coverage/unavailable warnings.
     @Published var showWeatherCoverageWarnings: Bool { didSet { save(showWeatherCoverageWarnings, .showWeatherCoverageWarnings) } }
+    /// On a cellular / expensive connection, skip the background EUMETNET OPERA radar
+    /// composite downloads (the megabyte-scale source that drives the auto reroute).
+    /// The overlay still loads when you open the Weather map. On by default.
+    @Published var reduceCellularData: Bool { didSet { save(reduceCellularData, .reduceCellularData) } }
 
     // Diagnostics / dev
     @Published var debugLogging: Bool { didSet { save(debugLogging, .debugLogging) } }
@@ -209,6 +213,7 @@ final class AppSettings: ObservableObject {
         weatherDeviationAlerts = WeatherDeviationAlertMode(rawValue: defaults.string(forKey: Key.weatherDeviationAlerts.rawValue) ?? "") ?? .advisoryPlusDeviation
         showWeatherDataSourceLabels = defaults.object(forKey: Key.showWeatherDataSourceLabels.rawValue) as? Bool ?? true
         showWeatherCoverageWarnings = defaults.object(forKey: Key.showWeatherCoverageWarnings.rawValue) as? Bool ?? true
+        reduceCellularData = defaults.object(forKey: Key.reduceCellularData.rawValue) as? Bool ?? true
 
         debugLogging = defaults.object(forKey: Key.debugLogging.rawValue) as? Bool ?? true
         mockMode = defaults.object(forKey: Key.mockMode.rawValue) as? Bool ?? true
@@ -249,6 +254,7 @@ final class AppSettings: ObservableObject {
         weatherDeviationAlerts = other.weatherDeviationAlerts
         showWeatherDataSourceLabels = other.showWeatherDataSourceLabels
         showWeatherCoverageWarnings = other.showWeatherCoverageWarnings
+        reduceCellularData = other.reduceCellularData
         debugLogging = other.debugLogging; mockMode = other.mockMode
         isLoading = false
     }
@@ -266,7 +272,7 @@ final class AppSettings: ObservableObject {
         case initialClimbAltitudeFt, traconCeilingFL
         case routeCorridorNM, altitudeBandFt, weatherBaseURL
         case noaaRadarOverlay, radarOpacity, weatherDeviationAlerts
-        case showWeatherDataSourceLabels, showWeatherCoverageWarnings
+        case showWeatherDataSourceLabels, showWeatherCoverageWarnings, reduceCellularData
         case debugLogging, mockMode
     }
 

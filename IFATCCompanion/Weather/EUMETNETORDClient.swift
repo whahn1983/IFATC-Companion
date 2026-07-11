@@ -145,7 +145,10 @@ struct EUMETNETORDClient: Sendable {
     /// Shared revalidating-cache session (honors ETag/Last-Modified/Cache-Control) with
     /// the app's descriptive User-Agent. The ORD bucket is a **shared public resource**
     /// with low anonymous limits, so requests are minimized and cache-revalidated.
-    static let cachingSession = AppHTTP.makeCachingSession(cacheName: "ord-http-cache")
+    /// Bounded (LRU) cache — hard-capped at `diskMB`, so cached composites never grow
+    /// past it and old timestamped products are evicted as new ones arrive.
+    static let cachingSession = AppHTTP.makeCachingSession(cacheName: "ord-http-cache",
+                                                           memoryMB: 8, diskMB: 64)
 
     /// Outcome of an object fetch, distinguishing a retryable throttle/transient error
     /// (429/503/5xx/network — back off) from a non-retryable "gone" (keep last good).
