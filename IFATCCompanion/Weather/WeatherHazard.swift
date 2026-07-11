@@ -17,6 +17,11 @@ import MapKit
 /// primarily U.S. + North Atlantic; G-AIRMET is contiguous-U.S. only.
 enum WeatherHazardSource: String, Codable, CaseIterable {
     case noaaRadar
+    /// NASA GPM IMERG / GIBS global satellite precipitation *estimate* (not radar).
+    /// Only ever drives a deviation when the user opts in via the satellite-estimate
+    /// deviation setting; kept as its own source so diagnostics and phraseology never
+    /// present the estimate as radar-grade.
+    case satelliteEstimate
     case sigmet
     case pirep
     case metar
@@ -29,6 +34,7 @@ enum WeatherHazardSource: String, Codable, CaseIterable {
     var label: String {
         switch self {
         case .noaaRadar: return "NOAA/NWS radar precipitation"
+        case .satelliteEstimate: return "NASA satellite precipitation estimate"
         case .sigmet: return "SIGMET"
         case .pirep: return "PIREP"
         case .metar: return "METAR"
@@ -46,7 +52,7 @@ enum WeatherHazardSource: String, Codable, CaseIterable {
     var supportsTurbulenceWording: Bool {
         switch self {
         case .pirep, .sigmet, .cwa, .gairmet: return true
-        case .noaaRadar, .metar, .taf, .unknown: return false
+        case .noaaRadar, .satelliteEstimate, .metar, .taf, .unknown: return false
         }
     }
 }

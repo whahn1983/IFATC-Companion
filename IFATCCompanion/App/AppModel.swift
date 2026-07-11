@@ -2540,16 +2540,35 @@ final class AppModel: ObservableObject {
         guard radarOverlay.isEnabled, radarOverlay.coverageAvailable else { return [] }
         let providerConfidence = provider?.confidence ?? .high
         let providerLabel = provider?.uiLayerLabel ?? "Radar precipitation"
+        // Tag satellite-estimate cells as their own source (not radar) so diagnostics /
+        // phraseology never present the estimate as radar-grade.
+        let isSatelliteEstimate = provider.map { $0.layerType == .satelliteEstimate } ?? false
+        let hazardSource: WeatherHazardSource = isSatelliteEstimate ? .satelliteEstimate : .noaaRadar
         let precipCells = settings.mockMode ? radarOverlay.mockCells : radarOverlay.sampledCells
         return precipCells.compactMap { cell in
             guard cell.intensity >= .moderate else { return nil }
             return WeatherHazard(
-                source: .noaaRadar, providerID: provider?.id,
+                source: hazardSource, providerID: provider?.id,
                 phenomenon: .precipitation, intensity: cell.intensity,
                 geometry: .polygon(cell.polygon), confidence: providerConfidence,
                 movementDirectionDegrees: cell.movementDirectionDegrees,
                 movementSpeedKnots: cell.movementSpeedKnots,
                 notes: providerLabel)
+        }
+    }
+
+    /// Re-evaluate live precipitation after the satellite-estimate deviation setting is
+    /// toggled. Bypasses the staleness throttle and forces a fresh sample so the mint
+    /// line appears (turned on) or clears (turned off) at once, correctly *keeping* NOAA
+    /// radar cells either way — the resample re-populates them and only the NASA cells
+    /// come or go. In Mock Mode there is nothing live to sample, so it just recomputes.
+    func applySatelliteDeviationSettingChange() {
+        guard !settings.mockMode else { recomputeWeatherHazards(); return }
+        lastPrecipSampleAt = nil
+        lastPrecipSamplePos = nil
+        Task { @MainActor in
+            await sampleLivePrecipitation()
+            recomputeWeatherHazards()
         }
     }
 
@@ -2599,8 +2618,11 @@ final class AppModel: ObservableObject {
     /// 3. The region is route-relative (not aircraft-relative), so it barely changes as
     ///    the aircraft flies — resampling is driven mainly by staleness, not movement.
     ///
-    /// Best-effort and **true-radar only** (NOAA/OPERA); a satellite estimate or no
-    /// coverage yields no cells. Simulation/training only.
+    /// Best-effort. Radar (NOAA/OPERA) always samples; the NASA global satellite
+    /// estimate samples only when the user opts in via `satelliteDeviationsEnabled` —
+    /// then decoded with the IMERG rate palette and tagged low-confidence, so the mint
+    /// line is drawn around satellite-estimated precipitation but never presented as
+    /// radar. With neither, no cells. Simulation/training only.
     private func sampleLivePrecipitation() async {
         guard settings.noaaRadarOverlay == .autoWhereAvailable else {
             radarOverlay.sampledCells = []
@@ -2632,9 +2654,15 @@ final class AppModel: ObservableObject {
         region.span.latitudeDelta += 2 * padLat
         region.span.longitudeDelta += 2 * padLon
 
-        guard let provider = precipService.selectedProvider(for: region),
-              provider.supportsTrueRadar else {
-            // No true-radar coverage for this route → genuinely no radar cells here.
+        guard let provider = precipService.selectedProvider(for: region) else {
+            radarOverlay.sampledCells = []
+            return
+        }
+        // Radar (NOAA/OPERA) always samples. The NASA satellite estimate samples only
+        // when the user opts in (`satelliteDeviationsEnabled`); otherwise satellite
+        // coverage shows the overlay image but never drives a deviation.
+        let isSatelliteEstimate = provider.layerType == .satelliteEstimate
+        guard provider.supportsTrueRadar || (isSatelliteEstimate && settings.satelliteDeviationsEnabled) else {
             radarOverlay.sampledCells = []
             return
         }
@@ -2664,7 +2692,8 @@ final class AppModel: ObservableObject {
         let fetched = try? await provider.exportImage(
             for: bbox, size: CGSize(width: grid.columns, height: grid.rows), frame: frame)
         guard let data = fetched ?? nil,
-              let cells = RadarImageSampler.cells(fromPNG: data, columns: grid.columns, rows: grid.rows, bbox: bbox) else {
+              let cells = RadarImageSampler.cells(fromPNG: data, columns: grid.columns, rows: grid.rows, bbox: bbox,
+                                                  palette: isSatelliteEstimate ? .imergRate : .reflectivity) else {
             // Fetch or decode failed — keep the last good cells so the deviation line
             // doesn't blink out on a transient error.
             return

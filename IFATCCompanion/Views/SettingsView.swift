@@ -277,6 +277,16 @@ struct SettingsView: View {
             Picker("Weather deviation alerts", selection: $settings.weatherDeviationAlerts) {
                 ForEach(WeatherDeviationAlertMode.allCases) { Text($0.title).tag($0) }
             }
+            Toggle(isOn: Binding(
+                get: { settings.satelliteDeviationsEnabled },
+                set: { settings.satelliteDeviationsEnabled = $0; model.applySatelliteDeviationSettingChange() })) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Deviations from satellite estimate")
+                    Text("Draw reroute lines around NASA global satellite precipitation where there's no radar (e.g. oceans, much of the world). Lower confidence, coarser and more latent than radar, and severity can't be graded reliably — always labeled “satellite estimate, not radar.”")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
             Toggle("Show data-source labels", isOn: $settings.showWeatherDataSourceLabels)
             Toggle("Show coverage warnings", isOn: $settings.showWeatherCoverageWarnings)
             // The "Reduce cellular data" toggle is hidden while OPERA is disabled: its

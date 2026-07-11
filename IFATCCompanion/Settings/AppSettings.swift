@@ -146,6 +146,13 @@ final class AppSettings: ObservableObject {
     @Published var radarOpacity: Double { didSet { save(radarOpacity, .radarOpacity) } }
     /// Simulated weather-deviation alert level.
     @Published var weatherDeviationAlerts: WeatherDeviationAlertMode { didSet { save(weatherDeviationAlerts.rawValue, .weatherDeviationAlerts) } }
+    /// Opt in to driving the weather-deviation flow (mint reroute line + advisory) from
+    /// the **NASA global satellite precipitation estimate** where there is no NOAA/OPERA
+    /// radar coverage. Off by default: the estimate is coarse (~10 km), latent (hours),
+    /// and cannot reliably grade severity, so it is treated as low confidence and always
+    /// labeled "satellite estimate — not radar". When off, satellite coverage still shows
+    /// the overlay image but never draws a deviation (radar-only behavior).
+    @Published var satelliteDeviationsEnabled: Bool { didSet { save(satelliteDeviationsEnabled, .satelliteDeviationsEnabled) } }
     /// Show data-source labels (e.g. "Radar precipitation data: NOAA/NWS").
     @Published var showWeatherDataSourceLabels: Bool { didSet { save(showWeatherDataSourceLabels, .showWeatherDataSourceLabels) } }
     /// Show coverage/unavailable warnings.
@@ -217,6 +224,7 @@ final class AppSettings: ObservableObject {
         noaaRadarOverlay = NOAARadarOverlayMode(rawValue: defaults.string(forKey: Key.noaaRadarOverlay.rawValue) ?? "") ?? .autoWhereAvailable
         radarOpacity = defaults.object(forKey: Key.radarOpacity.rawValue) as? Double ?? 0.55
         weatherDeviationAlerts = WeatherDeviationAlertMode(rawValue: defaults.string(forKey: Key.weatherDeviationAlerts.rawValue) ?? "") ?? .advisoryPlusDeviation
+        satelliteDeviationsEnabled = defaults.object(forKey: Key.satelliteDeviationsEnabled.rawValue) as? Bool ?? false
         showWeatherDataSourceLabels = defaults.object(forKey: Key.showWeatherDataSourceLabels.rawValue) as? Bool ?? true
         showWeatherCoverageWarnings = defaults.object(forKey: Key.showWeatherCoverageWarnings.rawValue) as? Bool ?? true
         reduceCellularData = defaults.object(forKey: Key.reduceCellularData.rawValue) as? Bool ?? true
@@ -258,6 +266,7 @@ final class AppSettings: ObservableObject {
         weatherBaseURL = other.weatherBaseURL
         noaaRadarOverlay = other.noaaRadarOverlay; radarOpacity = other.radarOpacity
         weatherDeviationAlerts = other.weatherDeviationAlerts
+        satelliteDeviationsEnabled = other.satelliteDeviationsEnabled
         showWeatherDataSourceLabels = other.showWeatherDataSourceLabels
         showWeatherCoverageWarnings = other.showWeatherCoverageWarnings
         reduceCellularData = other.reduceCellularData
@@ -277,7 +286,7 @@ final class AppSettings: ObservableObject {
         case phraseologyMode, digitStyle
         case initialClimbAltitudeFt, traconCeilingFL
         case routeCorridorNM, altitudeBandFt, weatherBaseURL
-        case noaaRadarOverlay, radarOpacity, weatherDeviationAlerts
+        case noaaRadarOverlay, radarOpacity, weatherDeviationAlerts, satelliteDeviationsEnabled
         case showWeatherDataSourceLabels, showWeatherCoverageWarnings, reduceCellularData
         case debugLogging, mockMode
     }

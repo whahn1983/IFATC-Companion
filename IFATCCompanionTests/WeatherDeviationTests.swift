@@ -876,9 +876,17 @@ final class WeatherDeviationTests: XCTestCase {
             XCTAssertTrue(source.supportsTurbulenceWording, "\(source) should support turbulence wording")
         }
         // Precipitation / surface-only sources.
-        for source in [WeatherHazardSource.noaaRadar, .metar, .taf] {
+        for source in [WeatherHazardSource.noaaRadar, .satelliteEstimate, .metar, .taf] {
             XCTAssertFalse(source.supportsTurbulenceWording, "\(source) must not imply turbulence")
         }
+    }
+
+    func testSatelliteEstimateSourceIsLabeledAsEstimateNotRadar() {
+        // The satellite-estimate deviation source must read as an estimate, never as
+        // radar, wherever the label surfaces (diagnostics / data-source captions).
+        let label = WeatherHazardSource.satelliteEstimate.label
+        XCTAssertTrue(label.lowercased().contains("estimate"))
+        XCTAssertFalse(label.lowercased().contains("radar"))
     }
 
     func testIntensityUnknownWording() {
