@@ -293,26 +293,54 @@ final class WeatherDeviationTests: XCTestCase {
 
     // MARK: - On-path gate + tactical-range gating
 
-    func testFarOnPathWeatherDrawsMintLineButHoldsTheBanner() throws {
-        // On-path weather well beyond the tactical range still draws the mint line — so
-        // the pilot sees the suggested reroute far ahead — but must NOT raise the banner
-        // / advisory yet: shouldPrompt stays false until the aircraft closes in.
+    func testFarOnPathWeatherIsMonitoredButNotDrawn() throws {
+        // On-path weather well beyond the draw range is still *detected* (so Diagnostics
+        // can report it as "monitoring"), but its mint line is held: drawing a straight
+        // reroute aimed across the route's bends at distant weather produced the runaway
+        // "crazy" line. withinDrawRange (and withinTacticalRange / shouldPrompt) stay
+        // false until the aircraft closes in.
         let farCell = radarHazard(cell(alongNM: 140, crossNM: 0, from: usPosition))
         let far = try XCTUnwrap(detector.detectConflict(position: usPosition, course: course,
                                                         groundspeedKnots: 450, phase: .cruise,
                                                         hazards: [farCell], waypoints: []),
-                                "far on-path weather should still produce a conflict + mint line")
-        XCTAssertGreaterThanOrEqual(far.deviationPath.count, 2, "the mint line is drawn far ahead")
+                                "far on-path weather should still produce a conflict")
+        XCTAssertFalse(far.withinDrawRange, "far weather must not draw a mint line yet")
         XCTAssertFalse(far.withinTacticalRange, "far weather is out of tactical range")
         XCTAssertFalse(far.shouldPrompt, "the banner / advisory must not fire for far weather")
 
-        // The same cell up close is within tactical range and prompts.
+        // The same cell up close is within draw + tactical range and prompts.
         let nearCell = radarHazard(cell(alongNM: 45, crossNM: 0, from: usPosition))
         let near = try XCTUnwrap(detector.detectConflict(position: usPosition, course: course,
                                                          groundspeedKnots: 450, phase: .cruise,
                                                          hazards: [nearCell], waypoints: []))
+        XCTAssertGreaterThanOrEqual(near.deviationPath.count, 2, "a near conflict draws the mint line")
+        XCTAssertTrue(near.withinDrawRange, "near weather draws the mint line")
         XCTAssertTrue(near.withinTacticalRange, "near weather is within tactical range")
         XCTAssertTrue(near.shouldPrompt, "near weather raises the banner / advisory")
+    }
+
+    func testMintLineDrawsAheadOfTheBannerButNotAtTheHorizon() throws {
+        // The draw range sits between the tactical (banner) trigger and the far horizon,
+        // so the reroute appears a little before the "contact ATC" banner, but weather at
+        // the edge of the enroute lookahead is monitored only — never drawn as a line
+        // that shoots across the map.
+        // Just past the tactical trigger (60 NM) but within the draw range (75 NM): the
+        // mint line is drawn as advance notice, yet the banner still holds. The cell is
+        // centered 70 NM ahead (near edge ~60–65 NM), inside the draw range.
+        let advance = radarHazard(cell(alongNM: 70, crossNM: 0, halfAlong: 8, from: usPosition))
+        let adv = try XCTUnwrap(detector.detectConflict(position: usPosition, course: course,
+                                                        groundspeedKnots: 450, phase: .cruise,
+                                                        hazards: [advance], waypoints: []))
+        XCTAssertTrue(adv.withinDrawRange, "weather inside the draw range shows the reroute ahead")
+        XCTAssertFalse(adv.withinTacticalRange, "but the banner holds until the tactical range")
+        XCTAssertGreaterThanOrEqual(adv.deviationPath.count, 2)
+
+        // Beyond the draw range: detected and monitored, but the line is held.
+        let horizon = radarHazard(cell(alongNM: 120, crossNM: 0, from: usPosition))
+        let hz = try XCTUnwrap(detector.detectConflict(position: usPosition, course: course,
+                                                       groundspeedKnots: 450, phase: .cruise,
+                                                       hazards: [horizon], waypoints: []))
+        XCTAssertFalse(hz.withinDrawRange, "weather at the horizon is monitored, not drawn")
     }
 
     func testWeatherOffToTheSideDoesNotDrawADeviation() {

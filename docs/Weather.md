@@ -249,15 +249,26 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      centerline, or crossed by it. Weather merely *near* the route (off to one side) no
      longer draws a mint line or raises the banner: "nearby but not on top of the route"
      → nothing.
-   - **Mint line far ahead, banner only close in.** The mint line is drawn as soon as
-     on-path weather is detected anywhere within the lookahead, so the pilot sees the
-     suggested reroute early. Distance only gates whether it is worked *tactically* now:
-     the "contact ATC" banner and the auto-issued advisory hold off until the near edge
-     is within `deviationTriggerNM` (~60 NM) — the realistic range for a tactical
-     convective deviation (pilots avoid severe echoes by ~20 NM laterally per FAA
-     AC 00-24C and start deviating ~20–40 NM out, with ATC coordinating a little
-     earlier). The conflict carries `withinTacticalRange`; Diagnostics shows a far
-     on-path conflict as "… — monitoring" rather than "No conflict".
+   - **Mint line a little ahead, banner only close in — far weather monitored.** Three
+     ranges, from close to far:
+     - **Tactical (`deviationTriggerNM`, ~60 NM).** The near edge is close enough to work
+       the deviation now: the mint line is drawn, the "contact ATC" banner is raised, and
+       (in Mock Mode) the advisory auto-issues. This is the realistic range for a tactical
+       convective deviation (pilots avoid severe echoes by ~20 NM laterally per FAA
+       AC 00-24C and start deviating ~20–40 NM out, with ATC coordinating a little earlier).
+     - **Draw range (`mintLineDrawNM`, ~75 NM).** A little beyond tactical: the mint line
+       is drawn as advance notice so the pilot sees the suggested reroute a bit before the
+       banner, but the banner / advisory hold off.
+     - **Beyond the draw range, out to the lookahead.** The conflict is still *detected*
+       and monitored, but the mint line is **not drawn**. The reroute is a straight-corridor
+       offset aimed at the blockage; for weather far ahead — typically past one or more of
+       the route's bends — drawing it produced a long line that shot across the map toward
+       distant weather (the "crazy mint line" with no weather nearby). Holding the line
+       until the aircraft is roughly committed toward the weather keeps the drawn geometry
+       meaningful.
+
+     The conflict carries `withinTacticalRange` and `withinDrawRange`; Diagnostics shows a
+     conflict outside the tactical range as "… — monitoring" rather than "No conflict".
    - **The corridor follows the route.** The detection band is only ±6 NM wide, so a
      straight corridor aimed at the *bearing to the next fix* misses weather that sits
      on the route **after a turn** — the aircraft's wide sampling window still finds

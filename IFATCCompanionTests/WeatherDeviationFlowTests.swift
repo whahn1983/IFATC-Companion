@@ -516,6 +516,40 @@ final class WeatherDeviationFlowTests: XCTestCase {
         XCTAssertEqual(model.weatherDeviationState, .none, "lifecycle rolls back after a confirmed clear")
     }
 
+    // MARK: - Far weather is monitored but not drawn ("no weather, crazy mint line")
+
+    /// A conflict whose weather is beyond the draw range must NOT put a mint line (or its
+    /// rejoin marker) on the map — the reported "no weather nearby, crazy mint line
+    /// shooting across the map" case. The same conflict inside the draw range does draw.
+    func testFarConflictDrawsNoMintLine() {
+        // weatherDeviationLine keys off the active conflict (no committed path yet), so a
+        // synthesized conflict exercises the draw gate directly.
+        let model = makeModel()
+        let pos = CLLocationCoordinate2D(latitude: 40, longitude: -95)
+        let apex = Geo.destination(from: pos, bearingDegrees: 20, distanceNM: 60)
+        let end = Geo.destination(from: pos, bearingDegrees: 0, distanceNM: 160)
+        let hazard = WeatherHazard(source: .noaaRadar, phenomenon: .precipitation, intensity: .heavy,
+                                   geometry: .polygon(box(around: apex, half: 0.3)), confidence: .high)
+        func conflict(drawable: Bool) -> RouteWeatherConflict {
+            RouteWeatherConflict(
+                hazard: hazard, distanceAheadNM: drawable ? 70 : 140, relativeBearingDegrees: 0,
+                leftClock: 12, centerClock: 12, rightClock: 12, estimatedTimeMinutes: nil,
+                severity: .heavy, leftBypassScore: 0, rightBypassScore: 0,
+                recommendedDirection: .right, recommendedDeviationDegrees: 20,
+                rejoinFix: Waypoint(name: "RJOIN", latitude: end.latitude, longitude: end.longitude),
+                originalSegment: nil, shouldPrompt: false, withinTacticalRange: false,
+                withinDrawRange: drawable, intersectionArea: [], deviationPath: [pos, apex, end])
+        }
+
+        model.activeWeatherConflict = conflict(drawable: false)
+        XCTAssertNil(model.weatherDeviationLine, "far weather must not draw a mint line")
+        XCTAssertNil(model.weatherRejoinMarker, "far weather must not draw a rejoin marker")
+
+        model.activeWeatherConflict = conflict(drawable: true)
+        XCTAssertNotNil(model.weatherDeviationLine, "weather in the draw range draws the mint line")
+        XCTAssertNotNil(model.weatherRejoinMarker, "weather in the draw range draws the rejoin marker")
+    }
+
     // MARK: - Committed mint line is locked
 
     /// Once the pilot commits to a vector, the mint line freezes to the path being

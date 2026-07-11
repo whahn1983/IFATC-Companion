@@ -2657,8 +2657,9 @@ final class AppModel: ObservableObject {
         d.lastAviationUpdate = lastAviationWeatherUpdate
         d.hazardCount = weatherHazards.count
         if let c = conflict {
-            // Distinguish an on-path conflict being monitored far ahead (mint line drawn,
-            // banner not yet raised) from one close enough to be worked now.
+            // Distinguish an on-path conflict being monitored ahead (the reroute may be
+            // drawn once within draw range, but the banner has not yet been raised) from
+            // one close enough to be worked now.
             let stage = c.withinTacticalRange ? "" : " — monitoring"
             d.routeConflictStatus = "\(c.severity.displayLabel) \(c.hazard.source.label), \(Int(c.distanceAheadNM.rounded())) NM\(stage)"
         } else {
@@ -2768,8 +2769,14 @@ final class AppModel: ObservableObject {
         if let frozen = weatherDeviation.committedDeviationPath, frozen.count >= 2 {
             return frozen.map { $0.coordinate }
         }
-        let path = activeWeatherConflict?.deviationPath
-        return (path?.count ?? 0) >= 2 ? path : nil
+        // Only draw the live recommendation once the weather is close enough to be a
+        // real tactical deviation (`withinDrawRange`). Far on-path weather is still
+        // detected and monitored, but its straight-corridor reroute — aimed across the
+        // route's bends at distant weather — would render as a runaway "crazy" line, so
+        // the line is held until the aircraft closes in.
+        guard let conflict = activeWeatherConflict, conflict.withinDrawRange,
+              conflict.deviationPath.count >= 2 else { return nil }
+        return conflict.deviationPath
     }
 
     /// The rejoin fix marker for the mint line: its name and coordinate. Uses the
@@ -2777,7 +2784,11 @@ final class AppModel: ObservableObject {
     /// committed path (labeled with the recorded rejoin fix name) so the marker stays
     /// put with the locked line even after the conflict itself settles.
     var weatherRejoinMarker: (name: String, coordinate: CLLocationCoordinate2D)? {
-        if let fix = activeWeatherConflict?.rejoinFix, let c = fix.coordinate, c.isValid {
+        // Mirror `weatherDeviationLine`: only show the live rejoin marker while the mint
+        // line itself is drawn (within draw range), so a lone marker never appears for
+        // far weather whose reroute is still being held.
+        if let conflict = activeWeatherConflict, conflict.withinDrawRange,
+           let fix = conflict.rejoinFix, let c = fix.coordinate, c.isValid {
             return (fix.name.isEmpty ? "Rejoin" : fix.name, c)
         }
         if let frozen = weatherDeviation.committedDeviationPath, let last = frozen.last {

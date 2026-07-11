@@ -44,6 +44,18 @@ struct RouteWeatherConflictDetector {
         /// coordinating a little earlier — so the banner appearing 100–250 NM in advance
         /// is neither realistic nor useful, while the advisory line ahead is.
         var deviationTriggerNM: Double = 60
+        /// How close the on-path weather's near edge must be (NM) before the mint reroute
+        /// line is actually **drawn** on the map. The conflict is still *detected* out to
+        /// the full lookahead (so Diagnostics can report far weather as "monitoring"), but
+        /// the drawn line is held until the weather is within this range. Drawing the line
+        /// for weather far ahead — often past one or more route bends — produced a long
+        /// straight line that cut across the near route legs toward distant weather (the
+        /// "crazy mint line"): the deviation is built as a straight-corridor offset aimed
+        /// at the blockage, which is only geometrically meaningful once the aircraft is
+        /// roughly committed toward it. Set just beyond `deviationTriggerNM` so the
+        /// reroute still appears a little before the "contact ATC" banner, but never at
+        /// the far edge of the enroute lookahead where it reads as a runaway line.
+        var mintLineDrawNM: Double = 75
         /// Half-width of the route corridor around the course line (NM). A precipitation
         /// cell only counts as a conflict (draws a mint line / can raise the advisory)
         /// when it is genuinely **on the flight path** — within this half-width of the
@@ -378,12 +390,18 @@ struct RouteWeatherConflictDetector {
         let bandNear = blockers.map { $0.nearAlong }.min() ?? primary.nearAlong
         let bandFar = blockers.map { $0.farAlong }.max() ?? primary.farAlong
 
-        // Draw the mint line as soon as on-path weather is detected within the
-        // lookahead — even far ahead — so the pilot sees the suggested reroute early.
-        // Distance only gates whether it is worked *tactically* now: the banner / ATC
-        // advisory (via `shouldPrompt`) hold off until the near edge is within the
-        // tactical deviation range. The conflict itself is returned regardless.
+        // On-path weather is detected across the whole lookahead — the conflict is
+        // returned regardless of distance — but two range gates govern what the pilot
+        // sees. `withinTacticalRange` gates working it *now*: the banner / ATC advisory
+        // (via `shouldPrompt`) hold off until the near edge is within the tactical
+        // deviation range.
         let withinTacticalRange = bandNear <= config.deviationTriggerNM
+        // `withinDrawRange` gates *drawing* the mint line. Far on-path weather is still
+        // detected (for the "monitoring" diagnostics) but its line is held until the
+        // weather is close enough that a straight tactical deviation is meaningful —
+        // otherwise the straight-corridor line, aimed across the route's bends at distant
+        // weather, shoots off across the map ("crazy mint line").
+        let withinDrawRange = bandNear <= config.mintLineDrawNM
         let lineCells = projections.filter {
             $0.alongMax >= bandNear - config.clusterAlongMarginNM
                 && $0.alongMin <= bandFar + config.clusterAlongMarginNM
@@ -619,6 +637,7 @@ struct RouteWeatherConflictDetector {
             originalSegment: segment,
             shouldPrompt: prompt,
             withinTacticalRange: withinTacticalRange,
+            withinDrawRange: withinDrawRange,
             intersectionArea: area,
             deviationPath: deviationPath)
     }
