@@ -13,12 +13,15 @@ struct WeatherRouteAnalyzer {
     var config = Config()
 
     /// Returns relevant PIREPs as `RideReportItem`s ahead of the aircraft along
-    /// the path toward `routeEnd`.
+    /// the path toward `routeEnd`. Pass `ignoreAltitudeBand: true` to keep reports at
+    /// **all** levels (for the smoother-altitude search, which needs the other levels the
+    /// ±band filter would otherwise hide).
     func relevantReports(pireps: [PIREP],
                          position: CLLocationCoordinate2D,
                          routeEnd: CLLocationCoordinate2D?,
                          altitudeFt: Double,
                          nearestFix: String? = nil,
+                         ignoreAltitudeBand: Bool = false,
                          now: Date = Date()) -> [RideReportItem] {
 
         let courseTo = routeEnd.map { Geo.bearing(from: position, to: $0) }
@@ -29,7 +32,7 @@ struct WeatherRouteAnalyzer {
             guard let coord = pirep.coordinate, coord.isValid else { continue }
 
             // Altitude band filter (unknown altitude is included conservatively).
-            if let alt = pirep.altitudeFt {
+            if !ignoreAltitudeBand, let alt = pirep.altitudeFt {
                 if abs(Double(alt) - altitudeFt) > config.altitudeBandFt { continue }
             }
 
@@ -62,10 +65,46 @@ struct WeatherRouteAnalyzer {
                                         bearing: bearingToPirep,
                                         nearFix: nearestFix,
                                         sourceRaw: pirep.raw,
-                                        ageMinutes: age))
+                                        ageMinutes: age,
+                                        reportedAltitudeFt: pirep.altitudeFt,
+                                        aircraftType: pirep.aircraftType))
         }
 
         return items.sorted { ($0.distanceAheadNM ?? .greatestFiniteMagnitude) < ($1.distanceAheadNM ?? .greatestFiniteMagnitude) }
+    }
+
+    /// Cruise band (ft) a smoother-altitude suggestion is bounded to — commercial jets
+    /// including regional and business jets (FL240–FL430). Suggestions never fall outside it.
+    static let cruiseBandFt = 24_000...43_000
+
+    /// A specific smoother altitude to suggest, drawn from PIREPs at *other* levels along
+    /// the route, or nil when none supports one (the caller then keeps the generic "advise
+    /// higher or lower"). Considers reports within `band` that are strictly smoother than
+    /// `currentSeverity` and at a level at least `minSeparationFt` from `referenceAltFt`;
+    /// prefers the smoothest, then the nearest such level, snapped to 1000 ft. **Data-driven
+    /// only** — it never invents a smooth level with no report behind it. Pure/testable.
+    func smootherAltitude(items: [RideReportItem],
+                          referenceAltFt: Int,
+                          currentSeverity: TurbulenceSeverity,
+                          band: ClosedRange<Int> = cruiseBandFt,
+                          minSeparationFt: Int = 1500) -> SmootherAltitude? {
+        guard currentSeverity > .smooth else { return nil }
+        let candidates: [(alt: Int, item: RideReportItem)] = items.compactMap { item in
+            guard let raw = item.reportedAltitudeFt else { return nil }
+            let alt = Int((Double(raw) / 1000).rounded()) * 1000
+            guard band.contains(alt),
+                  item.severity < currentSeverity,
+                  abs(alt - referenceAltFt) >= minSeparationFt else { return nil }
+            return (alt, item)
+        }
+        let best = candidates.min { a, b in
+            a.item.severity != b.item.severity
+                ? a.item.severity < b.item.severity
+                : abs(a.alt - referenceAltFt) < abs(b.alt - referenceAltFt)
+        }
+        guard let best else { return nil }
+        return SmootherAltitude(altitudeFt: best.alt, severity: best.item.severity,
+                                aircraftType: best.item.aircraftType, higher: best.alt > referenceAltFt)
     }
 
     /// Filter SIGMET/AIRMET advisories to those the route actually passes through.

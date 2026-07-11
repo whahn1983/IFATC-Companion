@@ -152,14 +152,21 @@ clearance, say again, verify altitude, pilot's-discretion descent.
 
 ### Ride reports & weather (deterministic; never fabricated)
 
+The ride report relays the driving PIREP the way ATC would — severity, the **reported
+altitude**, distance/fix ahead, reporting type and recency — and, when a PIREP at another
+level shows a smoother ride, names that **specific altitude** to climb/descend to (bounded
+to the FL240–FL430 cruise band, data-driven only). With no supporting report it keeps the
+generic higher/lower offer.
+
 ```
-None:     United 598, no significant ride reports along your route at this time.
-Light:    United 598, light chop reported ahead between FL330 and FL370.
-Moderate: United 598, moderate turbulence reported approximately 80 miles ahead near
-          Des Moines between FL310 and FL350. Advise if you'd like higher or lower.
-Severe:   United 598, severe turbulence reported ahead. Deviation or altitude change
-          recommended; say intentions.
-Failure:  United 598, unable weather update at this time.
+None:      United 598, overall ride is smooth along your route at this time.
+Smooth:    United 598, no significant ride reports along your route at this time.
+Moderate,  United 598, moderate turbulence reported at FL350 approximately 40 miles ahead
+ smoother  near DSM, by a B738, 15 minutes ago. Based on pilot reports. Smooth ride reported
+ level:    at FL390; advise if you'd like to climb.
+Moderate,  United 598, moderate turbulence reported at FL350 approximately 25 miles ahead.
+ no data:  Advise if you'd like higher or lower for a smoother ride.
+Failure:   United 598, unable weather update at this time.
 ```
 
 ---

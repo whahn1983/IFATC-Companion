@@ -165,4 +165,19 @@ struct RideReportItem: Identifiable {
     var sourceRaw: String
     /// Age of the source report in minutes, when the report time is known.
     var ageMinutes: Double? = nil
+    /// The report's actual level (ft), when known — for the altitude-matched PIREP relay
+    /// and the smoother-altitude search. Distinct from `altitudeBand` (a ±2000 display band).
+    var reportedAltitudeFt: Int? = nil
+    /// Reporting aircraft type code (e.g. "B738"), when the source is a PIREP.
+    var aircraftType: String? = nil
+}
+
+/// A reachable altitude with a smoother reported ride than the pilot's current level,
+/// derived from PIREPs at other levels along the route. `higher` is relative to the
+/// pilot. Only ever produced when a real report supports it (never invented).
+struct SmootherAltitude: Equatable {
+    var altitudeFt: Int
+    var severity: TurbulenceSeverity
+    var aircraftType: String?
+    var higher: Bool
 }

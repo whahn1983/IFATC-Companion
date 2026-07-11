@@ -52,10 +52,15 @@ struct RideReportEngine {
         }
     }
 
-    /// Build a ride report from a composite `RideAssessment` (turbulence model),
-    /// mentioning overall ride quality, the nearest significant report, and the
-    /// contributing factors. Falls back to the item-only report when smooth.
+    /// Build a ride report from a composite `RideAssessment` (turbulence model). When a
+    /// PIREP drives it, relay that report the way ATC would — severity, the reported
+    /// altitude, distance/fix ahead, reporting type and recency — and, when a PIREP at
+    /// another level shows a smoother ride, name that specific altitude; otherwise fall
+    /// back to the generic higher/lower offer. `referenceAltitudeFt` is the pilot's level
+    /// (used when the lead report's own altitude is unknown).
     func rideReport(assessment: RideAssessment, items: [RideReportItem],
+                    referenceAltitudeFt: Int = 0,
+                    smoother: SmootherAltitude? = nil,
                     callsign: PhraseologyEngine.Callsign) -> ATCTransmission {
         guard assessment.severity > .smooth else {
             return center("\(callsign.display), overall ride is smooth along your route at this time.",
@@ -66,14 +71,49 @@ struct RideReportEngine {
             .min(by: { ($0.distanceAheadNM ?? .greatestFiniteMagnitude) < ($1.distanceAheadNM ?? .greatestFiniteMagnitude) })
             ?? items.max(by: { $0.severity < $1.severity })
 
+        let sev = assessment.severity
+        // Altitude: the report's own level when known, else the pilot's level.
+        let altFt = lead?.reportedAltitudeFt ?? (referenceAltitudeFt > 0 ? referenceAltitudeFt : nil)
+        let altDisplay = altFt.map { " at \(engine.formatAltDisplay($0))" } ?? ""
+        let altSpoken = altFt.map { " at \(Phonetic.altitude($0))" } ?? ""
         let distDisplay = distancePhrase(lead?.distanceAheadNM, spoken: false)
         let distSpoken = distancePhrase(lead?.distanceAheadNM, spoken: true)
+        let fix = lead?.nearFix.flatMap { $0.isEmpty ? nil : $0 }
+        let nearDisplay = fix.map { " near \($0)" } ?? ""
+        let nearSpoken = fix.map { " near \(Phonetic.spellToken($0, icao: icao))" } ?? ""
+        let type = lead?.aircraftType.flatMap { $0.isEmpty ? nil : $0 }
+        let typeDisplay = type.map { ", by a \($0)" } ?? ""
+        let typeSpoken = type.map { ", by a \(Phonetic.spellToken($0, icao: icao))" } ?? ""
+        let ageDisplay = agePhrase(lead?.ageMinutes, spoken: false)
+        let ageSpoken = agePhrase(lead?.ageMinutes, spoken: true)
         let factors = assessment.contributors.isEmpty ? "" : " Based on \(assessment.contributors.joined(separator: ", "))."
-        let advice = assessment.severity >= .moderate ? " Advise if you'd like higher or lower for a smoother ride." : ""
+        // A data-backed smoother level when one exists, else the generic offer (moderate+).
+        let tailDisplay = smootherTail(smoother, spoken: false, offerGeneric: sev >= .moderate)
+        let tailSpoken = smootherTail(smoother, spoken: true, offerGeneric: sev >= .moderate)
 
-        let display = "\(callsign.display), expect \(assessment.severity.spoken)\(distDisplay) along your route.\(factors)\(advice)"
-        let spoken = "\(callsign.spoken), expect \(assessment.severity.spoken)\(distSpoken) along your route.\(factors)\(advice)"
+        let display = "\(callsign.display), \(sev.spoken) reported\(altDisplay)\(distDisplay)\(nearDisplay)\(typeDisplay)\(ageDisplay).\(factors)\(tailDisplay)"
+        let spoken = "\(callsign.spoken), \(sev.spoken) reported\(altSpoken)\(distSpoken)\(nearSpoken)\(typeSpoken)\(ageSpoken).\(factors)\(tailSpoken)"
         return center(display, spoken)
+    }
+
+    /// A recency clause ("… , one five minutes ago"), or empty when the age is unknown.
+    private func agePhrase(_ minutes: Double?, spoken: Bool) -> String {
+        guard let minutes, minutes >= 1 else { return "" }
+        let m = Int(minutes.rounded())
+        return spoken ? ", \(Phonetic.spellDigits(String(m))) minutes ago" : ", \(m) minutes ago"
+    }
+
+    /// The smoother-altitude suggestion clause (names the specific level), or the generic
+    /// higher/lower offer when there is no data-backed level and `offerGeneric` is set.
+    private func smootherTail(_ s: SmootherAltitude?, spoken: Bool, offerGeneric: Bool) -> String {
+        guard let s else {
+            return offerGeneric ? " Advise if you'd like higher or lower for a smoother ride." : ""
+        }
+        let dir = s.higher ? "climb" : "descend"
+        let alt = spoken ? Phonetic.altitude(s.altitudeFt) : engine.formatAltDisplay(s.altitudeFt)
+        let ride = s.severity == .smooth ? "smooth ride" : "lighter ride, \(s.severity.spoken),"
+        let leadCap = ride.prefix(1).uppercased() + String(ride.dropFirst())
+        return " \(leadCap) reported at \(alt); advise if you'd like to \(dir)."
     }
 
     /// Build the destination weather transmission from a METAR.

@@ -223,6 +223,9 @@ final class AppModel: ObservableObject {
     @Published var rideReportItems: [RideReportItem] = []
     @Published var rideAssessment: RideAssessment = .smooth
     @Published var weatherStatus: String = "Not loaded"
+    /// A specific smoother cruise altitude (ft) surfaced by the last ride report, for the
+    /// next higher/lower request to target directly. Nil when no PIREP supports one.
+    private var suggestedSmootherAltitudeFt: Int?
 
     // Radar precipitation + simulated weather-deviation state.
     /// Descriptive state for the Weather View radar layer (coverage, opacity,
@@ -2024,6 +2027,7 @@ final class AppModel: ObservableObject {
             tx.readback = altitudeReadback("Climb", altitude: target, callsign: c.callsign, facility: currentFacility)
             post(tx, speak: true)
         }
+        suggestedSmootherAltitudeFt = nil   // one-shot hint from the last ride report
     }
 
     func requestLower() {
@@ -2034,6 +2038,7 @@ final class AppModel: ObservableObject {
         tx.readback = altitudeReadback("Descend", altitude: target, callsign: c.callsign, facility: currentFacility)
         post(tx, speak: true)
         assignedAltitude = target
+        suggestedSmootherAltitudeFt = nil   // one-shot hint from the last ride report
     }
 
     /// A pilot read-back of an assigned altitude, attached to a controller call so the
@@ -2235,10 +2240,38 @@ final class AppModel: ObservableObject {
         Task {
             await refreshWeather()
             recomputeRideItems()
-            post(rideEngine.rideReport(assessment: rideAssessment, items: rideReportItems, callsign: c.callsign), speak: true)
+            let refAlt = rideReferenceAltitudeFt()
+            let smoother = computeSmootherAltitude(referenceAltFt: refAlt)
+            // Remember the suggested level so the next higher/lower request targets it.
+            suggestedSmootherAltitudeFt = smoother?.altitudeFt
+            post(rideEngine.rideReport(assessment: rideAssessment, items: rideReportItems,
+                                       referenceAltitudeFt: refAlt, smoother: smoother,
+                                       callsign: c.callsign), speak: true)
             // Acknowledge the report — an informational reply, so a courtesy "Roger".
             postPilot(pilotEngine.roger(context: c, facility: facility))
         }
+    }
+
+    /// The altitude (ft) ride reports are evaluated against: the filed cruise level, or
+    /// the live altitude before one is set (matching `recomputeRideItems`).
+    private func rideReferenceAltitudeFt() -> Int {
+        flightPlan.cruiseAltitude > 0 ? flightPlan.cruiseAltitude : aircraftAltInt()
+    }
+
+    /// A data-backed smoother altitude from PIREPs at *other* levels along the route,
+    /// bounded to the commercial cruise band. Nil when nothing supports one.
+    private func computeSmootherAltitude(referenceAltFt: Int) -> SmootherAltitude? {
+        guard let pos = aircraftState.coordinate ?? airports.coordinate(for: flightPlan.departure) else { return nil }
+        let end = airports.coordinate(for: flightPlan.destination) ?? flightPlan.nextWaypoint(from: pos)?.coordinate
+        let nearestFix = flightPlan.nextWaypoint(from: pos)?.name
+        // All route-corridor PIREPs regardless of altitude — the ±band filter would hide
+        // the very levels a smoother-ride suggestion is drawn from.
+        let allItems = routeAnalyzer.relevantReports(pireps: pireps, position: pos, routeEnd: end,
+                                                     altitudeFt: Double(referenceAltFt),
+                                                     nearestFix: nearestFix, ignoreAltitudeBand: true)
+        let currentSeverity = rideReportItems.map { $0.severity }.max() ?? .smooth
+        return routeAnalyzer.smootherAltitude(items: allItems, referenceAltFt: referenceAltFt,
+                                              currentSeverity: currentSeverity)
     }
 
     func requestDestinationWeather() {
@@ -2277,6 +2310,11 @@ final class AppModel: ObservableObject {
     }
 
     private func nextAltitude(from current: Int, up: Bool) -> Int {
+        // Prefer a data-backed smoother level from the last ride report when it lies in
+        // the requested direction (it is already bounded to the cruise band).
+        if let s = suggestedSmootherAltitudeFt, (up && s > current) || (!up && s < current) {
+            return s
+        }
         let step = 2000
         let base = current <= 0 ? (flightPlan.cruiseAltitude > 0 ? flightPlan.cruiseAltitude : 35000) : current
         let target = up ? base + step : base - step
