@@ -76,34 +76,47 @@ struct WeatherRouteAnalyzer {
     /// be placed on the route, and the nationwide AIR/SIGMET feed otherwise makes a
     /// distant turbulence advisory look like it's on every flight. Pure and
     /// deterministic.
+    /// Evaluate against the full route polyline (aircraft → remaining fixes →
+    /// destination), so an advisory on a leg *after* a turn is caught, not just one on
+    /// the straight line to the destination — "along the entire route."
     func relevantSigmets(_ sigmets: [SIGMET],
-                         position: CLLocationCoordinate2D,
-                         routeEnd: CLLocationCoordinate2D?) -> [SIGMET] {
-        sigmets.filter { sigmet in
+                         routePolyline: [CLLocationCoordinate2D]) -> [SIGMET] {
+        let route = routePolyline.filter { $0.isValid }
+        return sigmets.filter { sigmet in
             // Require a drawable polygon (≥3 valid vertices): an advisory that can't
             // be placed on the map must not silently drive the ride index either.
             guard let area = sigmet.drawableArea else { return false }
-            return routePassesThroughPolygon(area, position: position, routeEnd: routeEnd)
+            return routePassesThroughPolygon(area, polyline: route)
         }
     }
 
-    /// Whether the route actually passes through the advisory polygon: either an
-    /// endpoint lies inside the area, or the route line crosses one of its edges.
-    /// With no destination yet, only the current position being inside the area
-    /// counts — a lone point isn't a route, so proximity alone is not applicability.
-    private func routePassesThroughPolygon(_ polygon: [CLLocationCoordinate2D],
-                                           position: CLLocationCoordinate2D,
-                                           routeEnd: CLLocationCoordinate2D?) -> Bool {
-        if Self.pointInPolygon(position, polygon) { return true }
-        guard let routeEnd else { return false }
-        if Self.pointInPolygon(routeEnd, polygon) { return true }
+    /// Convenience for a single straight leg (aircraft → route end). With no route end
+    /// only the current position being inside the area counts — a lone point isn't a
+    /// route, so proximity alone is not applicability.
+    func relevantSigmets(_ sigmets: [SIGMET],
+                         position: CLLocationCoordinate2D,
+                         routeEnd: CLLocationCoordinate2D?) -> [SIGMET] {
+        relevantSigmets(sigmets, routePolyline: [position] + (routeEnd.map { [$0] } ?? []))
+    }
 
-        // The route line enters and leaves the area by crossing its boundary, so a
+    /// Whether the route actually passes through the advisory polygon: either a
+    /// polyline vertex lies inside the area, or one of its legs crosses an edge. A lone
+    /// point (no legs) is applicable only if it sits inside — proximity alone is not.
+    private func routePassesThroughPolygon(_ polygon: [CLLocationCoordinate2D],
+                                           polyline: [CLLocationCoordinate2D]) -> Bool {
+        guard !polyline.isEmpty else { return false }
+        for p in polyline where Self.pointInPolygon(p, polygon) { return true }
+        guard polyline.count >= 2 else { return false }
+
+        // Each leg enters and leaves the area by crossing its boundary, so a
         // pass-through with both endpoints outside is caught by an edge crossing.
-        var j = polygon.count - 1
-        for i in polygon.indices {
-            if Geo.segmentsIntersect(position, routeEnd, polygon[j], polygon[i]) { return true }
-            j = i
+        for k in 0..<(polyline.count - 1) {
+            let a = polyline[k], b = polyline[k + 1]
+            var j = polygon.count - 1
+            for i in polygon.indices {
+                if Geo.segmentsIntersect(a, b, polygon[j], polygon[i]) { return true }
+                j = i
+            }
         }
         return false
     }

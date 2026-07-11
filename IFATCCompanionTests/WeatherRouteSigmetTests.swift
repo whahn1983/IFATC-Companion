@@ -112,6 +112,31 @@ final class WeatherRouteSigmetTests: XCTestCase {
         XCTAssertEqual(assessment.severity, .severe)
     }
 
+    func testLowSeveritySigmetIsStillRouteRelevant() {
+        // An IFR advisory (maps to .smooth, doesn't raise the ride index) that the route
+        // crosses is still returned — the map shows all route SIGMETs, not only rough
+        // ones, now that SIGMETs don't drive a deviation.
+        let ifr = sigmet(box(CLLocationCoordinate2D(latitude: 37.4, longitude: -94.3)), hazard: "IFR")
+        XCTAssertEqual(ifr.turbulenceSeverity, .smooth)
+        let kept = analyzer.relevantSigmets([ifr], position: origin, routeEnd: dest)
+        XCTAssertEqual(kept.count, 1, "a low-severity on-route advisory is still route-relevant")
+    }
+
+    func testSigmetOnALaterLegIsCaughtByTheFullRoute() {
+        // The route turns: east to a fix, then north. A box sitting on the northern leg
+        // is missed by the straight aircraft→destination line but caught when the whole
+        // route polyline is tested — "along the entire route."
+        let f1 = CLLocationCoordinate2D(latitude: origin.latitude, longitude: origin.longitude + 3) // east
+        let f2 = CLLocationCoordinate2D(latitude: origin.latitude + 4, longitude: f1.longitude)     // then north
+        let onLeg = sigmet(box(CLLocationCoordinate2D(latitude: origin.latitude + 2, longitude: f1.longitude)))
+
+        let straight = analyzer.relevantSigmets([onLeg], position: origin, routeEnd: f2)
+        XCTAssertTrue(straight.isEmpty, "the straight line to the destination misses the later-leg advisory")
+
+        let full = analyzer.relevantSigmets([onLeg], routePolyline: [origin, f1, f2])
+        XCTAssertEqual(full.count, 1, "the full route polyline catches an advisory on a later leg")
+    }
+
     func testPointInPolygon() {
         let square = box(CLLocationCoordinate2D(latitude: 40, longitude: -90), half: 1.0)
         XCTAssertTrue(WeatherRouteAnalyzer.pointInPolygon(

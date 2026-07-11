@@ -222,7 +222,11 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      route map, populate the SIGMET card, and raise the composite ride index
      (`routeSigmets`); they just don't feed `buildWeatherHazards`. Turbulence
      wording remains reserved for PIREP / AIREP / SIGMET / G-AIRMET / CWA / ride
-     reports elsewhere in the app.
+     reports elsewhere in the app. Because they never drive a deviation, **every**
+     route SIGMET is shown on the map — relevance is tested against the whole route
+     polyline (all legs, not just the straight line to the destination), and the
+     lower-severity advisories (IFR / icing / mountain wave, drawn gray) are no longer
+     hidden behind a severity filter.
    - **Turbulence / icing → altitude, not a lateral reroute.** A turbulence or icing
      SIGMET along the route has nothing to laterally route around — real ATC handles
      it by facilitating a climb or descent (smoother air, or out of the icing), and
@@ -240,16 +244,21 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
    clear gap** between adjacent cells — offering the reachable gaps and going around
    either end of a solid line. This mirrors how a controller vectors a pilot between
    cells, whether they appear just after takeoff, enroute, or on approach.
-   - **Only when the weather is genuinely upcoming.** A deviation is surfaced only once
-     the nearest blocking cell's near edge is within `deviationTriggerNM` (~60 NM) — the
-     realistic range for a tactical convective deviation (pilots avoid severe echoes by
-     ~20 NM laterally per FAA AC 00-24C and start deviating ~20–40 NM out, with ATC
-     coordinating a little earlier). Farther out the route ahead is still clear, so no
-     mint line or "contact ATC" banner is drawn yet; the wider detection lookahead is
-     kept only so the line is *stable* once shown, and continuous re-detection surfaces
-     it as the aircraft closes in. This is why weather 100+ NM ahead no longer draws a
-     reroute while the near path is clear.
-   - **The corridor follows the route.** The detection band is only ±15 NM wide, so a
+   - **Only for weather *on* the flight path.** A cell counts as a conflict only when it
+     is genuinely on the route — within the ±6 NM corridor half-width of the course
+     centerline, or crossed by it. Weather merely *near* the route (off to one side) no
+     longer draws a mint line or raises the banner: "nearby but not on top of the route"
+     → nothing.
+   - **Mint line far ahead, banner only close in.** The mint line is drawn as soon as
+     on-path weather is detected anywhere within the lookahead, so the pilot sees the
+     suggested reroute early. Distance only gates whether it is worked *tactically* now:
+     the "contact ATC" banner and the auto-issued advisory hold off until the near edge
+     is within `deviationTriggerNM` (~60 NM) — the realistic range for a tactical
+     convective deviation (pilots avoid severe echoes by ~20 NM laterally per FAA
+     AC 00-24C and start deviating ~20–40 NM out, with ATC coordinating a little
+     earlier). The conflict carries `withinTacticalRange`; Diagnostics shows a far
+     on-path conflict as "… — monitoring" rather than "No conflict".
+   - **The corridor follows the route.** The detection band is only ±6 NM wide, so a
      straight corridor aimed at the *bearing to the next fix* misses weather that sits
      on the route **after a turn** — the aircraft's wide sampling window still finds
      the cells (so Diagnostics shows hazards), but the narrow band slides past them

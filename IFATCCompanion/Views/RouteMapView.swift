@@ -40,11 +40,12 @@ struct RouteMapView: View {
         model.pireps.filter { ($0.coordinate?.isValid ?? false) && ($0.turbulence ?? .smooth) > .smooth }
     }
 
-    /// Route-relevant SIGMET/AIRMET advisories that have a drawable area. These are
-    /// the same advisories that raise the composite ride index, so the map and the
-    /// ride assessment always agree.
+    /// Every route-relevant SIGMET/AIRMET advisory that has a drawable area. SIGMETs
+    /// don't drive the weather deviation — they're informational ride advisories — so
+    /// all of them along the route are shown, including the lower-severity ones (IFR,
+    /// icing, mountain wave) that don't raise the ride index.
     private var routeSigmetAreas: [SIGMET] {
-        model.routeSigmets.filter { $0.turbulenceSeverity > .smooth && $0.drawableArea != nil }
+        model.routeSigmets.filter { $0.drawableArea != nil }
     }
 
     /// Mock-mode radar precipitation cells (drawn as colored polygons). In Live
@@ -228,8 +229,10 @@ struct RouteMapView: View {
         }
     }
 
-    /// Color for a SIGMET area, matching the severity that raises the ride index.
+    /// Color for a SIGMET area, matching the severity that raises the ride index. A
+    /// non-turbulence advisory (IFR / volcanic ash / other → `.smooth`) is drawn gray
+    /// rather than green, so showing it never reads as a "smooth ride" all-clear.
     private func sigmetColor(_ sigmet: SIGMET) -> Color {
-        color(for: sigmet.turbulenceSeverity)
+        sigmet.turbulenceSeverity == .smooth ? .gray : color(for: sigmet.turbulenceSeverity)
     }
 }
