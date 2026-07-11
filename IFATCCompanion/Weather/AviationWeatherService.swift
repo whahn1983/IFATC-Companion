@@ -75,8 +75,15 @@ actor AviationWeatherService {
         return TAFParser.parseJSON(data).first
     }
 
-    func pireps(ageHours: Int = 3) async throws -> [PIREP] {
-        let data = try await get(path: "pirep", query: ["format": "json", "age": String(ageHours)])
+    /// Fetch PIREPs within a bounding box. The AWC `pirep` endpoint **requires** a
+    /// `bbox` (or a station id + radial distance) and returns HTTP 400 without one, so
+    /// callers must pass the route/area box; an empty box yields no request.
+    /// `bbox` is `minLat,minLon,maxLat,maxLon`.
+    func pireps(bbox: String, ageHours: Int = 3) async throws -> [PIREP] {
+        let box = bbox.trimmingCharacters(in: .whitespaces)
+        guard !box.isEmpty else { return [] }
+        let data = try await get(path: "pirep",
+                                 query: ["format": "json", "age": String(ageHours), "bbox": box])
         return PIREPParser.parseJSON(data)
     }
 

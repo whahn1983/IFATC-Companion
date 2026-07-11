@@ -2285,6 +2285,28 @@ final class AppModel: ObservableObject {
 
     private func aircraftAltInt() -> Int { Int(aircraftState.altitudeMSL ?? 0) }
 
+    /// A `minLat,minLon,maxLat,maxLon` box enclosing the aircraft and the route
+    /// airports, padded so PIREPs just off the route are still returned (then narrowed
+    /// to the corridor by `relevantReports`). The AWC pirep endpoint requires a box;
+    /// nil when no position/route is known yet, in which case the caller skips the query.
+    private func pirepBoundingBox(padDegrees: Double = 2.0) -> String? {
+        var coords: [CLLocationCoordinate2D] = []
+        if let c = aircraftState.coordinate, c.isValid { coords.append(c) }
+        for icao in [flightPlan.departure, flightPlan.destination, flightPlan.alternate] {
+            if let c = airports.coordinate(for: icao), c.isValid { coords.append(c) }
+        }
+        if let near = aircraftState.nearestAirport, let c = airports.coordinate(for: near), c.isValid {
+            coords.append(c)
+        }
+        guard !coords.isEmpty else { return nil }
+        let lats = coords.map { $0.latitude }, lons = coords.map { $0.longitude }
+        let minLat = max(-90, (lats.min() ?? 0) - padDegrees)
+        let maxLat = min(90, (lats.max() ?? 0) + padDegrees)
+        let minLon = max(-180, (lons.min() ?? 0) - padDegrees)
+        let maxLon = min(180, (lons.max() ?? 0) + padDegrees)
+        return String(format: "%.3f,%.3f,%.3f,%.3f", minLat, minLon, maxLat, maxLon)
+    }
+
     // MARK: - Weather refresh
 
     func refreshWeather() async {
@@ -2318,7 +2340,13 @@ final class AppModel: ObservableObject {
             destinationMETAR = metars.first { $0.icao == flightPlan.destination }
             alternateMETAR = metars.first { $0.icao == flightPlan.alternate }
             destinationTAF = try? await weatherService.taf(for: flightPlan.destination)
-            pireps = (try? await weatherService.pireps()) ?? []
+            // The AWC pirep endpoint requires a bounding box (else HTTP 400), so query the
+            // route/area box and let `relevantReports` narrow it to the corridor afterwards.
+            if let bbox = pirepBoundingBox() {
+                pireps = (try? await weatherService.pireps(bbox: bbox)) ?? []
+            } else {
+                pireps = []
+            }
             sigmets = (try? await weatherService.airSigmets()) ?? []
             await sampleLivePrecipitation()
             lastAviationWeatherUpdate = Date()

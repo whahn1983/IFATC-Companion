@@ -89,6 +89,36 @@ final class WeatherTests: XCTestCase {
         XCTAssertEqual(TurbulenceSeverity.parse("CHOP"), .lightChop)
     }
 
+    /// Real AWC `pirep?format=json` shape: flight level is `fltLvl` (camelCase) and
+    /// turbulence is a code *string* in `tbInt1` (not an Int). Locks the parser to it.
+    func testPIREPParserMatchesRealAWCJSON() {
+        let json = """
+        [
+          {"obsTime":1783796520,"lat":38.04,"lon":-87.53,"fltLvl":0,"fltLvlType":"DURD",
+           "tbInt1":"","acType":"E55P","rawOb":"EVV UA /OV EVV/TM 1902/FLDURD/TP E55P/SK BKN020"},
+          {"obsTime":1783796460,"lat":27.03,"lon":-81.80,"fltLvl":190,"fltLvlType":"OTHER",
+           "tbInt1":"NEG","acType":"E50P","rawOb":"RSW UA /OV RSW360030/TM 1901/FL190/TP E50P/SK SKC/TB NEG"},
+          {"obsTime":1783796400,"lat":43.55,"lon":-116.19,"fltLvl":110,"fltLvlType":"OTHER",
+           "tbInt1":"MOD","acType":"E75L","rawOb":"BOI UA /OV SPUUD4 STAR/TM 1900/FL110/TP E75L/TB MOD TURB 110-090 DURD"}
+        ]
+        """.data(using: .utf8)!
+
+        let pireps = PIREPParser.parseJSON(json)
+        XCTAssertEqual(pireps.count, 3)
+
+        // fltLvl (camelCase) → feet; a 0 / during-descent level stays unknown (nil).
+        XCTAssertNil(pireps[0].altitudeFt, "fltLvl 0 (DURD) is unknown, not sea level")
+        XCTAssertEqual(pireps[1].altitudeFt, 19000)
+        XCTAssertEqual(pireps[2].altitudeFt, 11000)
+
+        // tbInt1 is a code string: NEG → smooth (filtered out), MOD → moderate.
+        XCTAssertEqual(pireps[1].turbulence, .smooth)
+        XCTAssertEqual(pireps[2].turbulence, .moderate)
+
+        XCTAssertEqual(pireps[2].coordinate?.latitude ?? 0, 43.55, accuracy: 1e-6)
+        XCTAssertNotNil(pireps[2].time, "obsTime epoch parses to a date")
+    }
+
     func testRideReportEngineNoReports() {
         let engine = PhraseologyEngine(digitStyle: .individual)
         let ride = RideReportEngine(engine: engine)
