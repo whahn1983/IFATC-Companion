@@ -626,14 +626,17 @@ final class AppModel: ObservableObject {
         mock.start()
         diagnostics.log(.app, "Mock simulator feed started.")
         Task { await refreshWeather() }
+        armWeatherRefreshTimer()
     }
 
     func stopMock() {
         mock.stop()
+        cancelWeatherRefreshTimer()
     }
 
     func startLive() {
         mock.stop()
+        cancelWeatherRefreshTimer()
         tunedFacility = nil
         pendingCheckInFacility = nil
         clearReadbackGate()
@@ -669,10 +672,12 @@ final class AppModel: ObservableObject {
     }
 
     private func afterConnect() {
-        // Load weather once the connection is established.
+        // Load weather once the connection is established, then keep it fresh on a timer
+        // (the first periodic tick lands a full interval after this initial load).
         Task {
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             await self.refreshWeather()
+            self.armWeatherRefreshTimer()
         }
     }
 
@@ -2386,6 +2391,36 @@ final class AppModel: ObservableObject {
     }
 
     // MARK: - Weather refresh
+
+    /// Interval between automatic aviation-weather refreshes while a feed is active. Set
+    /// to the weather service's cache TTL so each tick actually revalidates rather than
+    /// re-serving the same cached payload.
+    var weatherRefreshInterval: TimeInterval = 300
+    /// Drives the periodic refresh. Cancelled when the source stops / a new one starts.
+    private var weatherRefreshTimer: Task<Void, Never>?
+
+    /// Re-fetch aviation weather (METARs, PIREPs, SIGMETs) on a fixed cadence while a feed
+    /// is active. The fetch is otherwise event-driven (connect, route change, ride-report
+    /// tap, pull-to-refresh), so PIREPs would freeze at the connect-time snapshot and the
+    /// ride-report pool would empty out late in a flight as reports fall behind the
+    /// aircraft. Each tick honors the service's TTL cache, so the network is not hit more
+    /// often than the data updates. Re-arming cancels any prior timer, so it never doubles.
+    private func armWeatherRefreshTimer() {
+        weatherRefreshTimer?.cancel()
+        weatherRefreshTimer = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let interval = self?.weatherRefreshInterval else { return }
+                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                guard !Task.isCancelled, let self else { return }
+                await self.refreshWeather()
+            }
+        }
+    }
+
+    private func cancelWeatherRefreshTimer() {
+        weatherRefreshTimer?.cancel()
+        weatherRefreshTimer = nil
+    }
 
     func refreshWeather() async {
         if settings.mockMode {

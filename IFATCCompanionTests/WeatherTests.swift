@@ -132,15 +132,29 @@ final class WeatherTests: XCTestCase {
                        nearFix: nil, sourceRaw: "", reportedAltitudeFt: altFt, aircraftType: type)
     }
 
-    func testSmootherAltitudePicksSmoothestReachableLevelInBand() {
+    func testSmootherAltitudePicksNearestSmootherLevelInBand() {
         let analyzer = WeatherRouteAnalyzer()
-        // Moderate at FL350; a smooth report at FL390 and a light one at FL330.
+        // Moderate at FL350; a smooth report at FL390 (4000 ft away) and a light one at
+        // FL330 (2000 ft away). The nearest smoother level wins even though FL390 is
+        // smoother — least altitude change to reach a better ride.
         let items = [rideItem(.moderate, altFt: 35000),
                      rideItem(.smooth, altFt: 39000),
                      rideItem(.light, altFt: 33000)]
         let s = analyzer.smootherAltitude(items: items, referenceAltFt: 35000, currentSeverity: .moderate)
-        XCTAssertEqual(s?.altitudeFt, 39000, "prefers the smoothest reachable level")
-        XCTAssertEqual(s?.higher, true)
+        XCTAssertEqual(s?.altitudeFt, 33000, "prefers the nearest smoother level")
+        XCTAssertEqual(s?.higher, false)
+    }
+
+    func testSmootherAltitudeBreaksSeparationTieBySmootherRide() {
+        let analyzer = WeatherRouteAnalyzer()
+        // Two candidates equidistant from FL350: light at FL370 (+2000) and smooth at
+        // FL330 (-2000). Equal altitude change → the smoother of the two wins.
+        let items = [rideItem(.moderate, altFt: 35000),
+                     rideItem(.light, altFt: 37000),
+                     rideItem(.smooth, altFt: 33000)]
+        let s = analyzer.smootherAltitude(items: items, referenceAltFt: 35000, currentSeverity: .moderate)
+        XCTAssertEqual(s?.altitudeFt, 33000, "at equal separation, prefers the smoother ride")
+        XCTAssertEqual(s?.severity, .smooth)
     }
 
     func testSmootherAltitudeIsDataDrivenAndBandBounded() {
