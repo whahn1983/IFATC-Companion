@@ -426,8 +426,8 @@ struct ATCView: View {
     /// available for the tuned controller and phase.
     private var orderedActions: [PilotAction] {
         [.clearance, .pushback, .engineStart, .taxi, .ready, .takeoff,
-         .toGate, .checkIn, .requestHigher, .requestLower, .vectors, .approach,
-         .rideReport, .destWx]
+         .toGate, .checkIn, .requestHigher, .requestLower, .acceptSmootherAltitude,
+         .vectors, .approach, .rideReport, .destWx]
     }
 
     /// Map a pilot action to its labelled button wired to the model.
@@ -454,6 +454,10 @@ struct ATCView: View {
             ActionButton(title: "Vectors", systemImage: "arrow.triangle.turn.up.right.diamond") { model.requestVectors() }
         case .approach:
             ActionButton(title: "Approach", systemImage: "airplane.arrival") { model.requestApproach() }
+        case .acceptSmootherAltitude:
+            ActionButton(title: model.smootherAltitudeActionTitle ?? "Smoother Altitude",
+                         systemImage: model.suggestedSmootherAltitude?.higher == true ? "arrow.up.circle.fill" : "arrow.down.circle.fill",
+                         tint: .green) { model.acceptSmootherAltitude() }
         case .rideReport:
             ActionButton(title: "Ride Report", systemImage: "wind") { model.requestRideReport() }
         case .destWx:

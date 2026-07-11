@@ -15,6 +15,9 @@ enum PilotAction: CaseIterable {
     case clearance, pushback, engineStart, taxi, ready, takeoff
     case requestHigher, requestLower, vectors, approach, rideReport, destWx, checkIn
     case toGate
+    /// Accept the smoother cruise altitude the last ride report suggested (shown only
+    /// while such a suggestion is active).
+    case acceptSmootherAltitude
 }
 
 /// A pilot response-button action for the simulated weather-deviation flow. Kept
@@ -186,7 +189,11 @@ final class AppModel: ObservableObject {
         case .departure:
             return [.checkIn, .requestHigher, .requestLower]
         case .center:
-            return [.requestHigher, .requestLower, .rideReport, .destWx, .checkIn]
+            var actions: Set<PilotAction> = [.requestHigher, .requestLower, .rideReport, .destWx, .checkIn]
+            // Surface the accept button only while a ride report's smoother-altitude
+            // suggestion is active.
+            if suggestedSmootherAltitude != nil { actions.insert(.acceptSmootherAltitude) }
+            return actions
         case .approach:
             return [.checkIn, .vectors, .approach, .requestLower, .destWx]
         case .ramp:
@@ -223,9 +230,17 @@ final class AppModel: ObservableObject {
     @Published var rideReportItems: [RideReportItem] = []
     @Published var rideAssessment: RideAssessment = .smooth
     @Published var weatherStatus: String = "Not loaded"
-    /// A specific smoother cruise altitude (ft) surfaced by the last ride report, for the
-    /// next higher/lower request to target directly. Nil when no PIREP supports one.
-    private var suggestedSmootherAltitudeFt: Int?
+    /// A specific smoother cruise altitude surfaced by the last ride report, for the
+    /// dedicated accept button (and the next higher/lower request) to target directly.
+    /// Nil when no PIREP supports one. Published so the button can appear/label itself.
+    @Published private(set) var suggestedSmootherAltitude: SmootherAltitude?
+
+    /// The accept button's label for the active suggestion, e.g. "Climb FL390". Nil when
+    /// there is no suggestion, so the button is hidden.
+    var smootherAltitudeActionTitle: String? {
+        guard let s = suggestedSmootherAltitude else { return nil }
+        return "\(s.higher ? "Climb" : "Descend") \(engine.formatAltDisplay(s.altitudeFt))"
+    }
 
     // Radar precipitation + simulated weather-deviation state.
     /// Descriptive state for the Weather View radar layer (coverage, opacity,
@@ -2027,7 +2042,7 @@ final class AppModel: ObservableObject {
             tx.readback = altitudeReadback("Climb", altitude: target, callsign: c.callsign, facility: currentFacility)
             post(tx, speak: true)
         }
-        suggestedSmootherAltitudeFt = nil   // one-shot hint from the last ride report
+        suggestedSmootherAltitude = nil   // one-shot hint from the last ride report
     }
 
     func requestLower() {
@@ -2038,7 +2053,25 @@ final class AppModel: ObservableObject {
         tx.readback = altitudeReadback("Descend", altitude: target, callsign: c.callsign, facility: currentFacility)
         post(tx, speak: true)
         assignedAltitude = target
-        suggestedSmootherAltitudeFt = nil   // one-shot hint from the last ride report
+        suggestedSmootherAltitude = nil   // one-shot hint from the last ride report
+    }
+
+    /// Accept the smoother altitude the last ride report suggested — a direct climb or
+    /// descent to that specific level (the suggestion is already a smooth/lighter level in
+    /// the cruise band, so no traffic/turbulence block applies). Clears the suggestion.
+    func acceptSmootherAltitude() {
+        guard let s = suggestedSmootherAltitude else { return }
+        let c = buildContext(for: atcState)
+        let target = s.altitudeFt
+        postPilot(s.higher ? pilotEngine.requestHigher(context: c, target: target)
+                           : pilotEngine.requestLower(context: c, target: target))
+        var tx = s.higher ? engine.climbMaintain(cs: c.callsign, altitude: target)
+                          : engine.descendPilotsDiscretion(cs: c.callsign, altitude: target)
+        tx.readback = altitudeReadback(s.higher ? "Climb" : "Descend", altitude: target,
+                                       callsign: c.callsign, facility: currentFacility)
+        post(tx, speak: true)
+        assignedAltitude = target
+        suggestedSmootherAltitude = nil
     }
 
     /// A pilot read-back of an assigned altitude, attached to a controller call so the
@@ -2242,8 +2275,9 @@ final class AppModel: ObservableObject {
             recomputeRideItems()
             let refAlt = rideReferenceAltitudeFt()
             let smoother = computeSmootherAltitude(referenceAltFt: refAlt)
-            // Remember the suggested level so the next higher/lower request targets it.
-            suggestedSmootherAltitudeFt = smoother?.altitudeFt
+            // Remember the suggestion so the accept button appears and the next
+            // higher/lower request targets it.
+            suggestedSmootherAltitude = smoother
             post(rideEngine.rideReport(assessment: rideAssessment, items: rideReportItems,
                                        referenceAltitudeFt: refAlt, smoother: smoother,
                                        callsign: c.callsign), speak: true)
@@ -2312,7 +2346,7 @@ final class AppModel: ObservableObject {
     private func nextAltitude(from current: Int, up: Bool) -> Int {
         // Prefer a data-backed smoother level from the last ride report when it lies in
         // the requested direction (it is already bounded to the cruise band).
-        if let s = suggestedSmootherAltitudeFt, (up && s > current) || (!up && s < current) {
+        if let s = suggestedSmootherAltitude?.altitudeFt, (up && s > current) || (!up && s < current) {
             return s
         }
         let step = 2000
