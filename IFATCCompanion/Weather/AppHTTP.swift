@@ -38,6 +38,12 @@ enum AppHTTP {
         return URLSession(configuration: config)
     }
 
+    /// Shared revalidating-cache session for overlay **image** fetches (NOAA/NASA/OPERA
+    /// WMS PNGs pulled programmatically for sampling/rendering). Carries the descriptive
+    /// User-Agent and honors ETag/Last-Modified. Bounded LRU disk cache.
+    static let imageSession = makeCachingSession(cacheName: "overlay-img-cache",
+                                                 memoryMB: 16, diskMB: 64)
+
     // MARK: - Retry-After / backoff (pure, unit-tested)
 
     /// Parse an HTTP `Retry-After` header value, which is either an integer number of
