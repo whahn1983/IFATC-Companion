@@ -7,7 +7,9 @@ import MapKit
 /// image URL. Provider preference order is **NOAA → EUMETNET OPERA → NASA GIBS**:
 ///
 /// 1. Inside NOAA radar coverage → NOAA/NWS radar precipitation.
-/// 2. Else inside EUMETNET OPERA (Europe) coverage → OPERA radar precipitation.
+/// 2. Else inside EUMETNET OPERA (Europe) coverage → OPERA radar precipitation
+///    **when it can render**. OPERA's ORD render is **currently disabled** (see the
+///    provider construction below), so today Europe falls through to case 3.
 /// 3. Else → NASA global satellite precipitation *estimate* (never called radar).
 /// 4. If none covers the region → no overlay ("Precipitation overlay unavailable
 ///    for this region.").
@@ -49,7 +51,20 @@ final class PrecipitationOverlayService {
 
     init(providers: [RadarPrecipitationProvider] = [
             NOAARadarPrecipitationProvider(),
-            EUMETNETOPERARadarProvider(),
+            // OPERA ORD rendering is disabled in shipping builds. Decoding the raw
+            // scientific DBZH GeoTIFF with ImageIO produces a garbled field — false
+            // clutter speckle over clear ocean AND little/no signal where real
+            // precipitation is heavy — because ImageIO can't faithfully read/scale the
+            // single-band sample values. There is no keyless, rendered, cleanly
+            // licensed pan-European radar source to swap in: LibreWXR is close
+            // (keyless, RainViewer-compatible tiles, includes OPERA) but its European
+            // composite carries a CC-BY-SA **share-alike** obligation via DPC Italy and
+            // offers no production reliability. Until a validated source exists, OPERA
+            // still *covers* Europe but *cannot render*, so selection falls through to
+            // the NASA satellite estimate (clearly labeled, not called radar). The
+            // provider and its whole ORD/renderer/store stack stay in place — flip
+            // `useORD: true` (or configure a WMS endpoint) to re-enable.
+            EUMETNETOPERARadarProvider(useORD: false),
             NASAGIBSPrecipitationProvider()
          ],
          mock: RadarPrecipitationProvider = MockRadarPrecipitationProvider()) {

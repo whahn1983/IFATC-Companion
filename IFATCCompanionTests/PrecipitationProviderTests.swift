@@ -109,8 +109,9 @@ final class PrecipitationProviderSelectionTests: XCTestCase {
 
         // Inside NOAA coverage → NOAA.
         XCTAssertEqual(service.selectedProvider(for: region(40, -95))?.id, "noaa-nws-radar")
-        // Europe (outside NOAA, inside OPERA) → OPERA.
-        XCTAssertEqual(service.selectedProvider(for: region(48.85, 2.35))?.id, "eumetnet-opera-radar")
+        // Europe: OPERA covers it but its ORD render is disabled in shipping builds,
+        // so selection falls through to the NASA satellite estimate.
+        XCTAssertEqual(service.selectedProvider(for: region(48.85, 2.35))?.id, "nasa-gibs-imerg")
         // Elsewhere within ±60° → NASA satellite estimate.
         XCTAssertEqual(service.selectedProvider(for: region(0, -30))?.id, "nasa-gibs-imerg")
         // High latitude outside all coverage → none.
@@ -120,7 +121,9 @@ final class PrecipitationProviderSelectionTests: XCTestCase {
     func testSelectedProviderLayerLabels() {
         let service = PrecipitationOverlayService()
         XCTAssertEqual(service.selectedProvider(for: region(40, -95))?.uiLayerLabel, "Radar precipitation")
-        XCTAssertEqual(service.selectedProvider(for: region(48.85, 2.35))?.uiLayerLabel, "Radar precipitation")
+        // OPERA disabled → Europe shows the satellite estimate label, never "radar".
+        XCTAssertEqual(service.selectedProvider(for: region(48.85, 2.35))?.uiLayerLabel,
+                       "Satellite precipitation estimate")
         XCTAssertEqual(service.selectedProvider(for: region(0, -30))?.uiLayerLabel, "Satellite precipitation estimate")
     }
 
@@ -130,10 +133,23 @@ final class PrecipitationProviderSelectionTests: XCTestCase {
         XCTAssertEqual(service.selectedProvider(for: region(48.85, 2.35))?.id, "mock-radar")
     }
 
-    func testEuropeSelectsOPERAWhenItCanRender() {
-        // Default OPERA renders from the anonymous ORD composite, so it wins in Europe.
-        let service = PrecipitationOverlayService()
+    func testEuropeSelectsOPERAWhenExplicitlyEnabled() {
+        // The selection logic still prefers OPERA over NASA in Europe when OPERA has a
+        // working source — this guards the re-enable path (flip `useORD: true`, or wire
+        // a WMS endpoint, and OPERA wins again). The shipping default keeps it disabled.
+        let service = PrecipitationOverlayService(providers: [
+            NOAARadarPrecipitationProvider(),
+            EUMETNETOPERARadarProvider(useORD: true),   // explicitly enabled
+            NASAGIBSPrecipitationProvider()
+        ])
         XCTAssertEqual(service.selectedProvider(for: region(48.85, 2.35))?.id, "eumetnet-opera-radar")
+    }
+
+    func testShippingDefaultDisablesOPERAInEurope() {
+        // Regression guard for the shipping decision: OPERA's ORD render is disabled by
+        // default, so Europe resolves to the NASA satellite estimate, not OPERA.
+        let service = PrecipitationOverlayService()
+        XCTAssertEqual(service.selectedProvider(for: region(48.85, 2.35))?.id, "nasa-gibs-imerg")
     }
 
     func testEuropeFallsThroughToNASAWhenOPERACannotRender() {

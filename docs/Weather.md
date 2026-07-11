@@ -47,6 +47,21 @@ subscription** — for the user or for the app publisher.
    usable composite coverage**, and rendering **fails gracefully** where it does not.
    Check product metadata for any license/source exceptions before display.
 
+   > **Status: disabled in shipping builds (`useORD: false`).** On-device, decoding
+   > the raw scientific `DBZH` GeoTIFF with ImageIO produces a garbled field — false
+   > clutter speckle over clear ocean **and** little/no signal where precipitation is
+   > actually heavy — because ImageIO can't faithfully read/scale the single-band
+   > sample values. No keyless, rendered, cleanly licensed pan-European radar source
+   > exists to replace it: **LibreWXR** (`api.librewxr.net`) is the closest — keyless,
+   > RainViewer-v2-compatible rendered tiles that include the OPERA composite — but its
+   > European composite blends in **DPC Italy data under CC-BY-SA 4.0 (share-alike)**,
+   > which the app's attribution-only licensing model avoids, and its public instance
+   > offers no production reliability (self-hosting is the intended model). Until a
+   > validated source exists, OPERA still *covers* Europe but *cannot render*, so
+   > selection falls through to the **NASA satellite estimate** (§3). The entire
+   > ORD/renderer/store stack below stays in place — flip `useORD: true` (or configure
+   > a WMS endpoint) in `PrecipitationOverlayService` to re-enable.
+
    **How it renders (ORD / CIRRUS).** ODYSSEY was retired in 2024; the current
    pan-European composite is produced by **CIRRUS** and published through the
    **EUMETNET Open Radar Data (ORD)** programme. There is **no public keyless
@@ -145,13 +160,16 @@ citizens** (`AppHTTP` centralizes the common bits):
 `PrecipitationOverlayService` selects one provider for the current route/region:
 
 1. Inside **NOAA** radar coverage → NOAA/NWS radar precipitation.
-2. Else inside **EUMETNET OPERA** (Europe) coverage → OPERA radar precipitation.
+2. Else inside **EUMETNET OPERA** (Europe) coverage → OPERA radar precipitation
+   *when it can render*. OPERA's ORD render is **currently disabled** (see §2 above),
+   so in practice Europe falls through to case 3 today.
 3. Else → **NASA** global satellite precipitation *estimate* (not radar).
 4. If none covers the region → no overlay: *"Precipitation overlay unavailable for
    this region."*
 
 UI labels: NOAA and OPERA both show *"Radar precipitation"*; NASA shows
-*"Satellite precipitation estimate"*. The app **never** shows "global radar".
+*"Satellite precipitation estimate"*. The app **never** shows "global radar". While
+OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* label.
 
 ## Coverage limitations (read this)
 
