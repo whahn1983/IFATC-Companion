@@ -65,6 +65,15 @@ subscription** — for the user or for the app publisher.
      classified conservatively (the standard reflectivity color ramp for colorized
      pixels; ODIM `DBZH` scaling for near-gray data pixels) so the overlay never
      *invents* precipitation from ambiguous data.
+   - **Clutter/speckle suppression.** The raw *maximum-reflectivity* composite carries
+     substantial non-meteorological echo (ground/sea clutter, anomalous propagation,
+     interference "spokes", bioscatter, coverage-edge artifacts) that the public
+     *rendered* products quality-control away. `OPERACompositeRenderer.denoise` drops
+     classified cells that are not part of an 8-connected cluster of a minimum size,
+     applied once at full raster resolution so both the map overlay and the
+     route-corridor sampler get clutter-suppressed data instead of speckling clear
+     ocean. Resampling is nearest-neighbor throughout (the raster is *classified*, so
+     linear blending would fabricate reflectivity across no-data boundaries).
    - **On-device verification note.** The exact composite GeoTIFF encoding, the
      `DBZH`→intensity scaling, and the LAEA georeferencing are **best-effort and meant
      to be verified/tuned against real ORD composites on device** (the ORD S3 host is
