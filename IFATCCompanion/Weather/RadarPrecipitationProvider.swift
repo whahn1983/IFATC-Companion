@@ -48,6 +48,13 @@ protocol RadarPrecipitationProvider {
 
     /// Whether the provider covers a region (synchronous coverage check — no I/O).
     func covers(region: MKCoordinateRegion) -> Bool
+    /// Whether the provider can actually **render an overlay** for the region right
+    /// now — a stricter check than `covers`. A provider may geographically cover a
+    /// region yet be unable to produce imagery there (e.g. no data endpoint is
+    /// configured), in which case it must not be selected as the active overlay and
+    /// selection falls through to the next provider. Defaults to `covers` (a provider
+    /// that covers a region can render it) — override to gate on a live capability.
+    func canRenderOverlay(for region: MKCoordinateRegion) -> Bool
     /// Whether the provider covers the region (async form; defaults to `covers`).
     func isAvailable(for region: MKCoordinateRegion) async -> Bool
     /// The time steps available for the region.
@@ -62,6 +69,10 @@ protocol RadarPrecipitationProvider {
 }
 
 extension RadarPrecipitationProvider {
+    /// Default: a provider that geographically covers a region can also render it.
+    /// Override where rendering depends on a live capability (e.g. a configured or
+    /// reachable data source) that coverage alone doesn't guarantee.
+    func canRenderOverlay(for region: MKCoordinateRegion) -> Bool { covers(region: region) }
     /// Default async availability delegates to the synchronous coverage check.
     func isAvailable(for region: MKCoordinateRegion) async -> Bool { covers(region: region) }
     /// Default: no synchronous image URL (conformers override where they can render).
@@ -121,9 +132,10 @@ struct NOAARadarPrecipitationProvider: RadarPrecipitationProvider {
     func exportImage(for bbox: RadarBoundingBox, size: CGSize, frame: RadarFrame) async throws -> Data? {
         guard let url = exportImageURL(for: bbox, size: size, frame: frame) else { return nil }
         var request = URLRequest(url: url)
+        request.cachePolicy = .reloadRevalidatingCacheData
         request.timeoutInterval = 12
-        request.setValue("IFATCCompanion/1.0", forHTTPHeaderField: "User-Agent")
-        let (data, response) = try await URLSession.shared.data(for: request)
+        request.setValue(AppHTTP.userAgent, forHTTPHeaderField: "User-Agent")
+        let (data, response) = try await AppHTTP.imageSession.data(for: request)
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) { return nil }
         return data.isEmpty ? nil : data
     }

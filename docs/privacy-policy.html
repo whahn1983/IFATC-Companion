@@ -225,8 +225,12 @@
       precipitation, used in NOAA-covered radar regions (contiguous U.S., Alaska, Hawaii, and Puerto
       Rico approximations) and served from <code>mapservices.weather.noaa.gov</code>. Radar
       precipitation data: NOAA/NWS.</li>
-    <li><strong>EUMETNET OPERA</strong> — European radar precipitation composites, used where OPERA
-      radar coverage is available (Europe). Radar precipitation data: EUMETNET OPERA (CC BY 4.0).</li>
+    <li><strong>EUMETNET OPERA</strong> — European radar precipitation composites (produced by the
+      <strong>CIRRUS</strong> production, successor to ODYSSEY), used where OPERA radar coverage is
+      available (Europe). The App reads the latest composite anonymously (no account, no API key, no
+      credentials — the AWS "no-sign-request" equivalent) from the public EUMETNET Open Radar Data (ORD)
+      24-hour cache served from <code>s3.waw3-1.cloudferro.com</code>. Radar precipitation data:
+      EUMETNET OPERA / CIRRUS composite (CC BY 4.0).</li>
     <li><strong>NASA Global Imagery Browse Services (GIBS)</strong> — a global satellite precipitation
       estimate (part of NASA's Earth Science Data and Information System, using GPM IMERG where
       applicable), used as a fallback outside NOAA and OPERA coverage.</li>
@@ -302,7 +306,9 @@
       <tr>
         <td>Precipitation radar / satellite imagery</td>
         <td>NOAA / U.S. National Weather Service (<code>mapservices.weather.noaa.gov</code>),
-          EUMETNET OPERA, or NASA Global Imagery Browse Services (GIBS) over the internet</td>
+          EUMETNET OPERA / CIRRUS composite (anonymous public ORD cache at
+          <code>s3.waw3-1.cloudferro.com</code>), or NASA Global Imagery Browse Services (GIBS) over the
+          internet</td>
         <td>Only the map area (bounding box) being displayed; IP/request metadata</td>
         <td>No</td>
       </tr>
@@ -339,7 +345,10 @@
     <li><strong>NOAA / U.S. National Weather Service radar</strong>
       (<code>mapservices.weather.noaa.gov</code>) — public radar precipitation imagery for
       NOAA-covered regions.</li>
-    <li><strong>EUMETNET OPERA</strong> — European radar precipitation composites (CC BY 4.0).</li>
+    <li><strong>EUMETNET OPERA</strong> — European radar precipitation composites, produced by the
+      <strong>CIRRUS</strong> production and read anonymously from the public EUMETNET Open Radar Data
+      (ORD) cache (<code>s3.waw3-1.cloudferro.com</code>). Radar precipitation data: EUMETNET OPERA /
+      CIRRUS composite (CC BY 4.0).</li>
     <li><strong>NASA Global Imagery Browse Services (GIBS)</strong> — global satellite precipitation
       estimate imagery (part of NASA's Earth Science Data and Information System, using GPM IMERG where
       applicable).</li>

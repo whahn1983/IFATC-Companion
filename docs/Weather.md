@@ -37,15 +37,41 @@ subscription** — for the user or for the app publisher.
    and NOAA-covered radar regions. **True radar.** Labeled *"Radar precipitation"*;
    source *NOAA/NWS radar precipitation*. No NOAA/NWS logos or endorsement implied;
    attribution is a plain text label ("Radar precipitation data: NOAA/NWS").
-2. **EUMETNET OPERA (ODC/ORD) radar composite** — Europe, where OPERA data is
+2. **EUMETNET OPERA (ORD / CIRRUS) radar composite** — Europe, where OPERA data is
    available. **True radar.** Labeled *"Radar precipitation"*; source *EUMETNET
    OPERA radar precipitation*. Honors **CC BY 4.0** attribution ("Radar
-   precipitation data: EUMETNET OPERA (CC BY 4.0)"). Prefers OPERA composite
-   products in order — **maximum reflectivity → instantaneous rain rate → 1-hour
-   accumulation** — and cloud-optimized GeoTIFF over ODIM HDF5 for easier iOS
+   precipitation data: EUMETNET OPERA / CIRRUS composite (CC BY 4.0)"). Prefers OPERA
+   composite products in order — **maximum reflectivity → instantaneous rain rate →
+   1-hour accumulation** — and cloud-optimized GeoTIFF over ODIM HDF5 for easier iOS
    rendering. Coverage is best-effort: **not every European country necessarily has
-   usable ORD coverage**, and rendering **fails gracefully** where it does not.
+   usable composite coverage**, and rendering **fails gracefully** where it does not.
    Check product metadata for any license/source exceptions before display.
+
+   **How it renders (ORD / CIRRUS).** ODYSSEY was retired in 2024; the current
+   pan-European composite is produced by **CIRRUS** and published through the
+   **EUMETNET Open Radar Data (ORD)** programme. There is **no public keyless
+   *rendered* WMS/WMTS** for the composite — only the raw ODIM-HDF5 and
+   cloud-optimized GeoTIFF data files — so the app renders the overlay itself:
+   - `EUMETNETORDClient` reads the ORD **24-hour cache** *anonymously* — a public S3
+     bucket (`s3://openradar-24h/YYYY/MM/DD/OPERA/COMP/…@DBZH.tif` at
+     `s3.waw3-1.cloudferro.com`) requiring **no account, API key, or credentials**
+     (the AWS-CLI `--no-sign-request` equivalent — plain unsigned HTTPS GETs). It
+     lists the latest composite GeoTIFF for the product and fetches it.
+   - `OPERACompositeRenderer` decodes the composite (ImageIO), reprojects it from the
+     OPERA **Lambert Azimuthal Equal Area** grid (origin 55° N/10° E; projected
+     extent derived from the documented corners) into a Web-Mercator PNG for the map
+     bounding box — the same form the NOAA/NASA overlays use, so the existing image
+     sampler and overlay renderer consume it unchanged. Precipitation intensity is
+     classified conservatively (the standard reflectivity color ramp for colorized
+     pixels; ODIM `DBZH` scaling for near-gray data pixels) so the overlay never
+     *invents* precipitation from ambiguous data.
+   - **On-device verification note.** The exact composite GeoTIFF encoding, the
+     `DBZH`→intensity scaling, and the LAEA georeferencing are **best-effort and meant
+     to be verified/tuned against real ORD composites on device** (the ORD S3 host is
+     not reachable from CI). Every fetch/decode step **fails to `nil`**, and after a
+     few consecutive render failures the OPERA provider is put in a short cooldown so
+     selection **falls through to the NASA satellite estimate** rather than leaving
+     the map blank while claiming OPERA coverage.
 3. **NASA GPM IMERG via NASA GIBS** — global fallback outside NOAA and OPERA
    coverage. This is a **satellite precipitation estimate — NOT radar** — always
    labeled *"Satellite precipitation estimate"* and treated as **lower confidence**
@@ -64,6 +90,46 @@ provider architecture ships exactly these conformers:
 `NOAARadarPrecipitationProvider`, `EUMETNETOPERARadarProvider`,
 `NASAGIBSPrecipitationProvider`, and `MockRadarPrecipitationProvider` (Mock
 Mode/tests).
+
+## Responsible use of the public services (no backend)
+
+The app has **no backend** — every device talks to these free public services
+directly — so all clients are written to be **well-behaved shared-resource
+citizens** (`AppHTTP` centralizes the common bits):
+
+- **Descriptive User-Agent with contact.** Every request identifies the app and a
+  contact URL: `IFATCCompanion/<version> (+https://github.com/whahn1983/IFATC-Companion)`.
+- **Poll no faster than the data updates, and not off-screen.** Aviation weather is
+  **event-driven** (on connect / manual refresh — there is no periodic poll). The
+  radar overlay renders only while the weather map is on screen; radar *sampling*
+  runs only while airborne **and in the foreground** (gated on app-active), never on a
+  background tick.
+- **Cache, and revalidate conditionally.** Responses are cached (in-memory TTL +
+  an on-disk `URLCache`), and network revalidation uses **ETag / If-None-Match** and
+  **Last-Modified / If-Modified-Since** (`.reloadRevalidatingCacheData`), so a `304`
+  reuses cached bytes.
+- **OPERA/ORD specifics.** The CIRRUS composite updates every ~5 min, so the client
+  refreshes on a **5–8 minute jittered interval** (de-synchronizing devices), does the
+  **cheap listing first and skips the multi-MB GeoTIFF download when the product
+  timestamp is unchanged**, and shares one decoded composite across all overlay/sampling
+  renders. The ORD docs note anonymous access has *low query limits* and *is not
+  recommended for permanent usage*, which is exactly why these limits are enforced.
+- **Data usage is measured, not assumed.** Unlike NOAA/NASA (small server-cropped
+  PNGs, ~KB), the CIRRUS composite is a whole-Europe file the app downloads and renders
+  itself, so it is the only megabyte-scale source (4400×3800 @ 1 km single band ≈
+  16.7 MB / 33 MB uncompressed at 8/16-bit; a compressed COG is typically smaller, but
+  the delivered product may also carry a quality band, overviews, and masks). The
+  Weather Diagnostics panel reports the **actual bytes downloaded** (latest + session
+  total) so real measurements can replace the estimate.
+- **Back off on throttling/outages; prefer stale over failing.** On `429`/`503`/`5xx`
+  or a network error the clients **back off exponentially** and honor **`Retry-After`**,
+  and they **serve the last good cached data** rather than blanking. Non-retryable
+  errors (e.g. `400`) don't trigger backoff. Missing products, partial responses, and
+  temporary outages degrade gracefully (OPERA falls through to the NASA estimate).
+- **Not `api.weather.gov`.** Aviation weather uses the **AWC Data API**
+  (`aviationweather.gov/api/data`), so the app makes **no** `/points`, forecast-office,
+  gridpoint, station-list, or alerts-metadata calls that would need separate long-lived
+  caching.
 
 ## Provider selection order
 
@@ -315,9 +381,23 @@ state when established on final.
 - **Weather deviation alerts** — *Off*, *Advisory only*, or *Advisory + suggested
   deviation*.
 - **Show data-source labels** and **Show coverage warnings**.
+- **Reduce cellular data** (default **on**) — on a cellular / hotspot / Low-Data-Mode
+  connection, skips the background EUMETNET OPERA composite downloads that drive the
+  automatic reroute (the only megabyte-scale weather source; NOAA/NASA are small
+  server-cropped PNGs). The radar overlay still loads when you open the Weather map
+  (user-initiated). Turn it off to run live OPERA radar on any connection.
 
 No user-entered API keys, provider subscriptions, or commercial weather-provider
 configuration are offered — by design.
+
+### On-device storage / cache growth
+
+Nothing accumulates without bound. The **one composite the app actually uses is held
+in memory** (a single decoded raster, ~a few MB, replaced on each 5-min update and
+freed when the app exits). The HTTP layer's on-disk cache is a **bounded LRU**, hard-
+capped per client (**OPERA composite ≤ 64 MB**, aviation JSON ≤ 32 MB): new products
+evict old ones, so it can never grow past the cap (and a composite larger than ~5 % of
+the cap isn't disk-cached at all — it's just streamed, decoded, and discarded).
 
 ## Mock Mode demo
 

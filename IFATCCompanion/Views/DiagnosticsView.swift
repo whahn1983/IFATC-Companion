@@ -116,6 +116,9 @@ struct DiagnosticsView: View {
                 DataRow(label: "Precip source", value: d.radarSource)
                 DataRow(label: "Overlay coverage", value: d.coverageText)
                 DataRow(label: "Last radar update", value: timeText(d.lastRadarUpdate))
+                if let usage = d.radarDataUsageText {
+                    DataRow(label: "Radar data (OPERA)", value: usage)
+                }
                 DataRow(label: "Last aviation wx update", value: timeText(d.lastAviationUpdate))
                 DataRow(label: "Hazards detected", value: "\(d.hazardCount)")
                 DataRow(label: "Route conflict", value: d.routeConflictStatus)

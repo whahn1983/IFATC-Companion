@@ -3,6 +3,7 @@ import Combine
 import CoreLocation
 import CoreGraphics
 import MapKit
+import Network
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -401,12 +402,16 @@ final class AppModel: ObservableObject {
         guard !started else { return }
         started = true
 
+        startNetworkMonitor()
         diagnostics.verbose = settings.debugLogging
         applyKeepScreenAwake()
         speech.configure(settings: settings)
         connect.configure(diagnostics: diagnostics)
         Task { await weatherService.configure(baseURL: settings.weatherBaseURL, diagnostics: diagnostics) }
         precipService.configure(diagnostics: diagnostics)
+        // An async OPERA/ORD overlay render finished — nudge the map to re-request the
+        // now-cached image (touch the published overlay model without recomputing).
+        precipService.onOverlayUpdated = { [weak self] in self?.radarOverlay.lastUpdated = Date() }
         applyRadarProvider()
 
         // Route state from whichever feed is active.
@@ -655,9 +660,19 @@ final class AppModel: ObservableObject {
     /// foreground forces a fresh Connect link.
     private var wasBackgrounded = false
 
+    /// Whether the app is currently in the foreground. Gates network polling (radar
+    /// resampling) so we don't fetch from public weather services while backgrounded.
+    private var appActive = true
+
+    /// Watches the network path so the "Reduce cellular data" setting can suppress the
+    /// megabyte-scale OPERA composite downloads on a cellular / expensive connection.
+    private let networkMonitor = NWPathMonitor()
+    /// True on a cellular / personal-hotspot / Low-Data-Mode connection.
+    private(set) var isExpensiveNetwork = false
+
     /// Record that the app went to the background (the OS may have torn down or
     /// silently stalled the Infinite Flight TCP link while we were away).
-    func markBackgrounded() { wasBackgrounded = true }
+    func markBackgrounded() { wasBackgrounded = true; appActive = false }
 
     /// When the app returns to the foreground after being backgrounded, force a
     /// reconnect so live flight details resume updating immediately. (Infinite Flight
@@ -665,12 +680,23 @@ final class AppModel: ObservableObject {
     /// otherwise required a manual Reconnect.) The in-progress session is restored on
     /// reconnect, so the conversation picks up where it left off. No-op in Mock Mode.
     func handleReturnToForeground() {
+        appActive = true
         guard started, wasBackgrounded else { return }
         wasBackgrounded = false
         guard !settings.mockMode else { return }
         diagnostics.log(.app, "Returned to foreground — forcing an Infinite Flight reconnect.")
         connect.disconnect()
         startLive()
+    }
+
+    /// Start watching the network path so `isExpensiveNetwork` reflects a cellular /
+    /// hotspot / Low-Data-Mode connection (drives the "Reduce cellular data" setting).
+    private func startNetworkMonitor() {
+        networkMonitor.pathUpdateHandler = { [weak self] path in
+            let expensive = path.isExpensive || path.isConstrained
+            Task { @MainActor in self?.isExpensiveNetwork = expensive }
+        }
+        networkMonitor.start(queue: DispatchQueue(label: "ifatc.network.monitor"))
     }
 
     // MARK: - State handling
@@ -2320,6 +2346,9 @@ final class AppModel: ObservableObject {
     private var lastPrecipSampleAt: Date?
     private var lastPrecipSamplePos: CLLocationCoordinate2D?
     private var isSamplingPrecip = false
+    /// Actual OPERA/CIRRUS composite bytes downloaded (latest / session total), read
+    /// from the shared composite store for the Weather Diagnostics data-usage row.
+    private var ordDataUsage: (last: Int, total: Int) = (0, 0)
 
     /// Reset the weather-deviation interaction (between flights / on mode change).
     private func resetWeatherDeviation() {
@@ -2480,7 +2509,7 @@ final class AppModel: ObservableObject {
     /// time and distance, and single-flighted so fetches never overlap. Call it from
     /// the telemetry loop; it re-runs the conflict detection once fresh cells land.
     private func maybeResamplePrecipitation() {
-        guard !settings.mockMode, settings.noaaRadarOverlay == .autoWhereAvailable,
+        guard appActive, !settings.mockMode, settings.noaaRadarOverlay == .autoWhereAvailable,
               !isSamplingPrecip, let pos = aircraftState.coordinate, pos.isValid else { return }
         let now = Date()
         let movedFar = lastPrecipSamplePos.map { Geo.distanceNM(from: $0, to: pos) > 15 } ?? true
@@ -2490,6 +2519,8 @@ final class AppModel: ObservableObject {
         Task { @MainActor in
             await sampleLivePrecipitation()
             isSamplingPrecip = false
+            // Record real ORD composite data usage for the diagnostics row.
+            ordDataUsage = await OPERACompositeStore.shared.dataUsage()
             // Re-run detection against the fresh cells so the mint line updates now.
             recomputeWeatherHazards()
         }
@@ -2541,6 +2572,15 @@ final class AppModel: ObservableObject {
               provider.supportsTrueRadar else {
             // No true-radar coverage for this window → genuinely no radar cells here.
             radarOverlay.sampledCells = []
+            return
+        }
+
+        // "Reduce cellular data": on a cellular / expensive link, skip the background
+        // download of the megabyte-scale EUMETNET OPERA composite that this sampling
+        // triggers. The map overlay still loads when the user opens the Weather view
+        // (user-initiated); NOAA/NASA (small server-cropped PNGs) keep sampling. Keep
+        // the last good cells so the reroute doesn't blink out.
+        if settings.reduceCellularData, isExpensiveNetwork, provider.id == "eumetnet-opera-radar" {
             return
         }
 
@@ -2617,6 +2657,8 @@ final class AppModel: ObservableObject {
         d.lastDeviationState = weatherDeviation.state
         d.providerError = precipService.lastError
         d.coverageMessage = radarOverlay.coverageAvailable ? nil : radarOverlay.unavailableMessage
+        d.radarLastBytes = ordDataUsage.last
+        d.radarSessionBytes = ordDataUsage.total
         weatherDiagnostics = d
     }
 

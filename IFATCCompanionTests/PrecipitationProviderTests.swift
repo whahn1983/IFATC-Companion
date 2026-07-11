@@ -20,13 +20,30 @@ final class PrecipitationProviderMetadataTests: XCTestCase {
         XCTAssertTrue(p.supportsTrueRadar)
         XCTAssertEqual(p.layerType, .radar)
         XCTAssertEqual(p.uiLayerLabel, "Radar precipitation")
-        // CC BY 4.0 attribution is honored.
+        // CC BY 4.0 attribution is honored, and credits the CIRRUS composite.
         XCTAssertTrue(p.attributionText?.contains("CC BY 4.0") ?? false)
+        XCTAssertTrue(p.attributionText?.contains("CIRRUS") ?? false)
         // Product preference order: max reflectivity → rain rate → 1h accumulation.
         XCTAssertEqual(EUMETNETOPERARadarProvider.preferredProducts.first, .maximumReflectivity)
         // Cloud-optimized GeoTIFF is preferred over HDF5.
         XCTAssertTrue(EUMETNETOPERARadarProvider.preferredFormats.first?.contains("geotiff") ?? false)
         XCTAssertTrue(EUMETNETOPERARadarProvider.preferredFormats.contains("odim-hdf5"))
+    }
+
+    func testOPERACanRenderReflectsAvailableSource() {
+        let region = MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: 48.85, longitude: 2.35),
+                                        span: MKCoordinateSpan(latitudeDelta: 2, longitudeDelta: 2))
+        // Default provider renders from the anonymous ORD composite.
+        XCTAssertTrue(EUMETNETOPERARadarProvider().canRenderOverlay(for: region))
+        // A configured WMS endpoint also counts as a renderable source.
+        XCTAssertTrue(EUMETNETOPERARadarProvider(wmsBaseURL: "https://example.org/wms", useORD: false)
+            .canRenderOverlay(for: region))
+        // With neither ORD nor a WMS endpoint it can't render → must not claim coverage.
+        XCTAssertFalse(EUMETNETOPERARadarProvider(useORD: false).canRenderOverlay(for: region))
+        // Even with a source, it never claims to render outside its coverage box (U.S.).
+        let kansas = MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: 39, longitude: -98),
+                                        span: MKCoordinateSpan(latitudeDelta: 2, longitudeDelta: 2))
+        XCTAssertFalse(EUMETNETOPERARadarProvider().canRenderOverlay(for: kansas))
     }
 
     func testOPERACoverageIsEuropeNotUS() {
@@ -37,10 +54,11 @@ final class PrecipitationProviderMetadataTests: XCTestCase {
                        "OPERA must not claim U.S. coverage")
     }
 
-    func testOPERAFailsGracefullyWithoutEndpoint() {
-        // No configured ORD/WMS endpoint → no image URL (graceful), never a wrong
-        // or fabricated raster.
-        let p = EUMETNETOPERARadarProvider()  // empty wmsBaseURL
+    func testOPERAHasNoSynchronousWMSURLWithoutEndpoint() {
+        // The synchronous `AsyncImage` URL path is WMS-only. Without a configured WMS
+        // endpoint it returns nil (the ORD composite is rendered asynchronously via
+        // `exportImage` instead) — never a wrong or fabricated raster URL.
+        let p = EUMETNETOPERARadarProvider()  // empty wmsBaseURL, ORD render path
         let bbox = RadarBoundingBox(minLatitude: 45, minLongitude: 0, maxLatitude: 50, maxLongitude: 8)
         XCTAssertNil(p.exportImageURL(for: bbox, size: CGSize(width: 400, height: 300), frame: nil))
     }
@@ -110,5 +128,24 @@ final class PrecipitationProviderSelectionTests: XCTestCase {
         let service = PrecipitationOverlayService()
         service.useMockProvider(true)
         XCTAssertEqual(service.selectedProvider(for: region(48.85, 2.35))?.id, "mock-radar")
+    }
+
+    func testEuropeSelectsOPERAWhenItCanRender() {
+        // Default OPERA renders from the anonymous ORD composite, so it wins in Europe.
+        let service = PrecipitationOverlayService()
+        XCTAssertEqual(service.selectedProvider(for: region(48.85, 2.35))?.id, "eumetnet-opera-radar")
+    }
+
+    func testEuropeFallsThroughToNASAWhenOPERACannotRender() {
+        // An OPERA provider with no working source must not win selection and blank the
+        // map while claiming coverage — selection falls through to the NASA estimate.
+        let service = PrecipitationOverlayService(providers: [
+            NOAARadarPrecipitationProvider(),
+            EUMETNETOPERARadarProvider(useORD: false),   // no ORD, no WMS → can't render
+            NASAGIBSPrecipitationProvider()
+        ])
+        XCTAssertEqual(service.selectedProvider(for: region(48.85, 2.35))?.id, "nasa-gibs-imerg")
+        XCTAssertEqual(service.selectedProvider(for: region(48.85, 2.35))?.uiLayerLabel,
+                       "Satellite precipitation estimate")
     }
 }
