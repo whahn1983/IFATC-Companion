@@ -442,6 +442,47 @@ final class WeatherDeviationTests: XCTestCase {
         XCTAssertTrue(conflict.shouldPrompt)
     }
 
+    // MARK: - Prefer the parallel hug over a single-apex triangle
+
+    /// A cell biased to one side of course can be dodged either by a single-apex
+    /// triangle (2 legs / 3 points: turn out to an apex, turn straight back) or by a
+    /// parallel side-hug (3 legs / 4 points: turn out ~30°, run alongside the weather,
+    /// turn ~30° back). The triangle is a touch shorter, but real weather deviations
+    /// parallel the weather — so the drawn mint line must be the parallel hug, not the
+    /// single-turn triangle.
+    func testPrefersParallelHugOverSingleApexTriangle() throws {
+        // A heavy cell just right of course (near edge ~2 NM right), where a shallow
+        // dogleg around the near (left) end clears the cell — the case that used to be
+        // drawn as a 3-point triangle.
+        let cellPoly = cell(alongNM: 45, crossNM: 10, halfCross: 8, from: usPosition)
+        let conflict = try XCTUnwrap(detector.detectConflict(
+            position: usPosition, course: course, groundspeedKnots: 450, phase: .cruise,
+            hazards: [radarHazard(cellPoly, intensity: .heavy)], waypoints: []))
+        let path = conflict.deviationPath
+
+        XCTAssertEqual(conflict.recommendedDirection, .left, "the shorter side of a right-biased cell is left")
+        // A parallel hug has at least four points (start, turn-out, turn-back, rejoin);
+        // a single-apex triangle has only three.
+        XCTAssertGreaterThanOrEqual(path.count, 4,
+                                    "the reroute must be a parallel hug (4+ points), not a 3-point triangle")
+        // It has an interior leg that runs roughly parallel to course — the alongside
+        // leg a triangle lacks (both of a triangle's legs angle away from the course).
+        var hasParallelLeg = false
+        for i in 0..<(path.count - 1) where Geo.headingDifference(Geo.bearing(from: path[i], to: path[i + 1]), course) < 15 {
+            hasParallelLeg = true
+        }
+        XCTAssertTrue(hasParallelLeg, "the hug must include a leg parallel to course")
+        // Both the turn-out onto the parallel leg and the turn-back off it are realistic
+        // ~30° turns, not a single wide apex.
+        let turnOut = Geo.headingDifference(Geo.bearing(from: path[0], to: path[1]), course)
+        XCTAssertGreaterThanOrEqual(turnOut, 22, "turn-out onto the parallel leg is a genuine ~30° turn")
+        XCTAssertLessThanOrEqual(turnOut, 50, "the turn-out must not overshoot a normal deviation turn")
+        let n = path.count
+        let turnBack = Geo.headingDifference(Geo.bearing(from: path[n - 2], to: path[n - 1]), course)
+        XCTAssertLessThanOrEqual(turnBack, 45, "the turn-back onto course is gradual, not a wide single turn")
+        assertPathClear(path, of: [cellPoly])
+    }
+
     // MARK: - Tight to the storm (no giant last-resort detours)
 
     func testKeepsDeviationTightAroundACore() throws {
