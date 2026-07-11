@@ -382,17 +382,26 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      turn-bounded, see below) and then validated end-to-end against **every** cell
      polygon, so what is ranked and flown is exactly the line drawn. Routine candidates
      are bounded to `searchHalfWidthNM` (~60 NM) off course, and the pick is made in a
-     priority order that keeps the line close to the weather:
-     1. the **shortest routine-width path clear of every cell**;
+     priority order that keeps the line close to the weather and **prefers the 3-leg /
+     4-point parallel hug over the 2-leg / 3-point single-apex triangle** (each candidate
+     carries a `parallel` flag, and the selector takes the shortest parallel hug when one
+     clears before falling back to a triangle):
+     1. the **shortest routine-width path clear of every cell** — a parallel hug when one
+        clears, else a triangle (e.g. a gap-threading dogleg no straight parallel offset
+        fits);
      2. else the shortest routine-width path that clears the **intense (heavy/extreme)
-        cores** while skirting lighter (moderate) precip — so a broad area of moderate
-        returns is passed close rather than looped around wholesale;
+        cores** while skirting lighter (moderate) precip — again preferring the parallel
+        hug — so a broad area of moderate returns is passed close rather than looped
+        around wholesale;
      3. else, **only as an absolute last resort**, the shortest *wide* detour (out to
         `maxDetourOffsetNM`) that clears every cell — taken solely when nothing tight can
         even dodge the intense cores;
      4. else (genuinely boxed in) the routine path that keeps the **most room from the
         intense cores** — never the straight-through least-deviation dogleg.
 
+     Preferring the parallel hug matches how real weather deviations are flown — turn out
+     ~30°, parallel the weather, turn ~30° back — rather than cutting a single wide turn
+     around it, even when that triangle to the shared rejoin would be a shade shorter.
      Ranking by true distance (not smallest initial turn) keeps the reroute on the
      genuinely shorter side, and dropping any candidate wider than the bound stops a
      broad line from emitting a runaway around-the-end loop far from the route. The

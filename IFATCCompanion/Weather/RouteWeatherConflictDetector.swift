@@ -440,13 +440,19 @@ struct RouteWeatherConflictDetector {
         }
         // Candidate reroutes around the line come in two shapes:
         //   • single-apex doglegs (position → abeam-the-middle apex → rejoin) at each
-        //     threadable gap and around either end, least-deviation first; and
+        //     threadable gap and around either end, least-deviation first — a 2-leg /
+        //     3-point triangle; and
         //   • side-hug paths (position → step out just before the near edge → hold
-        //     that offset past the far edge → rejoin) down the left and right edges.
+        //     that offset past the far edge → rejoin) down the left and right edges — a
+        //     3-leg / 4-point parallel route that turns out ~30°, parallels the weather,
+        //     then turns ~30° back onto course.
         // The hug is what lets a long line lying roughly along course be passed on the
         // genuinely shorter side — a single dogleg to the shared rejoin would cut back
-        // across the line and be rejected. Every candidate is validated end-to-end and
-        // the shortest one that stays clear is flown.
+        // across the line and be rejected. Every candidate is validated end-to-end. Among
+        // the ones that stay clear the **parallel hug is preferred over the triangle** —
+        // real weather deviations parallel the weather rather than cut a single wide turn
+        // around it — with the triangle used only when no hug clears (e.g. threading a gap
+        // that no straight parallel offset fits).
         let lineSet = lineCells.isEmpty ? blockers : lineCells
         let solution = threadSolution(cells: lineSet)
         let midAlong = max(0, (bandNear + bandFar) / 2)
@@ -612,25 +618,30 @@ struct RouteWeatherConflictDetector {
         // hug on each side. Each is finalized up front so it is validated and ranked as
         // the line actually drawn. Offsets beyond the bound are dropped here, so a broad
         // line can never emit a runaway around-the-end candidate that loops far out.
-        var candidates: [(path: [CLLocationCoordinate2D], target: Double)] =
+        // Each candidate carries a `parallel` flag: true for the 3-leg / 4-point side-hug
+        // (turn out ~30°, parallel the weather, turn ~30° back) and false for the 2-leg /
+        // 3-point single-apex triangle. The selector prefers a clear parallel hug over a
+        // clear triangle, so the mint line parallels the weather instead of cutting one
+        // wide turn around it.
+        var candidates: [(path: [CLLocationCoordinate2D], target: Double, parallel: Bool)] =
             solution.targets.filter { abs($0) <= config.searchHalfWidthNM }
-                .map { (path: finalize(apexPath(for: $0)), target: $0) }
+                .map { (path: finalize(apexPath(for: $0)), target: $0, parallel: false) }
         for edge in [solution.leftEdge, solution.rightEdge] where abs(edge) <= config.searchHalfWidthNM {
-            candidates.append((path: finalize(hugPath(offset: edge, minLead: 0)), target: edge))
+            candidates.append((path: finalize(hugPath(offset: edge, minLead: 0)), target: edge, parallel: true))
         }
         for gentle in [true, false] {
             for side in [1.0, -1.0] {
                 // The tightest hug that clears EVERY cell (the ideal, fully-clear option).
                 if let tight = tightHug(side: side, gentle: gentle, cells: cellBerths,
                                         maxOffset: config.searchHalfWidthNM) {
-                    candidates.append(tight)
+                    candidates.append((path: tight.path, target: tight.target, parallel: true))
                 }
                 // The tightest hug that clears the INTENSE cores but may skirt lighter
                 // precip — the close-in option that keeps the line tight to a broad area
                 // of moderate returns instead of forcing a wide detour around all of it.
                 if let tight = tightHug(side: side, gentle: gentle, cells: intenseBerths,
                                         maxOffset: config.searchHalfWidthNM) {
-                    candidates.append(tight)
+                    candidates.append((path: tight.path, target: tight.target, parallel: true))
                 }
             }
         }
@@ -640,14 +651,24 @@ struct RouteWeatherConflictDetector {
         // paralleling at the widest offset.
         for side in [1.0, -1.0] {
             if let hull = hullHugPath(side: side), abs(hull.target) <= config.searchHalfWidthNM {
-                candidates.append((path: finalize(hull.path), target: hull.target))
+                candidates.append((path: finalize(hull.path), target: hull.target, parallel: true))
             }
         }
 
         // The shortest of a candidate set (by total drawn length), or nil when empty.
-        func shortest(_ set: [(path: [CLLocationCoordinate2D], target: Double)])
-            -> (path: [CLLocationCoordinate2D], target: Double)? {
+        func shortest(_ set: [(path: [CLLocationCoordinate2D], target: Double, parallel: Bool)])
+            -> (path: [CLLocationCoordinate2D], target: Double, parallel: Bool)? {
             set.min { pathLengthNM($0.path) < pathLengthNM($1.path) }
+        }
+        // The shortest clear reroute, **preferring the 3-leg parallel hug over the
+        // single-apex triangle**: take the shortest parallel hug when one is present, and
+        // only fall back to the shortest triangle when no hug is (e.g. a gap-threading
+        // dogleg that no straight parallel offset fits). This is what makes the drawn line
+        // parallel the weather rather than cut one wide turn around it — even when a
+        // triangle to the shared rejoin would be a shade shorter.
+        func shortestPreferringParallel(_ set: [(path: [CLLocationCoordinate2D], target: Double, parallel: Bool)])
+            -> (path: [CLLocationCoordinate2D], target: Double, parallel: Bool)? {
+            shortest(set.filter { $0.parallel }) ?? shortest(set)
         }
         // Last resort: the shortest *wide* hug (out to maxDetourOffsetNM) that clears
         // every cell — used only when nothing routine-width can even dodge the intense
@@ -667,21 +688,26 @@ struct RouteWeatherConflictDetector {
         }
 
         // Choose the reroute the pilot actually flies, in priority order that keeps it
-        // tight to the storm and only ever swings wide as an absolute last resort:
-        //   1. the shortest routine-width path clear of EVERY cell;
+        // tight to the storm, prefers a parallel hug over a single-turn triangle, and only
+        // ever swings wide as an absolute last resort:
+        //   1. the shortest routine-width path clear of EVERY cell — a parallel hug when
+        //      one clears, else a triangle;
         //   2. else the shortest routine-width path that clears the intense (heavy /
-        //      extreme) cores — skirting lighter precip to stay close, not looping;
+        //      extreme) cores — again preferring the parallel hug — skirting lighter
+        //      precip to stay close, not looping;
         //   3. else, last resort, the shortest *wide* detour that clears every cell —
         //      taken only when nothing tight can dodge the intense cores;
         //   4. else (genuinely boxed in) the routine path that keeps the most room from
         //      the intense cores — never the straight-through least-deviation one.
         let clearAll = candidates.filter { pathIsClear($0.path, cells: cellBerths, origin: position) }
         let clearIntense = candidates.filter { pathIsClear($0.path, cells: intenseBerths, origin: position) }
-        let chosen = shortest(clearAll)
-            ?? shortest(clearIntense)
+        let chosen: (path: [CLLocationCoordinate2D], target: Double) =
+            shortestPreferringParallel(clearAll).map { (path: $0.path, target: $0.target) }
+            ?? shortestPreferringParallel(clearIntense).map { (path: $0.path, target: $0.target) }
             ?? wideDetourClearingAll()
             ?? candidates.max { pathBerthMarginNM($0.path, cells: intenseBerths, origin: position)
                                 < pathBerthMarginNM($1.path, cells: intenseBerths, origin: position) }
+                        .map { (path: $0.path, target: $0.target) }
             ?? (path: finalize(apexPath(for: 0)), target: 0)
         let target = chosen.target
         let direction: DeviationDirection = target >= 0 ? .right : .left
