@@ -181,14 +181,25 @@ struct WeatherDeviationPhraseology {
         return tx
     }
 
-    /// At the turn in the deviation path: turn back to intercept and rejoin the
-    /// filed route. Names the rejoin fix when one is known. Read back the heading.
+    /// A turn in the deviation path. An **intermediate** turn keeps vectoring around
+    /// the precipitation (e.g. turning out onto the parallel leg of a side-hug); the
+    /// **final** turn intercepts and rejoins the filed route, naming the rejoin fix
+    /// when one is known. A side-hug line has two turns — an intermediate one out,
+    /// then the final one back down to the route. Read back the heading.
     func rejoinInterceptVector(cs: Callsign, heading: Int, rejoinFix: String?,
+                               finalTurn: Bool = true,
                                facility: ATCFacility = .approach) -> ATCTransmission {
-        let rejoinD = rejoinFix.map { " to rejoin course direct \($0)" } ?? " to rejoin course"
-        let rejoinS = rejoinFix.map { " to rejoin course direct \(Phonetic.spellToken($0, icao: icao))" } ?? " to rejoin course"
-        var tx = center("\(cs.display), fly heading \(headingDisplay(heading))\(rejoinD).",
-               "\(cs.spoken), fly heading \(Phonetic.heading(heading, icao: icao))\(rejoinS).",
+        let tailD: String
+        let tailS: String
+        if finalTurn {
+            tailD = rejoinFix.map { " to rejoin course direct \($0)" } ?? " to rejoin course"
+            tailS = rejoinFix.map { " to rejoin course direct \(Phonetic.spellToken($0, icao: icao))" } ?? " to rejoin course"
+        } else {
+            tailD = ", vectors around precipitation"
+            tailS = ", vectors around precipitation"
+        }
+        var tx = center("\(cs.display), fly heading \(headingDisplay(heading))\(tailD).",
+               "\(cs.spoken), fly heading \(Phonetic.heading(heading, icao: icao))\(tailS).",
                facility: facility)
         tx.readback = ATCTransmission.Readback(
             displayText: "Heading \(headingDisplay(heading)), \(cs.display).",
