@@ -2328,6 +2328,9 @@ final class AppModel: ObservableObject {
     private var lastPrecipSampleAt: Date?
     private var lastPrecipSamplePos: CLLocationCoordinate2D?
     private var isSamplingPrecip = false
+    /// Actual OPERA/CIRRUS composite bytes downloaded (latest / session total), read
+    /// from the shared composite store for the Weather Diagnostics data-usage row.
+    private var ordDataUsage: (last: Int, total: Int) = (0, 0)
 
     /// Reset the weather-deviation interaction (between flights / on mode change).
     private func resetWeatherDeviation() {
@@ -2498,6 +2501,8 @@ final class AppModel: ObservableObject {
         Task { @MainActor in
             await sampleLivePrecipitation()
             isSamplingPrecip = false
+            // Record real ORD composite data usage for the diagnostics row.
+            ordDataUsage = await OPERACompositeStore.shared.dataUsage()
             // Re-run detection against the fresh cells so the mint line updates now.
             recomputeWeatherHazards()
         }
@@ -2625,6 +2630,8 @@ final class AppModel: ObservableObject {
         d.lastDeviationState = weatherDeviation.state
         d.providerError = precipService.lastError
         d.coverageMessage = radarOverlay.coverageAvailable ? nil : radarOverlay.unavailableMessage
+        d.radarLastBytes = ordDataUsage.last
+        d.radarSessionBytes = ordDataUsage.total
         weatherDiagnostics = d
     }
 

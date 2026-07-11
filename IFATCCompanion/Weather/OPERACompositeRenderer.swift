@@ -323,6 +323,18 @@ actor OPERACompositeStore {
     private var nextRetryAt: Date?
     private var failureCount = 0
 
+    /// Actual composite bytes downloaded — the latest download and the running total
+    /// this app run — so the app can surface real ORD data usage (the composite is the
+    /// only megabyte-scale weather source). Counted only on a real new-product download
+    /// (the timestamp-skip means unchanged products aren't re-fetched); a rare 304 on
+    /// relaunch is served from cache but still counted here, so this slightly
+    /// over-reports network bytes rather than under-reporting.
+    private(set) var lastDownloadBytes = 0
+    private(set) var sessionDownloadBytes = 0
+
+    /// Downloaded-bytes snapshot for diagnostics (`last`, session `total`).
+    func dataUsage() -> (last: Int, total: Int) { (lastDownloadBytes, sessionDownloadBytes) }
+
     /// Minimum refresh interval and jitter (→ 5–8 min); the composite updates every
     /// ~5 min, so checking more often just wastes the shared service's capacity.
     private let baseInterval: TimeInterval = 300
@@ -355,6 +367,8 @@ actor OPERACompositeStore {
         // New product → download (conditionally revalidated) and decode.
         switch await client.fetchObject(url: latest.url) {
         case .success(let data):
+            lastDownloadBytes = data.count
+            sessionDownloadBytes += data.count
             if let decoded = OPERACompositeRenderer.decodeRaster(from: data) {
                 raster = decoded
                 currentTimestamp = latest.timestamp

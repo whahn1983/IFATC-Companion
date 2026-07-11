@@ -114,6 +114,13 @@ citizens** (`AppHTTP` centralizes the common bits):
   timestamp is unchanged**, and shares one decoded composite across all overlay/sampling
   renders. The ORD docs note anonymous access has *low query limits* and *is not
   recommended for permanent usage*, which is exactly why these limits are enforced.
+- **Data usage is measured, not assumed.** Unlike NOAA/NASA (small server-cropped
+  PNGs, ~KB), the CIRRUS composite is a whole-Europe file the app downloads and renders
+  itself, so it is the only megabyte-scale source (4400×3800 @ 1 km single band ≈
+  16.7 MB / 33 MB uncompressed at 8/16-bit; a compressed COG is typically smaller, but
+  the delivered product may also carry a quality band, overviews, and masks). The
+  Weather Diagnostics panel reports the **actual bytes downloaded** (latest + session
+  total) so real measurements can replace the estimate.
 - **Back off on throttling/outages; prefer stale over failing.** On `429`/`503`/`5xx`
   or a network error the clients **back off exponentially** and honor **`Retry-After`**,
   and they **serve the last good cached data** rather than blanking. Non-retryable
