@@ -57,7 +57,7 @@ struct WeatherView: View {
                     legendDot(.red, "Severe")
                 }
                 .font(.caption2).foregroundStyle(.secondary)
-                Text("Dots are pilot reports; shaded areas are SIGMET/AIRMET advisories and the precipitation overlay where available (NOAA/OPERA radar or NASA satellite estimate). The mint path shows the simulated recommended reroute around the precipitation.")
+                Text("Dots are pilot reports; shaded areas are SIGMET/AIRMET advisories and the precipitation overlay where available (NOAA radar in the U.S., or a NASA satellite estimate elsewhere). The mint path shows the simulated recommended reroute around the precipitation.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
         }
@@ -155,7 +155,7 @@ struct WeatherView: View {
                 Text("Radar, precipitation, and deviation logic are for simulation only and must not be used for real-world aviation.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                Text("Radar precipitation is available only where the app's free NOAA/NWS (U.S.) and EUMETNET OPERA (Europe) data sources provide coverage. Elsewhere the app shows a NASA global satellite precipitation estimate — which is not radar. No global radar coverage is implied.")
+                Text("Radar precipitation is available only where the app's free NOAA/NWS (U.S.) data source provides coverage. Elsewhere — including Europe — the app shows a NASA global satellite precipitation estimate, which is not radar. No global radar coverage is implied.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Text("Training and entertainment use only. No paid weather subscription, API key, or account is required.")

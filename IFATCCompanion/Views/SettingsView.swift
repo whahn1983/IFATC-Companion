@@ -279,15 +279,12 @@ struct SettingsView: View {
             }
             Toggle("Show data-source labels", isOn: $settings.showWeatherDataSourceLabels)
             Toggle("Show coverage warnings", isOn: $settings.showWeatherCoverageWarnings)
-            Toggle("Reduce cellular data", isOn: $settings.reduceCellularData)
+            // The "Reduce cellular data" toggle is hidden while OPERA is disabled: its
+            // only purpose was to suppress the megabyte-scale EUMETNET OPERA composite
+            // downloads, and the remaining sources (NOAA/NASA) are small server-cropped
+            // PNGs. Restore it alongside re-enabling OPERA in PrecipitationOverlayService.
             Label {
-                Text("On cellular (or Low Data Mode), skips the background EUMETNET OPERA radar downloads that drive the automatic reroute — the only megabyte-scale weather source (NOAA/NASA are small). The radar overlay still loads when you open the Weather map. Off uses live radar on any connection.")
-                    .font(.footnote)
-            } icon: {
-                Image(systemName: "antenna.radiowaves.left.and.right").foregroundStyle(.blue)
-            }
-            Label {
-                Text("Precipitation overlay uses free sources: NOAA/NWS radar (U.S.), EUMETNET OPERA radar (Europe — the CIRRUS composite, read anonymously from the free EUMETNET Open Radar Data cache, CC BY 4.0), then a NASA global satellite estimate elsewhere (not radar). No global radar coverage is implied. Simulation only — not for real-world aviation. No paid subscription, API key, or account required.")
+                Text("Precipitation overlay uses free sources: NOAA/NWS radar (U.S.), then a NASA global satellite estimate everywhere else — including Europe — which is not radar. No global radar coverage is implied. Simulation only — not for real-world aviation. No paid subscription, API key, or account required.")
                     .font(.footnote)
             } icon: {
                 Image(systemName: "cloud.rain").foregroundStyle(.blue)

@@ -164,7 +164,10 @@ enum OPERACompositeRenderer {
                                   bytesPerRow: bytesPerRow, space: colorSpace,
                                   bitmapInfo: bitmapInfo),
               let raw = ctx.data else { return nil }
-        ctx.interpolationQuality = .low
+        // Nearest-neighbor: the composite is a *classified* raster with sentinel
+        // no-data/undetect values, so linear interpolation would average sentinels
+        // into data and fabricate reflectivity at every no-data boundary.
+        ctx.interpolationQuality = .none
         ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
 
         let buffer = raw.bindMemory(to: UInt8.self, capacity: bytesPerRow * h)
@@ -176,6 +179,58 @@ enum OPERACompositeRenderer {
                 let i = bufferRow * bytesPerRow + col * bytesPerPixel
                 out[row * w + col] = classify(r: buffer[i], g: buffer[i + 1],
                                               b: buffer[i + 2], a: buffer[i + 3])
+            }
+        }
+        return denoise(OPERARaster(width: w, height: h, intensity: out))
+    }
+
+    // MARK: Denoise (clutter / speckle suppression)
+
+    /// Suppress isolated speckle in a classified raster: a classified cell survives
+    /// only if it belongs to an 8-connected cluster of at least `minClusterCells`
+    /// classified cells. The raw OPERA *maximum-reflectivity* composite carries
+    /// substantial non-meteorological echo — ground/sea clutter, anomalous
+    /// propagation, interference "spokes", bioscatter, and coverage-edge artifacts —
+    /// that the public *rendered* products quality-control away. Without this the
+    /// overlay paints every clutter pixel as precipitation, speckling clear ocean
+    /// (visible as scattered dots over the sea where the reference composite is
+    /// empty). This is the display/sampling counterpart to `RadarImageSampler.cells`'
+    /// `minCells` cluster filter, applied once at full raster resolution so both the
+    /// map overlay and the route-corridor sampler consume clutter-suppressed data.
+    /// Pure; safe to unit-test.
+    static func denoise(_ raster: OPERARaster, minClusterCells: Int = 6) -> OPERARaster {
+        let w = raster.width, h = raster.height
+        guard w > 0, h > 0, minClusterCells > 1 else { return raster }
+        let source = raster.intensity
+        var out = source
+        var visited = [Bool](repeating: false, count: w * h)
+        let neighbors = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
+        var stack: [Int] = []
+
+        for start in 0..<(w * h) where source[start] != nil && !visited[start] {
+            visited[start] = true
+            stack.removeAll(keepingCapacity: true)
+            stack.append(start)
+            // Only the cells of a *small* cluster need erasing, so cap the recorded
+            // list at the threshold — large (real) clusters stop growing it early.
+            var clusterCells = [start]
+            var count = 1
+            while let idx = stack.popLast() {
+                let row = idx / w, col = idx % w
+                for (dr, dc) in neighbors {
+                    let nr = row + dr, nc = col + dc
+                    guard nr >= 0, nr < h, nc >= 0, nc < w else { continue }
+                    let n = nr * w + nc
+                    if source[n] != nil && !visited[n] {
+                        visited[n] = true
+                        stack.append(n)
+                        count += 1
+                        if clusterCells.count < minClusterCells { clusterCells.append(n) }
+                    }
+                }
+            }
+            if count < minClusterCells {
+                for idx in clusterCells { out[idx] = nil }
             }
         }
         return OPERARaster(width: w, height: h, intensity: out)

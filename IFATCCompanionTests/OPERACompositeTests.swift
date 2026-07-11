@@ -191,4 +191,42 @@ final class OPERACompositeRendererTests: XCTestCase {
             XCTAssertEqual(Array(d.prefix(4)), [0x89, 0x50, 0x4E, 0x47])
         }
     }
+
+    func testDenoiseRemovesSpeckleAndKeepsCoherentClusters() {
+        let w = 10, h = 10
+        var cells = [WeatherIntensity?](repeating: nil, count: w * h)
+        // Isolated single-pixel speckle (raw-composite clutter) → should be removed.
+        cells[1 * w + 1] = .extreme
+        // A tiny 2-pixel cluster below the threshold → also removed.
+        cells[1 * w + 5] = .heavy
+        cells[1 * w + 6] = .heavy
+        // A coherent 3×3 block (9 cells ≥ 6) → real precipitation, kept intact.
+        for r in 5...7 { for c in 5...7 { cells[r * w + c] = .moderate } }
+
+        let cleaned = OPERACompositeRenderer.denoise(
+            OPERARaster(width: w, height: h, intensity: cells), minClusterCells: 6)
+        XCTAssertNil(cleaned.intensity[1 * w + 1])   // isolated speckle gone
+        XCTAssertNil(cleaned.intensity[1 * w + 5])   // 2-px cluster gone
+        XCTAssertNil(cleaned.intensity[1 * w + 6])
+        for r in 5...7 { for c in 5...7 {
+            XCTAssertEqual(cleaned.intensity[r * w + c], .moderate)   // coherent block kept
+        } }
+    }
+
+    func testDenoiseTreatsDiagonalNeighborsAsConnected() {
+        let w = 8, h = 8
+        // Six cells connected only diagonally still form one 8-connected cluster → kept.
+        var big = [WeatherIntensity?](repeating: nil, count: w * h)
+        for i in 0..<6 { big[i * w + i] = .heavy }
+        let kept = OPERACompositeRenderer.denoise(
+            OPERARaster(width: w, height: h, intensity: big), minClusterCells: 6)
+        for i in 0..<6 { XCTAssertEqual(kept.intensity[i * w + i], .heavy) }
+
+        // A diagonal run of only 3 is below the threshold → removed.
+        var small = [WeatherIntensity?](repeating: nil, count: w * h)
+        for i in 0..<3 { small[i * w + i] = .heavy }
+        let removed = OPERACompositeRenderer.denoise(
+            OPERARaster(width: w, height: h, intensity: small), minClusterCells: 6)
+        for i in 0..<3 { XCTAssertNil(removed.intensity[i * w + i]) }
+    }
 }
