@@ -584,6 +584,19 @@ final class WeatherDeviationFlowTests: XCTestCase {
         }
     }
 
+    /// Mock mode seeds several storm systems down the route, and the strategic preview
+    /// scans the whole route (past clear gaps) to draw a line for each — visible from the
+    /// departure gate, with no telemetry yet, so scenarios can be eyeballed before flying.
+    func testMockModeSeedsMultipleSystemsVisibleFromTheGate() async {
+        let model = makeModel()
+        await model.refreshWeather()   // mock loads its sample storm systems + recomputes
+        XCTAssertGreaterThanOrEqual(model.radarOverlay.mockCells.count, 3,
+                                    "mock mode seeds several storm systems along the route")
+        XCTAssertNil(model.aircraftState.coordinate, "no telemetry yet — still at the gate")
+        XCTAssertGreaterThanOrEqual(model.weatherDeviationPreviews.count, 2,
+                                    "systems spread down the route each preview from the gate")
+    }
+
     /// Once a system is being worked (drawn solid), the preview lines are the systems
     /// *beyond* it — the solid one is not duplicated as a faint line.
     func testPreviewExcludesTheSystemDrawnSolid() async {

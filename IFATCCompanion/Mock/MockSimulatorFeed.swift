@@ -171,11 +171,16 @@ final class MockSimulatorFeed: ObservableObject {
         ]
     }
 
-    /// A deterministic mock precipitation cell that crosses the filed route about
-    /// 40 NM ahead of the cruise position, so the weather-deviation demo has a
-    /// conflict to work. Heavy precipitation, moving east at 20 knots. Symmetric
-    /// about the course line so it reads as "twelve o'clock" and either side is a
-    /// valid bypass.
+    /// Deterministic mock precipitation systems along the filed route, so the deviation
+    /// demo has a conflict to work **and** the strategic preview has several distinct
+    /// systems to draw. Three systems, all centered on (or crossing) the course line:
+    ///   • a moderate system early on (~20% along the route),
+    ///   • the primary heavy system ~40 NM ahead of the cruise point — the one the demo
+    ///     works as an active deviation (unchanged, so the mock flow stays stable), and
+    ///   • a heavy system near the arrival (~82% along the route).
+    /// They're spaced well over a single lookahead apart, so each is a separate deviation
+    /// (a distinct preview line) rather than one merged reroute — and at cruise only the
+    /// primary is in range, so the worked-deviation flow is unaffected. Moving east.
     func sampleRadarCells() -> [RadarCell] {
         let course = Geo.bearing(from: route.depCoord, to: route.destCoord)
         func along(_ fraction: Double) -> CLLocationCoordinate2D {
@@ -183,17 +188,23 @@ final class MockSimulatorFeed: ObservableObject {
                 latitude: route.depCoord.latitude + (route.destCoord.latitude - route.depCoord.latitude) * fraction,
                 longitude: route.depCoord.longitude + (route.destCoord.longitude - route.depCoord.longitude) * fraction)
         }
-        let cruisePoint = along(0.50)
-        let center = Geo.destination(from: cruisePoint, bearingDegrees: course, distanceNM: 40)
-        let half = 0.55
-        let polygon = [
-            CLLocationCoordinate2D(latitude: center.latitude - half, longitude: center.longitude - half),
-            CLLocationCoordinate2D(latitude: center.latitude - half, longitude: center.longitude + half),
-            CLLocationCoordinate2D(latitude: center.latitude + half, longitude: center.longitude + half),
-            CLLocationCoordinate2D(latitude: center.latitude + half, longitude: center.longitude - half)
+        func box(around c: CLLocationCoordinate2D, half: Double) -> [CLLocationCoordinate2D] {
+            [CLLocationCoordinate2D(latitude: c.latitude - half, longitude: c.longitude - half),
+             CLLocationCoordinate2D(latitude: c.latitude - half, longitude: c.longitude + half),
+             CLLocationCoordinate2D(latitude: c.latitude + half, longitude: c.longitude + half),
+             CLLocationCoordinate2D(latitude: c.latitude + half, longitude: c.longitude - half)]
+        }
+        // Primary system — unchanged from the original single-cell demo (~40 NM ahead of
+        // the cruise point, heavy, wide, symmetric about course).
+        let primary = Geo.destination(from: along(0.50), bearingDegrees: course, distanceNM: 40)
+        return [
+            RadarCell(polygon: box(around: along(0.20), half: 0.35), intensity: .moderate,
+                      movementDirectionDegrees: 90, movementSpeedKnots: 15),
+            RadarCell(polygon: box(around: primary, half: 0.55), intensity: .heavy,
+                      movementDirectionDegrees: 90, movementSpeedKnots: 20),
+            RadarCell(polygon: box(around: along(0.82), half: 0.4), intensity: .heavy,
+                      movementDirectionDegrees: 90, movementSpeedKnots: 25),
         ]
-        return [RadarCell(polygon: polygon, intensity: .heavy,
-                          movementDirectionDegrees: 90, movementSpeedKnots: 20)]
     }
 
     // MARK: - Routes

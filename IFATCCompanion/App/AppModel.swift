@@ -271,6 +271,11 @@ final class AppModel: ObservableObject {
     /// The most weather systems to draw faint preview mint lines for down the route, so
     /// the strategic preview can never run away (one detection per system).
     private let maxWeatherPreviewSystems = 6
+    /// How far (NM) the strategic preview jumps down the route when a detection window
+    /// turns up no system, so it scans the whole route past clear gaps rather than
+    /// stopping at the first one. A little under the detector's lookahead so windows
+    /// overlap and a system straddling a boundary isn't skipped.
+    private let previewScanStepNM: Double = 150
     /// Timestamp of the last aviation-weather refresh, for the diagnostics panel.
     private var lastAviationWeatherUpdate: Date?
 
@@ -2837,22 +2842,53 @@ final class AppModel: ObservableObject {
         // are the UPCOMING systems rather than a duplicate of the one being worked.
         var startPoint = weatherDeviationLine?.last ?? origin
         var lines: [[CLLocationCoordinate2D]] = []
-        for _ in 0..<maxWeatherPreviewSystems {
+        // Detection only reaches one lookahead ahead, so walk the whole route in hops:
+        // when a hop finds a system, append it and jump past its rejoin; when a hop is
+        // clear, scan on down the route rather than stopping — otherwise a system beyond
+        // the first clear gap (e.g. one seen from the gate before a long clear leg) would
+        // never preview. Bounded so it can't run away on a long route.
+        var steps = 0
+        while lines.count < maxWeatherPreviewSystems, steps < maxWeatherPreviewSystems * 4 {
+            steps += 1
             let ahead = upcomingRouteCoordinates(from: startPoint)
             guard !ahead.isEmpty else { break }
             let course = ahead.first { Geo.distanceNM(from: startPoint, to: $0) > 1 }
                 .map { Geo.bearing(from: startPoint, to: $0) } ?? currentCourse(from: startPoint)
-            guard let conflict = conflictDetector.detectConflict(
+            if let conflict = conflictDetector.detectConflict(
                     position: startPoint, course: course, groundspeedKnots: aircraftState.groundSpeed,
                     phase: .cruise, hazards: weatherHazards, waypoints: flightPlan.waypoints,
                     routeAhead: ahead, rejoinCap: cap),
-                  conflict.deviationPath.count >= 2,
-                  let end = conflict.deviationPath.last, end.isValid,
-                  Geo.distanceNM(from: startPoint, to: end) > 1 else { break }
-            lines.append(conflict.deviationPath)
-            startPoint = end   // walk on past this system's rejoin; its cells are now behind
+               conflict.deviationPath.count >= 2,
+               let end = conflict.deviationPath.last, end.isValid,
+               Geo.distanceNM(from: startPoint, to: end) > 1 {
+                lines.append(conflict.deviationPath)
+                startPoint = end   // jump past this system's rejoin; its cells are now behind
+            } else if let next = pointAlongRoute(from: startPoint, through: ahead, byNM: previewScanStepNM),
+                      Geo.distanceNM(from: startPoint, to: next) > 1 {
+                startPoint = next  // clear window — scan further down the route
+            } else {
+                break              // reached the end of the route
+            }
         }
         return lines
+    }
+
+    /// The point `target` NM along the route polyline (`start` then `ahead`) from
+    /// `start`, or nil when the route ends before reaching it.
+    private func pointAlongRoute(from start: CLLocationCoordinate2D,
+                                 through ahead: [CLLocationCoordinate2D], byNM target: Double) -> CLLocationCoordinate2D? {
+        var prev = start
+        var accumulated = 0.0
+        for c in ahead where c.isValid {
+            let seg = Geo.distanceNM(from: prev, to: c)
+            if accumulated + seg >= target {
+                let remaining = target - accumulated
+                return Geo.destination(from: prev, bearingDegrees: Geo.bearing(from: prev, to: c), distanceNM: remaining)
+            }
+            accumulated += seg
+            prev = c
+        }
+        return nil
     }
 
     /// The rejoin fix marker for the mint line: its name and coordinate. Uses the

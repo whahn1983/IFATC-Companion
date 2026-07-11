@@ -491,11 +491,16 @@ the cap isn't disk-cached at all — it's just streamed, decoded, and discarded)
 
 ## Mock Mode demo
 
-Mock Mode loads a deterministic precipitation cell that crosses the filed route
-~40 NM ahead of cruise. The map shows the cell, ATCView shows the advisory, and the
-pilot can request a right deviation, get an approval with a downstream rejoin fix,
-then report clear of weather and be cleared direct/own-navigation — all offline,
-with no live APIs and regardless of subscription state.
+Mock Mode loads several deterministic precipitation systems along the filed route: a
+primary heavy cell ~40 NM ahead of cruise (the one the demo works as an active
+deviation), plus a moderate system early on and a heavy system near the arrival, spaced
+well over a lookahead apart so each is a distinct deviation. The map shows the cells and
+the faint strategic-preview reroutes for every system down the route (visible from the
+gate), ATCView shows the advisory for the primary, and the pilot can request a right
+deviation, get an approval with a downstream rejoin fix, then report clear of weather
+and be cleared direct/own-navigation — all offline, with no live APIs and regardless of
+subscription state. Because the extra systems are spaced beyond the cruise lookahead,
+only the primary is in range at cruise, so the worked-deviation flow is unchanged.
 
 ## Future-only discovery task (do not implement without verification)
 
