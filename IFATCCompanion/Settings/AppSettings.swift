@@ -153,6 +153,12 @@ final class AppSettings: ObservableObject {
     /// On a cellular / expensive connection, skip the background EUMETNET OPERA radar
     /// composite downloads (the megabyte-scale source that drives the auto reroute).
     /// The overlay still loads when you open the Weather map. On by default.
+    ///
+    /// **Currently dormant and hidden from Settings:** OPERA's ORD render is disabled
+    /// (see `PrecipitationOverlayService`), so there are no megabyte-scale downloads to
+    /// throttle — the remaining NOAA/NASA sources are small. The property and its
+    /// network-path plumbing are kept so re-enabling OPERA restores the throttle and
+    /// its toggle together.
     @Published var reduceCellularData: Bool { didSet { save(reduceCellularData, .reduceCellularData) } }
 
     // Diagnostics / dev

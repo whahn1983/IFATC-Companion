@@ -666,6 +666,8 @@ final class AppModel: ObservableObject {
 
     /// Watches the network path so the "Reduce cellular data" setting can suppress the
     /// megabyte-scale OPERA composite downloads on a cellular / expensive connection.
+    /// Dormant while OPERA is disabled (no megabyte downloads to throttle), but kept
+    /// running so `isExpensiveNetwork` is ready when OPERA is re-enabled.
     private let networkMonitor = NWPathMonitor()
     /// True on a cellular / personal-hotspot / Low-Data-Mode connection.
     private(set) var isExpensiveNetwork = false
@@ -2580,6 +2582,8 @@ final class AppModel: ObservableObject {
         // triggers. The map overlay still loads when the user opens the Weather view
         // (user-initiated); NOAA/NASA (small server-cropped PNGs) keep sampling. Keep
         // the last good cells so the reroute doesn't blink out.
+        // Dormant while OPERA is disabled: OPERA is never the selected provider, so this
+        // guard never trips today — kept for when OPERA (and its toggle) are re-enabled.
         if settings.reduceCellularData, isExpensiveNetwork, provider.id == "eumetnet-opera-radar" {
             return
         }
