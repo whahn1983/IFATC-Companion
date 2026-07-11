@@ -56,14 +56,24 @@ struct RouteWeatherConflictDetector {
         /// reroute still appears a little before the "contact ATC" banner, but never at
         /// the far edge of the enroute lookahead where it reads as a runaway line.
         var mintLineDrawNM: Double = 75
-        /// Half-width of the route corridor around the course line (NM). A precipitation
-        /// cell only counts as a conflict (draws a mint line / can raise the advisory)
-        /// when it is genuinely **on the flight path** — within this half-width of the
-        /// course centerline, or crossed by it. Kept tight so weather merely *near* the
-        /// route (off to one side) no longer triggers a deviation; a cell that actually
-        /// straddles the course is still caught by the centerline-through-polygon test
-        /// regardless of this value.
+        /// Half-width of the route corridor around the course line (NM) for **moderate**
+        /// precipitation. A cell only counts as a conflict (draws a mint line / can raise the
+        /// advisory) when it is genuinely **on the flight path** — within this half-width of the
+        /// course centerline, or crossed by it. Kept tight for moderate returns so weather merely
+        /// *near* the route (off to one side) doesn't trigger a deviation; a cell that actually
+        /// straddles the course is still caught by the centerline-through-polygon test regardless
+        /// of this value. Heavier returns widen it (below), since the reroute rounds them by a
+        /// wider berth — so a red core skirting the route is caught, not reported "no conflict".
         var corridorHalfWidthNM: Double = 6
+        /// Corridor half-width for **heavy** (orange) precipitation (NM). Wider than moderate:
+        /// a heavy cell the route passes close to is worth flagging even when its edge sits a
+        /// little off the centerline.
+        var corridorHalfWidthHeavyNM: Double = 12
+        /// Corridor half-width for **extreme** (red) precipitation (NM). Widest, matching the
+        /// wide berth the reroute keeps from a convective core (~20 NM, FAA AC 00-24C) — a red
+        /// core skirting the route is caught here instead of slipping past the tight moderate
+        /// corridor and reporting "no conflict".
+        var corridorHalfWidthExtremeNM: Double = 18
         /// Minutes of travel used for the time-based lookahead fallback.
         var timeLookaheadMinutes: ClosedRange<Double> = 20...45
         /// Light precipitation only prompts when this close and near-dead-ahead.
@@ -279,7 +289,7 @@ struct RouteWeatherConflictDetector {
                 if along > lookahead { break }
                 let p = interpolate(a, b, t)
                 for hazard in hazards {
-                    let half = config.corridorHalfWidthNM + pointRadiusBuffer(hazard)
+                    let half = corridorHalfWidth(for: hazard.intensity) + pointRadiusBuffer(hazard)
                     if distanceHazardToPointNM(hazard, p) <= half, along < bestAlong {
                         bestAlong = along
                         bestPoint = p
@@ -335,7 +345,7 @@ struct RouteWeatherConflictDetector {
                 let p = interpolate(a, b, t)
                 var inWeather = false
                 for hazard in hazards {
-                    let half = config.corridorHalfWidthNM + pointRadiusBuffer(hazard)
+                    let half = corridorHalfWidth(for: hazard.intensity) + pointRadiusBuffer(hazard)
                     if distanceHazardToPointNM(hazard, p) <= half { inWeather = true; break }
                 }
                 if inWeather {
@@ -838,6 +848,19 @@ struct RouteWeatherConflictDetector {
         intensity == .extreme ? config.severeBerthNM : config.pathClearanceNM
     }
 
+    /// The corridor half-width (NM) for a cell of the given intensity — how far off the
+    /// course centerline the cell may sit and still count as **on the flight path**. Scaled
+    /// by intensity (moderate tight, heavy wider, extreme widest) so a red/orange core the
+    /// route skirts is flagged rather than slipping past the tight moderate corridor, while
+    /// moderate precip off to the side still doesn't trigger a deviation.
+    private func corridorHalfWidth(for intensity: WeatherIntensity) -> Double {
+        switch intensity {
+        case .extreme: return config.corridorHalfWidthExtremeNM
+        case .heavy:   return config.corridorHalfWidthHeavyNM
+        default:       return config.corridorHalfWidthNM
+        }
+    }
+
     /// Whether a deviation path stays clear of every cell along its whole length,
     /// each by that cell's own required clearance — the guard that stops a reroute
     /// from threading one storm and cutting into another, and that keeps a wide berth
@@ -1303,8 +1326,10 @@ struct RouteWeatherConflictDetector {
         guard alongMax > -5, alongMin < lookahead + config.clusterAlongMarginNM else { return nil }
 
         // Corridor blocking test: a sample inside the corridor, or (for a wide cell
-        // whose vertices all straddle it) the route line passing through the polygon.
-        let corridorHalf = config.corridorHalfWidthNM + radiusBuffer
+        // whose vertices all straddle it) the route line passing through the polygon. The
+        // corridor half-width scales with intensity, so a red/orange core skirting the route
+        // is caught while moderate precip off to the side is not.
+        let corridorHalf = corridorHalfWidth(for: hazard.intensity) + radiusBuffer
         let inCorridor = samples.filter { $0.along >= -5 && $0.along <= lookahead && abs($0.cross) <= corridorHalf }
         let lineThrough = poly.map { routeLinePasses(through: $0, from: position, to: corridorEnd) } ?? false
         let blocks = !inCorridor.isEmpty || lineThrough

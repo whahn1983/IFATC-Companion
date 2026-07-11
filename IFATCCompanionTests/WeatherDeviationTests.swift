@@ -465,6 +465,29 @@ final class WeatherDeviationTests: XCTestCase {
         XCTAssertTrue(conflict.shouldPrompt)
     }
 
+    /// The detection corridor scales with intensity: a red/orange core skirting the route
+    /// (edge a little off the centerline, not crossed by it) is flagged, while moderate
+    /// precip at the same offset still isn't — so a live "clear hazard on the route, but
+    /// diagnostics say no conflict" for an intense core near the path is caught, without
+    /// re-opening the moderate off-to-the-side false positive.
+    func testDetectionCorridorScalesWithIntensity() {
+        func conflict(at crossNM: Double, _ intensity: WeatherIntensity) -> RouteWeatherConflict? {
+            // A compact cell whose nearest edge sits `crossNM - 6` NM off the centerline,
+            // never crossing it (so only the corridor half-width decides the outcome).
+            let poly = cell(alongNM: 45, crossNM: crossNM, halfCross: 6, from: usPosition)
+            return detector.detectConflict(position: usPosition, course: course,
+                                           groundspeedKnots: 450, phase: .cruise,
+                                           hazards: [radarHazard(poly, intensity: intensity)], waypoints: [])
+        }
+        // Edge ~10 NM off course: moderate ignores it (±6), heavy and extreme catch it.
+        XCTAssertNil(conflict(at: 16, .moderate), "moderate precip 10 NM off the path stays off-path")
+        XCTAssertNotNil(conflict(at: 16, .heavy), "a heavy core 10 NM off the path is now flagged")
+        XCTAssertNotNil(conflict(at: 16, .extreme), "a red core 10 NM off the path is now flagged")
+        // Edge ~14 NM off course: past the heavy corridor but within the extreme one.
+        XCTAssertNil(conflict(at: 20, .heavy), "a heavy core 14 NM off the path is beyond its corridor")
+        XCTAssertNotNil(conflict(at: 20, .extreme), "a red core 14 NM off the path is within its wide corridor")
+    }
+
     // MARK: - Prefer the parallel hug over a single-apex triangle
 
     /// A cell biased to one side of course can be dodged either by a single-apex

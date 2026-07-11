@@ -278,11 +278,16 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
    clear gap** between adjacent cells — offering the reachable gaps and going around
    either end of a solid line. This mirrors how a controller vectors a pilot between
    cells, whether they appear just after takeoff, enroute, or on approach.
-   - **Only for weather *on* the flight path.** A cell counts as a conflict only when it
-     is genuinely on the route — within the ±6 NM corridor half-width of the course
-     centerline, or crossed by it. Weather merely *near* the route (off to one side) no
-     longer draws a mint line or raises the banner: "nearby but not on top of the route"
-     → nothing.
+   - **Only for weather *on* the flight path — with an intensity-scaled corridor.** A cell
+     counts as a conflict only when it is on the route — within the corridor half-width of
+     the course centerline, or crossed by it. The half-width **scales with intensity**, so it
+     matches how much room the reroute keeps from each: **moderate ±6 NM** (kept tight — a
+     yellow cell off to one side isn't worth a deviation), **heavy ±12 NM**, and **extreme
+     ±18 NM** (a red core the route skirts is rounded by a ~20 NM berth anyway, so flagging it
+     from that far off is what stops a live "clear red hazard on the route, but diagnostics say
+     no conflict"). A cell that actually straddles the centerline is caught regardless of its
+     intensity. Weather merely *near* the route stays off-path: a **moderate** cell off to one
+     side still draws nothing — only the tight moderate corridor governs it.
    - **Mint line a little ahead, banner only close in — far weather monitored.** Three
      ranges, from close to far:
      - **Tactical (`deviationTriggerNM`, ~60 NM).** The near edge is close enough to work
@@ -303,8 +308,9 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
 
      The conflict carries `withinTacticalRange` and `withinDrawRange`; Diagnostics shows a
      conflict outside the tactical range as "… — monitoring" rather than "No conflict".
-   - **The corridor follows the route.** The detection band is only ±6 NM wide, so a
-     straight corridor aimed at the *bearing to the next fix* misses weather that sits
+   - **The corridor follows the route.** The detection band is narrow (±6–18 NM by
+     intensity), so a straight corridor aimed at the *bearing to the next fix* misses weather
+     that sits
      on the route **after a turn** — the aircraft's wide sampling window still finds
      the cells (so Diagnostics shows hazards), but the narrow band slides past them
      and reports "no conflict". So the detector walks the **upcoming route polyline**
