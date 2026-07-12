@@ -59,6 +59,11 @@ final class FlightPlanParserTests: XCTestCase {
         // Every fix carries a coordinate, so the route can draw on the map.
         XCTAssertTrue(plan.waypoints.allSatisfy { $0.coordinate != nil })
 
+        // The departure/destination airport coordinates survive on the plan (they are
+        // not enroute waypoints), so the markers land on the real fields.
+        XCTAssertEqual(plan.departureCoordinate?.latitude ?? 0, 40.8501, accuracy: 0.0001)
+        XCTAssertEqual(plan.destinationCoordinate?.latitude ?? 0, 39.8719, accuracy: 0.0001)
+
         // The DPT/TOC/TOD display markers from the summary list never appear.
         XCTAssertFalse(names.contains("DPT"))
         XCTAssertFalse(names.contains("TOC"))
@@ -140,6 +145,60 @@ final class FlightPlanParserTests: XCTestCase {
         let plan = IFFlightPlanParser.parse(full: full, route: nil, coordinates: coords)
         XCTAssertEqual(plan?.waypoints.count, 2)
         XCTAssertTrue(plan?.waypoints.allSatisfy { $0.coordinate == nil } ?? false)
+    }
+
+    /// A flat coordinate list that carries the departure/destination airports as its
+    /// first and last entries (two more than the enroute fixes) is mapped correctly:
+    /// the endpoints land on the plan's departure/destination coordinates and the
+    /// middle coordinates onto the fixes — so the route draws to both fields, not
+    /// short of them. Regression for the "route shrunk to the enroute fixes" bug.
+    func testCoordinateListWithEndpointsMapsToAirportsAndFixes() {
+        let full = #"{ "Waypoints": ["SBGL", "KOKPI", "GAPE", "SBPS"] }"#
+        let coords = "-22.8089,-43.2438;-22.637,-42.690;-21.927,-41.470;-16.4385,-39.0810"
+        guard let plan = IFFlightPlanParser.parse(full: full, route: nil, coordinates: coords) else {
+            return XCTFail("expected a parsed plan")
+        }
+        XCTAssertEqual(plan.departure, "SBGL")
+        XCTAssertEqual(plan.destination, "SBPS")
+        XCTAssertEqual(plan.waypoints.map(\.name), ["KOKPI", "GAPE"])
+        XCTAssertEqual(plan.departureCoordinate?.latitude ?? 0, -22.8089, accuracy: 0.001)
+        XCTAssertEqual(plan.destinationCoordinate?.longitude ?? 0, -39.0810, accuracy: 0.001)
+        XCTAssertEqual(plan.waypoints.first?.coordinate?.latitude ?? 0, -22.637, accuracy: 0.001)
+        XCTAssertEqual(plan.waypoints.last?.coordinate?.longitude ?? 0, -41.470, accuracy: 0.001)
+    }
+
+    /// A southern-hemisphere detailed document keeps the departure and destination
+    /// airport coordinates on the plan (they are dropped from the enroute waypoint
+    /// list, but their position must survive so the markers land on the real field
+    /// when it is outside the built-in US airport database). Regression for the
+    /// Southern-Hemisphere map bug: SBGL→SBPS drew the destination at the last enroute
+    /// fix (VAMUR), well short of the coast, because the airport coordinate was lost.
+    func testDetailedJSONKeepsEndpointCoordinates() {
+        let json = """
+        {
+          "flightPlanItems": [
+            { "identifier": "SBGL", "children": [],
+              "location": { "Latitude": -22.808890, "Longitude": -43.243754 } },
+            { "identifier": "KOKPI", "children": [],
+              "location": { "Latitude": -22.636967, "Longitude": -42.690017 } },
+            { "identifier": "VAMUR", "children": [],
+              "location": { "Latitude": -16.815283, "Longitude": -39.658617 } },
+            { "identifier": "SBPS", "children": [],
+              "location": { "Latitude": -16.438536, "Longitude": -39.080952 } }
+          ]
+        }
+        """
+        guard let plan = IFFlightPlanParser.parse(json) else {
+            return XCTFail("expected a parsed plan")
+        }
+        XCTAssertEqual(plan.departure, "SBGL")
+        XCTAssertEqual(plan.destination, "SBPS")
+        XCTAssertEqual(plan.waypoints.map(\.name), ["KOKPI", "VAMUR"])
+        // The destination marker must resolve to SBPS on the coast, not to VAMUR.
+        XCTAssertEqual(plan.departureCoordinate?.latitude ?? 0, -22.808890, accuracy: 0.0001)
+        XCTAssertEqual(plan.departureCoordinate?.longitude ?? 0, -43.243754, accuracy: 0.0001)
+        XCTAssertEqual(plan.destinationCoordinate?.latitude ?? 0, -16.438536, accuracy: 0.0001)
+        XCTAssertEqual(plan.destinationCoordinate?.longitude ?? 0, -39.080952, accuracy: 0.0001)
     }
 
     // MARK: - Detailed `flightplan/full_info` document

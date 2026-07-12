@@ -52,6 +52,17 @@ struct FlightPlan: Equatable, Codable {
     var approachStartFixName: String = ""
     var waypoints: [Waypoint] = []
 
+    /// Coordinate Infinite Flight reports for the departure field, captured from the
+    /// flight plan itself. The built-in `AirportDatabase` only covers a handful of US
+    /// hubs, so this is how the departure marker lands on the real field for airports
+    /// outside that list (the whole world). Nil when the plan carries no located
+    /// departure endpoint.
+    var departureLatitude: Double?
+    var departureLongitude: Double?
+    /// Coordinate Infinite Flight reports for the destination field (see above).
+    var destinationLatitude: Double?
+    var destinationLongitude: Double?
+
     /// Source of truth flag — when true, fields were entered manually and should
     /// not be overwritten by Connect parsing.
     var manualOverride: Bool = false
@@ -60,6 +71,22 @@ struct FlightPlan: Equatable, Codable {
 
     var departureName: String { departure.isEmpty ? "departure" : departure }
     var destinationName: String { destination.isEmpty ? "destination" : destination }
+
+    /// The departure field's coordinate as reported by Infinite Flight, when the plan
+    /// carries one. Preferred over the first-waypoint fallback so the departure marker
+    /// sits on the actual field rather than the first enroute fix.
+    var departureCoordinate: CLLocationCoordinate2D? {
+        guard let lat = departureLatitude, let lon = departureLongitude else { return nil }
+        return CLLocationCoordinate2D(latitude: lat, longitude: lon)
+    }
+
+    /// The destination field's coordinate as reported by Infinite Flight, when the
+    /// plan carries one. Preferred over the last-waypoint fallback so the destination
+    /// marker sits on the actual field rather than the last enroute fix.
+    var destinationCoordinate: CLLocationCoordinate2D? {
+        guard let lat = destinationLatitude, let lon = destinationLongitude else { return nil }
+        return CLLocationCoordinate2D(latitude: lat, longitude: lon)
+    }
 
     /// Coordinate of the first located enroute fix, used as a route-start fallback
     /// when the departure airport isn't in the built-in coordinate database.

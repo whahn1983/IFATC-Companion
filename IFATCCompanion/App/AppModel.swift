@@ -1603,6 +1603,31 @@ final class AppModel: ObservableObject {
         fill(&plan.star, live.star)
         fill(&plan.approach, live.approach)
         if (!manual || plan.waypoints.isEmpty), !live.waypoints.isEmpty { plan.waypoints = live.waypoints }
+        // Carry the endpoint coordinates Infinite Flight reports for the fields (they
+        // place the departure/destination markers on the real field even when it's
+        // outside the built-in coordinate database). Only sync when the endpoint ICAO
+        // matches the live plan — so a manual override to a different field never
+        // inherits the wrong position. Prefer a live value; keep a previously captured
+        // one when a live read momentarily lacks it (so the marker doesn't blink to the
+        // enroute-fix fallback), but clear it when the field itself changed.
+        if plan.departure == live.departure {
+            if let lat = live.departureLatitude, let lon = live.departureLongitude {
+                plan.departureLatitude = lat
+                plan.departureLongitude = lon
+            } else if plan.departure != before.0 {
+                plan.departureLatitude = nil
+                plan.departureLongitude = nil
+            }
+        }
+        if plan.destination == live.destination {
+            if let lat = live.destinationLatitude, let lon = live.destinationLongitude {
+                plan.destinationLatitude = lat
+                plan.destinationLongitude = lon
+            } else if plan.destination != before.1 {
+                plan.destinationLatitude = nil
+                plan.destinationLongitude = nil
+            }
+        }
         // Cruise altitude (from the plan's TOC / highest planned level).
         if (!manual || plan.cruiseAltitude <= 0), live.cruiseAltitude > 0 {
             plan.cruiseAltitude = live.cruiseAltitude
@@ -1795,6 +1820,7 @@ final class AppModel: ObservableObject {
         // Initial departure heading: bearing from the field toward the first fix,
         // or the destination when no located fixes are available.
         let depCoord = airports.coordinate(for: flightPlan.departure)
+            ?? flightPlan.departureCoordinate
         let firstWaypoint = flightPlan.waypoints.first
         let firstLocated = flightPlan.waypoints.first { $0.coordinate != nil }
         // The "resume own navigation, direct …" fix in the departure climb: once
@@ -1818,6 +1844,7 @@ final class AppModel: ObservableObject {
         }.first
         let intercept = (sidFirstFix ?? firstLocated)?.coordinate
             ?? airports.coordinate(for: flightPlan.destination)
+            ?? flightPlan.destinationCoordinate
         let depHeading: Int
         if let depCoord, let intercept {
             depHeading = Int(Geo.bearing(from: depCoord, to: intercept).rounded())
@@ -2174,7 +2201,8 @@ final class AppModel: ObservableObject {
         let fallback = ApproachIntercept.normalizedHeading(aircraftState.heading ?? 270)
         guard let finalCourse = RunwayDatabase.heading(forRunway: runway),
               let aircraft = aircraftState.coordinate, aircraft.isValid,
-              let airport = airports.coordinate(for: flightPlan.destination), airport.isValid else {
+              let airport = airports.coordinate(for: flightPlan.destination)
+                ?? flightPlan.destinationCoordinate, airport.isValid else {
             return fallback
         }
         return ApproachIntercept.heading(finalCourse: finalCourse,
@@ -2355,8 +2383,11 @@ final class AppModel: ObservableObject {
     /// bounded to the commercial cruise band. Nil when nothing supports one.
     private func computeSmootherAltitude(referenceAltFt: Int) -> SmootherAltitude? {
         let liveAircraft = aircraftState.coordinate
-        guard let pos = liveAircraft ?? airports.coordinate(for: flightPlan.departure) else { return nil }
-        let end = airports.coordinate(for: flightPlan.destination) ?? flightPlan.nextWaypoint(from: pos)?.coordinate
+        guard let pos = liveAircraft ?? airports.coordinate(for: flightPlan.departure)
+                ?? flightPlan.departureCoordinate else { return nil }
+        let end = airports.coordinate(for: flightPlan.destination)
+            ?? flightPlan.destinationCoordinate
+            ?? flightPlan.nextWaypoint(from: pos)?.coordinate
         // All route-corridor PIREPs regardless of altitude — the ±band filter would hide
         // the very levels a smoother-ride suggestion is drawn from. This path reads only
         // each item's altitude/severity, so no `routeFixes` labeling is needed.
@@ -2533,12 +2564,14 @@ final class AppModel: ObservableObject {
         // departure only so PIREPs can still be filtered to the route corridor — in that
         // case the distance would be origin-relative, so it is flagged and not shown.
         let liveAircraft = aircraftState.coordinate
-        guard let pos = liveAircraft ?? airports.coordinate(for: flightPlan.departure) else {
+        guard let pos = liveAircraft ?? airports.coordinate(for: flightPlan.departure)
+                ?? flightPlan.departureCoordinate else {
             rideReportItems = []
             routeSigmets = []
             return
         }
         let end = airports.coordinate(for: flightPlan.destination)
+            ?? flightPlan.destinationCoordinate
             ?? flightPlan.nextWaypoint(from: pos)?.coordinate
         let liveAlt = aircraftState.altitudeMSL ?? Double(flightPlan.cruiseAltitude)
         // Ride reports describe the cruise portion of the route ahead, so evaluate a
@@ -2630,8 +2663,8 @@ final class AppModel: ObservableObject {
     /// NOAA → OPERA → NASA order. Pure/cheap; safe to call every tick.
     func recomputeWeatherHazards() {
         let positions = [aircraftState.coordinate,
-                         airports.coordinate(for: flightPlan.departure),
-                         airports.coordinate(for: flightPlan.destination)].compactMap { $0 }
+                         airports.coordinate(for: flightPlan.departure) ?? flightPlan.departureCoordinate,
+                         airports.coordinate(for: flightPlan.destination) ?? flightPlan.destinationCoordinate].compactMap { $0 }
         let enabled = settings.noaaRadarOverlay == .autoWhereAvailable
         let provider = enabled ? precipService.selectedProvider(for: positions) : nil
         let coverage = enabled && provider != nil
@@ -2782,6 +2815,7 @@ final class AppModel: ObservableObject {
             return
         }
         guard let origin = airports.coordinate(for: flightPlan.departure)
+                ?? flightPlan.departureCoordinate
                 ?? flightPlan.firstWaypointCoordinate
                 ?? aircraftState.coordinate, origin.isValid else {
             lockedDeviations = []
@@ -2909,10 +2943,10 @@ final class AppModel: ObservableObject {
     /// The full filed-route polyline: departure, located enroute fixes, destination.
     private func fullRoutePolyline() -> [CLLocationCoordinate2D] {
         var full: [CLLocationCoordinate2D] = []
-        if let dep = airports.coordinate(for: flightPlan.departure) ?? flightPlan.firstWaypointCoordinate,
+        if let dep = airports.coordinate(for: flightPlan.departure) ?? flightPlan.departureCoordinate ?? flightPlan.firstWaypointCoordinate,
            dep.isValid { full.append(dep) }
         full.append(contentsOf: flightPlan.waypoints.compactMap { $0.coordinate }.filter { $0.isValid })
-        if let dest = airports.coordinate(for: flightPlan.destination) ?? flightPlan.lastWaypointCoordinate,
+        if let dest = airports.coordinate(for: flightPlan.destination) ?? flightPlan.destinationCoordinate ?? flightPlan.lastWaypointCoordinate,
            dest.isValid { full.append(dest) }
         return full
     }
@@ -3156,10 +3190,10 @@ final class AppModel: ObservableObject {
         // The full filed route polyline, in order: departure, located enroute fixes,
         // destination — exactly the line drawn on the map.
         var full: [CLLocationCoordinate2D] = []
-        if let dep = airports.coordinate(for: flightPlan.departure) ?? flightPlan.firstWaypointCoordinate,
+        if let dep = airports.coordinate(for: flightPlan.departure) ?? flightPlan.departureCoordinate ?? flightPlan.firstWaypointCoordinate,
            dep.isValid { full.append(dep) }
         full.append(contentsOf: flightPlan.waypoints.compactMap { $0.coordinate }.filter { $0.isValid })
-        if let dest = airports.coordinate(for: flightPlan.destination) ?? flightPlan.lastWaypointCoordinate,
+        if let dest = airports.coordinate(for: flightPlan.destination) ?? flightPlan.destinationCoordinate ?? flightPlan.lastWaypointCoordinate,
            dest.isValid { full.append(dest) }
         guard full.count >= 2 else { return full }
 
@@ -3203,11 +3237,11 @@ final class AppModel: ObservableObject {
     /// The course to fly for the corridor: bearing to the next un-passed fix, else
     /// to the destination, else the aircraft heading.
     private func currentCourse(from pos: CLLocationCoordinate2D) -> Double {
-        let origin = airports.coordinate(for: flightPlan.departure)
+        let origin = airports.coordinate(for: flightPlan.departure) ?? flightPlan.departureCoordinate
         if let next = flightPlan.nextUnpassedWaypoint(from: pos, origin: origin)?.coordinate {
             return Geo.bearing(from: pos, to: next)
         }
-        if let dest = airports.coordinate(for: flightPlan.destination) ?? flightPlan.lastWaypointCoordinate {
+        if let dest = airports.coordinate(for: flightPlan.destination) ?? flightPlan.destinationCoordinate ?? flightPlan.lastWaypointCoordinate {
             return Geo.bearing(from: pos, to: dest)
         }
         return aircraftState.heading ?? 0
@@ -3706,7 +3740,8 @@ final class AppModel: ObservableObject {
         if let approachFix = flightPlan.approachStartCoordinate, approachFix.isValid {
             return approachFix
         }
-        if let dest = airports.coordinate(for: flightPlan.destination), dest.isValid {
+        if let dest = airports.coordinate(for: flightPlan.destination) ?? flightPlan.destinationCoordinate,
+           dest.isValid {
             return dest
         }
         return flightPlan.lastWaypointCoordinate

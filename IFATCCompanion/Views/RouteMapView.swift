@@ -15,15 +15,20 @@ struct RouteMapView: View {
 
     private let airports = AirportDatabase.shared
 
-    // Fall back to the first/last located flight-plan fix when the airport itself
-    // isn't in the built-in coordinate database, so the route still draws for
-    // fields outside the small built-in list.
+    // Resolve the airport marker to, in order: the built-in coordinate database, the
+    // coordinate Infinite Flight reports for the field in the flight plan (covers the
+    // whole world), and finally the first/last located enroute fix. The middle step is
+    // what keeps the departure/destination markers on the real field for airports
+    // outside the small built-in US list — without it they snapped to the first/last
+    // enroute fix, drawing the route short of both ends ("shrunk").
     private var depCoord: CLLocationCoordinate2D? {
         airports.coordinate(for: model.flightPlan.departure)
+            ?? model.flightPlan.departureCoordinate
             ?? model.flightPlan.firstWaypointCoordinate
     }
     private var destCoord: CLLocationCoordinate2D? {
         airports.coordinate(for: model.flightPlan.destination)
+            ?? model.flightPlan.destinationCoordinate
             ?? model.flightPlan.lastWaypointCoordinate
     }
 
