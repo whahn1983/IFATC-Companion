@@ -48,6 +48,53 @@ final class WeatherTests: XCTestCase {
         XCTAssertGreaterThan(items.first?.distanceAheadNM ?? 0, 0)
     }
 
+    /// Each PIREP is labeled with the route fix nearest to *its own* position — not the
+    /// fix nearest the aircraft. A report hundreds of miles ahead must name the fix out
+    /// there, never the fix the aircraft happens to be abeam of.
+    func testNearFixTracksPirepLocationNotAircraft() {
+        var analyzer = WeatherRouteAnalyzer()
+        analyzer.config.corridorNM = 100
+        analyzer.config.altitudeBandFt = 5000
+
+        let aircraft = CLLocationCoordinate2D(latitude: 40, longitude: -95)
+        let end = CLLocationCoordinate2D(latitude: 48, longitude: -95)
+        // A severe PIREP ~360 NM ahead (6° of latitude), at a distant fix.
+        let farCoord = CLLocationCoordinate2D(latitude: 46, longitude: -95)
+        let pirep = PIREP(raw: "sev", coordinate: farCoord,
+                          altitudeFt: 35000, turbulence: .severe, icing: nil, time: nil, aircraftType: "B38M")
+        let fixes = [WeatherRouteAnalyzer.NamedFix(name: "INDIE", coordinate: aircraft),  // abeam the aircraft
+                     WeatherRouteAnalyzer.NamedFix(name: "ZENOB", coordinate: farCoord)]  // out at the PIREP
+
+        let items = analyzer.relevantReports(pireps: [pirep], position: aircraft, routeEnd: end,
+                                             altitudeFt: 35000, routeFixes: fixes)
+        XCTAssertEqual(items.count, 1)
+        XCTAssertEqual(items.first?.nearFix, "ZENOB",
+                       "the fix must describe where the turbulence is, not where the aircraft is")
+        XCTAssertNotEqual(items.first?.nearFix, "INDIE")
+    }
+
+    /// When no route fix lies within the proximity threshold of the PIREP, no fix is named
+    /// — the report keeps only "… miles ahead" rather than borrowing a distant fix.
+    func testNoNearFixWhenNoRouteFixIsClose() {
+        var analyzer = WeatherRouteAnalyzer()
+        analyzer.config.corridorNM = 100
+        analyzer.config.altitudeBandFt = 5000
+        analyzer.config.fixProximityNM = 50
+
+        let aircraft = CLLocationCoordinate2D(latitude: 40, longitude: -95)
+        let end = CLLocationCoordinate2D(latitude: 48, longitude: -95)
+        let pirep = PIREP(raw: "sev", coordinate: CLLocationCoordinate2D(latitude: 43, longitude: -95),
+                          altitudeFt: 35000, turbulence: .severe, icing: nil, time: nil, aircraftType: "B38M")
+        // Both fixes are ~180 NM (3°) from the PIREP — well beyond the 50 NM threshold.
+        let fixes = [WeatherRouteAnalyzer.NamedFix(name: "INDIE", coordinate: aircraft),
+                     WeatherRouteAnalyzer.NamedFix(name: "ZENOB", coordinate: end)]
+
+        let items = analyzer.relevantReports(pireps: [pirep], position: aircraft, routeEnd: end,
+                                             altitudeFt: 35000, routeFixes: fixes)
+        XCTAssertEqual(items.count, 1)
+        XCTAssertNil(items.first?.nearFix, "no fix is named when none is genuinely near the PIREP")
+    }
+
     /// A PIREP at cruise altitude is relevant when evaluated against the planned
     /// cruise level, but not when evaluated against a much lower climb altitude —
     /// this is why the ride model keys route reports off the flight-plan cruise
@@ -211,11 +258,15 @@ final class WeatherTests: XCTestCase {
 
         let departure = CLLocationCoordinate2D(latitude: 30, longitude: -95)
         let end = CLLocationCoordinate2D(latitude: 44, longitude: -93)
-        let pirep = PIREP(raw: "sev", coordinate: CLLocationCoordinate2D(latitude: 37, longitude: -94),
+        let pirepCoord = CLLocationCoordinate2D(latitude: 37, longitude: -94)
+        let pirep = PIREP(raw: "sev", coordinate: pirepCoord,
                           altitudeFt: 36000, turbulence: .severe, icing: nil, time: nil, aircraftType: "A319")
 
+        // A route fix at the PIREP's own position labels it "near LIT"; a far fix does not.
+        let fixes = [WeatherRouteAnalyzer.NamedFix(name: "LIT", coordinate: pirepCoord),
+                     WeatherRouteAnalyzer.NamedFix(name: "FAR", coordinate: departure)]
         let items = analyzer.relevantReports(pireps: [pirep], position: departure, routeEnd: end,
-                                             altitudeFt: 36000, nearestFix: "LIT",
+                                             altitudeFt: 36000, routeFixes: fixes,
                                              positionIsLiveAircraft: false)
         XCTAssertEqual(items.count, 1)
         XCTAssertFalse(items.first?.distanceIsFromAircraft ?? true)
