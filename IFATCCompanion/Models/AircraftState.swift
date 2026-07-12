@@ -11,7 +11,13 @@ struct AircraftState: Equatable {
     var groundSpeed: Double?        // knots
     var indicatedAirspeed: Double?  // knots
     var trueAirspeed: Double?       // knots
-    var heading: Double?            // degrees true/magnetic
+    var heading: Double?            // degrees magnetic (what the pilot flies / ATC uses)
+    /// True (geographic) heading in degrees, when Infinite Flight exposes it. Used to
+    /// rotate the aircraft symbol on the true-north map so it points where the aircraft
+    /// is actually pointing — `heading` (magnetic) would be off by the local magnetic
+    /// declination, which is small near the US/UK but ~20°+ in parts of the southern
+    /// hemisphere. ATC phraseology still uses the magnetic `heading`.
+    var trueHeading: Double?        // degrees true
     var track: Double?              // degrees
     var verticalSpeed: Double?      // feet per minute
     var onGround: Bool?

@@ -38,6 +38,7 @@ struct IFConnectStateReader {
         s.indicatedAirspeed = (await double(.indicatedAirspeed)).map { $0 * IFConnectStateReader.metresPerSecondToKnots }
         s.trueAirspeed = (await double(.trueAirspeed)).map { $0 * IFConnectStateReader.metresPerSecondToKnots }
         s.heading = (await double(.heading)).map(IFConnectStateReader.normalizeAngle)
+        s.trueHeading = (await double(.trueHeading)).map(IFConnectStateReader.normalizeAngle)
         s.track = (await double(.track)).map(IFConnectStateReader.normalizeAngle)
         s.verticalSpeed = (await double(.verticalSpeed)).map { $0 * IFConnectStateReader.metresPerSecondToFeetPerMinute }
         s.onGround = await bool(.onGround)

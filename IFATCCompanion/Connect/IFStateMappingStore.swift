@@ -16,6 +16,9 @@ final class IFStateMappingStore {
         case indicatedAirspeed
         case trueAirspeed
         case heading
+        /// True (geographic) heading, distinct from the magnetic `heading`. Used to
+        /// orient the aircraft symbol on the true-north map.
+        case trueHeading
         case track
         case verticalSpeed
         case onGround
@@ -73,6 +76,7 @@ final class IFStateMappingStore {
             case .indicatedAirspeed: return ["indicatedairspeed", "ias"]
             case .trueAirspeed: return ["trueairspeed", "tas"]
             case .heading: return ["headingmagnetic", "heading", "magneticheading"]
+            case .trueHeading: return ["headingtrue", "trueheading"]
             case .track: return ["gpstrack", "track", "courseovertheground"]
             case .verticalSpeed: return ["verticalspeed", "vspeed", "verticalspeedfpm"]
             case .onGround: return ["isonground", "onground"]

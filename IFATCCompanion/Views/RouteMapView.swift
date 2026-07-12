@@ -197,10 +197,16 @@ struct RouteMapView: View {
 
             if let aircraft = model.aircraftState.coordinate {
                 Annotation("Aircraft", coordinate: aircraft) {
+                    // The map is drawn true-north-up, so orient the symbol by the TRUE
+                    // heading (falling back to magnetic when the sim doesn't expose it).
+                    // Using magnetic here would rotate the icon off by the local
+                    // declination — negligible near the US/UK, but ~20°+ in parts of the
+                    // southern hemisphere.
                     Image(systemName: "airplane")
                         .font(.system(size: 16, weight: .bold))
                         .foregroundStyle(.white)
-                        .rotationEffect(.degrees((model.aircraftState.heading ?? 0) - 90))
+                        .rotationEffect(.degrees((model.aircraftState.trueHeading
+                                                  ?? model.aircraftState.heading ?? 0) - 90))
                         .padding(6)
                         .background(Circle().fill(.blue))
                 }
