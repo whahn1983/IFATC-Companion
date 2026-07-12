@@ -160,6 +160,13 @@ struct RideReportItem: Identifiable {
     var severity: TurbulenceSeverity
     var altitudeBand: ClosedRange<Int>?
     var distanceAheadNM: Double?
+    /// Whether `distanceAheadNM` was measured from the live aircraft position (true) or
+    /// from a route-start fallback such as the departure airport (false). The ride-report
+    /// phrase and the Weather tab only present a "… miles ahead" distance when it is
+    /// aircraft-relative — otherwise the number would read as distance-from-origin, not
+    /// distance ahead of the aircraft. The turbulence model still uses `distanceAheadNM`
+    /// for route-progress weighting regardless.
+    var distanceIsFromAircraft: Bool = true
     var bearing: Double?
     var nearFix: String?
     var sourceRaw: String

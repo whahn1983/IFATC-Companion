@@ -24,8 +24,8 @@ struct RideReportEngine {
 
         let bandDisplay = bandPhrase(lead.altitudeBand, spoken: false)
         let bandSpoken = bandPhrase(lead.altitudeBand, spoken: true)
-        let distDisplay = distancePhrase(lead.distanceAheadNM, spoken: false)
-        let distSpoken = distancePhrase(lead.distanceAheadNM, spoken: true)
+        let distDisplay = aheadPhrase(lead, spoken: false)
+        let distSpoken = aheadPhrase(lead, spoken: true)
         let fix = lead.nearFix.flatMap { $0.isEmpty ? nil : $0 }
 
         switch worst.severity {
@@ -76,8 +76,8 @@ struct RideReportEngine {
         let altFt = lead?.reportedAltitudeFt ?? (referenceAltitudeFt > 0 ? referenceAltitudeFt : nil)
         let altDisplay = altFt.map { " at \(engine.formatAltDisplay($0))" } ?? ""
         let altSpoken = altFt.map { " at \(Phonetic.altitude($0))" } ?? ""
-        let distDisplay = distancePhrase(lead?.distanceAheadNM, spoken: false)
-        let distSpoken = distancePhrase(lead?.distanceAheadNM, spoken: true)
+        let distDisplay = aheadPhrase(lead, spoken: false)
+        let distSpoken = aheadPhrase(lead, spoken: true)
         let fix = lead?.nearFix.flatMap { $0.isEmpty ? nil : $0 }
         let nearDisplay = fix.map { " near \($0)" } ?? ""
         let nearSpoken = fix.map { " near \(Phonetic.spellToken($0, icao: icao))" } ?? ""
@@ -175,6 +175,19 @@ struct RideReportEngine {
             return " approximately \(Phonetic.spellDigits(String(rounded))) miles ahead"
         }
         return " approximately \(rounded) miles ahead"
+    }
+
+    /// The "how far" clause for the lead report. With a live aircraft fix this is an
+    /// aircraft-relative distance ("… approximately four zero miles ahead"); without one
+    /// (aircraft data lost / not connected) it falls back to a route-relative phrase
+    /// ("… along your route") so the report never presents a distance-from-origin as if it
+    /// were distance ahead of the aircraft.
+    private func aheadPhrase(_ item: RideReportItem?, spoken: Bool) -> String {
+        guard let item else { return "" }
+        if item.distanceIsFromAircraft {
+            return distancePhrase(item.distanceAheadNM, spoken: spoken)
+        }
+        return " along your route"
     }
 
     private func ceilingCover(_ m: METAR) -> String {
