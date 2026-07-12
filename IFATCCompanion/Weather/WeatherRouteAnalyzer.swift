@@ -8,9 +8,25 @@ struct WeatherRouteAnalyzer {
     struct Config {
         var corridorNM: Double = 100
         var altitudeBandFt: Double = 5000
+        /// A PIREP is labeled "near <fix>" only when a route fix lies within this many
+        /// nautical miles of the PIREP's own position. Beyond it no fix is named and the
+        /// report keeps just the "… miles ahead" distance — so a report is never labeled
+        /// with a fix that is actually far from where the turbulence was reported.
+        var fixProximityNM: Double = 50
     }
 
     var config = Config()
+
+    /// A named route fix with a known position. Used to label each PIREP with the nearest
+    /// fix to *its own* location, rather than a single fix taken from the aircraft position.
+    struct NamedFix {
+        let name: String
+        let coordinate: CLLocationCoordinate2D
+        init(name: String, coordinate: CLLocationCoordinate2D) {
+            self.name = name
+            self.coordinate = coordinate
+        }
+    }
 
     /// Returns relevant PIREPs as `RideReportItem`s ahead of the aircraft along
     /// the path toward `routeEnd`. Pass `ignoreAltitudeBand: true` to keep reports at
@@ -22,11 +38,17 @@ struct WeatherRouteAnalyzer {
     /// the live aircraft fix — the resulting items are flagged so the ride-report phrase and
     /// the Weather tab omit the "… miles ahead" distance instead of presenting a
     /// distance-from-origin as if it were distance ahead of the aircraft.
+    ///
+    /// Each item's `nearFix` is the `routeFixes` entry nearest to *that PIREP's own
+    /// position* (within `config.fixProximityNM`), not a single fix taken from the aircraft
+    /// — so "near <fix>" describes where the turbulence is, not where the aircraft is. When
+    /// no route fix is close enough, the item carries no fix and the report keeps only the
+    /// distance-ahead clause.
     func relevantReports(pireps: [PIREP],
                          position: CLLocationCoordinate2D,
                          routeEnd: CLLocationCoordinate2D?,
                          altitudeFt: Double,
-                         nearestFix: String? = nil,
+                         routeFixes: [NamedFix] = [],
                          ignoreAltitudeBand: Bool = false,
                          positionIsLiveAircraft: Bool = true,
                          now: Date = Date()) -> [RideReportItem] {
@@ -71,7 +93,7 @@ struct WeatherRouteAnalyzer {
                                         distanceAheadNM: distanceAhead,
                                         distanceIsFromAircraft: positionIsLiveAircraft,
                                         bearing: bearingToPirep,
-                                        nearFix: nearestFix,
+                                        nearFix: nearestFix(to: coord, among: routeFixes),
                                         sourceRaw: pirep.raw,
                                         ageMinutes: age,
                                         reportedAltitudeFt: pirep.altitudeFt,
@@ -79,6 +101,21 @@ struct WeatherRouteAnalyzer {
         }
 
         return items.sorted { ($0.distanceAheadNM ?? .greatestFiniteMagnitude) < ($1.distanceAheadNM ?? .greatestFiniteMagnitude) }
+    }
+
+    /// The route fix nearest to `coordinate` (a PIREP's own position), or nil when the
+    /// closest one is farther than `config.fixProximityNM` — in which case the report names
+    /// no fix rather than one that is far from where the turbulence was reported. Fixes
+    /// without a name or a valid coordinate are ignored.
+    private func nearestFix(to coordinate: CLLocationCoordinate2D, among fixes: [NamedFix]) -> String? {
+        let located = fixes.filter { !$0.name.isEmpty && $0.coordinate.isValid }
+        guard let nearest = located.min(by: {
+            Geo.distanceNM(from: coordinate, to: $0.coordinate) <
+            Geo.distanceNM(from: coordinate, to: $1.coordinate)
+        }), Geo.distanceNM(from: coordinate, to: nearest.coordinate) <= config.fixProximityNM else {
+            return nil
+        }
+        return nearest.name
     }
 
     /// Cruise band (ft) a smoother-altitude suggestion is bounded to — commercial jets

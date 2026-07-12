@@ -2327,12 +2327,12 @@ final class AppModel: ObservableObject {
         let liveAircraft = aircraftState.coordinate
         guard let pos = liveAircraft ?? airports.coordinate(for: flightPlan.departure) else { return nil }
         let end = airports.coordinate(for: flightPlan.destination) ?? flightPlan.nextWaypoint(from: pos)?.coordinate
-        let nearestFix = flightPlan.nextWaypoint(from: pos)?.name
         // All route-corridor PIREPs regardless of altitude — the ±band filter would hide
-        // the very levels a smoother-ride suggestion is drawn from.
+        // the very levels a smoother-ride suggestion is drawn from. This path reads only
+        // each item's altitude/severity, so no `routeFixes` labeling is needed.
         let allItems = routeAnalyzer.relevantReports(pireps: pireps, position: pos, routeEnd: end,
                                                      altitudeFt: Double(referenceAltFt),
-                                                     nearestFix: nearestFix, ignoreAltitudeBand: true,
+                                                     ignoreAltitudeBand: true,
                                                      positionIsLiveAircraft: liveAircraft != nil)
         let currentSeverity = rideReportItems.map { $0.severity }.max() ?? .smooth
         return routeAnalyzer.smootherAltitude(items: allItems, referenceAltFt: referenceAltFt,
@@ -2517,10 +2517,9 @@ final class AppModel: ObservableObject {
         // turbulence at cruise is filtered out while the aircraft is still climbing.
         // Fall back to the live altitude before a cruise level is set.
         let referenceAlt = flightPlan.cruiseAltitude > 0 ? Double(flightPlan.cruiseAltitude) : liveAlt
-        let nearestFix = flightPlan.nextWaypoint(from: pos)?.name
         rideReportItems = routeAnalyzer.relevantReports(pireps: pireps, position: pos,
                                                         routeEnd: end, altitudeFt: referenceAlt,
-                                                        nearestFix: nearestFix,
+                                                        routeFixes: routeNamedFixes(),
                                                         positionIsLiveAircraft: liveAircraft != nil)
         let arrivalPhase = [.descent, .approach, .landing, .taxiIn, .parked].contains(phase)
         let nearMETAR = arrivalPhase ? (destinationMETAR ?? departureMETAR) : (departureMETAR ?? destinationMETAR)
@@ -2897,6 +2896,17 @@ final class AppModel: ObservableObject {
             return
         }
         radarOverlay.sampledCells = cells
+    }
+
+    /// The filed route's located fixes as named candidates for labeling a PIREP with the
+    /// nearest fix to *its own* position (not the aircraft's). Only waypoints carrying both
+    /// a name and a valid coordinate qualify.
+    private func routeNamedFixes() -> [WeatherRouteAnalyzer.NamedFix] {
+        flightPlan.waypoints.compactMap { wp in
+            guard let coord = wp.coordinate, coord.isValid,
+                  !wp.name.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+            return WeatherRouteAnalyzer.NamedFix(name: wp.name, coordinate: coord)
+        }
     }
 
     /// The upcoming route as ordered coordinates — the located fixes still ahead of
