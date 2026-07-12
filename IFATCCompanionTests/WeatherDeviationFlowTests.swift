@@ -521,6 +521,51 @@ final class WeatherDeviationFlowTests: XCTestCase {
         XCTAssertEqual(model.weatherDeviationState, .none, "lifecycle rolls back after the refresh")
     }
 
+    // MARK: - Live-mode lock waits for radar cells to actually land
+
+    /// Regression: in **live** mode the whole-route deviation set is locked once and then
+    /// held. That lock must wait until a radar sample has actually **produced cells** —
+    /// not merely started. `lastPrecipSampleAt` is stamped at the *start* of a sample,
+    /// before the async image fetch lands, so gating the lock on it let a telemetry
+    /// recompute that ran mid-fetch (cells still empty) lock an empty set — and because the
+    /// set never re-locks, the mint line then never drew in live mode even with a storm
+    /// dead on the route. The lock is gated on `livePrecipCellsReady` instead, which flips
+    /// true only once the decoded cells are in place. (Mock mode is unaffected: its cells
+    /// are set synchronously before any recompute runs.)
+    func testLiveModeLockWaitsForRadarCellsBeforeLocking() {
+        let model = makeModel()
+        model.settings.mockMode = false          // live path: hazards come from sampledCells
+        model.flightPlan.waypoints = []          // straight dep→dest so the cell sits on the route
+
+        guard let dep = AirportDatabase.shared.coordinate(for: model.flightPlan.departure),
+              let dest = AirportDatabase.shared.coordinate(for: model.flightPlan.destination) else {
+            return XCTFail("test needs located CONUS endpoints for radar coverage")
+        }
+        let course = Geo.bearing(from: dep, to: dest)
+        let stormCenter = Geo.destination(from: dep, bearingDegrees: course, distanceNM: 45)
+        let storm = RadarCell(polygon: box(around: stormCenter, half: 0.25), intensity: .heavy)
+
+        // The decoded storm cells are already present, but the sample has not been marked
+        // ready (`livePrecipCellsReady == false`) — exactly the mid-fetch window where a
+        // telemetry recompute used to lock. The lock must be held: nothing is locked yet.
+        model.radarOverlay.sampledCells = [storm]
+        model.livePrecipCellsReady = false
+        model.recomputeWeatherHazards()
+        XCTAssertTrue(model.lockedDeviations.isEmpty,
+                      "the deviation must not lock before the sample is marked ready")
+        XCTAssertNil(model.weatherDeviationLine,
+                     "no mint line while the first live sample is still in flight")
+
+        // The sample completes: cells are marked ready. The lock now takes and the reroute
+        // is found — proving the earlier mid-fetch recompute did not permanently lock empty.
+        model.livePrecipCellsReady = true
+        model.recomputeWeatherHazards()
+        XCTAssertFalse(model.lockedDeviations.isEmpty,
+                       "once radar cells are ready the whole-route deviation locks")
+        XCTAssertNotNil(model.weatherDeviationLine,
+                        "the mint line draws in live mode once the storm's cells have landed")
+    }
+
     // MARK: - Far weather is monitored but not drawn ("no weather, crazy mint line")
 
     /// A conflict whose weather is beyond the draw range must NOT put a mint line (or its

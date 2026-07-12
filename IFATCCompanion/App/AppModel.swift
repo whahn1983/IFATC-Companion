@@ -1620,9 +1620,13 @@ final class AppModel: ObservableObject {
         // route. Detection itself re-runs every telemetry tick, so no explicit recompute
         // is needed here.
         if before != (plan.departure, plan.destination) {
+            // The corridor moved: the current cells are stale, so hold the deviation lock
+            // until the fresh sample lands rather than re-locking against the old route.
+            livePrecipCellsReady = false
             Task { await refreshWeather() }
         } else if plan.waypoints.map(\.name) != beforeWaypoints {
             lastPrecipSampleAt = nil
+            livePrecipCellsReady = false
         }
     }
 
@@ -2581,6 +2585,16 @@ final class AppModel: ObservableObject {
     private var lastPrecipSampleAt: Date?
     private var lastPrecipSamplePos: CLLocationCoordinate2D?
     private var isSamplingPrecip = false
+    /// Whether a live radar sample has actually **produced cells** for the current route
+    /// yet — set only once `sampleLivePrecipitation` finishes decoding an image into
+    /// `radarOverlay.sampledCells`, and reset whenever those cells go stale (route change,
+    /// refreshed weather, satellite-setting change). This gates the one-time deviation lock.
+    /// `lastPrecipSampleAt` can't: it is stamped at the *start* of a sample, before the
+    /// async fetch lands, so a telemetry tick during the fetch would otherwise lock an empty
+    /// set (no cells yet) and, since the set never re-locks, the mint line would never draw
+    /// in live mode even though the storm is right on the route.
+    /// Internal (not `private`) so tests can drive the "cells landed" transition directly.
+    var livePrecipCellsReady = false
     /// Actual OPERA/CIRRUS composite bytes downloaded (latest / session total), read
     /// from the shared composite store for the Weather Diagnostics data-usage row.
     private var ordDataUsage: (last: Int, total: Int) = (0, 0)
@@ -2601,6 +2615,7 @@ final class AppModel: ObservableObject {
         lockedRouteKey = ""
         lastPrecipSampleAt = nil
         lastPrecipSamplePos = nil
+        livePrecipCellsReady = false
     }
 
     /// The precipitation overlay image URL for the map's visible region, or nil when
@@ -2744,8 +2759,11 @@ final class AppModel: ObservableObject {
         }
         guard !deviationsLocked else { return }
         // Don't lock before there's radar data for this flight: in live mode wait for the
-        // first sample; in Mock Mode the cells are set synchronously before recompute runs.
-        guard settings.mockMode || lastPrecipSampleAt != nil else { return }
+        // first sample to actually PRODUCE cells (not merely start — `lastPrecipSampleAt`
+        // is stamped before the async fetch lands, so locking on it captures an empty set
+        // mid-fetch and never re-locks). In Mock Mode the cells are set synchronously before
+        // recompute runs, so no wait is needed.
+        guard settings.mockMode || livePrecipCellsReady else { return }
         recomputeLockedDeviations()
         deviationsLocked = true
     }
@@ -2969,6 +2987,9 @@ final class AppModel: ObservableObject {
         guard !settings.mockMode else { recomputeWeatherHazards(); return }
         lastPrecipSampleAt = nil
         lastPrecipSamplePos = nil
+        // The cell set changes with this toggle, so hold the lock until the forced sample
+        // below has re-populated the cells rather than re-locking against the pre-toggle set.
+        livePrecipCellsReady = false
         Task { @MainActor in
             await sampleLivePrecipitation()
             recomputeWeatherHazards()
@@ -3107,6 +3128,10 @@ final class AppModel: ObservableObject {
             return
         }
         radarOverlay.sampledCells = cells
+        // Cells now reflect a real decode of the current route's radar — the deviation lock
+        // may proceed (it was held off until this landed so it never locks an empty set
+        // mid-fetch and then never re-locks).
+        livePrecipCellsReady = true
     }
 
     /// The filed route's located fixes as named candidates for labeling a PIREP with the
