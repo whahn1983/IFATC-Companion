@@ -744,6 +744,62 @@ final class WeatherDeviationFlowTests: XCTestCase {
                      "the held turn is consumed once issued")
     }
 
+    // MARK: - Auto-call the advisory when the turn is imminent (banner ignored)
+
+    /// Because the mint lines are locked and drawn ahead, a pilot who never taps the
+    /// "contact ATC" banner could otherwise fly straight past the first turn with no ATC
+    /// call. Closing to within 15 NM of the upcoming deviation's turn-out auto-issues the
+    /// advisory on its own.
+    func testAdvisoryAutoIssuesWithin15NMOfTurnOutWhenBannerIgnored() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)
+        guard let turnOut = model.activeWeatherConflict?.deviationPath.first else {
+            return XCTFail("expected a locked deviation with a turn-out")
+        }
+        // Simulate the pilot ignoring the banner: back to the un-engaged state, with the
+        // one-shot mock demo advisory already spent so only the near-turn net can fire.
+        model.markWeatherUnengagedForTesting()
+        XCTAssertEqual(model.weatherDeviationState, .none)
+        let atcBefore = model.transcript.filter { $0.sender == .atc }.count
+
+        // Fly to 12 NM short of the turn-out without touching the banner.
+        let course = Geo.bearing(from: model.mock.route.depCoord, to: model.mock.route.destCoord)
+        let approach = Geo.destination(from: turnOut, bearingDegrees: course + 180, distanceNM: 12)
+        var near = model.mock.state(for: .cruise)
+        near.latitude = approach.latitude
+        near.longitude = approach.longitude
+        model.ingestStateForTesting(near)
+
+        XCTAssertEqual(model.weatherDeviationState, .awaitingPilotIntentions,
+                       "ATC auto-issues the advisory within 15 NM of the turn even without a banner tap")
+        XCTAssertGreaterThan(model.transcript.filter { $0.sender == .atc }.count, atcBefore,
+                             "the auto-issued advisory is transmitted by ATC")
+        XCTAssertTrue(atcContains(model, "precipitation"),
+                      "the auto-issued call is the precipitation advisory")
+    }
+
+    /// The auto-call respects an explicit choice to continue: a pilot who elected to
+    /// continue on course is not re-prompted as the turn approaches.
+    func testTurnProximityDoesNotReissueAfterPilotContinued() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)
+        guard let turnOut = model.activeWeatherConflict?.deviationPath.first else {
+            return XCTFail("expected a locked deviation with a turn-out")
+        }
+        model.continueThroughWeather()            // the pilot handles it: continue on course
+        XCTAssertEqual(model.weatherDeviationState, .none)
+
+        let course = Geo.bearing(from: model.mock.route.depCoord, to: model.mock.route.destCoord)
+        let approach = Geo.destination(from: turnOut, bearingDegrees: course + 180, distanceNM: 12)
+        var near = model.mock.state(for: .cruise)
+        near.latitude = approach.latitude
+        near.longitude = approach.longitude
+        model.ingestStateForTesting(near)
+
+        XCTAssertEqual(model.weatherDeviationState, .none,
+                       "a pilot who chose to continue is not auto-prompted again near the turn")
+    }
+
     // MARK: - Committed mint line is locked
 
     /// Once the pilot commits to a vector, the mint line freezes to the path being

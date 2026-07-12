@@ -300,6 +300,12 @@ final class AppModel: ObservableObject {
     /// reaches the turn-out ("continue, expect the turn in X miles"). Within this the
     /// aircraft is essentially at the turn-out, so the turn is worked immediately.
     private let deviationTurnHoldNM: Double = 6
+    /// How close (NM) the aircraft may come to a locked deviation's turn-out before the
+    /// controller **auto-issues** the weather advisory, even if the pilot never tapped the
+    /// "contact ATC" banner. Because the mint lines are locked and drawn ahead, a pilot who
+    /// ignores the banner could otherwise fly straight past the first turn with no ATC call;
+    /// this makes ATC initiate the advisory on its own once the turn is imminent.
+    private let deviationAutoCallNM: Double = 15
     /// The most weather systems to draw faint preview mint lines for down the route, so
     /// the strategic preview can never run away (one detection per system).
     private let maxWeatherPreviewSystems = 6
@@ -776,6 +782,16 @@ final class AppModel: ObservableObject {
     /// hysteresis window. Only affects a conflict no longer present in the locked set.
     func expireWeatherClearWindowForTesting() {
         lastConflictSeenAt = .distantPast
+    }
+
+    /// Test hook: return the weather-deviation lifecycle to the un-engaged state (as if the
+    /// pilot never tapped the banner), while marking the one-shot mock demo advisory as
+    /// already spent — so a test can exercise the near-turn auto-call in isolation.
+    func markWeatherUnengagedForTesting() {
+        weatherDeviation.reset()
+        weatherDeviation.state = .none
+        weatherHandled = false
+        mockWeatherAdvisoryIssued = true
     }
 
     /// Test hook: the route the detector treats as "ahead" of a position, so a test can
@@ -2652,6 +2668,10 @@ final class AppModel: ObservableObject {
 
         // Mock Mode auto-issues the advisory once so the offline demo plays out.
         maybeAutoIssueMockAdvisory(conflict: conflict)
+        // Safety net (all modes): if the pilot ignored the banner and is now within
+        // `deviationAutoCallNM` of the upcoming locked deviation's turn-out, ATC auto-issues
+        // the advisory so a drawn-ahead deviation isn't silently flown past.
+        maybeAutoIssueAdvisoryNearTurn()
         // Drive the deviation turns off the aircraft's progress, most-imminent first:
         //   1. a held beginning turn fires once the aircraft reaches the mint line's
         //      turn-out (a deviation approved while drawn ahead — "expect the turn …");
@@ -3474,6 +3494,31 @@ final class AppModel: ObservableObject {
               let situation = currentWeatherSituation() else { return }
         mockWeatherAdvisoryIssued = true
         weatherHandled = true
+        applyDeviationResult(deviationEngine.issueAdvisory(cs: callsignNow(),
+                                                           situation: situation,
+                                                           context: weatherDeviation,
+                                                           facility: weatherFacility))
+    }
+
+    /// Safety net for the locked mint lines: if the pilot never engaged the advisory (never
+    /// tapped the "contact ATC" banner, never continued or deviated) and the aircraft closes
+    /// to within `deviationAutoCallNM` of the upcoming deviation's first turn (its turn-out),
+    /// the controller **auto-issues** the advisory on its own — so a drawn-ahead deviation
+    /// can't be silently flown past with no ATC call. Fires once per un-engaged conflict, in
+    /// every mode; a pilot who already tapped the banner (state ≠ none) or elected to
+    /// continue (`weatherHandled`) is left alone. Mirrors `askCenterAboutWeather`, but with
+    /// no pilot query since ATC is the one initiating.
+    private func maybeAutoIssueAdvisoryNearTurn() {
+        guard settings.weatherDeviationAlerts.alertsEnabled, weatherFlowAllowed,
+              !companionStandby, !establishedOnFinal,
+              weatherDeviation.state == .none, !weatherHandled,
+              let conflict = activeWeatherConflict, conflict.shouldPrompt,
+              let turnOut = conflict.deviationPath.first, turnOut.isValid,
+              let pos = aircraftState.coordinate, pos.isValid,
+              Geo.distanceNM(from: pos, to: turnOut) <= deviationAutoCallNM,
+              let situation = currentWeatherSituation() else { return }
+        weatherHandled = true
+        mockWeatherAdvisoryIssued = true   // the one-shot advisory has now been issued
         applyDeviationResult(deviationEngine.issueAdvisory(cs: callsignNow(),
                                                            situation: situation,
                                                            context: weatherDeviation,
