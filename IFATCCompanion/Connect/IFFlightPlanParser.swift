@@ -95,10 +95,28 @@ enum IFFlightPlanParser {
         // mismatched list would scatter the route across the map.
         if let coordinates, var p = plan, !p.waypoints.isEmpty {
             let coords = parseCoordinateList(coordinates)
+            let hasEndpoints = !p.departure.isEmpty && !p.destination.isEmpty
             if coords.count == p.waypoints.count {
                 for i in p.waypoints.indices where p.waypoints[i].coordinate == nil {
                     p.waypoints[i].latitude = coords[i].lat
                     p.waypoints[i].longitude = coords[i].lon
+                }
+                plan = p
+            } else if hasEndpoints, coords.count == p.waypoints.count + 2 {
+                // Infinite Flight includes the departure and destination airport
+                // coordinates as the first and last entries of the flat list; capture
+                // those endpoints and map the middle coordinates onto the enroute fixes.
+                if p.departureCoordinate == nil, let dep = coords.first {
+                    p.departureLatitude = dep.lat
+                    p.departureLongitude = dep.lon
+                }
+                if p.destinationCoordinate == nil, let dest = coords.last {
+                    p.destinationLatitude = dest.lat
+                    p.destinationLongitude = dest.lon
+                }
+                for i in p.waypoints.indices where p.waypoints[i].coordinate == nil {
+                    p.waypoints[i].latitude = coords[i + 1].lat
+                    p.waypoints[i].longitude = coords[i + 1].lon
                 }
                 plan = p
             }
@@ -237,13 +255,20 @@ enum IFFlightPlanParser {
         }
 
         // Endpoints: first/last ICAO-looking fixes become departure/destination and
-        // are dropped from the enroute list.
+        // are dropped from the enroute list. Their coordinates are kept on the plan
+        // (the airport isn't a waypoint, so its position would otherwise be lost) so
+        // the departure/destination markers land on the real field worldwide, not on
+        // the first/last enroute fix.
         if let first = fixes.first, isICAO(first.name) {
             plan.departure = first.name
+            plan.departureLatitude = first.latitude
+            plan.departureLongitude = first.longitude
             fixes.removeFirst()
         }
         if let last = fixes.last, isICAO(last.name), last.name != plan.departure {
             plan.destination = last.name
+            plan.destinationLatitude = last.latitude
+            plan.destinationLongitude = last.longitude
             fixes.removeLast()
         }
 

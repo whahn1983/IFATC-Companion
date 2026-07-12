@@ -178,9 +178,12 @@ struct FlightView: View {
 
     private var distanceToDest: String {
         guard let pos = s.coordinate else { return "—" }
-        // Prefer the destination airport coordinate; fall back to the last located
-        // flight-plan fix when the field isn't in the built-in airport database.
+        // Prefer the destination airport coordinate: the built-in database, then the
+        // position Infinite Flight reports for the field (worldwide), and only then the
+        // last located fix — otherwise the distance reads short of the actual field for
+        // airports outside the built-in list.
         guard let dest = AirportDatabase.shared.coordinate(for: model.flightPlan.destination)
+                ?? model.flightPlan.destinationCoordinate
                 ?? model.flightPlan.lastWaypointCoordinate else { return "—" }
         return "\(Int(Geo.distanceNM(from: pos, to: dest).rounded())) NM"
     }
