@@ -306,6 +306,13 @@ final class AppModel: ObservableObject {
     /// ignores the banner could otherwise fly straight past the first turn with no ATC call;
     /// this makes ATC initiate the advisory on its own once the turn is imminent.
     private let deviationAutoCallNM: Double = 15
+    /// How far (NM) before a weather system's near edge each locked deviation is solved
+    /// from. A reroute is a straight-corridor offset aimed at the storm; solved from far
+    /// away (the origin, hundreds of NM back across the route's bends) it renders as a
+    /// runaway line drawn past the weather. Solving it from a modest lead just before the
+    /// storm — where the route is locally straight — keeps the geometry tight to the storm,
+    /// the same reason the old draw gate held the line until the aircraft was within ~75 NM.
+    private let deviationSolveLeadNM: Double = 70
     /// The most weather systems to draw faint preview mint lines for down the route, so
     /// the strategic preview can never run away (one detection per system).
     private let maxWeatherPreviewSystems = 6
@@ -2768,25 +2775,42 @@ final class AppModel: ObservableObject {
         var steps = 0
         while results.count < maxWeatherPreviewSystems, steps < maxWeatherPreviewSystems * 4 {
             steps += 1
-            let ahead = upcomingRouteCoordinates(from: startPoint)
+            let aheadFromStart = upcomingRouteCoordinates(from: startPoint)
+            guard !aheadFromStart.isEmpty else { break }
+            // Where does the route next enter qualifying weather, measured from startPoint?
+            guard let onRoute = conflictDetector.nearestRouteHazard(
+                    route: aheadFromStart, from: startPoint, hazards: weatherHazards) else { break }
+            // Solve the deviation from a modest lead BEFORE that entry, where the route is
+            // locally straight — not from startPoint, which may be hundreds of NM back
+            // across the route's bends and would render as a runaway line past the weather.
+            let lead = min(onRoute.distanceNM, deviationSolveLeadNM)
+            let detectAlong = max(0, onRoute.distanceNM - lead)
+            let detectPos = detectAlong <= 1 ? startPoint
+                : (pointAlongRoute(from: startPoint, through: aheadFromStart, byNM: detectAlong) ?? startPoint)
+            let ahead = upcomingRouteCoordinates(from: detectPos)
             guard !ahead.isEmpty else { break }
-            let course = ahead.first { Geo.distanceNM(from: startPoint, to: $0) > 1 }
-                .map { Geo.bearing(from: startPoint, to: $0) } ?? currentCourse(from: startPoint)
+            let course = ahead.first { Geo.distanceNM(from: detectPos, to: $0) > 1 }
+                .map { Geo.bearing(from: detectPos, to: $0) } ?? currentCourse(from: detectPos)
             if let conflict = conflictDetector.detectConflict(
-                    position: startPoint, course: course, groundspeedKnots: aircraftState.groundSpeed,
+                    position: detectPos, course: course, groundspeedKnots: aircraftState.groundSpeed,
                     phase: .cruise, hazards: weatherHazards, waypoints: flightPlan.waypoints,
                     routeAhead: ahead, rejoinCap: cap),
                conflict.deviationPath.count >= 2,
                // Only keep a line that actually rounds weather — never a degenerate line
                // drawn out in clear air — so every mint line hugs a real system.
                conflictDetector.pathEngagesWeather(conflict.deviationPath, hazards: weatherHazards),
+               // And its apex must sit alongside the weather, not bulge off into clear air —
+               // the guard that drops a straight-corridor stub aimed across a route bend.
+               conflictDetector.previewApexHugsWeather(conflict.deviationPath,
+                                                       route: [detectPos] + ahead, hazards: weatherHazards),
                let end = conflict.deviationPath.last, end.isValid,
-               Geo.distanceNM(from: startPoint, to: end) > 1 {
+               Geo.distanceNM(from: detectPos, to: end) > 1 {
                 results.append(conflict)
                 startPoint = end       // jump past this system's rejoin; its cells are behind
-            } else if let next = pointAlongRoute(from: startPoint, through: ahead, byNM: previewScanStepNM),
+            } else if let next = pointAlongRoute(from: startPoint, through: aheadFromStart,
+                                                 byNM: onRoute.distanceNM + previewScanStepNM),
                       Geo.distanceNM(from: startPoint, to: next) > 1 {
-                startPoint = next      // clear window — scan further down the route
+                startPoint = next      // couldn't solve here — scan past this system
             } else {
                 break                  // reached the end of the route
             }
@@ -2836,14 +2860,19 @@ final class AppModel: ObservableObject {
         return dev
     }
 
-    /// The faint mint lines: every locked deviation except the one currently drawn solid
-    /// (`weatherDeviationLine`), matched by its turn-out point so it is never double-drawn.
+    /// The faint mint lines: every upcoming locked deviation except the one currently drawn
+    /// solid (`weatherDeviationLine`, matched by its turn-out so it is never double-drawn).
+    /// Deviations the aircraft has already flown past (rejoin behind it) are dropped, so a
+    /// storm left behind stops showing a line.
     private func faintDeviationLines() -> [[CLLocationCoordinate2D]] {
         let solidStart = weatherDeviationLine?.first
+        let aircraftAlong = aircraftState.coordinate.map { alongRouteNM($0) }
         return lockedDeviations.compactMap { dev in
             let path = dev.deviationPath
             guard path.count >= 2, let p0 = path.first else { return nil }
             if let s = solidStart, Geo.distanceNM(from: s, to: p0) < 2 { return nil }   // drawn solid
+            if let ac = aircraftAlong, let end = path.last, end.isValid,
+               alongRouteNM(end) <= ac - 2 { return nil }                                // already passed
             return path
         }
     }
@@ -3066,8 +3095,13 @@ final class AppModel: ObservableObject {
         let fetched = try? await provider.exportImage(
             for: bbox, size: CGSize(width: grid.columns, height: grid.rows), frame: frame)
         guard let data = fetched ?? nil,
+              // The overlays are rendered in Web Mercator (EPSG:3857, `imageSR`/`SRS`), so
+              // the sampler must invert Mercator when mapping pixel rows back to latitude —
+              // otherwise the cells drift (tens of NM) from the displayed radar and an
+              // on-route core can fall outside the deviation corridor.
               let cells = RadarImageSampler.cells(fromPNG: data, columns: grid.columns, rows: grid.rows, bbox: bbox,
-                                                  palette: isSatelliteEstimate ? .imergRate : .reflectivity) else {
+                                                  palette: isSatelliteEstimate ? .imergRate : .reflectivity,
+                                                  projection: .webMercator) else {
             // Fetch or decode failed — keep the last good cells so the deviation line
             // doesn't blink out on a transient error.
             return
