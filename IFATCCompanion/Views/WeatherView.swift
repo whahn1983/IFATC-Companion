@@ -246,7 +246,7 @@ struct WeatherView: View {
                             StatusPill(text: item.severity.title, level: severityLevel(item.severity), systemImage: "wind")
                             Spacer()
                             VStack(alignment: .trailing, spacing: 2) {
-                                if let d = item.distanceAheadNM {
+                                if let d = item.distanceAheadNM, item.distanceIsFromAircraft {
                                     Text("\(Int(d.rounded())) NM ahead").font(.subheadline.weight(.semibold))
                                 }
                                 if let band = item.altitudeBand {

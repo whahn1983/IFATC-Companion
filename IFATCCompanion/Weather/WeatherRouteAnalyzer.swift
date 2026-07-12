@@ -16,12 +16,19 @@ struct WeatherRouteAnalyzer {
     /// the path toward `routeEnd`. Pass `ignoreAltitudeBand: true` to keep reports at
     /// **all** levels (for the smoother-altitude search, which needs the other levels the
     /// ±band filter would otherwise hide).
+    ///
+    /// `distanceAheadNM` is measured from `position`. Set `positionIsLiveAircraft: false`
+    /// when `position` is a route-start fallback (e.g. the departure airport) rather than
+    /// the live aircraft fix — the resulting items are flagged so the ride-report phrase and
+    /// the Weather tab omit the "… miles ahead" distance instead of presenting a
+    /// distance-from-origin as if it were distance ahead of the aircraft.
     func relevantReports(pireps: [PIREP],
                          position: CLLocationCoordinate2D,
                          routeEnd: CLLocationCoordinate2D?,
                          altitudeFt: Double,
                          nearestFix: String? = nil,
                          ignoreAltitudeBand: Bool = false,
+                         positionIsLiveAircraft: Bool = true,
                          now: Date = Date()) -> [RideReportItem] {
 
         let courseTo = routeEnd.map { Geo.bearing(from: position, to: $0) }
@@ -62,6 +69,7 @@ struct WeatherRouteAnalyzer {
             items.append(RideReportItem(severity: severity,
                                         altitudeBand: band,
                                         distanceAheadNM: distanceAhead,
+                                        distanceIsFromAircraft: positionIsLiveAircraft,
                                         bearing: bearingToPirep,
                                         nearFix: nearestFix,
                                         sourceRaw: pirep.raw,

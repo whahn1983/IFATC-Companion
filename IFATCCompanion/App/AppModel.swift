@@ -2324,14 +2324,16 @@ final class AppModel: ObservableObject {
     /// A data-backed smoother altitude from PIREPs at *other* levels along the route,
     /// bounded to the commercial cruise band. Nil when nothing supports one.
     private func computeSmootherAltitude(referenceAltFt: Int) -> SmootherAltitude? {
-        guard let pos = aircraftState.coordinate ?? airports.coordinate(for: flightPlan.departure) else { return nil }
+        let liveAircraft = aircraftState.coordinate
+        guard let pos = liveAircraft ?? airports.coordinate(for: flightPlan.departure) else { return nil }
         let end = airports.coordinate(for: flightPlan.destination) ?? flightPlan.nextWaypoint(from: pos)?.coordinate
         let nearestFix = flightPlan.nextWaypoint(from: pos)?.name
         // All route-corridor PIREPs regardless of altitude — the ±band filter would hide
         // the very levels a smoother-ride suggestion is drawn from.
         let allItems = routeAnalyzer.relevantReports(pireps: pireps, position: pos, routeEnd: end,
                                                      altitudeFt: Double(referenceAltFt),
-                                                     nearestFix: nearestFix, ignoreAltitudeBand: true)
+                                                     nearestFix: nearestFix, ignoreAltitudeBand: true,
+                                                     positionIsLiveAircraft: liveAircraft != nil)
         let currentSeverity = rideReportItems.map { $0.severity }.max() ?? .smooth
         return routeAnalyzer.smootherAltitude(items: allItems, referenceAltFt: referenceAltFt,
                                               currentSeverity: currentSeverity)
@@ -2497,7 +2499,11 @@ final class AppModel: ObservableObject {
     func recomputeRideItems() {
         routeAnalyzer.config.corridorNM = settings.routeCorridorNM
         routeAnalyzer.config.altitudeBandFt = settings.altitudeBandFt
-        guard let pos = aircraftState.coordinate ?? airports.coordinate(for: flightPlan.departure) else {
+        // Distance ahead must be measured from the live aircraft fix. Fall back to the
+        // departure only so PIREPs can still be filtered to the route corridor — in that
+        // case the distance would be origin-relative, so it is flagged and not shown.
+        let liveAircraft = aircraftState.coordinate
+        guard let pos = liveAircraft ?? airports.coordinate(for: flightPlan.departure) else {
             rideReportItems = []
             routeSigmets = []
             return
@@ -2514,7 +2520,8 @@ final class AppModel: ObservableObject {
         let nearestFix = flightPlan.nextWaypoint(from: pos)?.name
         rideReportItems = routeAnalyzer.relevantReports(pireps: pireps, position: pos,
                                                         routeEnd: end, altitudeFt: referenceAlt,
-                                                        nearestFix: nearestFix)
+                                                        nearestFix: nearestFix,
+                                                        positionIsLiveAircraft: liveAircraft != nil)
         let arrivalPhase = [.descent, .approach, .landing, .taxiIn, .parked].contains(phase)
         let nearMETAR = arrivalPhase ? (destinationMETAR ?? departureMETAR) : (departureMETAR ?? destinationMETAR)
         // Only SIGMETs whose area lies along the route may raise the ride index — a

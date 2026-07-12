@@ -24,8 +24,11 @@ struct RideReportEngine {
 
         let bandDisplay = bandPhrase(lead.altitudeBand, spoken: false)
         let bandSpoken = bandPhrase(lead.altitudeBand, spoken: true)
-        let distDisplay = distancePhrase(lead.distanceAheadNM, spoken: false)
-        let distSpoken = distancePhrase(lead.distanceAheadNM, spoken: true)
+        // Only voice a distance when it was measured from the live aircraft — a route-start
+        // fallback would read as distance-from-origin, not distance ahead of the aircraft.
+        let leadDistance = lead.distanceIsFromAircraft ? lead.distanceAheadNM : nil
+        let distDisplay = distancePhrase(leadDistance, spoken: false)
+        let distSpoken = distancePhrase(leadDistance, spoken: true)
         let fix = lead.nearFix.flatMap { $0.isEmpty ? nil : $0 }
 
         switch worst.severity {
@@ -76,8 +79,11 @@ struct RideReportEngine {
         let altFt = lead?.reportedAltitudeFt ?? (referenceAltitudeFt > 0 ? referenceAltitudeFt : nil)
         let altDisplay = altFt.map { " at \(engine.formatAltDisplay($0))" } ?? ""
         let altSpoken = altFt.map { " at \(Phonetic.altitude($0))" } ?? ""
-        let distDisplay = distancePhrase(lead?.distanceAheadNM, spoken: false)
-        let distSpoken = distancePhrase(lead?.distanceAheadNM, spoken: true)
+        // Only voice a distance when it was measured from the live aircraft — a route-start
+        // fallback would read as distance-from-origin, not distance ahead of the aircraft.
+        let leadDistance = (lead?.distanceIsFromAircraft ?? false) ? lead?.distanceAheadNM : nil
+        let distDisplay = distancePhrase(leadDistance, spoken: false)
+        let distSpoken = distancePhrase(leadDistance, spoken: true)
         let fix = lead?.nearFix.flatMap { $0.isEmpty ? nil : $0 }
         let nearDisplay = fix.map { " near \($0)" } ?? ""
         let nearSpoken = fix.map { " near \(Phonetic.spellToken($0, icao: icao))" } ?? ""
