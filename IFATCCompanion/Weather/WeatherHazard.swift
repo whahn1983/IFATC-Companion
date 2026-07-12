@@ -124,12 +124,36 @@ struct RadarBoundingBox: Equatable {
     }
 
     /// Build a box from a MapKit coordinate region (the map's visible extent).
+    ///
+    /// Longitude is linear in Web Mercator, so the east/west edges are just
+    /// `center ± longitudeDelta/2`. Latitude is **not**: MapKit draws the map in Web
+    /// Mercator (EPSG:3857) with `region.center` at the view's centre, so
+    /// reconstructing the north/south edges as `center ± latitudeDelta/2` in *degrees*
+    /// yields a box that is off-centre in Mercator — and the offset grows with the
+    /// span. An overlay requested for that box (the NASA GIBS / OPERA WMS layers all
+    /// export in 3857) therefore drifts vertically as the map is zoomed instead of
+    /// simply scaling. Placing the edges symmetrically about the centre *in Mercator*
+    /// keeps the overlay registered at every zoom level.
     init(region: MKCoordinateRegion) {
-        let latHalf = region.span.latitudeDelta / 2
         let lonHalf = region.span.longitudeDelta / 2
-        self.init(minLatitude: region.center.latitude - latHalf,
+        let centerLat = region.center.latitude
+        let latHalf = region.span.latitudeDelta / 2
+
+        // Normalized (Earth-radius-free) Web-Mercator y and its inverse; the radius
+        // cancels because we only use y to re-centre the latitude span symmetrically.
+        func mercatorY(_ lat: Double) -> Double {
+            let clamped = min(85.05112878, max(-85.05112878, lat))
+            return log(tan(.pi / 4 + clamped * .pi / 180 / 2))
+        }
+        func latitude(fromMercatorY y: Double) -> Double {
+            (2 * atan(exp(y)) - .pi / 2) * 180 / .pi
+        }
+
+        let yCenter = mercatorY(centerLat)
+        let yHalf = (mercatorY(centerLat + latHalf) - mercatorY(centerLat - latHalf)) / 2
+        self.init(minLatitude: latitude(fromMercatorY: yCenter - yHalf),
                   minLongitude: region.center.longitude - lonHalf,
-                  maxLatitude: region.center.latitude + latHalf,
+                  maxLatitude: latitude(fromMercatorY: yCenter + yHalf),
                   maxLongitude: region.center.longitude + lonHalf)
     }
 
