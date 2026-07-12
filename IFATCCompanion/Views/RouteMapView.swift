@@ -15,20 +15,20 @@ struct RouteMapView: View {
 
     private let airports = AirportDatabase.shared
 
-    // Resolve the airport marker to, in order: the built-in coordinate database, the
-    // coordinate Infinite Flight reports for the field in the flight plan (covers the
-    // whole world), and finally the first/last located enroute fix. The middle step is
-    // what keeps the departure/destination markers on the real field for airports
-    // outside the small built-in US list — without it they snapped to the first/last
-    // enroute fix, drawing the route short of both ends ("shrunk").
+    // Resolve the airport marker to, in order: the coordinate Infinite Flight reports for
+    // the field in the flight plan (the source of truth, covering the whole world), then
+    // the built-in hub table as a last resort for a manually-entered ICAO IF isn't
+    // reporting, and finally the first/last located enroute fix. IF wins over the built-in
+    // list so the marker sits on the field the sim is actually flying to — and matches the
+    // weather corridor and deviation math, which now resolve the same way.
     private var depCoord: CLLocationCoordinate2D? {
-        airports.coordinate(for: model.flightPlan.departure)
-            ?? model.flightPlan.departureCoordinate
+        model.flightPlan.departureCoordinate
+            ?? airports.coordinate(for: model.flightPlan.departure)
             ?? model.flightPlan.firstWaypointCoordinate
     }
     private var destCoord: CLLocationCoordinate2D? {
-        airports.coordinate(for: model.flightPlan.destination)
-            ?? model.flightPlan.destinationCoordinate
+        model.flightPlan.destinationCoordinate
+            ?? airports.coordinate(for: model.flightPlan.destination)
             ?? model.flightPlan.lastWaypointCoordinate
     }
 

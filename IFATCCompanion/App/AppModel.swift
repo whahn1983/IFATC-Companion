@@ -270,6 +270,11 @@ final class AppModel: ObservableObject {
     private var deviationsLocked = false
     /// Identifies the route `lockedDeviations` was computed for; a change re-locks a fresh set.
     private var lockedRouteKey = ""
+    /// Monotonic token identifying the current deviation solve. The lock renders an immediate
+    /// quick set, then an async refine replaces it with the fully-optimized set; the refine
+    /// applies its result only while this token (and `lockedRouteKey`) are unchanged, so a
+    /// newer solve or a route change supersedes an in-flight refine instead of clobbering.
+    private var deviationRefineToken = 0
     /// The active simulated weather-deviation interaction (state + assignments).
     @Published var weatherDeviation = WeatherDeviationContext()
     /// A read-only snapshot for the Weather Diagnostics panel.
@@ -1819,8 +1824,7 @@ final class AppModel: ObservableObject {
 
         // Initial departure heading: bearing from the field toward the first fix,
         // or the destination when no located fixes are available.
-        let depCoord = airports.coordinate(for: flightPlan.departure)
-            ?? flightPlan.departureCoordinate
+        let depCoord = resolvedDepartureCoordinate()
         let firstWaypoint = flightPlan.waypoints.first
         let firstLocated = flightPlan.waypoints.first { $0.coordinate != nil }
         // The "resume own navigation, direct …" fix in the departure climb: once
@@ -1843,8 +1847,7 @@ final class AppModel: ObservableObject {
             }
         }.first
         let intercept = (sidFirstFix ?? firstLocated)?.coordinate
-            ?? airports.coordinate(for: flightPlan.destination)
-            ?? flightPlan.destinationCoordinate
+            ?? resolvedDestinationCoordinate()
         let depHeading: Int
         if let depCoord, let intercept {
             depHeading = Int(Geo.bearing(from: depCoord, to: intercept).rounded())
@@ -2201,8 +2204,7 @@ final class AppModel: ObservableObject {
         let fallback = ApproachIntercept.normalizedHeading(aircraftState.heading ?? 270)
         guard let finalCourse = RunwayDatabase.heading(forRunway: runway),
               let aircraft = aircraftState.coordinate, aircraft.isValid,
-              let airport = airports.coordinate(for: flightPlan.destination)
-                ?? flightPlan.destinationCoordinate, airport.isValid else {
+              let airport = resolvedDestinationCoordinate(), airport.isValid else {
             return fallback
         }
         return ApproachIntercept.heading(finalCourse: finalCourse,
@@ -2383,10 +2385,8 @@ final class AppModel: ObservableObject {
     /// bounded to the commercial cruise band. Nil when nothing supports one.
     private func computeSmootherAltitude(referenceAltFt: Int) -> SmootherAltitude? {
         let liveAircraft = aircraftState.coordinate
-        guard let pos = liveAircraft ?? airports.coordinate(for: flightPlan.departure)
-                ?? flightPlan.departureCoordinate else { return nil }
-        let end = airports.coordinate(for: flightPlan.destination)
-            ?? flightPlan.destinationCoordinate
+        guard let pos = liveAircraft ?? resolvedDepartureCoordinate() else { return nil }
+        let end = resolvedDestinationCoordinate()
             ?? flightPlan.nextWaypoint(from: pos)?.coordinate
         // All route-corridor PIREPs regardless of altitude — the ±band filter would hide
         // the very levels a smoother-ride suggestion is drawn from. This path reads only
@@ -2458,8 +2458,11 @@ final class AppModel: ObservableObject {
     private func pirepBoundingBox(padDegrees: Double = 2.0) -> String? {
         var coords: [CLLocationCoordinate2D] = []
         if let c = aircraftState.coordinate, c.isValid { coords.append(c) }
-        for icao in [flightPlan.departure, flightPlan.destination, flightPlan.alternate] {
-            if let c = airports.coordinate(for: icao), c.isValid { coords.append(c) }
+        // Endpoints resolve via Infinite Flight first (covers the whole world); only the
+        // alternate falls back to the built-in hub table, since IF doesn't report it.
+        for c in [resolvedDepartureCoordinate(), resolvedDestinationCoordinate(),
+                  airports.coordinate(for: flightPlan.alternate)] {
+            if let c, c.isValid { coords.append(c) }
         }
         if let near = aircraftState.nearestAirport, let c = airports.coordinate(for: near), c.isValid {
             coords.append(c)
@@ -2564,14 +2567,12 @@ final class AppModel: ObservableObject {
         // departure only so PIREPs can still be filtered to the route corridor — in that
         // case the distance would be origin-relative, so it is flagged and not shown.
         let liveAircraft = aircraftState.coordinate
-        guard let pos = liveAircraft ?? airports.coordinate(for: flightPlan.departure)
-                ?? flightPlan.departureCoordinate else {
+        guard let pos = liveAircraft ?? resolvedDepartureCoordinate() else {
             rideReportItems = []
             routeSigmets = []
             return
         }
-        let end = airports.coordinate(for: flightPlan.destination)
-            ?? flightPlan.destinationCoordinate
+        let end = resolvedDestinationCoordinate()
             ?? flightPlan.nextWaypoint(from: pos)?.coordinate
         let liveAlt = aircraftState.altitudeMSL ?? Double(flightPlan.cruiseAltitude)
         // Ride reports describe the cruise portion of the route ahead, so evaluate a
@@ -2663,8 +2664,8 @@ final class AppModel: ObservableObject {
     /// NOAA → OPERA → NASA order. Pure/cheap; safe to call every tick.
     func recomputeWeatherHazards() {
         let positions = [aircraftState.coordinate,
-                         airports.coordinate(for: flightPlan.departure) ?? flightPlan.departureCoordinate,
-                         airports.coordinate(for: flightPlan.destination) ?? flightPlan.destinationCoordinate].compactMap { $0 }
+                         resolvedDepartureCoordinate(),
+                         resolvedDestinationCoordinate()].compactMap { $0 }
         let enabled = settings.noaaRadarOverlay == .autoWhereAvailable
         let provider = enabled ? precipService.selectedProvider(for: positions) : nil
         let coverage = enabled && provider != nil
@@ -2686,7 +2687,7 @@ final class AppModel: ObservableObject {
         let hazards = buildWeatherHazards(provider: provider)
         weatherHazards = hazards
 
-        guard let pos = aircraftState.coordinate ?? airports.coordinate(for: flightPlan.departure),
+        guard let pos = aircraftState.coordinate ?? resolvedDepartureCoordinate(),
               pos.isValid else {
             activeWeatherConflict = nil
             weatherDeviationPreviews = []
@@ -2812,16 +2813,57 @@ final class AppModel: ObservableObject {
     private func recomputeLockedDeviations() {
         guard radarOverlay.isEnabled, radarOverlay.coverageAvailable, !weatherHazards.isEmpty else {
             lockedDeviations = []
+            deviationRefineToken &+= 1   // cancel any in-flight refine — the set is empty now
             return
         }
-        guard let origin = airports.coordinate(for: flightPlan.departure)
-                ?? flightPlan.departureCoordinate
+        guard let origin = resolvedDepartureCoordinate()
                 ?? flightPlan.firstWaypointCoordinate
                 ?? aircraftState.coordinate, origin.isValid else {
             lockedDeviations = []
+            deviationRefineToken &+= 1
             return
         }
         let cap = weatherRejoinCap()
+        // Mock Mode computes the full set synchronously: its cells are hand-placed and the
+        // search is instant, so there's no async radar fetch to bridge and nothing to preview
+        // against — and the deterministic demo/tests expect the finished geometry in one pass.
+        guard !settings.mockMode else {
+            lockedDeviations = computeDeviations(from: origin, cap: cap, quick: false)
+            deviationRefineToken &+= 1   // no refine pending in mock
+            return
+        }
+        // Live mode: render an easy clean parallel hug for every system it can solve fast,
+        // immediately — so *a* reroute shows the moment live radar lands, visible confirmation
+        // the flow isn't stuck while the full search runs.
+        lockedDeviations = computeDeviations(from: origin, cap: cap, quick: true)
+        // Refine pass: replace with the fully-optimized set (gap doglegs, edge-following hull
+        // hugs, return-leg repair, multi-leg wrap) once ready. One atomic swap on the main
+        // actor, after a yield so the quick line paints first, guarded by a token + the route
+        // key so a route change or a newer solve mid-refine supersedes it instead of clobbering.
+        // The full search considers the quick hugs plus more, so the swap only tightens or adds
+        // lines — it never drops a system the quick pass already drew for the same weather. The
+        // active line / faint previews are re-selected from `lockedDeviations` on the next
+        // telemetry tick (frequent in live mode), so the refined geometry appears a tick later
+        // — we deliberately don't re-run the selection here, as it drives hysteresis, lifecycle
+        // rollback and the auto-issued ATC turns, none of which may fire off a background swap.
+        deviationRefineToken &+= 1
+        let token = deviationRefineToken
+        let key = lockedRouteKey
+        Task { @MainActor [weak self] in
+            await Task.yield()
+            guard let self, token == self.deviationRefineToken, key == self.lockedRouteKey else { return }
+            let refined = self.computeDeviations(from: origin, cap: cap, quick: false)
+            guard token == self.deviationRefineToken, key == self.lockedRouteKey else { return }
+            self.lockedDeviations = refined
+        }
+    }
+
+    /// Walk the filed route from `origin` to the destination and produce the deviation around
+    /// each qualifying weather system (see `recomputeLockedDeviations`). With `quick`, each
+    /// line is a single clean parallel hug (fast, for the immediate render); otherwise the full
+    /// optimized search runs. Bounded so it can't run away.
+    private func computeDeviations(from origin: CLLocationCoordinate2D,
+                                   cap: CLLocationCoordinate2D?, quick: Bool) -> [RouteWeatherConflict] {
         var results: [RouteWeatherConflict] = []
         var startPoint = origin
         var steps = 0
@@ -2846,7 +2888,7 @@ final class AppModel: ObservableObject {
             if let conflict = conflictDetector.detectConflict(
                     position: detectPos, course: course, groundspeedKnots: aircraftState.groundSpeed,
                     phase: .cruise, hazards: weatherHazards, waypoints: flightPlan.waypoints,
-                    routeAhead: ahead, rejoinCap: cap),
+                    routeAhead: ahead, rejoinCap: cap, quick: quick),
                conflict.deviationPath.count >= 2,
                // Only keep a line that actually rounds weather — never a degenerate line
                // drawn out in clear air — so every mint line hugs a real system.
@@ -2867,7 +2909,7 @@ final class AppModel: ObservableObject {
                 break                  // reached the end of the route
             }
         }
-        lockedDeviations = results
+        return results
     }
 
     /// Re-run the whole-route deviation search now and re-lock the result — the action
@@ -2940,13 +2982,29 @@ final class AppModel: ObservableObject {
         return parts.joined(separator: "|")
     }
 
+    /// The departure field's coordinate, **Infinite Flight's reported position first**
+    /// (the source of truth for what the sim is actually flying), then the built-in hub
+    /// table only as a last resort for a manually-entered ICAO that IF isn't reporting.
+    /// `AirportDatabase` is 21 US hubs, so for essentially every live flight this resolves
+    /// via IF — and where the DB *does* have the field, IF's position still wins, so the
+    /// drawn route, the weather corridor, and the deviation math all agree on one location.
+    private func resolvedDepartureCoordinate() -> CLLocationCoordinate2D? {
+        flightPlan.departureCoordinate ?? airports.coordinate(for: flightPlan.departure)
+    }
+
+    /// The destination field's coordinate, Infinite Flight's reported position first, then
+    /// the built-in hub table as a last resort. See `resolvedDepartureCoordinate`.
+    private func resolvedDestinationCoordinate() -> CLLocationCoordinate2D? {
+        flightPlan.destinationCoordinate ?? airports.coordinate(for: flightPlan.destination)
+    }
+
     /// The full filed-route polyline: departure, located enroute fixes, destination.
     private func fullRoutePolyline() -> [CLLocationCoordinate2D] {
         var full: [CLLocationCoordinate2D] = []
-        if let dep = airports.coordinate(for: flightPlan.departure) ?? flightPlan.departureCoordinate ?? flightPlan.firstWaypointCoordinate,
+        if let dep = resolvedDepartureCoordinate() ?? flightPlan.firstWaypointCoordinate,
            dep.isValid { full.append(dep) }
         full.append(contentsOf: flightPlan.waypoints.compactMap { $0.coordinate }.filter { $0.isValid })
-        if let dest = airports.coordinate(for: flightPlan.destination) ?? flightPlan.destinationCoordinate ?? flightPlan.lastWaypointCoordinate,
+        if let dest = resolvedDestinationCoordinate() ?? flightPlan.lastWaypointCoordinate,
            dest.isValid { full.append(dest) }
         return full
     }
@@ -3086,7 +3144,7 @@ final class AppModel: ObservableObject {
             radarOverlay.sampledCells = []
             return
         }
-        guard let pos = aircraftState.coordinate ?? airports.coordinate(for: flightPlan.departure),
+        guard let pos = aircraftState.coordinate ?? resolvedDepartureCoordinate(),
               pos.isValid else { return }   // no position — keep the last good cells
 
         // The whole flight plan ahead: the aircraft plus every located fix still in front
@@ -3190,10 +3248,10 @@ final class AppModel: ObservableObject {
         // The full filed route polyline, in order: departure, located enroute fixes,
         // destination — exactly the line drawn on the map.
         var full: [CLLocationCoordinate2D] = []
-        if let dep = airports.coordinate(for: flightPlan.departure) ?? flightPlan.departureCoordinate ?? flightPlan.firstWaypointCoordinate,
+        if let dep = resolvedDepartureCoordinate() ?? flightPlan.firstWaypointCoordinate,
            dep.isValid { full.append(dep) }
         full.append(contentsOf: flightPlan.waypoints.compactMap { $0.coordinate }.filter { $0.isValid })
-        if let dest = airports.coordinate(for: flightPlan.destination) ?? flightPlan.destinationCoordinate ?? flightPlan.lastWaypointCoordinate,
+        if let dest = resolvedDestinationCoordinate() ?? flightPlan.lastWaypointCoordinate,
            dest.isValid { full.append(dest) }
         guard full.count >= 2 else { return full }
 
@@ -3237,11 +3295,11 @@ final class AppModel: ObservableObject {
     /// The course to fly for the corridor: bearing to the next un-passed fix, else
     /// to the destination, else the aircraft heading.
     private func currentCourse(from pos: CLLocationCoordinate2D) -> Double {
-        let origin = airports.coordinate(for: flightPlan.departure) ?? flightPlan.departureCoordinate
+        let origin = resolvedDepartureCoordinate()
         if let next = flightPlan.nextUnpassedWaypoint(from: pos, origin: origin)?.coordinate {
             return Geo.bearing(from: pos, to: next)
         }
-        if let dest = airports.coordinate(for: flightPlan.destination) ?? flightPlan.destinationCoordinate ?? flightPlan.lastWaypointCoordinate {
+        if let dest = resolvedDestinationCoordinate() ?? flightPlan.lastWaypointCoordinate {
             return Geo.bearing(from: pos, to: dest)
         }
         return aircraftState.heading ?? 0
@@ -3263,7 +3321,7 @@ final class AppModel: ObservableObject {
             // one close enough to be worked now.
             let stage = c.withinTacticalRange ? "" : " — monitoring"
             d.routeConflictStatus = "\(c.severity.displayLabel) \(c.hazard.source.label), \(Int(c.distanceAheadNM.rounded())) NM\(stage)"
-        } else if let pos = aircraftState.coordinate ?? airports.coordinate(for: flightPlan.departure),
+        } else if let pos = aircraftState.coordinate ?? resolvedDepartureCoordinate(),
                   let onRoute = conflictDetector.nearestRouteHazard(
                     route: upcomingRouteCoordinates(from: pos), from: pos, hazards: weatherHazards) {
             // No active deviation selected, but qualifying radar still sits on the route
@@ -3514,7 +3572,7 @@ final class AppModel: ObservableObject {
     /// Falls back to offsetting the current heading (or the filed course) by the
     /// recommended amount when no usable deviation path is available.
     private func weatherDeviationHeading(direction: DeviationDirection) -> Int {
-        let pos = aircraftState.coordinate ?? airports.coordinate(for: flightPlan.departure)
+        let pos = aircraftState.coordinate ?? resolvedDepartureCoordinate()
         if let pos, pos.isValid,
            let apex = activeWeatherConflict?.deviationPath.dropFirst().first, apex.isValid {
             let bearing = Geo.bearing(from: pos, to: apex)
@@ -3740,7 +3798,7 @@ final class AppModel: ObservableObject {
         if let approachFix = flightPlan.approachStartCoordinate, approachFix.isValid {
             return approachFix
         }
-        if let dest = airports.coordinate(for: flightPlan.destination) ?? flightPlan.destinationCoordinate,
+        if let dest = resolvedDestinationCoordinate(),
            dest.isValid {
             return dest
         }

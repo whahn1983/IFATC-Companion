@@ -221,7 +221,8 @@ struct RouteWeatherConflictDetector {
                         hazards: [WeatherHazard],
                         waypoints: [Waypoint],
                         routeAhead: [CLLocationCoordinate2D] = [],
-                        rejoinCap: CLLocationCoordinate2D? = nil) -> RouteWeatherConflict? {
+                        rejoinCap: CLLocationCoordinate2D? = nil,
+                        quick: Bool = false) -> RouteWeatherConflict? {
         guard position.isValid, !hazards.isEmpty else { return nil }
         let lookahead = lookaheadNM(phase: phase, groundspeed: groundspeedKnots)
         let flyCourse = routeAwareCourse(position: position, fallback: course, routeAhead: routeAhead,
@@ -233,7 +234,8 @@ struct RouteWeatherConflictDetector {
                                            hazards: hazards, lookahead: lookahead)
         guard var conflict = detect(position: position, course: flyCourse, groundspeedKnots: groundspeedKnots,
                                     phase: phase, hazards: hazards, waypoints: waypoints,
-                                    rejoinOverride: routeRejoin, rejoinCap: rejoinCap) else { return nil }
+                                    rejoinOverride: routeRejoin, rejoinCap: rejoinCap,
+                                    quick: quick) else { return nil }
         // End the drawn line exactly where it first rejoins the filed route. The
         // deviation begins on the route, turns off it, and must come back to intercept it
         // **once** — it can't cross the route and loop back to intercept a second time.
@@ -403,7 +405,8 @@ struct RouteWeatherConflictDetector {
                         hazards: [WeatherHazard],
                         waypoints: [Waypoint],
                         rejoinOverride: CLLocationCoordinate2D? = nil,
-                        rejoinCap: CLLocationCoordinate2D? = nil) -> RouteWeatherConflict? {
+                        rejoinCap: CLLocationCoordinate2D? = nil,
+                        quick: Bool = false) -> RouteWeatherConflict? {
         guard position.isValid, !hazards.isEmpty else { return nil }
         let lookahead = lookaheadNM(phase: phase, groundspeed: groundspeedKnots)
         let corridorEnd = Geo.destination(from: position, bearingDegrees: course, distanceNM: lookahead)
@@ -683,35 +686,55 @@ struct RouteWeatherConflictDetector {
         // 3-point single-apex triangle. The selector prefers a clear parallel hug over a
         // clear triangle, so the mint line parallels the weather instead of cutting one
         // wide turn around it.
-        var candidates: [(path: [CLLocationCoordinate2D], target: Double, parallel: Bool)] =
-            solution.targets.filter { abs($0) <= config.searchHalfWidthNM }
-                .map { (path: finalize(apexPath(for: $0)), target: $0, parallel: false) }
-        for edge in [solution.leftEdge, solution.rightEdge] where abs(edge) <= config.searchHalfWidthNM {
-            candidates.append((path: finalize(hugPath(offset: edge, minLead: 0)), target: edge, parallel: true))
-        }
-        for gentle in [true, false] {
+        var candidates: [(path: [CLLocationCoordinate2D], target: Double, parallel: Bool)] = []
+        if quick {
+            // Fast pass: only the tightest clearing parallel hug on each side (a gentle
+            // ~30° turn-out) — clearing every cell where it can, else at least the intense
+            // cores. No gap doglegs, no edge-following hull hugs, and (below) no return-leg
+            // repair or multi-leg wrap. This yields an immediate clean parallel hug so the
+            // pilot sees *a* reroute at once; the refine pass replaces it with the fully
+            // optimized line. If nothing tight clears here, return nil and let the refine
+            // pass draw this system rather than emit a degenerate straight-through line.
             for side in [1.0, -1.0] {
-                // The tightest hug that clears EVERY cell (the ideal, fully-clear option).
-                if let tight = tightHug(side: side, gentle: gentle, cells: cellBerths,
+                if let tight = tightHug(side: side, gentle: true, cells: cellBerths,
                                         maxOffset: config.searchHalfWidthNM) {
                     candidates.append((path: tight.path, target: tight.target, parallel: true))
-                }
-                // The tightest hug that clears the INTENSE cores but may skirt lighter
-                // precip — the close-in option that keeps the line tight to a broad area
-                // of moderate returns instead of forcing a wide detour around all of it.
-                if let tight = tightHug(side: side, gentle: gentle, cells: intenseBerths,
-                                        maxOffset: config.searchHalfWidthNM) {
+                } else if let tight = tightHug(side: side, gentle: true, cells: intenseBerths,
+                                               maxOffset: config.searchHalfWidthNM) {
                     candidates.append((path: tight.path, target: tight.target, parallel: true))
                 }
             }
-        }
-        // Variable-offset edge-following hugs (the multi-leg path for staggered / complex
-        // shapes). Added on top of the fixed-offset hugs; the shortest-clear selector picks
-        // whichever is shorter, so this only wins where following the edge genuinely beats
-        // paralleling at the widest offset.
-        for side in [1.0, -1.0] {
-            if let hull = hullHugPath(side: side), abs(hull.target) <= config.searchHalfWidthNM {
-                candidates.append((path: finalize(hull.path), target: hull.target, parallel: true))
+            guard !candidates.isEmpty else { return nil }
+        } else {
+            candidates = solution.targets.filter { abs($0) <= config.searchHalfWidthNM }
+                .map { (path: finalize(apexPath(for: $0)), target: $0, parallel: false) }
+            for edge in [solution.leftEdge, solution.rightEdge] where abs(edge) <= config.searchHalfWidthNM {
+                candidates.append((path: finalize(hugPath(offset: edge, minLead: 0)), target: edge, parallel: true))
+            }
+            for gentle in [true, false] {
+                for side in [1.0, -1.0] {
+                    // The tightest hug that clears EVERY cell (the ideal, fully-clear option).
+                    if let tight = tightHug(side: side, gentle: gentle, cells: cellBerths,
+                                            maxOffset: config.searchHalfWidthNM) {
+                        candidates.append((path: tight.path, target: tight.target, parallel: true))
+                    }
+                    // The tightest hug that clears the INTENSE cores but may skirt lighter
+                    // precip — the close-in option that keeps the line tight to a broad area
+                    // of moderate returns instead of forcing a wide detour around all of it.
+                    if let tight = tightHug(side: side, gentle: gentle, cells: intenseBerths,
+                                            maxOffset: config.searchHalfWidthNM) {
+                        candidates.append((path: tight.path, target: tight.target, parallel: true))
+                    }
+                }
+            }
+            // Variable-offset edge-following hugs (the multi-leg path for staggered / complex
+            // shapes). Added on top of the fixed-offset hugs; the shortest-clear selector picks
+            // whichever is shorter, so this only wins where following the edge genuinely beats
+            // paralleling at the widest offset.
+            for side in [1.0, -1.0] {
+                if let hull = hullHugPath(side: side), abs(hull.target) <= config.searchHalfWidthNM {
+                    candidates.append((path: finalize(hull.path), target: hull.target, parallel: true))
+                }
             }
         }
 
@@ -790,21 +813,30 @@ struct RouteWeatherConflictDetector {
         if !pathIsClear(deviationPath, cells: intenseBerths, origin: position) {
             deviationPath = chosen.path
         }
-        // Guarantee the WHOLE drawn path — the return leg included — clears every cell. When
-        // the fixed rejoin left the return leg cutting through weather (nothing there was
-        // fully clear), hold the offset longer and turn back farther past it, widening only
-        // if needed, until the entire path is clear. A path already clear is untouched.
-        deviationPath = extendedToClear(deviationPath, position: position, course: course,
-                                        cells: cellBerths, capAlong: capAlong)
-        // Still cutting weather? The storm wraps the route through several turns and no
-        // single-jog hug can thread it. Route around the WHOLE system with a multi-leg hug
-        // down each side and take the shortest that actually clears every cell — so a line
-        // is drawn (over the top / around the end) instead of none at all.
-        if !pathIsClear(deviationPath, cells: cellBerths, origin: position) {
-            let multi = [1.0, -1.0].compactMap { wideHullHug(side: $0) }
-                .filter { $0.count >= 2 && pathIsClear($0, cells: cellBerths, origin: position) }
-                .min { pathLengthNM($0) < pathLengthNM($1) }
-            if let multi { deviationPath = multi }
+        if quick {
+            // Quick pass: skip the iterative return-leg repair and the multi-leg wrap. If the
+            // reshaped lead-in / lead-out clipped any cell, fall back to the already-clear tight
+            // hug; the refine pass runs the full repair and replaces this line.
+            if !pathIsClear(deviationPath, cells: cellBerths, origin: position) {
+                deviationPath = chosen.path
+            }
+        } else {
+            // Guarantee the WHOLE drawn path — the return leg included — clears every cell. When
+            // the fixed rejoin left the return leg cutting through weather (nothing there was
+            // fully clear), hold the offset longer and turn back farther past it, widening only
+            // if needed, until the entire path is clear. A path already clear is untouched.
+            deviationPath = extendedToClear(deviationPath, position: position, course: course,
+                                            cells: cellBerths, capAlong: capAlong)
+            // Still cutting weather? The storm wraps the route through several turns and no
+            // single-jog hug can thread it. Route around the WHOLE system with a multi-leg hug
+            // down each side and take the shortest that actually clears every cell — so a line
+            // is drawn (over the top / around the end) instead of none at all.
+            if !pathIsClear(deviationPath, cells: cellBerths, origin: position) {
+                let multi = [1.0, -1.0].compactMap { wideHullHug(side: $0) }
+                    .filter { $0.count >= 2 && pathIsClear($0, cells: cellBerths, origin: position) }
+                    .min { pathLengthNM($0) < pathLengthNM($1) }
+                if let multi { deviationPath = multi }
+            }
         }
         let throughPoint = deviationPath.count >= 2 ? deviationPath[1] : chosen.path[1]
 
