@@ -226,8 +226,13 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
    including the faint strategic previews **from the gate before takeoff**. To avoid the
    old whole-route problem (a fixed grid over a long route under-resolved storms and
    "cleared" weather still dead ahead), the **sample resolution scales with the corridor
-   size** to hold ~2 NM per pixel, floored for short routes and capped for transcon ones
-   (`RadarImageSampler.sampleGrid`). Sampling is **continuous** — it resamples so the
+   size** to hold ~2 NM per pixel, floored for short routes and capped for transcon ones.
+   The sampled image is sized to the corridor bbox's **exact Web-Mercator aspect ratio**
+   (`RadarImageSampler.mercatorSampleSize`), so the EPSG:3857 render comes back registered
+   to that bbox: a mismatched aspect makes the source adjust the returned extent (ArcGIS
+   ImageServer) or stretch the render (WMS), which would drift every sampled cell — pulled
+   toward the corridor's centre, tens of NM — off the displayed radar. Sampling is
+   **continuous** — it resamples so the
    reroutes track the weather rather than going stale; because the region is the whole
    route (not aircraft-relative) it barely changes as the aircraft flies, so
    `maybeResamplePrecipitation` is driven mainly by staleness (~60 s) with a large
@@ -238,8 +243,10 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
    deviation is offered (rather than one invented from coarser data), unless the user
    opts in to satellite-estimate deviations (see Coverage limitations), in which case
    the NASA estimate is sampled with the IMERG palette and tagged low-confidence.
-   The sampled cells drive geometry only and are never drawn (the radar image overlay
-   already shows the precipitation). Radar is always spoken as *"precipitation"*,
+   The sampled cells drive geometry only and are not drawn on the map by default (the
+   radar image overlay already shows the precipitation); an opt-in Diagnostics toggle
+   ("Show sampled cells on map") can draw them as colored polygons to confirm they line up
+   with the radar returns. Radar is always spoken as *"precipitation"*,
    never *"turbulence"*.
    - **Re-evaluated on a flight-plan change.** Detection reads the live flight plan
      (waypoints, upcoming route, rejoin cap) fresh on every telemetry tick, so a plan

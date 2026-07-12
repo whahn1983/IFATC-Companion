@@ -143,6 +143,54 @@ enum RadarImageSampler {
         return (columns: dim(lonSpanNM), rows: dim(latSpanNM))
     }
 
+    /// The `columns × rows` sample size for a radar export of `bbox`, sized so its aspect
+    /// ratio matches the bbox's exact **Web-Mercator** width:height.
+    ///
+    /// The live NOAA/NASA overlays render in EPSG:3857 (the projection MapKit draws, and
+    /// the one the pixel→lat inversion in `boundingPolygon` assumes). If the requested
+    /// image's aspect ratio differs from the bbox's Mercator aspect, the source does not
+    /// give back the extent we asked for: an ArcGIS ImageServer **expands the returned
+    /// extent** to fit the image, and a WMS **stretches** the render — either way the image
+    /// covers a different area than the `bbox` the sampler uses to place pixels, so every
+    /// sampled cell drifts (tens of NM, pulled toward the corridor's centre) from the
+    /// displayed radar. Sizing from `sampleGrid` alone did this: it clamps each axis to
+    /// `[minDim, maxDim]` independently and sizes from lat/lon NM (whose single-`cos(lat)`
+    /// aspect also diverges over a tall corridor), so the two axes rarely held the Mercator
+    /// aspect.
+    ///
+    /// This keeps `sampleGrid`'s ~`targetNMPerPixel` resolution/cap on the **longer**
+    /// Mercator axis, then derives the shorter axis from the exact Mercator aspect so the
+    /// image is registered to `bbox` and the inverse-Mercator cell coordinates land on the
+    /// real returns. Pure and unit-tested.
+    static func mercatorSampleSize(bbox: RadarBoundingBox,
+                                   targetNMPerPixel: Double = 2, minDim: Int = 160, maxDim: Int = 640)
+        -> (columns: Int, rows: Int) {
+        let midLat = (bbox.minLatitude + bbox.maxLatitude) / 2
+        let latSpanNM = (bbox.maxLatitude - bbox.minLatitude) * 60
+        let lonSpanNM = (bbox.maxLongitude - bbox.minLongitude) * 60 * max(0.2, cos(midLat * .pi / 180))
+        let base = sampleGrid(latSpanNM: latSpanNM, lonSpanNM: lonSpanNM,
+                              targetNMPerPixel: targetNMPerPixel, minDim: minDim, maxDim: maxDim)
+
+        // Exact Web-Mercator span (radius omitted — it cancels in the aspect). x ∝ longitude
+        // in radians so it matches the units of `mercatorY`; y is the Mercator projection of
+        // latitude, so a row is linear in it (see `PixelProjection.webMercator`).
+        let mercWidth = (bbox.maxLongitude - bbox.minLongitude) * .pi / 180
+        let mercHeight = mercatorY(bbox.maxLatitude) - mercatorY(bbox.minLatitude)
+        guard mercWidth > 0, mercHeight > 0 else { return base }
+
+        // Keep the resolution budget on the longer axis; derive the shorter from the exact
+        // Mercator aspect so `columns / rows == mercWidth / mercHeight`.
+        if mercWidth >= mercHeight {
+            let columns = base.columns
+            let rows = Swift.max(8, Int((Double(columns) * mercHeight / mercWidth).rounded()))
+            return (columns: columns, rows: rows)
+        } else {
+            let rows = base.rows
+            let columns = Swift.max(8, Int((Double(rows) * mercWidth / mercHeight).rounded()))
+            return (columns: columns, rows: rows)
+        }
+    }
+
     // MARK: - Grid → cells
 
     /// Cluster a grid of per-pixel intensities into moderate-or-greater

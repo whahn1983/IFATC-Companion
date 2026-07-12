@@ -178,4 +178,56 @@ final class RadarImageSamplerTests: XCTestCase {
         XCTAssertEqual(big.rows, 640)
         XCTAssertEqual(big.columns, 640)
     }
+
+    // MARK: - Mercator-aspect sample size (live NOAA/NASA export)
+
+    /// The exact Web-Mercator width:height of a box, the aspect the 3857 render is
+    /// registered to. Mirrors `mercatorSampleSize`'s own span math.
+    private func mercatorAspect(_ box: RadarBoundingBox) -> Double {
+        func y(_ lat: Double) -> Double {
+            let c = min(85.05112878, max(-85.05112878, lat))
+            return log(tan(.pi / 4 + c * .pi / 180 / 2))
+        }
+        let w = (box.maxLongitude - box.minLongitude) * .pi / 180
+        let h = y(box.maxLatitude) - y(box.minLatitude)
+        return w / h
+    }
+
+    func testMercatorSampleSizeMatchesBboxMercatorAspect() {
+        // A wide, mid-latitude corridor: sizing from lat/lon NM with an independent
+        // `[160, 640]` clamp per axis would floor the short (lat) axis and break the
+        // aspect, so the ImageServer would adjust the returned extent and drift the cells.
+        // The size must instead hold the bbox's exact Web-Mercator aspect ratio.
+        let wide = RadarBoundingBox(minLatitude: 33, minLongitude: -102,
+                                    maxLatitude: 37, maxLongitude: -94)
+        let s = RadarImageSampler.mercatorSampleSize(bbox: wide)
+        XCTAssertEqual(Double(s.columns) / Double(s.rows), mercatorAspect(wide), accuracy: 0.02,
+                       "sample size aspect must match the bbox's Web-Mercator aspect")
+        // The longer (Mercator) axis keeps the ~2 NM/pixel resolution budget; the shorter
+        // axis follows from the aspect (here below the old 160 floor — which is the point).
+        XCTAssertEqual(s.columns, 197, "longer axis holds the sampleGrid resolution/cap")
+        XCTAssertLessThan(s.rows, 160, "shorter axis follows the aspect, not the per-axis floor")
+    }
+
+    func testMercatorSampleSizeTallCorridorKeepsAspect() {
+        // A tall, narrow corridor: the latitude axis is the longer Mercator axis and keeps
+        // the resolution budget; longitude follows from the aspect.
+        let tall = RadarBoundingBox(minLatitude: 30, minLongitude: -98,
+                                    maxLatitude: 42, maxLongitude: -96)
+        let s = RadarImageSampler.mercatorSampleSize(bbox: tall)
+        XCTAssertEqual(Double(s.columns) / Double(s.rows), mercatorAspect(tall), accuracy: 0.02)
+        XCTAssertGreaterThan(s.rows, s.columns, "a tall corridor samples more rows than columns")
+    }
+
+    func testMercatorSampleSizeSmallRegionFloorsLongerAxisAndKeepsAspect() {
+        // A small region floors the longer Mercator axis to the minimum. A degrees-square
+        // box at mid-latitude is taller than wide in Mercator (latitude is stretched by
+        // 1/cos(lat)), so latitude is the longer axis and floors to 160; longitude follows.
+        let small = RadarBoundingBox(minLatitude: 34.8, minLongitude: -97.6,
+                                     maxLatitude: 35.2, maxLongitude: -97.2)
+        let s = RadarImageSampler.mercatorSampleSize(bbox: small)
+        XCTAssertEqual(max(s.columns, s.rows), 160, "longer axis floors to the minimum dimension")
+        XCTAssertEqual(s.rows, 160, "latitude is the longer Mercator axis at mid-latitude")
+        XCTAssertEqual(Double(s.columns) / Double(s.rows), mercatorAspect(small), accuracy: 0.02)
+    }
 }
