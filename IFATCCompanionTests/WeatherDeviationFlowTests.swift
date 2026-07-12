@@ -658,6 +658,42 @@ final class WeatherDeviationFlowTests: XCTestCase {
         }
     }
 
+    // MARK: - Route ahead follows the filed route (not radial distance from departure)
+
+    /// The route the detector treats as "ahead" must follow the filed route past a bend,
+    /// even where a downstream fix is *closer to the departure* than the aircraft already
+    /// is. The old distance-from-departure test dropped such a fix once telemetry arrived,
+    /// reshaping the detection corridor away from the drawn route — so on-route storms
+    /// stopped being detected the moment the aircraft icon appeared (the reported "mint
+    /// line drew perfectly while disconnected, then vanished as soon as the flight
+    /// reconnected"). Projection onto the route keeps the fix, so detection tracks the
+    /// drawn line.
+    func testRouteAheadFollowsTheFiledRouteThroughABendNotRadialDistance() {
+        let model = makeModel()
+        func wp(_ name: String, _ lat: Double, _ lon: Double) -> Waypoint {
+            Waypoint(name: name, latitude: lat, longitude: lon)
+        }
+        // A route that jogs: ORIG → far east fix A → fix B (back west, so B is CLOSER to
+        // the departure than A) → DEST. `departure`/`destination` are left blank so the
+        // origin/dest fall back to the first/last fix coordinates.
+        let origin = CLLocationCoordinate2D(latitude: 30, longitude: -95)
+        let bend = CLLocationCoordinate2D(latitude: 34, longitude: -96)   // the fix past the bend
+        var plan = FlightPlan()
+        plan.departure = ""
+        plan.destination = ""
+        plan.waypoints = [wp("ORIG", 30, -95), wp("AAAAA", 33, -90),
+                          wp("BBEND", 34, -96), wp("DESTF", 40, -95)]
+        model.flightPlan = plan
+        _ = origin
+
+        // Aircraft abeam the A→B leg, having flown past A. Its straight-line distance from
+        // the departure now exceeds fix B's, so the old heuristic dropped B.
+        let aircraft = CLLocationCoordinate2D(latitude: 33.3, longitude: -91.0)
+        let ahead = model.upcomingRouteCoordinatesForTesting(from: aircraft)
+        XCTAssertTrue(ahead.contains { Geo.distanceNM(from: $0, to: bend) < 5 },
+                      "the fix past the bend stays on the route ahead (it is not dropped for being closer to the departure)")
+    }
+
     // MARK: - Deferred deviation (reroute drawn ahead → hold the turn, issue it at the turn-out)
 
     /// When the reroute is drawn ahead, requesting a deviation approves it but holds the

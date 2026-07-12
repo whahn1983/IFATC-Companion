@@ -774,6 +774,13 @@ final class AppModel: ObservableObject {
         lastConflictSeenAt = .distantPast
         lastPreviewsSeenAt = .distantPast
     }
+
+    /// Test hook: the route the detector treats as "ahead" of a position, so a test can
+    /// verify it follows the filed route past a bend rather than a straight-line
+    /// distance-from-departure test that drops upcoming fixes once telemetry is live.
+    func upcomingRouteCoordinatesForTesting(from pos: CLLocationCoordinate2D) -> [CLLocationCoordinate2D] {
+        upcomingRouteCoordinates(from: pos)
+    }
     #endif
 
     private func handle(state: AircraftState) {
@@ -2888,25 +2895,56 @@ final class AppModel: ObservableObject {
     /// The upcoming route as ordered coordinates — the located fixes still ahead of
     /// the aircraft, then the destination — so the conflict detector can follow the
     /// route's bends into the weather rather than a straight bearing to the next fix.
-    /// A fix counts as "ahead" when it lies farther down-route than the aircraft's
-    /// progress from the origin (the same test `nextUnpassedWaypoint` uses).
+    /// "Ahead" is determined by **projecting the aircraft onto the filed route polyline**
+    /// and returning the remainder, so it always tracks the drawn route — not by a
+    /// straight-line distance-from-departure test, which drops an upcoming fix wherever
+    /// the route jogs (see below).
     private func upcomingRouteCoordinates(from pos: CLLocationCoordinate2D) -> [CLLocationCoordinate2D] {
-        let origin = airports.coordinate(for: flightPlan.departure) ?? flightPlan.firstWaypointCoordinate
-        let progress = origin.map { Geo.distanceNM(from: $0, to: pos) }
-        var coords: [CLLocationCoordinate2D] = []
-        for wp in flightPlan.waypoints {
-            guard let c = wp.coordinate, c.isValid else { continue }
-            if let origin, let progress {
-                if Geo.distanceNM(from: origin, to: c) > progress + 1 { coords.append(c) }
-            } else {
-                coords.append(c)
-            }
-        }
+        // The full filed route polyline, in order: departure, located enroute fixes,
+        // destination — exactly the line drawn on the map.
+        var full: [CLLocationCoordinate2D] = []
+        if let dep = airports.coordinate(for: flightPlan.departure) ?? flightPlan.firstWaypointCoordinate,
+           dep.isValid { full.append(dep) }
+        full.append(contentsOf: flightPlan.waypoints.compactMap { $0.coordinate }.filter { $0.isValid })
         if let dest = airports.coordinate(for: flightPlan.destination) ?? flightPlan.lastWaypointCoordinate,
-           dest.isValid {
-            coords.append(dest)
+           dest.isValid { full.append(dest) }
+        guard full.count >= 2 else { return full }
+
+        // The route *ahead* of the aircraft, found by projecting it onto the polyline and
+        // returning the vertices past the segment it sits abeam. Selecting "ahead" by
+        // straight-line distance from the departure instead (the old heuristic) silently
+        // drops an upcoming fix on any route that jogs — where a later fix isn't strictly
+        // farther from the departure than the aircraft — which reshapes the detection
+        // corridor away from the drawn route the moment telemetry arrives, so on-route
+        // storms stop being detected (the reroute lines vanish as the aircraft icon
+        // appears). Projection tracks the drawn route exactly. At the gate (pos is the
+        // departure) the nearest point is the first vertex, so the whole route is returned
+        // — unchanged from before.
+        var bestSeg = 0
+        var bestDist = Double.greatestFiniteMagnitude
+        for i in 0..<(full.count - 1) {
+            let d = distanceToSegmentNM(pos, full[i], full[i + 1])
+            if d < bestDist { bestDist = d; bestSeg = i }
         }
-        return coords
+        let ahead = Array(full[(bestSeg + 1)...])
+        return ahead.isEmpty ? [full[full.count - 1]] : ahead
+    }
+
+    /// Distance (NM) from a point to a segment in a local equirectangular NM plane —
+    /// used to project the aircraft onto the filed route polyline. Consistent with the
+    /// planar geometry the conflict detector uses at this scale.
+    private func distanceToSegmentNM(_ p: CLLocationCoordinate2D,
+                                     _ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D) -> Double {
+        let latScale = 60.0
+        let lonScale = 60.0 * cos(p.latitude * .pi / 180)
+        let px = p.longitude * lonScale, py = p.latitude * latScale
+        let ax = a.longitude * lonScale, ay = a.latitude * latScale
+        let bx = b.longitude * lonScale, by = b.latitude * latScale
+        let dx = bx - ax, dy = by - ay
+        let lenSq = dx * dx + dy * dy
+        let t = lenSq <= 0 ? 0 : max(0, min(1, ((px - ax) * dx + (py - ay) * dy) / lenSq))
+        let cx = ax + t * dx, cy = ay + t * dy
+        return hypot(px - cx, py - cy)
     }
 
     /// The course to fly for the corridor: bearing to the next un-passed fix, else
@@ -3100,6 +3138,14 @@ final class AppModel: ObservableObject {
                // Same protection as the solid line: only preview a reroute that actually
                // engages weather, so a degenerate line in clear air is never drawn.
                conflictDetector.pathEngagesWeather(conflict.deviationPath, hazards: weatherHazards),
+               // Stricter still for the preview, which — unlike the solid line — has no
+               // `withinDrawRange` gate: the reroute's apex (its farthest bulge off the
+               // route) must itself hug weather. This drops the "sharp angle out and back"
+               // spike a straight-corridor reroute leaves when aimed across a route bend
+               // (e.g. the arrival turn) and truncated there, jutting into clear air toward
+               // weather that is really further along past the bend.
+               conflictDetector.previewApexHugsWeather(conflict.deviationPath,
+                                                       route: [startPoint] + ahead, hazards: weatherHazards),
                let end = conflict.deviationPath.last, end.isValid,
                Geo.distanceNM(from: startPoint, to: end) > 1 {
                 lines.append(conflict.deviationPath)

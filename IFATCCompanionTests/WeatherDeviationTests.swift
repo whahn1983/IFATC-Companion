@@ -306,6 +306,40 @@ final class WeatherDeviationTests: XCTestCase {
                       "the drawn reroute around the storm engages it")
     }
 
+    // MARK: - Strategic-preview apex hug (no clear-air spike near a route bend)
+
+    /// A genuine reroute that rounds the cell has its apex right beside the weather, so the
+    /// stricter preview guard accepts it.
+    func testPreviewApexHugsWeatherAcceptsAGenuineHug() throws {
+        let storm = radarHazard(cell(alongNM: 40, crossNM: 0, from: usPosition))
+        let route = [usPosition, Geo.destination(from: usPosition, bearingDegrees: course, distanceNM: 120)]
+        let conflict = try XCTUnwrap(detector.detectConflict(
+            position: usPosition, course: course, groundspeedKnots: 450, phase: .cruise,
+            hazards: [storm], waypoints: [], routeAhead: route))
+        XCTAssertTrue(detector.previewApexHugsWeather(conflict.deviationPath, route: route, hazards: [storm]),
+                      "a reroute that rounds the cell has its apex beside the weather")
+    }
+
+    /// The reported anomaly: a "sharp angle out and back" whose *base* sits near a cell but
+    /// whose *apex* bulges off into clear air, far downrange from any weather. The loose
+    /// `pathEngagesWeather` guard is fooled (the base is near the cell), but the stricter
+    /// apex-hug guard the strategic preview uses rejects it, so the faint line is suppressed.
+    func testPreviewApexHugsWeatherRejectsAClearAirSpike() {
+        let storm = radarHazard(cell(alongNM: 40, crossNM: 0, from: usPosition), intensity: .heavy)
+        let route = [usPosition, Geo.destination(from: usPosition, bearingDegrees: course, distanceNM: 120)]
+        // Base near the cell's near edge; apex 40 NM off the route, 90 NM downrange, in
+        // clear air; then back to the route — the truncated cross-bend stub.
+        let base = Geo.destination(from: usPosition, bearingDegrees: course, distanceNM: 30)
+        let onCourse90 = Geo.destination(from: usPosition, bearingDegrees: course, distanceNM: 90)
+        let apex = Geo.destination(from: onCourse90, bearingDegrees: course + 90, distanceNM: 40)
+        let end = Geo.destination(from: usPosition, bearingDegrees: course, distanceNM: 100)
+        let spike = [base, apex, end]
+        XCTAssertTrue(detector.pathEngagesWeather(spike, hazards: [storm]),
+                      "the loose guard is fooled — the spike's base sits inside the cell")
+        XCTAssertFalse(detector.previewApexHugsWeather(spike, route: route, hazards: [storm]),
+                       "the apex bulges into clear air far from the cell, so the preview drops it")
+    }
+
     // MARK: - Rejoin cap (never route past the destination / approach)
 
     /// The along-course component (NM) of a point relative to the northbound course.

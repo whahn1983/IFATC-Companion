@@ -319,6 +319,16 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      corridor from the aircraft at that blockage — turning the band down-route so a
      storm on a later leg is caught. With no route supplied, or nothing on it blocked,
      it keeps the straight bearing (unchanged behavior).
+   - **"Ahead" is by projection onto the route, not distance from the departure.** The
+     upcoming polyline (`upcomingRouteCoordinates`) is the filed route past the aircraft's
+     **projection onto it**, so it always matches the drawn route. An earlier heuristic
+     picked the fixes whose straight-line distance from the departure exceeded the
+     aircraft's — which quietly dropped an upcoming fix wherever the route jogged (a later
+     fix nearer the departure than the aircraft), reshaping the corridor away from the drawn
+     line the instant telemetry arrived. That produced the "detected 51 hazards but **No
+     conflict**, and the reroute drew perfectly while disconnected then vanished the moment
+     the aircraft reconnected" failure: at the gate the departure-distance test keeps the
+     whole route (progress 0), so it only bit once a live position was known.
    - **Side-hug for lines along course.** A single dogleg abeam the middle of the
      line always aims at the same downstream rejoin, so when a long line lies roughly
      *along* the course (each end near the aircraft and near the destination), the
@@ -469,6 +479,16 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      cell does **not** engage the weather and is **suppressed** rather than shown as a mint
      line with no weather near it. A committed (frozen) line the pilot is already flying is
      never suppressed.
+   - **The faint previews additionally require their apex to hug weather
+     (`previewApexHugsWeather`).** `pathEngagesWeather` only asks that *some* point of the
+     line be near a cell — which a "sharp angle out and back" spike satisfies when its *base*
+     sits by a cell while its *apex bulges into clear air*. That shape is what a preview draws
+     when a straight-corridor reroute is aimed across a route bend (e.g. the arrival turn) and
+     truncated there. The solid line never shows it because it is held until the weather is
+     within `mintLineDrawNM` (route to it essentially straight); the preview has no such gate,
+     so it gets a stricter check — the vertex that bulges **farthest off the filed route** must
+     itself be within a berth (~30 NM) of a moderate-or-greater cell. A preview whose apex is
+     out in clear air, nowhere near precipitation, is hugging nothing and is dropped.
    It also computes distance, clock position(s), estimated time, severity, the spoken
    deviation amount (the actual initial turn onto the threading path), and a
    downstream rejoin fix.
