@@ -590,6 +590,56 @@ struct RouteWeatherConflictDetector {
             return (path, side * maxOff)
         }
 
+        // A **multi-leg** route around the ENTIRE storm on one side (+1 right / −1 left),
+        // for when the storm wraps the route through several turns and no fixed-offset or
+        // single-jog hug can thread it (the "no line drawn — can't resolve" case). It traces
+        // the outboard convex silhouette of **every** cell within reach on that side — the
+        // upper hull of all their corners, offset out by the berth — so it rounds the whole
+        // system with as many legs as the shape needs (turn out ~30°, follow the edge in and
+        // out, turn back ~30° past the far side), then rejoins the route past all of it.
+        // Being the convex upper envelope it never cuts inboard, so it stays clear of every
+        // (box) cell it encloses; `pathIsClear` still validates the whole thing. Unlike
+        // `hullHugPath` it is not limited to the clustered `lineSet` or the fixed rejoin, so
+        // it can route over the top of a storm that sits across the route's bends.
+        func wideHullHug(side: Double) -> [CLLocationCoordinate2D]? {
+            let margin = config.lateralBufferNM
+            var berth = config.pathClearanceNM
+            var pts: [(x: Double, y: Double)] = []       // x = along, y = outboard cross on `side`
+            for cell in cellBerths {
+                var onSide = false
+                for v in cell.polygon {
+                    let s = project(v, from: position, course: course)
+                    guard s.along > 0 else { continue }
+                    if let capAlong, s.along > capAlong { continue }
+                    // Keep corners on this side or straddling the route; a cell wholly on the
+                    // far side doesn't shape this side's route (and `pathIsClear` still guards).
+                    guard side * s.cross > -(config.corridorHalfWidthExtremeNM + margin) else { continue }
+                    pts.append((x: s.along, y: side * s.cross)); onSide = true
+                }
+                if onSide { berth = max(berth, cell.clearance) }
+            }
+            guard pts.count >= 2 else { return nil }
+            let hull = upperHull(pts)
+            guard let first = hull.first, let last = hull.last else { return nil }
+            func offsetFor(_ y: Double) -> Double { max(margin, y + berth) }
+            func point(along: Double, offset: Double) -> CLLocationCoordinate2D {
+                let onC = Geo.destination(from: position, bearingDegrees: course, distanceNM: max(0, along))
+                return Geo.destination(from: onC, bearingDegrees: course + side * 90, distanceNM: offset)
+            }
+            var path = [position]
+            // Turn out to the first (nearest) hull vertex's offset a ~30° lead before it.
+            let firstOff = offsetFor(first.y)
+            path.append(point(along: max(0, first.x - turnOutLead(forOffset: side * firstOff)), offset: firstOff))
+            for h in hull { path.append(point(along: h.x, offset: offsetFor(h.y))) }
+            // Turn back onto the route a ~30° lead past the last (farthest) hull vertex, capped.
+            let lastOff = offsetFor(last.y)
+            var backAlong = last.x + turnOutLead(forOffset: side * lastOff)
+            if let capAlong { backAlong = min(backAlong, capAlong) }
+            path.append(Geo.destination(from: position, bearingDegrees: course,
+                                        distanceNM: max(last.x + 1, backAlong)))
+            return path
+        }
+
         // The finally-drawn geometry of a candidate: capped to the rejoin limit (never
         // past the destination / approach) and bounded to the max off-course turn (never
         // reversing the aircraft). Validation and selection run on THIS — the line
@@ -746,6 +796,16 @@ struct RouteWeatherConflictDetector {
         // if needed, until the entire path is clear. A path already clear is untouched.
         deviationPath = extendedToClear(deviationPath, position: position, course: course,
                                         cells: cellBerths, capAlong: capAlong)
+        // Still cutting weather? The storm wraps the route through several turns and no
+        // single-jog hug can thread it. Route around the WHOLE system with a multi-leg hug
+        // down each side and take the shortest that actually clears every cell — so a line
+        // is drawn (over the top / around the end) instead of none at all.
+        if !pathIsClear(deviationPath, cells: cellBerths, origin: position) {
+            let multi = [1.0, -1.0].compactMap { wideHullHug(side: $0) }
+                .filter { $0.count >= 2 && pathIsClear($0, cells: cellBerths, origin: position) }
+                .min { pathLengthNM($0) < pathLengthNM($1) }
+            if let multi { deviationPath = multi }
+        }
         let throughPoint = deviationPath.count >= 2 ? deviationPath[1] : chosen.path[1]
 
         // Speak the deviation the drawn line actually flies: the initial turn from the
