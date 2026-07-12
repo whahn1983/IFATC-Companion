@@ -172,11 +172,15 @@ enum OPERACompositeRenderer {
 
         let buffer = raw.bindMemory(to: UInt8.self, capacity: bytesPerRow * h)
         var out = [WeatherIntensity?](repeating: nil, count: w * h)
-        // CoreGraphics origin is bottom-left; flip so row 0 is the image top (north).
+        // A freshly created `CGContext(data:…)` reads back top-row-first: buffer row 0 is the
+        // image top (north), matching this raster's convention (row 0 = north; see `at(v:)`
+        // and `intensityGrid`). Read straight through — an earlier `h - 1 - row` flip here
+        // inverted the raster north↔south, the same latitude flip fixed in the NOAA/NASA
+        // sampler (`RadarImageSampler.grid(fromPNG:)`). (OPERA rendering is disabled today, so
+        // this is a latent-consistency fix.)
         for row in 0..<h {
-            let bufferRow = h - 1 - row
             for col in 0..<w {
-                let i = bufferRow * bytesPerRow + col * bytesPerPixel
+                let i = row * bytesPerRow + col * bytesPerPixel
                 out[row * w + col] = classify(r: buffer[i], g: buffer[i + 1],
                                               b: buffer[i + 2], a: buffer[i + 3])
             }

@@ -1,5 +1,8 @@
 import XCTest
 import CoreLocation
+import CoreGraphics
+import ImageIO
+import UniformTypeIdentifiers
 @testable import IFATCCompanion
 
 /// Tests for `RadarImageSampler` — the live "radar image → moderate-or-greater
@@ -229,5 +232,54 @@ final class RadarImageSamplerTests: XCTestCase {
         XCTAssertEqual(max(s.columns, s.rows), 160, "longer axis floors to the minimum dimension")
         XCTAssertEqual(s.rows, 160, "latitude is the longer Mercator axis at mid-latitude")
         XCTAssertEqual(Double(s.columns) / Double(s.rows), mercatorAspect(small), accuracy: 0.02)
+    }
+
+    // MARK: - PNG decode orientation (north stays north)
+
+    /// A PNG whose rows are laid out **top-first** (row 0 = north), built from an explicit
+    /// `CGImage` over raw bytes so the source orientation is unambiguous — independent of
+    /// any `CGContext` row convention. `top…` rows are opaque yellow (moderate) and the
+    /// rest transparent.
+    private func makePNG(width: Int, height: Int, opaqueYellowTopRows top: Int) -> Data? {
+        var px = [UInt8](repeating: 0, count: 4 * width * height)
+        for row in 0..<height where row < top {
+            for col in 0..<width {
+                let i = (row * width + col) * 4
+                px[i] = 255; px[i + 1] = 255; px[i + 2] = 0; px[i + 3] = 255   // opaque yellow → moderate
+            }
+        }
+        let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
+        guard let provider = CGDataProvider(data: Data(px) as CFData),
+              let image = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
+                                  bytesPerRow: 4 * width, space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: bitmapInfo, provider: provider, decode: nil,
+                                  shouldInterpolate: false, intent: .defaultIntent) else { return nil }
+        let out = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(out, UTType.png.identifier as CFString, 1, nil)
+        else { return nil }
+        CGImageDestinationAddImage(dest, image, nil)
+        guard CGImageDestinationFinalize(dest) else { return nil }
+        return out as Data
+    }
+
+    /// End-to-end guard on the PNG decode's vertical orientation: precipitation in the
+    /// **north** (top) half of the image must decode to a cell in the **north** half of the
+    /// bbox. A flipped decode (the earlier `rows - 1 - row`) mirrors it into the south,
+    /// which put southern storms' sampled cells hundreds of NM north on the map.
+    func testPNGDecodeKeepsNorthPrecipInNorthHalf() throws {
+        let side = 16
+        let data = try XCTUnwrap(makePNG(width: side, height: side, opaqueYellowTopRows: side / 2))
+        let bbox = RadarBoundingBox(minLatitude: 40, minLongitude: -100, maxLatitude: 44, maxLongitude: -96)
+        let cells = try XCTUnwrap(
+            RadarImageSampler.cells(fromPNG: data, columns: side, rows: side, bbox: bbox))
+        let cell = try XCTUnwrap(cells.first, "the yellow (moderate) top half must produce a cell")
+        let centerLat = try XCTUnwrap(cell.center?.latitude)
+        let midLat = (bbox.minLatitude + bbox.maxLatitude) / 2
+        XCTAssertGreaterThan(centerLat, midLat,
+                             "north-half precipitation must decode to a north-half cell (not vertically flipped)")
+        // The cluster fills exactly the top half of the image, so the cell's southern edge
+        // sits at the bbox mid-latitude and its northern edge at the top.
+        XCTAssertEqual(cell.polygon.map(\.latitude).min() ?? 0, midLat, accuracy: 1e-9)
+        XCTAssertEqual(cell.polygon.map(\.latitude).max() ?? 0, bbox.maxLatitude, accuracy: 1e-9)
     }
 }
