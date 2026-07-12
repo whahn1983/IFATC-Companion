@@ -251,11 +251,25 @@ final class AppModel: ObservableObject {
     @Published var weatherHazards: [WeatherHazard] = []
     /// The most significant route-weather conflict currently detected (nil = none).
     @Published var activeWeatherConflict: RouteWeatherConflict?
-    /// Faint "preview" reroute lines for the weather systems ahead along the route,
-    /// beyond the one drawn solid — one per distinct system. Display only (never drives
-    /// ATC), and computed even on the ground, so the whole route's deviations can be
-    /// eyeballed from the gate before takeoff.
+    /// Faint "preview" reroute lines for the weather systems ahead along the route —
+    /// every locked deviation *except* the one currently drawn solid (`weatherDeviationLine`).
+    /// Display only (never drives ATC). Derived from `lockedDeviations`, so it is stable
+    /// (locked in place) rather than recomputed every tick.
     @Published var weatherDeviationPreviews: [[CLLocationCoordinate2D]] = []
+    /// Every recommended deviation across the **entire** flight plan, found in one pass
+    /// from the origin to the destination and then **locked in place**. Each is a clean
+    /// turn-out / parallel-hug / turn-back maneuver around one weather system on the route.
+    /// Computed once when the flight's radar data first lands (and re-computed when the
+    /// route changes or the pilot taps "Refresh Deviations") — never every telemetry tick —
+    /// so the mint lines stop shifting, flickering, or drawing crazy triangles. Faint until
+    /// the aircraft is within draw range of each (`weatherDeviationLine` draws that one
+    /// solid); they stay put until the next refresh.
+    @Published var lockedDeviations: [RouteWeatherConflict] = []
+    /// Whether `lockedDeviations` has been computed for the current route+radar. Cleared on
+    /// a route change or a "Refresh Deviations" tap so the set is recomputed once, then held.
+    private var deviationsLocked = false
+    /// Identifies the route `lockedDeviations` was computed for; a change re-locks a fresh set.
+    private var lockedRouteKey = ""
     /// The active simulated weather-deviation interaction (state + assignments).
     @Published var weatherDeviation = WeatherDeviationContext()
     /// A read-only snapshot for the Weather Diagnostics panel.
@@ -277,16 +291,6 @@ final class AppModel: ObservableObject {
     /// removed — long enough to span a radar resample cycle (~45 s) so a single
     /// empty sample never drops a storm that's really still there.
     private var weatherClearConfirmWindow: TimeInterval = 90
-    /// The last non-empty strategic previews and when they were computed — the
-    /// confirm-clear hold for the *faint* preview lines, mirroring `lastConflictSeenAt`
-    /// for the solid line. The previews recompute straight off `weatherHazards`, so a
-    /// noisy resample that momentarily samples the route clear (or drops a marginal
-    /// on-route cell below the sampling threshold) would otherwise blink them out even
-    /// though the storms are still there. Holding the last non-empty set for
-    /// `weatherClearConfirmWindow` keeps them steady — each re-detection re-arms the
-    /// hold — and they clear only once the route is confirmed clear.
-    private var lastPreviewsSeenAt: Date?
-    private var heldWeatherDeviationPreviews: [[CLLocationCoordinate2D]] = []
     /// How close (NM) to the flight-plan intercept at the end of the mint line the
     /// aircraft must get before the controller auto-resumes own navigation when the
     /// pilot hasn't reported clear of weather.
@@ -296,6 +300,12 @@ final class AppModel: ObservableObject {
     /// reaches the turn-out ("continue, expect the turn in X miles"). Within this the
     /// aircraft is essentially at the turn-out, so the turn is worked immediately.
     private let deviationTurnHoldNM: Double = 6
+    /// How close (NM) the aircraft may come to a locked deviation's turn-out before the
+    /// controller **auto-issues** the weather advisory, even if the pilot never tapped the
+    /// "contact ATC" banner. Because the mint lines are locked and drawn ahead, a pilot who
+    /// ignores the banner could otherwise fly straight past the first turn with no ATC call;
+    /// this makes ATC initiate the advisory on its own once the turn is imminent.
+    private let deviationAutoCallNM: Double = 15
     /// The most weather systems to draw faint preview mint lines for down the route, so
     /// the strategic preview can never run away (one detection per system).
     private let maxWeatherPreviewSystems = 6
@@ -767,12 +777,21 @@ final class AppModel: ObservableObject {
     /// can verify the conversation resumes where it left off.
     func applySnapshotForTesting(_ snapshot: SessionSnapshot) { apply(snapshot: snapshot) }
 
-    /// Test hook: force the confirm-clear window to have elapsed, so the next
-    /// recompute drops a held (no-longer-detected) conflict and its held strategic
-    /// previews instead of waiting out the real hysteresis window.
+    /// Test hook: force the confirm-clear window to have elapsed, so the next recompute
+    /// drops a held (no-longer-detected) conflict instead of waiting out the real
+    /// hysteresis window. Only affects a conflict no longer present in the locked set.
     func expireWeatherClearWindowForTesting() {
         lastConflictSeenAt = .distantPast
-        lastPreviewsSeenAt = .distantPast
+    }
+
+    /// Test hook: return the weather-deviation lifecycle to the un-engaged state (as if the
+    /// pilot never tapped the banner), while marking the one-shot mock demo advisory as
+    /// already spent — so a test can exercise the near-turn auto-call in isolation.
+    func markWeatherUnengagedForTesting() {
+        weatherDeviation.reset()
+        weatherDeviation.state = .none
+        weatherHandled = false
+        mockWeatherAdvisoryIssued = true
     }
 
     /// Test hook: the route the detector treats as "ahead" of a position, so a test can
@@ -2570,8 +2589,9 @@ final class AppModel: ObservableObject {
         mockWeatherAdvisoryIssued = false
         lastConflictSeenAt = nil
         weatherDeviationPreviews = []
-        heldWeatherDeviationPreviews = []
-        lastPreviewsSeenAt = nil
+        lockedDeviations = []
+        deviationsLocked = false
+        lockedRouteKey = ""
         lastPrecipSampleAt = nil
         lastPrecipSamplePos = nil
     }
@@ -2618,13 +2638,14 @@ final class AppModel: ObservableObject {
             updateWeatherDiagnostics(conflict: nil)
             return
         }
-        let course = currentCourse(from: pos)
-        let detected = conflictDetector.detectConflict(position: pos, course: course,
-                                                       groundspeedKnots: aircraftState.groundSpeed,
-                                                       phase: phase, hazards: hazards,
-                                                       waypoints: flightPlan.waypoints,
-                                                       routeAhead: upcomingRouteCoordinates(from: pos),
-                                                       rejoinCap: weatherRejoinCap())
+        // Find every deviation across the whole flight plan once and lock them in place
+        // (route change / "Refresh Deviations" recomputes them; a telemetry tick never
+        // does). The mint lines are then drawn from this fixed set, so they stop shifting.
+        ensureLockedDeviationsComputed()
+        // The deviation the aircraft is currently working is *selected* from that locked
+        // set by its position along the route — with the range flags (banner / draw / solid)
+        // refreshed live — rather than re-solving the geometry every tick.
+        let detected = selectActiveLockedDeviation(from: pos)
         // Apply confirm-clear hysteresis so the mint line / banner don't blink out on
         // a noisy resample that momentarily loses a storm that's really still ahead.
         let conflict = resolveConflictWithHysteresis(detected: detected)
@@ -2647,6 +2668,10 @@ final class AppModel: ObservableObject {
 
         // Mock Mode auto-issues the advisory once so the offline demo plays out.
         maybeAutoIssueMockAdvisory(conflict: conflict)
+        // Safety net (all modes): if the pilot ignored the banner and is now within
+        // `deviationAutoCallNM` of the upcoming locked deviation's turn-out, ATC auto-issues
+        // the advisory so a drawn-ahead deviation isn't silently flown past.
+        maybeAutoIssueAdvisoryNearTurn()
         // Drive the deviation turns off the aircraft's progress, most-imminent first:
         //   1. a held beginning turn fires once the aircraft reaches the mint line's
         //      turn-out (a deviation approved while drawn ahead — "expect the turn …");
@@ -2658,9 +2683,9 @@ final class AppModel: ObservableObject {
                 maybeAutoResumeAtRouteIntercept()
             }
         }
-        // Faint preview lines for the systems ahead beyond the one drawn solid, held
-        // through a transient clear the same way the solid line is (see below).
-        weatherDeviationPreviews = resolvePreviewsWithHysteresis(fresh: computeWeatherDeviationPreviews())
+        // Faint lines for every locked deviation except the one currently drawn solid
+        // (`weatherDeviationLine`). Derived from the locked set, so they hold steady.
+        weatherDeviationPreviews = faintDeviationLines()
         updateWeatherDiagnostics(conflict: conflict)
     }
 
@@ -2695,30 +2720,182 @@ final class AppModel: ObservableObject {
         return nil
     }
 
-    /// Apply the same confirm-clear hysteresis to the faint strategic previews that
-    /// `resolveConflictWithHysteresis` applies to the solid line. The previews are
-    /// recomputed straight off `weatherHazards` every tick, so a noisy resample that
-    /// momentarily samples the route clear — or drops a marginal on-route cell below the
-    /// coarse whole-route sampling threshold — would blink them out even though the storms
-    /// are still along the route (the reported "faint line appeared for a bit then went
-    /// away, but the hazard is still there"). Holding the last non-empty set until the
-    /// route has tested continuously clear for `weatherClearConfirmWindow` keeps them
-    /// steady: each re-detection within the window re-arms the hold, so an intermittently
-    /// sampled system shows a continuous line rather than a flicker. The lifecycle resets
-    /// (`resetWeatherDeviation`) drop the hold so it never lingers across flights.
-    private func resolvePreviewsWithHysteresis(fresh: [[CLLocationCoordinate2D]]) -> [[CLLocationCoordinate2D]] {
-        if !fresh.isEmpty {
-            lastPreviewsSeenAt = Date()
-            heldWeatherDeviationPreviews = fresh
-            return fresh
+    // MARK: - Locked whole-route deviations
+
+    /// Recompute the locked deviation set once per route+radar. The set is found in a
+    /// single pass across the whole flight plan and then held (locked in place) — a
+    /// telemetry tick never re-solves the geometry, so the mint lines stop shifting,
+    /// flickering, or drawing crazy triangles. It re-locks only when the route changes
+    /// (new flight plan) or the pilot taps "Refresh Deviations" (`refreshDeviations`).
+    /// Locking waits until the flight's radar has actually been sampled, so it never locks
+    /// an empty set before the first fetch lands.
+    private func ensureLockedDeviationsComputed() {
+        let key = routeFingerprint()
+        if key != lockedRouteKey {          // a new/edited route → discard the old lock
+            lockedRouteKey = key
+            deviationsLocked = false
         }
-        // Nothing this tick: hold the last non-empty previews until clear is confirmed.
-        if let since = lastPreviewsSeenAt, Date().timeIntervalSince(since) < weatherClearConfirmWindow {
-            return heldWeatherDeviationPreviews
+        guard !deviationsLocked else { return }
+        // Don't lock before there's radar data for this flight: in live mode wait for the
+        // first sample; in Mock Mode the cells are set synchronously before recompute runs.
+        guard settings.mockMode || lastPrecipSampleAt != nil else { return }
+        recomputeLockedDeviations()
+        deviationsLocked = true
+    }
+
+    /// Walk the entire filed route from the origin to the destination and, at each weather
+    /// system that qualifies (a cell on the flight path per the corridor threshold), find
+    /// the best deviation around it: a ~30° turn-out, a parallel leg hugging the system's
+    /// edge, and a ~30° turn-back to the route (with the extra interior turns the detector
+    /// adds when more weather sits before the rejoin). Once a deviation rejoins the route,
+    /// the walk continues down the route to the next system, and so on to the destination —
+    /// so every deviation on the whole plan is produced in one pass. The result is stored in
+    /// `lockedDeviations` and held until the next refresh. Bounded so it can't run away.
+    private func recomputeLockedDeviations() {
+        guard radarOverlay.isEnabled, radarOverlay.coverageAvailable, !weatherHazards.isEmpty else {
+            lockedDeviations = []
+            return
         }
-        lastPreviewsSeenAt = nil
-        heldWeatherDeviationPreviews = []
-        return []
+        guard let origin = airports.coordinate(for: flightPlan.departure)
+                ?? flightPlan.firstWaypointCoordinate
+                ?? aircraftState.coordinate, origin.isValid else {
+            lockedDeviations = []
+            return
+        }
+        let cap = weatherRejoinCap()
+        var results: [RouteWeatherConflict] = []
+        var startPoint = origin
+        var steps = 0
+        while results.count < maxWeatherPreviewSystems, steps < maxWeatherPreviewSystems * 4 {
+            steps += 1
+            let ahead = upcomingRouteCoordinates(from: startPoint)
+            guard !ahead.isEmpty else { break }
+            let course = ahead.first { Geo.distanceNM(from: startPoint, to: $0) > 1 }
+                .map { Geo.bearing(from: startPoint, to: $0) } ?? currentCourse(from: startPoint)
+            if let conflict = conflictDetector.detectConflict(
+                    position: startPoint, course: course, groundspeedKnots: aircraftState.groundSpeed,
+                    phase: .cruise, hazards: weatherHazards, waypoints: flightPlan.waypoints,
+                    routeAhead: ahead, rejoinCap: cap),
+               conflict.deviationPath.count >= 2,
+               // Only keep a line that actually rounds weather — never a degenerate line
+               // drawn out in clear air — so every mint line hugs a real system.
+               conflictDetector.pathEngagesWeather(conflict.deviationPath, hazards: weatherHazards),
+               let end = conflict.deviationPath.last, end.isValid,
+               Geo.distanceNM(from: startPoint, to: end) > 1 {
+                results.append(conflict)
+                startPoint = end       // jump past this system's rejoin; its cells are behind
+            } else if let next = pointAlongRoute(from: startPoint, through: ahead, byNM: previewScanStepNM),
+                      Geo.distanceNM(from: startPoint, to: next) > 1 {
+                startPoint = next      // clear window — scan further down the route
+            } else {
+                break                  // reached the end of the route
+            }
+        }
+        lockedDeviations = results
+    }
+
+    /// Re-run the whole-route deviation search now and re-lock the result — the action
+    /// behind the "Refresh Deviations" button. Samples fresh radar first (live mode) so a
+    /// pilot who sees the weather has moved can update every deviation across the plan at
+    /// once. Everything else (ATC calls, the auto-called turns, timings) is unchanged.
+    func refreshDeviations() async {
+        if !settings.mockMode {
+            await sampleLivePrecipitation()
+        }
+        deviationsLocked = false           // force a fresh lock on the next recompute
+        // An explicit refresh is a clean slate: don't let the confirm-clear hold keep a
+        // pre-refresh conflict alive when the re-locked set no longer contains it.
+        lastConflictSeenAt = nil
+        recomputeWeatherHazards()          // rebuilds hazards, re-locks, re-selects, redraws
+    }
+
+    /// Select the deviation the aircraft is currently working from the locked set: the
+    /// next one whose rejoin still lies ahead along the route. Its range flags (banner /
+    /// draw / solid) are refreshed from the live distance to its turn-out, so the ATC
+    /// advisory and the faint→solid transition fire at the right time even though the
+    /// geometry itself is locked. Nil once every deviation has been flown past.
+    private func selectActiveLockedDeviation(from pos: CLLocationCoordinate2D) -> RouteWeatherConflict? {
+        guard !lockedDeviations.isEmpty else { return nil }
+        let aircraftAlong = alongRouteNM(pos)
+        var best: RouteWeatherConflict?
+        var bestAlong = Double.greatestFiniteMagnitude
+        for dev in lockedDeviations {
+            guard let end = dev.deviationPath.last, end.isValid else { continue }
+            let endAlong = alongRouteNM(end)
+            if endAlong <= aircraftAlong - 2 { continue }   // already flown past its rejoin
+            if endAlong < bestAlong { bestAlong = endAlong; best = dev }
+        }
+        guard var dev = best, let start = dev.deviationPath.first else { return nil }
+        // Refresh proximity from the live aircraft position: distance to the turn-out point
+        // (the start of the drawn maneuver, a short lead just before the weather).
+        let d = Geo.distanceNM(from: pos, to: start)
+        dev.distanceAheadNM = d
+        dev.withinTacticalRange = d <= conflictDetector.config.deviationTriggerNM
+        dev.withinDrawRange = d <= conflictDetector.config.mintLineDrawNM
+        dev.shouldPrompt = dev.withinTacticalRange && (dev.isConvectiveSigmet || dev.severity >= .moderate)
+        return dev
+    }
+
+    /// The faint mint lines: every locked deviation except the one currently drawn solid
+    /// (`weatherDeviationLine`), matched by its turn-out point so it is never double-drawn.
+    private func faintDeviationLines() -> [[CLLocationCoordinate2D]] {
+        let solidStart = weatherDeviationLine?.first
+        return lockedDeviations.compactMap { dev in
+            let path = dev.deviationPath
+            guard path.count >= 2, let p0 = path.first else { return nil }
+            if let s = solidStart, Geo.distanceNM(from: s, to: p0) < 2 { return nil }   // drawn solid
+            return path
+        }
+    }
+
+    /// A fingerprint of the filed route, so a new/edited flight plan discards the old
+    /// locked deviations and computes a fresh set.
+    private func routeFingerprint() -> String {
+        var parts = [flightPlan.departure, flightPlan.destination]
+        parts.append(contentsOf: flightPlan.waypoints.map { wp in
+            guard let c = wp.coordinate else { return wp.name }
+            return "\(wp.name):\(Int(c.latitude * 100)):\(Int(c.longitude * 100))"
+        })
+        return parts.joined(separator: "|")
+    }
+
+    /// The full filed-route polyline: departure, located enroute fixes, destination.
+    private func fullRoutePolyline() -> [CLLocationCoordinate2D] {
+        var full: [CLLocationCoordinate2D] = []
+        if let dep = airports.coordinate(for: flightPlan.departure) ?? flightPlan.firstWaypointCoordinate,
+           dep.isValid { full.append(dep) }
+        full.append(contentsOf: flightPlan.waypoints.compactMap { $0.coordinate }.filter { $0.isValid })
+        if let dest = airports.coordinate(for: flightPlan.destination) ?? flightPlan.lastWaypointCoordinate,
+           dest.isValid { full.append(dest) }
+        return full
+    }
+
+    /// The along-route distance (NM from the origin) of the point on the filed-route
+    /// polyline nearest `coord` — used to order the locked deviations and tell which the
+    /// aircraft has flown past. Planar projection, consistent with the detector's geometry.
+    private func alongRouteNM(_ coord: CLLocationCoordinate2D) -> Double {
+        let route = fullRoutePolyline()
+        guard route.count >= 2 else { return 0 }
+        var cumulative = 0.0
+        var bestAlong = 0.0
+        var bestDist = Double.greatestFiniteMagnitude
+        for i in 0..<(route.count - 1) {
+            let a = route[i], b = route[i + 1]
+            let segLen = Geo.distanceNM(from: a, to: b)
+            let latScale = 60.0
+            let lonScale = 60.0 * cos(coord.latitude * .pi / 180)
+            let px = coord.longitude * lonScale, py = coord.latitude * latScale
+            let ax = a.longitude * lonScale, ay = a.latitude * latScale
+            let bx = b.longitude * lonScale, by = b.latitude * latScale
+            let dx = bx - ax, dy = by - ay
+            let lenSq = dx * dx + dy * dy
+            let t = lenSq <= 0 ? 0 : max(0, min(1, ((px - ax) * dx + (py - ay) * dy) / lenSq))
+            let cx = ax + t * dx, cy = ay + t * dy
+            let d = hypot(px - cx, py - cy)
+            if d < bestDist { bestDist = d; bestAlong = cumulative + segLen * t }
+            cumulative += segLen
+        }
+        return bestAlong
     }
 
     /// Normalize the current weather into the hazards the conflict detector routes
@@ -2993,6 +3170,13 @@ final class AppModel: ObservableObject {
             // one close enough to be worked now.
             let stage = c.withinTacticalRange ? "" : " — monitoring"
             d.routeConflictStatus = "\(c.severity.displayLabel) \(c.hazard.source.label), \(Int(c.distanceAheadNM.rounded())) NM\(stage)"
+        } else if let pos = aircraftState.coordinate ?? airports.coordinate(for: flightPlan.departure),
+                  let onRoute = conflictDetector.nearestRouteHazard(
+                    route: upcomingRouteCoordinates(from: pos), from: pos, hazards: weatherHazards) {
+            // No active deviation selected, but qualifying radar still sits on the route
+            // somewhere ahead (e.g. a system with no drawable reroute, or one being flown
+            // past). Report it as monitored rather than falsely claiming "No conflict".
+            d.routeConflictStatus = "\(onRoute.hazard.intensity.displayLabel) \(onRoute.hazard.source.label) on route, \(Int(onRoute.distanceNM.rounded())) NM — monitoring"
         } else {
             d.routeConflictStatus = "No conflict"
         }
@@ -3107,74 +3291,18 @@ final class AppModel: ObservableObject {
         // the line is held until the aircraft closes in.
         guard let conflict = activeWeatherConflict, conflict.withinDrawRange,
               conflict.deviationPath.count >= 2 else { return nil }
-        // Protection: never draw a recommended line that doesn't actually engage the
-        // weather. A degenerate reroute drawn out in clear air (e.g. stretched past the
-        // storm toward a distant rejoin) is suppressed rather than shown as a mint line
-        // with no weather near it.
-        guard conflictDetector.pathEngagesWeather(conflict.deviationPath, hazards: weatherHazards) else {
+        // A locked deviation was already validated to hug real weather when it was found,
+        // and is held in place, so it is not re-checked against the live hazards — which can
+        // transiently empty on a noisy radar resample and would otherwise blink the solid
+        // line out. Only a conflict that isn't part of the locked set (e.g. one injected
+        // directly) is re-validated live, so a degenerate line in clear air is still
+        // suppressed rather than drawn as a mint line with no weather near it.
+        let isLocked = lockedDeviations.contains { $0.id == conflict.id }
+        if !isLocked,
+           !conflictDetector.pathEngagesWeather(conflict.deviationPath, hazards: weatherHazards) {
             return nil
         }
         return conflict.deviationPath
-    }
-
-    /// Build the faint strategic preview lines: a recommended reroute for each distinct
-    /// weather system along the filed route **beyond** the one currently drawn solid.
-    /// Purely for display / tuning — it never drives ATC or the active deviation. Walks
-    /// the route, detecting each successive system from just past the previous system's
-    /// rejoin, so a broken line clustered close still counts as one system while systems
-    /// farther apart each get their own preview. Uses the cruise lookahead so the whole
-    /// route is covered from a standstill (the gate), where the tactical lookahead is
-    /// short. Bounded by `maxWeatherPreviewSystems`.
-    private func computeWeatherDeviationPreviews() -> [[CLLocationCoordinate2D]] {
-        guard radarOverlay.isEnabled, radarOverlay.coverageAvailable, !weatherHazards.isEmpty else { return [] }
-        guard let origin = aircraftState.coordinate
-                ?? airports.coordinate(for: flightPlan.departure)
-                ?? flightPlan.firstWaypointCoordinate, origin.isValid else { return [] }
-        let cap = weatherRejoinCap()
-        // Start past the deviation drawn solid (committed / active), so the faint lines
-        // are the UPCOMING systems rather than a duplicate of the one being worked.
-        var startPoint = weatherDeviationLine?.last ?? origin
-        var lines: [[CLLocationCoordinate2D]] = []
-        // Detection only reaches one lookahead ahead, so walk the whole route in hops:
-        // when a hop finds a system, append it and jump past its rejoin; when a hop is
-        // clear, scan on down the route rather than stopping — otherwise a system beyond
-        // the first clear gap (e.g. one seen from the gate before a long clear leg) would
-        // never preview. Bounded so it can't run away on a long route.
-        var steps = 0
-        while lines.count < maxWeatherPreviewSystems, steps < maxWeatherPreviewSystems * 4 {
-            steps += 1
-            let ahead = upcomingRouteCoordinates(from: startPoint)
-            guard !ahead.isEmpty else { break }
-            let course = ahead.first { Geo.distanceNM(from: startPoint, to: $0) > 1 }
-                .map { Geo.bearing(from: startPoint, to: $0) } ?? currentCourse(from: startPoint)
-            if let conflict = conflictDetector.detectConflict(
-                    position: startPoint, course: course, groundspeedKnots: aircraftState.groundSpeed,
-                    phase: .cruise, hazards: weatherHazards, waypoints: flightPlan.waypoints,
-                    routeAhead: ahead, rejoinCap: cap),
-               conflict.deviationPath.count >= 2,
-               // Same protection as the solid line: only preview a reroute that actually
-               // engages weather, so a degenerate line in clear air is never drawn.
-               conflictDetector.pathEngagesWeather(conflict.deviationPath, hazards: weatherHazards),
-               // Stricter still for the preview, which — unlike the solid line — has no
-               // `withinDrawRange` gate: the reroute's apex (its farthest bulge off the
-               // route) must itself hug weather. This drops the "sharp angle out and back"
-               // spike a straight-corridor reroute leaves when aimed across a route bend
-               // (e.g. the arrival turn) and truncated there, jutting into clear air toward
-               // weather that is really further along past the bend.
-               conflictDetector.previewApexHugsWeather(conflict.deviationPath,
-                                                       route: [startPoint] + ahead, hazards: weatherHazards),
-               let end = conflict.deviationPath.last, end.isValid,
-               Geo.distanceNM(from: startPoint, to: end) > 1 {
-                lines.append(conflict.deviationPath)
-                startPoint = end   // jump past this system's rejoin; its cells are now behind
-            } else if let next = pointAlongRoute(from: startPoint, through: ahead, byNM: previewScanStepNM),
-                      Geo.distanceNM(from: startPoint, to: next) > 1 {
-                startPoint = next  // clear window — scan further down the route
-            } else {
-                break              // reached the end of the route
-            }
-        }
-        return lines
     }
 
     /// The point `target` NM along the route polyline (`start` then `ahead`) from
@@ -3366,6 +3494,31 @@ final class AppModel: ObservableObject {
               let situation = currentWeatherSituation() else { return }
         mockWeatherAdvisoryIssued = true
         weatherHandled = true
+        applyDeviationResult(deviationEngine.issueAdvisory(cs: callsignNow(),
+                                                           situation: situation,
+                                                           context: weatherDeviation,
+                                                           facility: weatherFacility))
+    }
+
+    /// Safety net for the locked mint lines: if the pilot never engaged the advisory (never
+    /// tapped the "contact ATC" banner, never continued or deviated) and the aircraft closes
+    /// to within `deviationAutoCallNM` of the upcoming deviation's first turn (its turn-out),
+    /// the controller **auto-issues** the advisory on its own — so a drawn-ahead deviation
+    /// can't be silently flown past with no ATC call. Fires once per un-engaged conflict, in
+    /// every mode; a pilot who already tapped the banner (state ≠ none) or elected to
+    /// continue (`weatherHandled`) is left alone. Mirrors `askCenterAboutWeather`, but with
+    /// no pilot query since ATC is the one initiating.
+    private func maybeAutoIssueAdvisoryNearTurn() {
+        guard settings.weatherDeviationAlerts.alertsEnabled, weatherFlowAllowed,
+              !companionStandby, !establishedOnFinal,
+              weatherDeviation.state == .none, !weatherHandled,
+              let conflict = activeWeatherConflict, conflict.shouldPrompt,
+              let turnOut = conflict.deviationPath.first, turnOut.isValid,
+              let pos = aircraftState.coordinate, pos.isValid,
+              Geo.distanceNM(from: pos, to: turnOut) <= deviationAutoCallNM,
+              let situation = currentWeatherSituation() else { return }
+        weatherHandled = true
+        mockWeatherAdvisoryIssued = true   // the one-shot advisory has now been issued
         applyDeviationResult(deviationEngine.issueAdvisory(cs: callsignNow(),
                                                            situation: situation,
                                                            context: weatherDeviation,
