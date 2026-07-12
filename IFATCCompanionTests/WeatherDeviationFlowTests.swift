@@ -982,4 +982,40 @@ final class WeatherDeviationFlowTests: XCTestCase {
         XCTAssertFalse(model.pireps.isEmpty, "existing PIREPs must still load")
         XCTAssertTrue(model.weatherStatus.contains("Mock weather loaded"))
     }
+
+    // MARK: - Sampled-radar-cell diagnostics overlay
+
+    /// The overlay of the sampler's radar clusters is a verification aid — off until turned on.
+    func testSampledRadarCellsOverlayDefaultsOff() {
+        XCTAssertFalse(makeModel().showSampledRadarCells,
+                       "the sampled-radar-cell diagnostic overlay is off by default")
+    }
+
+    /// The Diagnostics readout reports how many cells the sampler produced, most-severe first,
+    /// so an empty result (with weather plainly on the route) points at the sampling step.
+    func testSampledRadarCellSummaryReportsCountAndBreakdown() {
+        let model = makeModel()
+        XCTAssertEqual(model.sampledRadarCellSummary, "None", "no sampled cells reads as None")
+
+        let c = CLLocationCoordinate2D(latitude: 35, longitude: -97)
+        model.radarOverlay.sampledCells = [
+            RadarCell(polygon: box(around: c, half: 0.2), intensity: .moderate),
+            RadarCell(polygon: box(around: c, half: 0.2), intensity: .heavy),
+            RadarCell(polygon: box(around: c, half: 0.2), intensity: .heavy),
+            RadarCell(polygon: box(around: c, half: 0.2), intensity: .extreme)
+        ]
+        let summary = model.sampledRadarCellSummary
+        XCTAssertTrue(summary.hasPrefix("4 "), summary)
+        XCTAssertTrue(summary.contains("1 extreme"), summary)
+        XCTAssertTrue(summary.contains("2 heavy"), summary)
+        XCTAssertTrue(summary.contains("1 moderate"), summary)
+        // Ordered most-severe first.
+        guard let ext = summary.range(of: "extreme"),
+              let hvy = summary.range(of: "heavy"),
+              let mod = summary.range(of: "moderate") else {
+            return XCTFail("summary should break down every present intensity: \(summary)")
+        }
+        XCTAssertTrue(ext.lowerBound < hvy.lowerBound && hvy.lowerBound < mod.lowerBound,
+                      "breakdown is ordered most-severe first: \(summary)")
+    }
 }

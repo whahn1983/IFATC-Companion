@@ -265,6 +265,12 @@ final class AppModel: ObservableObject {
     /// the aircraft is within draw range of each (`weatherDeviationLine` draws that one
     /// solid); they stay put until the next refresh.
     @Published var lockedDeviations: [RouteWeatherConflict] = []
+    /// Diagnostics overlay: when on, the route map draws the **sampled radar cells** (the
+    /// raster→cell clusters the live sampler derives from the radar image, and the sole
+    /// input to the deviation math) as colored polygons, so you can confirm they land on the
+    /// actual radar returns. Off by default and transient (resets each launch), like
+    /// `simulateStaffedATC` — it's a verification aid, not a normal display layer.
+    @Published var showSampledRadarCells = false
     /// Whether `lockedDeviations` has been computed for the current route+radar. Cleared on
     /// a route change or a "Refresh Deviations" tap so the set is recomputed once, then held.
     private var deviationsLocked = false
@@ -3303,6 +3309,21 @@ final class AppModel: ObservableObject {
             return Geo.bearing(from: pos, to: dest)
         }
         return aircraftState.heading ?? 0
+    }
+
+    /// A one-line summary of the **sampled radar cells** — the moderate-or-greater clusters
+    /// the live sampler derived from the radar image (light returns are dropped; they don't
+    /// drive deviations) — for the Diagnostics readout: the total count and a per-intensity
+    /// breakdown. "None" when the sampler produced no cells, which, with a storm plainly on
+    /// the route, points at the sampling step rather than the deviation geometry.
+    var sampledRadarCellSummary: String {
+        let cells = radarOverlay.sampledCells
+        guard !cells.isEmpty else { return "None" }
+        let parts = [WeatherIntensity.extreme, .heavy, .moderate, .light].compactMap { level -> String? in
+            let n = cells.filter { $0.intensity == level }.count
+            return n > 0 ? "\(n) \(level.displayLabel.lowercased())" : nil
+        }
+        return parts.isEmpty ? "\(cells.count)" : "\(cells.count) (\(parts.joined(separator: ", ")))"
     }
 
     private func updateWeatherDiagnostics(conflict: RouteWeatherConflict?) {

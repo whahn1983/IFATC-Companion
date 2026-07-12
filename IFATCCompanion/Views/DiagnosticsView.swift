@@ -121,6 +121,7 @@ struct DiagnosticsView: View {
                 }
                 DataRow(label: "Last aviation wx update", value: timeText(d.lastAviationUpdate))
                 DataRow(label: "Hazards detected", value: "\(d.hazardCount)")
+                DataRow(label: "Sampled radar cells", value: model.sampledRadarCellSummary)
                 DataRow(label: "Route conflict", value: d.routeConflictStatus)
                 DataRow(label: "Rejoin fix", value: d.selectedRejoinFix ?? "—")
                 DataRow(label: "Deviation state", value: d.lastDeviationState.rawValue)
@@ -132,6 +133,12 @@ struct DiagnosticsView: View {
                     Text(msg).font(.caption2).foregroundStyle(.tertiary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                Divider().padding(.vertical, 2)
+                Toggle("Show sampled cells on map", isOn: $model.showSampledRadarCells)
+                    .font(.subheadline)
+                Text("Draws the sampler's moderate-or-greater radar clusters as colored polygons on the Weather map, so you can check they line up with the radar returns. Clearest with the radar overlay turned off, where they sit on the plain map.")
+                    .font(.caption2).foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }

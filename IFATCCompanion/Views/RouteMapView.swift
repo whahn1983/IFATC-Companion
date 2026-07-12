@@ -59,6 +59,14 @@ struct RouteMapView: View {
         model.radarOverlay.shouldDisplay ? model.radarOverlay.mockCells : []
     }
 
+    /// Diagnostics overlay (opt-in): the live-sampled radar cells — the raster→cell clusters
+    /// the sampler feeds to the deviation math — colored by intensity, so you can confirm they
+    /// land on the actual radar returns. Empty unless the Diagnostics toggle is on. Clearest
+    /// with the radar overlay turned off, where they sit on the plain map.
+    private var sampledDiagnosticCells: [RadarCell] {
+        model.showSampledRadarCells ? model.radarOverlay.sampledCells : []
+    }
+
     /// The next un-passed filed fix ahead of the aircraft, shown as a distinct
     /// marker so the pilot can see where the route continues.
     private var nextWaypoint: Waypoint? {
@@ -124,6 +132,16 @@ struct RouteMapView: View {
                 MapPolygon(coordinates: cell.polygon)
                     .foregroundStyle(radarColor(cell.intensity).opacity(0.35))
                     .stroke(radarColor(cell.intensity), lineWidth: 1)
+            }
+
+            // Diagnostics (opt-in): the live-sampled radar cells that drive the deviation
+            // math, colored by intensity, so you can confirm the sampler reads the radar in
+            // the right place. A thicker outline + lighter fill than the Mock cells, so the
+            // radar image underneath still shows through for a side-by-side comparison.
+            ForEach(sampledDiagnosticCells) { cell in
+                MapPolygon(coordinates: cell.polygon)
+                    .foregroundStyle(radarColor(cell.intensity).opacity(0.18))
+                    .stroke(radarColor(cell.intensity), lineWidth: 2.5)
             }
 
             // Advisory areas next, so route line, PIREPs and markers draw on top.
