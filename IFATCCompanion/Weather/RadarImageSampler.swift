@@ -311,13 +311,16 @@ enum RadarImageSampler {
         context.draw(image, in: CGRect(x: 0, y: 0, width: columns, height: rows))
 
         let buffer = raw.bindMemory(to: UInt8.self, capacity: bytesPerRow * rows)
-        // CoreGraphics origin is bottom-left; our grid is top-left (row 0 = north),
-        // so flip the row index when reading the buffer back.
+        // A freshly created `CGContext(data:…)` reads back top-row-first: buffer row 0 is
+        // the image's TOP (north), matching our grid (row 0 = north / `bbox.maxLatitude`, as
+        // `boundingPolygon` maps it). So read the buffer straight through — an earlier
+        // `rows - 1 - row` flip here mirrored every sampled cell north↔south about the
+        // corridor's centre latitude (a southern storm sampled as a northern cell), which
+        // the diagnostics overlay exposed.
         var out = [[WeatherIntensity?]](repeating: [WeatherIntensity?](repeating: nil, count: columns), count: rows)
         for row in 0..<rows {
-            let bufferRow = rows - 1 - row
             for col in 0..<columns {
-                let i = bufferRow * bytesPerRow + col * bytesPerPixel
+                let i = row * bytesPerRow + col * bytesPerPixel
                 out[row][col] = intensity(r: buffer[i], g: buffer[i + 1], b: buffer[i + 2], a: buffer[i + 3],
                                           palette: palette)
             }
