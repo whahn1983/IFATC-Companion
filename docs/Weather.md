@@ -319,6 +319,16 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      corridor from the aircraft at that blockage — turning the band down-route so a
      storm on a later leg is caught. With no route supplied, or nothing on it blocked,
      it keeps the straight bearing (unchanged behavior).
+   - **"Ahead" is by projection onto the route, not distance from the departure.** The
+     upcoming polyline (`upcomingRouteCoordinates`) is the filed route past the aircraft's
+     **projection onto it**, so it always matches the drawn route. An earlier heuristic
+     picked the fixes whose straight-line distance from the departure exceeded the
+     aircraft's — which quietly dropped an upcoming fix wherever the route jogged (a later
+     fix nearer the departure than the aircraft), reshaping the corridor away from the drawn
+     line the instant telemetry arrived. That produced the "detected 51 hazards but **No
+     conflict**, and the reroute drew perfectly while disconnected then vanished the moment
+     the aircraft reconnected" failure: at the gate the departure-distance test keeps the
+     whole route (progress 0), so it only bit once a live position was known.
    - **Side-hug for lines along course.** A single dogleg abeam the middle of the
      line always aims at the same downstream rejoin, so when a long line lies roughly
      *along* the course (each end near the aircraft and near the destination), the
