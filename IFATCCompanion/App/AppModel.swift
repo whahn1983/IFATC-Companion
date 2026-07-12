@@ -3201,12 +3201,12 @@ final class AppModel: ObservableObject {
         }
 
         let bbox = RadarBoundingBox(region: region)
-        // Scale the sample grid to the corridor so NM/pixel stays roughly constant on any
-        // route length (fine for short routes, capped for transcon ones).
-        let midLat = (bbox.minLatitude + bbox.maxLatitude) / 2
-        let latSpanNM = (bbox.maxLatitude - bbox.minLatitude) * 60
-        let lonSpanNM = (bbox.maxLongitude - bbox.minLongitude) * 60 * max(0.2, cos(midLat * .pi / 180))
-        let grid = RadarImageSampler.sampleGrid(latSpanNM: latSpanNM, lonSpanNM: lonSpanNM)
+        // Size the sample image to the corridor bbox's exact Web-Mercator aspect ratio so the
+        // NOAA/NASA (EPSG:3857) render comes back registered to `bbox`. A mismatched aspect
+        // makes the source adjust the returned extent (ArcGIS ImageServer) or stretch the
+        // render (WMS), which drifts every sampled cell — pulled toward the corridor's centre
+        // — off the displayed radar. NM/pixel stays roughly constant on any route length.
+        let grid = RadarImageSampler.mercatorSampleSize(bbox: bbox)
         let frames = (try? await provider.availableFrames(for: region)) ?? []
         let frame = frames.first ?? RadarFrame(id: "sample", timestamp: Date(), label: "Current")
         // `exportImage` itself returns an optional Data, so flatten the `try?`
