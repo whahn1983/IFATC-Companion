@@ -985,6 +985,41 @@ final class WeatherDeviationFlowTests: XCTestCase {
         XCTAssertNil(model.weatherDeviationLine, "clear of weather releases the locked mint line")
     }
 
+    /// A pull-to-refresh re-solves the whole deviation set, but it must never move the line
+    /// the pilot is already flying — that would literally change the path underneath him.
+    /// Once committed the mint line is frozen, so even a refresh against *moved* weather
+    /// (which re-solves to a different line elsewhere) leaves the flown line byte-for-byte
+    /// unchanged. Exercises the deviation half of the pull-to-refresh directly.
+    func testPullToRefreshDoesNotMoveTheCommittedMintLine() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)
+        model.requestVectorAroundWeather()
+        XCTAssertEqual(model.weatherDeviationState, .vectoringAroundWeather)
+        guard let flown = model.weatherDeviationLine, flown.count >= 2 else {
+            return XCTFail("expected a frozen mint line after committing to a vector")
+        }
+
+        // Move the storm far down the route so a fresh solve would draw a *different* line
+        // (the original storm the committed line rounds is now gone from the radar)…
+        let dep = model.mock.route.depCoord
+        let dest = model.mock.route.destCoord
+        let course = Geo.bearing(from: dep, to: dest)
+        model.radarOverlay.mockCells = [RadarCell(
+            polygon: box(around: Geo.destination(from: dep, bearingDegrees: course, distanceNM: 300), half: 0.4),
+            intensity: .heavy)]
+        model.expireWeatherClearWindowForTesting()
+
+        // …then run the deviation half of a pull-to-refresh. The flown line must not budge.
+        model.refreshDeviationsFromCurrentRadar()
+        XCTAssertEqual(model.weatherDeviationLine?.count, flown.count,
+                       "a pull-to-refresh leaves the committed mint line locked")
+        XCTAssertEqual(model.weatherDeviationLine?.first?.latitude, flown.first?.latitude,
+                       "the committed line's start does not move")
+        XCTAssertEqual(model.weatherDeviationLine?.last?.latitude, flown.last?.latitude,
+                       "the committed line's rejoin does not move")
+        XCTAssertEqual(model.weatherDeviationLine?.last?.longitude, flown.last?.longitude)
+    }
+
     // MARK: - Re-vector while committed (new weather ahead)
 
     /// While already committed to a deviation, Vectors stays available so the pilot

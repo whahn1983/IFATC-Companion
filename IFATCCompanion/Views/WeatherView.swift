@@ -35,8 +35,7 @@ struct WeatherView: View {
     /// the Weather view refreshes entirely by **pull-to-refresh** (no buttons). Pulling down
     /// reloads all weather first, then recomputes the deviations against it.
     private var pullToRefreshNote: some View {
-        Label("Pull down to refresh: all weather reloads first, then the deviations recompute against it.",
-              systemImage: "arrow.down.circle")
+        Label("Pull down to refresh", systemImage: "arrow.down.circle")
             .font(.caption).foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
