@@ -32,8 +32,10 @@ struct PhaseDetector {
         debug.verticalSpeed = vs
 
         let coord = state.coordinate
-        let depCoord = airports.coordinate(for: plan.departure)
-        let destCoord = airports.coordinate(for: plan.destination)
+        // Infinite Flight's reported field position is the source of truth; the built-in
+        // hub table is only a last resort for a manually-entered ICAO IF isn't reporting.
+        let depCoord = plan.departureCoordinate ?? airports.coordinate(for: plan.departure)
+        let destCoord = plan.destinationCoordinate ?? airports.coordinate(for: plan.destination)
         if let coord, let depCoord {
             debug.distanceToDepNM = Geo.distanceNM(from: coord, to: depCoord)
         }

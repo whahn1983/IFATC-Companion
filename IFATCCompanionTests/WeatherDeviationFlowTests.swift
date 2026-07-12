@@ -566,6 +566,72 @@ final class WeatherDeviationFlowTests: XCTestCase {
                         "the mint line draws in live mode once the storm's cells have landed")
     }
 
+    /// Live mode renders an easy clean parallel hug **immediately** (synchronously, no await),
+    /// then refines it to the fully-optimized set on a follow-up hop — so a reroute shows the
+    /// moment radar lands, confirming the flow isn't stuck while the full search runs. The
+    /// refine only ever tightens or adds lines; it never drops the system the quick pass drew.
+    func testLiveModeRendersQuickDeviationImmediatelyThenRefines() async {
+        let model = makeModel()
+        model.settings.mockMode = false          // live path: quick render + async refine
+        model.flightPlan.waypoints = []          // straight dep→dest so the cell sits on the route
+
+        guard let dep = AirportDatabase.shared.coordinate(for: model.flightPlan.departure),
+              let dest = AirportDatabase.shared.coordinate(for: model.flightPlan.destination) else {
+            return XCTFail("test needs located CONUS endpoints for radar coverage")
+        }
+        let course = Geo.bearing(from: dep, to: dest)
+        let stormCenter = Geo.destination(from: dep, bearingDegrees: course, distanceNM: 45)
+        model.radarOverlay.sampledCells = [RadarCell(polygon: box(around: stormCenter, half: 0.3),
+                                                     intensity: .heavy)]
+        model.livePrecipCellsReady = true
+
+        // Synchronous recompute: the quick pass draws a reroute right away, before the async
+        // refine has had a chance to run.
+        model.recomputeWeatherHazards()
+        XCTAssertFalse(model.lockedDeviations.isEmpty,
+                       "live mode renders an immediate quick deviation without waiting for the full search")
+        XCTAssertNotNil(model.weatherDeviationLine, "the quick reroute is drawn at once")
+
+        // Let the async refine run; the deviation the quick pass drew survives (optimized).
+        await Task.yield()
+        await Task.yield()
+        XCTAssertFalse(model.lockedDeviations.isEmpty,
+                       "the refine keeps the deviation the quick pass drew — it only tightens or adds lines")
+        XCTAssertNotNil(model.weatherDeviationLine, "a mint line is still drawn after the refine")
+    }
+
+    // MARK: - Endpoints resolve from Infinite Flight, not just the built-in hub table
+
+    /// The route corridor must resolve for airports **outside** the 21-hub built-in table by
+    /// using Infinite Flight's reported endpoint coordinates. Previously departure/destination
+    /// leaned on the built-in table first, so a non-hub field (e.g. an Oklahoma airport) had no
+    /// coordinate at the gate — the corridor collapsed and the deviation flow drew nothing
+    /// ("no cells / no conflict" for a clear on-route hazard).
+    func testEndpointsResolveFromInfiniteFlightForFieldsOutsideTheBuiltInDatabase() {
+        let model = makeModel()
+        model.settings.mockMode = false
+        XCTAssertNil(AirportDatabase.shared.coordinate(for: "KADM"),
+                     "precondition: the departure is not one of the built-in hubs")
+        XCTAssertNil(AirportDatabase.shared.coordinate(for: "KOUN"),
+                     "precondition: the destination is not one of the built-in hubs")
+
+        var plan = FlightPlan()
+        plan.departure = "KADM"                                   // Ardmore, OK — not in the table
+        plan.destination = "KOUN"                                 // Norman, OK — not in the table
+        plan.departureLatitude = 34.30; plan.departureLongitude = -97.02      // Infinite Flight-reported
+        plan.destinationLatitude = 35.24; plan.destinationLongitude = -97.47
+        plan.waypoints = []
+        model.flightPlan = plan
+
+        let dep = CLLocationCoordinate2D(latitude: 34.30, longitude: -97.02)
+        let dest = CLLocationCoordinate2D(latitude: 35.24, longitude: -97.47)
+        let ahead = model.upcomingRouteCoordinatesForTesting(from: dep)
+        XCTAssertFalse(ahead.isEmpty,
+                       "the corridor resolves from the IF-reported endpoints for a non-hub field")
+        XCTAssertTrue(ahead.contains { Geo.distanceNM(from: $0, to: dest) < 30 },
+                      "the corridor runs to the IF-reported destination, not nowhere")
+    }
+
     // MARK: - Far weather is monitored but not drawn ("no weather, crazy mint line")
 
     /// A conflict whose weather is beyond the draw range must NOT put a mint line (or its
@@ -915,5 +981,41 @@ final class WeatherDeviationFlowTests: XCTestCase {
         XCTAssertNotNil(model.departureMETAR, "existing METAR loading must still work")
         XCTAssertFalse(model.pireps.isEmpty, "existing PIREPs must still load")
         XCTAssertTrue(model.weatherStatus.contains("Mock weather loaded"))
+    }
+
+    // MARK: - Sampled-radar-cell diagnostics overlay
+
+    /// The overlay of the sampler's radar clusters is a verification aid — off until turned on.
+    func testSampledRadarCellsOverlayDefaultsOff() {
+        XCTAssertFalse(makeModel().showSampledRadarCells,
+                       "the sampled-radar-cell diagnostic overlay is off by default")
+    }
+
+    /// The Diagnostics readout reports how many cells the sampler produced, most-severe first,
+    /// so an empty result (with weather plainly on the route) points at the sampling step.
+    func testSampledRadarCellSummaryReportsCountAndBreakdown() {
+        let model = makeModel()
+        XCTAssertEqual(model.sampledRadarCellSummary, "None", "no sampled cells reads as None")
+
+        let c = CLLocationCoordinate2D(latitude: 35, longitude: -97)
+        model.radarOverlay.sampledCells = [
+            RadarCell(polygon: box(around: c, half: 0.2), intensity: .moderate),
+            RadarCell(polygon: box(around: c, half: 0.2), intensity: .heavy),
+            RadarCell(polygon: box(around: c, half: 0.2), intensity: .heavy),
+            RadarCell(polygon: box(around: c, half: 0.2), intensity: .extreme)
+        ]
+        let summary = model.sampledRadarCellSummary
+        XCTAssertTrue(summary.hasPrefix("4 "), summary)
+        XCTAssertTrue(summary.contains("1 extreme"), summary)
+        XCTAssertTrue(summary.contains("2 heavy"), summary)
+        XCTAssertTrue(summary.contains("1 moderate"), summary)
+        // Ordered most-severe first.
+        guard let ext = summary.range(of: "extreme"),
+              let hvy = summary.range(of: "heavy"),
+              let mod = summary.range(of: "moderate") else {
+            return XCTFail("summary should break down every present intensity: \(summary)")
+        }
+        XCTAssertTrue(ext.lowerBound < hvy.lowerBound && hvy.lowerBound < mod.lowerBound,
+                      "breakdown is ordered most-severe first: \(summary)")
     }
 }
