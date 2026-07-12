@@ -84,6 +84,9 @@ final class MockSimulatorFeed: ObservableObject {
         s.liveryName = "United"
         let course = Geo.bearing(from: route.depCoord, to: route.destCoord)
         s.heading = course
+        // The mock course is a true bearing, so the true heading matches it (no
+        // synthetic magnetic declination in the demo feed).
+        s.trueHeading = course
         s.track = course
 
         func along(_ fraction: Double) -> CLLocationCoordinate2D {
