@@ -521,6 +521,52 @@ final class WeatherDeviationFlowTests: XCTestCase {
         XCTAssertEqual(model.weatherDeviationState, .none, "lifecycle rolls back after the refresh")
     }
 
+    // MARK: - Automatic 5-min deviation refresh (skipped while deviating)
+
+    /// The periodic auto-refresh re-runs the whole-route search against the latest radar — the
+    /// Refresh Deviations button without a tap — when the pilot has not committed to a
+    /// deviation. Here the weather clears, so the re-solve drops the now-stale mint line.
+    func testAutoDeviationRefreshRerunsTheSearchWhenNotDeviating() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)
+        XCTAssertNotNil(model.weatherDeviationLine, "the demo storm locks a mint line")
+        XCTAssertFalse(model.weatherDeviation.state.isCommittedDeviation,
+                       "precondition: the pilot has not committed to a deviation")
+
+        // The radar clears; a plain recompute keeps the locked line (locked until refreshed).
+        model.radarOverlay.mockCells = []
+        model.recomputeWeatherHazards()
+        XCTAssertNotNil(model.weatherDeviationLine, "locked deviations hold through a radar clear")
+
+        // The automatic refresh (not deviating) re-runs the search and drops the stale line.
+        let refreshed = model.autoRefreshDeviationsUnlessDeviating()
+        XCTAssertTrue(refreshed, "not deviating → the auto-refresh runs")
+        XCTAssertNil(model.activeWeatherConflict, "the auto-refresh clears the conflict for cleared weather")
+        XCTAssertNil(model.weatherDeviationLine, "the auto-refresh removes the mint line")
+    }
+
+    /// While the pilot is committed to and flying a deviation, the automatic refresh must not
+    /// fire — re-proposing the mint line under them would move the path they're following. The
+    /// committed deviation is left untouched until it clears.
+    func testAutoDeviationRefreshIsSkippedWhileDeviating() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)
+        XCTAssertNotNil(model.weatherDeviationLine, "the demo storm locks a mint line")
+
+        // The pilot is committed to and flying the deviation.
+        model.weatherDeviation.state = .vectoringAroundWeather
+        XCTAssertTrue(model.weatherDeviation.state.isCommittedDeviation)
+        let lockedBefore = model.lockedDeviations.count
+
+        // Even with the weather cleared (a refresh WOULD drop the line), the auto-refresh must
+        // step aside while a deviation is being flown.
+        model.radarOverlay.mockCells = []
+        let refreshed = model.autoRefreshDeviationsUnlessDeviating()
+        XCTAssertFalse(refreshed, "a committed deviation blocks the automatic refresh")
+        XCTAssertEqual(model.lockedDeviations.count, lockedBefore, "the locked set is left intact")
+        XCTAssertNotNil(model.weatherDeviationLine, "the committed mint line stays put while deviating")
+    }
+
     // MARK: - Live-mode lock waits for radar cells to actually land
 
     /// Regression: in **live** mode the whole-route deviation set is locked once and then
@@ -566,13 +612,13 @@ final class WeatherDeviationFlowTests: XCTestCase {
                         "the mint line draws in live mode once the storm's cells have landed")
     }
 
-    /// Live mode renders an easy clean parallel hug **immediately** (synchronously, no await),
-    /// then refines it to the fully-optimized set on a follow-up hop — so a reroute shows the
-    /// moment radar lands, confirming the flow isn't stuck while the full search runs. The
-    /// refine only ever tightens or adds lines; it never drops the system the quick pass drew.
-    func testLiveModeRendersQuickDeviationImmediatelyThenRefines() async {
+    /// Live mode renders the deviation set **synchronously** the moment radar lands: the full
+    /// optimized search runs directly in one pass (the earlier "quick hug first, refine in the
+    /// background" two-step is gone, now that the slow part — radar-polygon sampling — is
+    /// fixed), so a reroute shows at once with no follow-up swap to reconcile.
+    func testLiveModeRendersDeviationSynchronouslyWhenRadarLands() async {
         let model = makeModel()
-        model.settings.mockMode = false          // live path: quick render + async refine
+        model.settings.mockMode = false
         model.flightPlan.waypoints = []          // straight dep→dest so the cell sits on the route
 
         guard let dep = AirportDatabase.shared.coordinate(for: model.flightPlan.departure),
@@ -585,19 +631,17 @@ final class WeatherDeviationFlowTests: XCTestCase {
                                                      intensity: .heavy)]
         model.livePrecipCellsReady = true
 
-        // Synchronous recompute: the quick pass draws a reroute right away, before the async
-        // refine has had a chance to run.
+        // Synchronous recompute: the full search runs directly and draws the reroute right away.
         model.recomputeWeatherHazards()
         XCTAssertFalse(model.lockedDeviations.isEmpty,
-                       "live mode renders an immediate quick deviation without waiting for the full search")
-        XCTAssertNotNil(model.weatherDeviationLine, "the quick reroute is drawn at once")
+                       "live mode solves and locks the deviation set in one synchronous pass")
+        XCTAssertNotNil(model.weatherDeviationLine, "the reroute is drawn at once")
 
-        // Let the async refine run; the deviation the quick pass drew survives (optimized).
+        // No background refine to wait for: the locked set is stable across later hops.
         await Task.yield()
         await Task.yield()
-        XCTAssertFalse(model.lockedDeviations.isEmpty,
-                       "the refine keeps the deviation the quick pass drew — it only tightens or adds lines")
-        XCTAssertNotNil(model.weatherDeviationLine, "a mint line is still drawn after the refine")
+        XCTAssertFalse(model.lockedDeviations.isEmpty, "the locked set is stable — no async swap follows")
+        XCTAssertNotNil(model.weatherDeviationLine, "a mint line is still drawn")
     }
 
     // MARK: - Endpoints resolve from Infinite Flight, not just the built-in hub table

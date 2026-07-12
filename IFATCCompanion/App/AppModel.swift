@@ -276,11 +276,6 @@ final class AppModel: ObservableObject {
     private var deviationsLocked = false
     /// Identifies the route `lockedDeviations` was computed for; a change re-locks a fresh set.
     private var lockedRouteKey = ""
-    /// Monotonic token identifying the current deviation solve. The lock renders an immediate
-    /// quick set, then an async refine replaces it with the fully-optimized set; the refine
-    /// applies its result only while this token (and `lockedRouteKey`) are unchanged, so a
-    /// newer solve or a route change supersedes an in-flight refine instead of clobbering.
-    private var deviationRefineToken = 0
     /// The active simulated weather-deviation interaction (state + assignments).
     @Published var weatherDeviation = WeatherDeviationContext()
     /// A read-only snapshot for the Weather Diagnostics panel.
@@ -2497,6 +2492,11 @@ final class AppModel: ObservableObject {
     /// ride-report pool would empty out late in a flight as reports fall behind the
     /// aircraft. Each tick honors the service's TTL cache, so the network is not hit more
     /// often than the data updates. Re-arming cancels any prior timer, so it never doubles.
+    ///
+    /// The same tick also **auto-refreshes the deviation set** (`autoRefreshDeviationsUnlessDeviating`),
+    /// right after the weather sample lands, so every deviation across the plan is re-solved
+    /// against fresh radar every ~5 min — the "Refresh Deviations" button, run automatically —
+    /// unless the pilot is committed to and flying a deviation.
     private func armWeatherRefreshTimer() {
         weatherRefreshTimer?.cancel()
         weatherRefreshTimer = Task { @MainActor [weak self] in
@@ -2504,9 +2504,28 @@ final class AppModel: ObservableObject {
                 guard let interval = self?.weatherRefreshInterval else { return }
                 try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
                 guard !Task.isCancelled, let self else { return }
-                await self.refreshWeather()
+                await self.refreshWeather()                    // fresh radar + aviation weather
+                self.autoRefreshDeviationsUnlessDeviating()    // re-lock against those fresh cells
             }
         }
+    }
+
+    /// The periodic (≈5-min) automatic deviation refresh, driven by the weather-refresh timer on
+    /// the same cadence, immediately after `refreshWeather` samples fresh radar. Drops the
+    /// deviation lock and re-solves the whole plan against the just-sampled cells — **unless**
+    /// the pilot is committed to and flying a deviation, whose mint line is locked to the path
+    /// being flown and must never be re-proposed under them. This is the automatic counterpart
+    /// to the "Refresh Deviations" button; the button always refreshes, this one steps aside
+    /// while a deviation is being worked. The unlock and re-lock happen together (no await
+    /// between), so a telemetry tick can't slip in and re-lock the stale set first. Returns
+    /// whether it refreshed, so it reads as "auto-refreshed" vs "skipped, deviation in progress".
+    @discardableResult
+    func autoRefreshDeviationsUnlessDeviating() -> Bool {
+        guard !weatherDeviation.state.isCommittedDeviation else { return false }
+        deviationsLocked = false           // force a fresh lock…
+        lastConflictSeenAt = nil           // …a clean slate, like the manual refresh…
+        recomputeWeatherHazards()          // …and re-solve now, against the current cells
+        return true
     }
 
     private func cancelWeatherRefreshTimer() {
@@ -2819,57 +2838,28 @@ final class AppModel: ObservableObject {
     private func recomputeLockedDeviations() {
         guard radarOverlay.isEnabled, radarOverlay.coverageAvailable, !weatherHazards.isEmpty else {
             lockedDeviations = []
-            deviationRefineToken &+= 1   // cancel any in-flight refine — the set is empty now
             return
         }
         guard let origin = resolvedDepartureCoordinate()
                 ?? flightPlan.firstWaypointCoordinate
                 ?? aircraftState.coordinate, origin.isValid else {
             lockedDeviations = []
-            deviationRefineToken &+= 1
             return
         }
-        let cap = weatherRejoinCap()
-        // Mock Mode computes the full set synchronously: its cells are hand-placed and the
-        // search is instant, so there's no async radar fetch to bridge and nothing to preview
-        // against — and the deterministic demo/tests expect the finished geometry in one pass.
-        guard !settings.mockMode else {
-            lockedDeviations = computeDeviations(from: origin, cap: cap, quick: false)
-            deviationRefineToken &+= 1   // no refine pending in mock
-            return
-        }
-        // Live mode: render an easy clean parallel hug for every system it can solve fast,
-        // immediately — so *a* reroute shows the moment live radar lands, visible confirmation
-        // the flow isn't stuck while the full search runs.
-        lockedDeviations = computeDeviations(from: origin, cap: cap, quick: true)
-        // Refine pass: replace with the fully-optimized set (gap doglegs, edge-following hull
-        // hugs, return-leg repair, multi-leg wrap) once ready. One atomic swap on the main
-        // actor, after a yield so the quick line paints first, guarded by a token + the route
-        // key so a route change or a newer solve mid-refine supersedes it instead of clobbering.
-        // The full search considers the quick hugs plus more, so the swap only tightens or adds
-        // lines — it never drops a system the quick pass already drew for the same weather. The
-        // active line / faint previews are re-selected from `lockedDeviations` on the next
-        // telemetry tick (frequent in live mode), so the refined geometry appears a tick later
-        // — we deliberately don't re-run the selection here, as it drives hysteresis, lifecycle
-        // rollback and the auto-issued ATC turns, none of which may fire off a background swap.
-        deviationRefineToken &+= 1
-        let token = deviationRefineToken
-        let key = lockedRouteKey
-        Task { @MainActor [weak self] in
-            await Task.yield()
-            guard let self, token == self.deviationRefineToken, key == self.lockedRouteKey else { return }
-            let refined = self.computeDeviations(from: origin, cap: cap, quick: false)
-            guard token == self.deviationRefineToken, key == self.lockedRouteKey else { return }
-            self.lockedDeviations = refined
-        }
+        // Run the full optimized search for every system in one synchronous pass — gap
+        // doglegs, edge-following hull hugs, return-leg repair, multi-leg wrap, and the
+        // adjacent-hug fold. It is fast enough to render directly (the earlier "quick hug
+        // first, then refine in the background" two-step existed only to bridge a slow solve
+        // that was really the radar-polygon sampling, since fixed), so there is no longer a
+        // preliminary line to paint or a background swap to reconcile.
+        lockedDeviations = computeDeviations(from: origin, cap: weatherRejoinCap())
     }
 
     /// Walk the filed route from `origin` to the destination and produce the deviation around
-    /// each qualifying weather system (see `recomputeLockedDeviations`). With `quick`, each
-    /// line is a single clean parallel hug (fast, for the immediate render); otherwise the full
-    /// optimized search runs. Bounded so it can't run away.
+    /// each qualifying weather system (see `recomputeLockedDeviations`) — the full optimized
+    /// search for every one. Bounded so it can't run away.
     private func computeDeviations(from origin: CLLocationCoordinate2D,
-                                   cap: CLLocationCoordinate2D?, quick: Bool) -> [RouteWeatherConflict] {
+                                   cap: CLLocationCoordinate2D?) -> [RouteWeatherConflict] {
         var results: [RouteWeatherConflict] = []
         var startPoint = origin
         var steps = 0
@@ -2894,7 +2884,7 @@ final class AppModel: ObservableObject {
             if let conflict = conflictDetector.detectConflict(
                     position: detectPos, course: course, groundspeedKnots: aircraftState.groundSpeed,
                     phase: .cruise, hazards: weatherHazards, waypoints: flightPlan.waypoints,
-                    routeAhead: ahead, rejoinCap: cap, quick: quick),
+                    routeAhead: ahead, rejoinCap: cap),
                conflict.deviationPath.count >= 2,
                // Only keep a line that actually rounds weather — never a degenerate line
                // drawn out in clear air — so every mint line hugs a real system.

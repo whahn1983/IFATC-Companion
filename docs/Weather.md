@@ -594,6 +594,19 @@ blinks as the radar resamples, and confirm-clear hysteresis never tears it down.
 lock releases only on clear-of-weather (which resets the flow) or on a fresh reroute
 request, which re-freezes it.
 
+**Refreshing the whole-route set.** The locked deviation set is re-solved in one
+synchronous pass (`computeDeviations` → the full optimized search per system, then the
+adjacent-hug fold — there is no longer a "quick hug first, refine in the background"
+two-step; that only existed to bridge the slow radar-polygon sampling, since fixed). It
+re-locks on a route change, on the **Refresh Deviations** button (`refreshDeviations`,
+which samples fresh radar first), and **automatically every ~5 min**
+(`autoRefreshDeviationsUnlessDeviating`, driven off the weather-refresh timer right after
+it samples radar) — the button, run on a cadence, so the reroutes track weather that has
+moved without a tap. The automatic refresh **steps aside while a deviation is being
+flown**: if the state is a committed deviation (`isCommittedDeviation`) it does nothing,
+so the path the pilot is following is never re-proposed under them; the manual button
+always refreshes.
+
 **Re-vectoring for new weather.** While flying a lateral deviation, the **Vectors**
 button stays on the card alongside *Clear of Weather*. If new weather pops up ahead
 of the reroute, tapping it re-plans from the aircraft's **current position**, treating
