@@ -116,7 +116,7 @@ struct SettingsView: View {
                 } label: {
                     Label(connect.connectionState.isActive ? "Reconnect" : "Connect", systemImage: "antenna.radiowaves.left.and.right")
                 }
-                Text(connect.connectionState.title).font(.caption).foregroundStyle(.secondary)
+                Text(connect.connectionState.detailedTitle).font(.caption).foregroundStyle(.secondary)
             }
         }
     }

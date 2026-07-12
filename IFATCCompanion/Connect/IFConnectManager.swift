@@ -88,9 +88,10 @@ final class IFConnectManager: ObservableObject {
                 }
             }
             let message = lastFailure.map(errorMessage) ?? "Connection failed."
-            connectionState = .failed(message)
-            lastError = message
-            diagnostics?.log(.connect, "Connect failed after \(max(1, connectMaxAttempts)) attempt(s): \(message)")
+            let detail = lastFailure.flatMap(errorDetail)
+            connectionState = .failed(message, detail: detail)
+            lastError = detail ?? message
+            diagnostics?.log(.connect, "Connect failed after \(max(1, connectMaxAttempts)) attempt(s): \(detail ?? message)")
         }
     }
 
@@ -118,6 +119,14 @@ final class IFConnectManager: ObservableObject {
 
     private func errorMessage(_ error: Error) -> String {
         (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+    }
+
+    /// The fuller error text — short summary plus any recovery instructions —
+    /// for UI with room to show it. `nil` when the error has no extra detail
+    /// beyond `errorMessage`.
+    private func errorDetail(_ error: Error) -> String? {
+        guard let suggestion = (error as? LocalizedError)?.recoverySuggestion else { return nil }
+        return "\(errorMessage(error)). \(suggestion)"
     }
 
     func disconnect() {
