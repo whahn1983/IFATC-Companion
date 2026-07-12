@@ -45,7 +45,7 @@ enum IFConnectError: LocalizedError {
         case .invalidHost: return "Invalid host or port."
         case .timeout: return "The connection timed out."
         case .connectionFailed(let r): return "Connection failed: \(r)"
-        case .manifestUnavailable: return "Manifest unavailable."
+        case .manifestUnavailable: return "Manifest Unavailable. Try force closing Infinite Flight and IFATC Companion, then open Infinite Flight first and then the Companion again."
         case .unknownState: return "Requested state is not available."
         case .decodingFailed: return "Failed to decode a response."
         case .cancelled: return "Operation cancelled."
