@@ -165,3 +165,68 @@ final class PrecipitationProviderSelectionTests: XCTestCase {
                        "Satellite precipitation estimate")
     }
 }
+
+/// The visible-region → overlay bounding box must register to what MapKit draws.
+/// MapKit projects in Web Mercator (EPSG:3857) with `region.center` at the view's
+/// centre, so the box's north/south edges have to be symmetric about the centre
+/// *in Mercator*, not in raw degrees. Getting this wrong leaves the 3857 NASA
+/// GIBS / OPERA WMS overlay off-centre by an amount that grows with the span — so
+/// it appears to *move* (not just scale) as the map is zoomed.
+final class RadarBoundingBoxMercatorTests: XCTestCase {
+
+    /// Normalized (Earth-radius-free) Web-Mercator y, matching `RadarBoundingBox`.
+    private func mercatorY(_ lat: Double) -> Double {
+        let clamped = min(85.05112878, max(-85.05112878, lat))
+        return log(tan(.pi / 4 + clamped * .pi / 180 / 2))
+    }
+
+    func testRegionBoxIsMercatorSymmetricAboutCenter() {
+        // A mid-latitude region where Mercator's latitude non-linearity is pronounced.
+        let center = CLLocationCoordinate2D(latitude: 55, longitude: 10)
+        let region = MKCoordinateRegion(center: center,
+                                        span: MKCoordinateSpan(latitudeDelta: 20, longitudeDelta: 20))
+        let box = RadarBoundingBox(region: region)
+
+        let yCenter = mercatorY(center.latitude)
+        let northHalf = mercatorY(box.maxLatitude) - yCenter
+        let southHalf = yCenter - mercatorY(box.minLatitude)
+        // North and south Mercator half-spans match → the box is centred on the map centre.
+        XCTAssertEqual(northHalf, southHalf, accuracy: 1e-9)
+        // The degree edges are therefore *asymmetric* about the centre (that is correct):
+        // the northern edge is nearer the centre in degrees than the southern one.
+        XCTAssertLessThan(box.maxLatitude - center.latitude, center.latitude - box.minLatitude)
+        // Longitude is linear in Mercator, so it stays a plain symmetric ± half-span.
+        XCTAssertEqual(box.minLongitude, 0, accuracy: 1e-9)
+        XCTAssertEqual(box.maxLongitude, 20, accuracy: 1e-9)
+    }
+
+    func testOverlayCentreStaysPinnedAcrossZoomLevels() {
+        // Same centre, several zoom levels: a correctly-registered overlay keeps its
+        // Mercator centre pinned to the map centre at every zoom — it scales, never moves.
+        let center = CLLocationCoordinate2D(latitude: 45, longitude: -100)
+        let yCenter = mercatorY(center.latitude)
+        for delta in [1.0, 8.0, 30.0, 60.0] {
+            let region = MKCoordinateRegion(center: center,
+                span: MKCoordinateSpan(latitudeDelta: delta, longitudeDelta: delta))
+            let box = RadarBoundingBox(region: region)
+            let boxYCenter = (mercatorY(box.minLatitude) + mercatorY(box.maxLatitude)) / 2
+            XCTAssertEqual(boxYCenter, yCenter, accuracy: 1e-9,
+                           "overlay centre drifted from the map centre at zoom span \(delta)")
+        }
+    }
+
+    func testMercatorBBoxStringCentresOnRegionCenter() {
+        // End-to-end for the NASA/OPERA WMS request: the exported 3857 BBOX must be
+        // vertically centred on the region centre so GIBS returns the on-screen extent.
+        let center = CLLocationCoordinate2D(latitude: 30, longitude: 0)
+        let region = MKCoordinateRegion(center: center,
+            span: MKCoordinateSpan(latitudeDelta: 40, longitudeDelta: 40))
+        let box = RadarBoundingBox(region: region)
+        let parts = box.mercatorBBoxString.split(separator: ",").compactMap { Double($0) }
+        XCTAssertEqual(parts.count, 4)
+        let yMin = parts[1], yMax = parts[3]
+        // `mercatorBBoxString` applies the Earth radius; fold it in for the comparison.
+        let yCenterMeters = 6_378_137.0 * mercatorY(center.latitude)
+        XCTAssertEqual((yMin + yMax) / 2, yCenterMeters, accuracy: 1e-3)
+    }
+}
