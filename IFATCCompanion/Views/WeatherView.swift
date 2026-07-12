@@ -4,6 +4,7 @@ struct WeatherView: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var settings: AppSettings
     @State private var refreshing = false
+    @State private var deviationsRefreshing = false
 
     var body: some View {
         NavigationStack {
@@ -50,6 +51,7 @@ struct WeatherView: View {
         Card(title: "Route & Weather Overlay", systemImage: "map") {
             VStack(alignment: .leading, spacing: 8) {
                 RouteMapView()
+                refreshDeviationsButton
                 HStack(spacing: 12) {
                     legendDot(.green, "Light/chop")
                     legendDot(.yellow, "Light")
@@ -57,10 +59,30 @@ struct WeatherView: View {
                     legendDot(.red, "Severe")
                 }
                 .font(.caption2).foregroundStyle(.secondary)
-                Text("Dots are pilot reports; shaded areas are SIGMET/AIRMET advisories and the precipitation overlay where available (NOAA radar in the U.S., or a NASA satellite estimate elsewhere). The solid mint path is the simulated recommended reroute around the precipitation you're working now; faint mint paths preview the reroutes for the other systems ahead along your route.")
+                Text("Dots are pilot reports; shaded areas are SIGMET/AIRMET advisories and the precipitation overlay where available (NOAA radar in the U.S., or a NASA satellite estimate elsewhere). The mint paths are the simulated recommended reroutes around the precipitation on your route — found for the whole flight plan at once and locked in place, faint until you close within ~75 NM and then drawn solid. Tap “Refresh Deviations” to recompute them if the weather has moved.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
         }
+    }
+
+    /// Recompute every locked deviation across the whole flight plan against the current
+    /// radar. Deviations are otherwise found once and held in place (they never redraw on
+    /// their own), so this is how the pilot updates them after the weather moves.
+    private var refreshDeviationsButton: some View {
+        Button {
+            Task {
+                deviationsRefreshing = true
+                await model.refreshDeviations()
+                deviationsRefreshing = false
+            }
+        } label: {
+            Label(deviationsRefreshing ? "Refreshing Deviations…" : "Refresh Deviations",
+                  systemImage: "arrow.triangle.turn.up.right.diamond")
+                .frame(maxWidth: .infinity, minHeight: 44)
+        }
+        .buttonStyle(.bordered)
+        .tint(.mint)
+        .disabled(deviationsRefreshing)
     }
 
     private func legendDot(_ color: Color, _ label: String) -> some View {

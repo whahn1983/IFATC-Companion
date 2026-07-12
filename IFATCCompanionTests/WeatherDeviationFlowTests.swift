@@ -61,11 +61,13 @@ final class WeatherDeviationFlowTests: XCTestCase {
         model.continueThroughWeather()
 
         // Swap the precipitation cell for a severe-turbulence SIGMET over the aircraft.
+        // The locked deviations hold until refreshed, so refresh against the now-clear
+        // radar to clear the precip reroute before the ride advisory takes over.
         model.radarOverlay.mockCells = []
         model.sigmets = [SIGMET(raw: "SEV TURB", hazard: "TURB", severity: "SEV",
                                 area: box(around: pos, half: 0.8))]
         model.recomputeRideItems()
-        model.recomputeWeatherHazards()
+        await model.refreshDeviations()
 
         XCTAssertNil(model.activeWeatherConflict, "no precipitation → no lateral conflict")
         XCTAssertEqual(model.weatherDeviationState, .none, "the precip flow settled before the ride advisory")
@@ -496,24 +498,27 @@ final class WeatherDeviationFlowTests: XCTestCase {
                        "the deviation lifecycle is not torn down on a transient clear")
     }
 
-    /// Once the route has tested clear past the confirm window, the mint line, banner
-    /// and lifecycle are removed — a confirmed clean route.
-    func testConfirmedClearRemovesMintLineAndBanner() async {
+    /// The locked deviations hold in place even when the radar momentarily (or lastingly)
+    /// clears — they are removed only when the pilot taps "Refresh Deviations", which
+    /// re-runs the whole-route search against the now-clear radar and locks an empty set.
+    func testRefreshDeviationsClearsMintLineAndBannerWhenWeatherIsGone() async {
         let model = makeModel()
         await driveToCruiseConflict(model)
         XCTAssertNotNil(model.activeWeatherConflict)
 
+        // The radar clears, but a plain recompute never re-solves the locked deviations —
+        // the line and banner stay put (they don't disappear on their own).
         model.radarOverlay.mockCells = []
         model.recomputeWeatherHazards()
-        XCTAssertNotNil(model.activeWeatherConflict, "held within the confirm window")
+        XCTAssertNotNil(model.activeWeatherConflict, "locked deviations hold through a radar clear")
+        XCTAssertNotNil(model.weatherDeviationLine, "the mint line holds until a refresh")
 
-        // Let the confirm window elapse: the next clear sample confirms a clean route.
-        model.expireWeatherClearWindowForTesting()
-        model.recomputeWeatherHazards()
-        XCTAssertNil(model.activeWeatherConflict, "confirmed clear removes the conflict")
-        XCTAssertNil(model.weatherDeviationLine, "confirmed clear removes the mint line")
+        // The pilot refreshes: the search re-runs against the clear radar and locks nothing.
+        await model.refreshDeviations()
+        XCTAssertNil(model.activeWeatherConflict, "a refresh against a clear route removes the conflict")
+        XCTAssertNil(model.weatherDeviationLine, "a refresh against a clear route removes the mint line")
         XCTAssertFalse(model.weatherBannerVisible)
-        XCTAssertEqual(model.weatherDeviationState, .none, "lifecycle rolls back after a confirmed clear")
+        XCTAssertEqual(model.weatherDeviationState, .none, "lifecycle rolls back after the refresh")
     }
 
     // MARK: - Far weather is monitored but not drawn ("no weather, crazy mint line")
@@ -584,11 +589,11 @@ final class WeatherDeviationFlowTests: XCTestCase {
         }
     }
 
-    /// The faint previews get the same confirm-clear hold as the solid line: a single
-    /// noisy resample that momentarily samples the route clear must not blink them out
-    /// while the storms are still there (the reported "faint line appeared then went away,
-    /// but the hazard is still there"). They clear only once the route is confirmed clear.
-    func testStrategicPreviewsHoldThroughTransientRadarClear() {
+    /// The faint previews are locked in place: a noisy resample that momentarily (or
+    /// lastingly) samples the route clear must not blink them out while the storms are
+    /// still there. They are recomputed only on a "Refresh Deviations" tap, which — against
+    /// a clear radar — removes them.
+    func testStrategicPreviewsHoldUntilRefreshed() async {
         let model = makeModel()
         model.flightPlan.waypoints = []   // straight dep→dest so the cells sit on the corridor
 
@@ -605,17 +610,16 @@ final class WeatherDeviationFlowTests: XCTestCase {
         let shown = model.weatherDeviationPreviews.count
         XCTAssertGreaterThanOrEqual(shown, 2, "previews drawn for each system ahead")
 
-        // A noisy resample momentarily reports the sky clear (the storms are still there).
+        // The radar clears, but a plain recompute never re-solves the locked previews.
         model.radarOverlay.mockCells = []
         model.recomputeWeatherHazards()
         XCTAssertEqual(model.weatherDeviationPreviews.count, shown,
-                       "a single empty sample must not blink the faint previews out")
+                       "an empty sample must not blink the faint previews out")
 
-        // Once the route has tested clear past the confirm window, the previews clear.
-        model.expireWeatherClearWindowForTesting()
-        model.recomputeWeatherHazards()
+        // A refresh against the clear radar removes them.
+        await model.refreshDeviations()
         XCTAssertTrue(model.weatherDeviationPreviews.isEmpty,
-                      "confirmed clear removes the strategic previews")
+                      "a refresh against a clear route removes the strategic previews")
     }
 
     /// Mock mode seeds several storm systems down the route, and the strategic preview
@@ -646,7 +650,7 @@ final class WeatherDeviationFlowTests: XCTestCase {
         let far = Geo.destination(from: pos, bearingDegrees: course, distanceNM: 200)
         model.radarOverlay.mockCells = model.radarOverlay.mockCells
             + [RadarCell(polygon: box(around: far, half: 0.2), intensity: .heavy)]
-        model.recomputeWeatherHazards()
+        await model.refreshDeviations()
 
         // The solid line is the near cell; the far cell previews faint. The preview set
         // must not include a line starting back at the (solid) near system.
@@ -706,11 +710,12 @@ final class WeatherDeviationFlowTests: XCTestCase {
         guard let pos = model.aircraftState.coordinate else { return XCTFail("no cruise position") }
 
         // Replace the demo cell with a narrow one ~60 NM ahead on the filed course, so its
-        // reroute is drawn ahead with the turn-out well in front of the aircraft.
+        // reroute is drawn ahead with the turn-out well in front of the aircraft. Refresh
+        // so the locked deviations pick up the moved weather.
         let course = Geo.bearing(from: model.mock.route.depCoord, to: model.mock.route.destCoord)
         let center = Geo.destination(from: pos, bearingDegrees: course, distanceNM: 60)
         model.radarOverlay.mockCells = [RadarCell(polygon: box(around: center, half: 0.15), intensity: .moderate)]
-        model.recomputeWeatherHazards()
+        await model.refreshDeviations()
         guard let v0 = model.activeWeatherConflict?.deviationPath.first else {
             return XCTFail("expected a drawn-ahead conflict")
         }

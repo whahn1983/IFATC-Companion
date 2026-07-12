@@ -951,6 +951,42 @@ struct RouteWeatherConflictDetector {
         return false
     }
 
+    /// The nearest moderate-or-greater hazard that sits **on the route corridor** anywhere
+    /// along the given polyline (`[position] + route`), and how far along the route it
+    /// begins (NM). Walks the whole route — no lookahead limit — and tests each sampled
+    /// point against every hazard's intensity-scaled corridor half-width, exactly the
+    /// "on the flight path" test the deviation detector uses. Independent of whether a
+    /// drawable reroute was produced, so Diagnostics can report on-path weather ("moderate
+    /// precipitation on route, 210 NM — monitoring") even when no mint line was drawn for
+    /// it, instead of falsely saying "no conflict". Nil when nothing qualifying lies on the
+    /// route. No AI, no I/O.
+    func nearestRouteHazard(route: [CLLocationCoordinate2D],
+                            from position: CLLocationCoordinate2D,
+                            hazards: [WeatherHazard]) -> (hazard: WeatherHazard, distanceNM: Double)? {
+        let pts = ([position] + route).filter { $0.isValid }
+        guard pts.count >= 2, !hazards.isEmpty else { return nil }
+        var best: (WeatherHazard, Double)?
+        var cumulative = 0.0
+        for i in 0..<(pts.count - 1) {
+            let a = pts[i], b = pts[i + 1]
+            let segLen = Geo.distanceNM(from: a, to: b)
+            let steps = max(1, Int(segLen / 5))
+            for s in 0...steps {
+                let t = Double(s) / Double(steps)
+                let p = interpolate(a, b, t)
+                for h in hazards where h.intensity >= .moderate {
+                    let half = corridorHalfWidth(for: h.intensity) + pointRadiusBuffer(h)
+                    if distanceHazardToPointNM(h, p) <= half {
+                        let along = cumulative + segLen * t
+                        if best == nil || along < best!.1 { best = (h, along) }
+                    }
+                }
+            }
+            cumulative += segLen
+        }
+        return best
+    }
+
     /// A stricter engagement test than `pathEngagesWeather`, for the faint **strategic
     /// previews**. `pathEngagesWeather` only asks whether *some* point of the drawn line
     /// comes near weather — which a "sharp angle out and back" spike still satisfies when
