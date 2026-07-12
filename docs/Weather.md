@@ -397,6 +397,24 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      to course just past the far edge. The nearest downstream fix is still selected and
      named for the ATC rejoin call ("proceed direct …"); it simply lies on ahead of where
      the drawn line rejoins.
+   - **Adjacent deviations fold into one parallel run.** The whole-route walk works each
+     system separately, so a *complex* multi-cell system — cells packed just far enough
+     apart that each is its own "system" — produced a string of short in-and-out hugs, each
+     turning out, paralleling one cell, and dipping back to the route right where the next
+     cell begins (so a rejoin often landed *inside* the next hazard). After the walk,
+     `mergeAdjacentDeviations` (in `RouteWeatherConflictDetector`) folds a run of these
+     together whenever the rejoin of one sits within `mergeAdjacentGapNM` (~30 NM) of the
+     next one's turn-out **and both hug the same side**: it keeps the first turn-out, threads
+     every offset vertex of the run into one line, drops the dips back to the route between
+     them, and rejoins only at the last hug's rejoin — one long parallel deviation down the
+     whole system, exactly what a pilot threading it would fly. Only the *connector* legs
+     across the gaps are re-validated (each constituent hug already clears every core), so a
+     hug whose own rejoin lands in the next cell still folds in. A run that would rejoin in a
+     cell has its final rejoin **slid forward along the route to clear air** (closing leg
+     kept clear of the cores), so the merged line no longer terminates in a hazard. Runs that
+     hug opposite sides, or are separated by more than the gap, are left split. The interior
+     turns are still walked generically at each vertex, so the folded line's ATC turn-by-turn
+     is unchanged — it just has more legs.
    - **Red cores get a wide berth.** Clearance is per-cell by intensity: a
      red/extreme return demands a wide berth (`severeBerthNM`, ~20 NM per FAA AC
      00-24C guidance for severe echoes) while moderate/heavy cells keep the base margin. That berth is applied both to path

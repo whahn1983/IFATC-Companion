@@ -2915,7 +2915,12 @@ final class AppModel: ObservableObject {
                 break                  // reached the end of the route
             }
         }
-        return results
+        // Fold runs of short, back-to-back deviations (each rejoin within reach of the next
+        // turn-out, same side) into one continuous parallel hug down the whole system, so a
+        // complex multi-cell system draws a single long parallel line instead of a string of
+        // little in-and-out jogs that each rejoin inside the next cell.
+        return conflictDetector.mergeAdjacentDeviations(
+            results, hazards: weatherHazards, route: upcomingRouteCoordinates(from: origin))
     }
 
     /// Re-run the whole-route deviation search now and re-lock the result — the action
