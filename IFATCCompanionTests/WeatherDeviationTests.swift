@@ -288,6 +288,24 @@ final class WeatherDeviationTests: XCTestCase {
         assertPathClear(path, of: [wall.geometry.polygonPoints ?? []])
     }
 
+    // MARK: - Whole-path clearance (the return leg too)
+
+    /// The entire drawn reroute — every leg, the return included — must clear every cell,
+    /// not just the ones the initial candidate happened to rejoin past. A staggered line
+    /// whose tail sits where a naive return leg would cut back through it is held on its
+    /// offset longer (and widened if needed) until the whole path is clear.
+    func testWholePathIncludingReturnLegClearsEveryCell() throws {
+        let polys = [
+            cell(alongNM: 35, crossNM: -18, halfCross: 14, from: usPosition),
+            cell(alongNM: 55, crossNM: 0,   halfCross: 14, from: usPosition),
+            cell(alongNM: 78, crossNM: 20,  halfCross: 14, from: usPosition),
+        ]
+        let conflict = try XCTUnwrap(detector.detectConflict(
+            position: usPosition, course: course, groundspeedKnots: 450, phase: .cruise,
+            hazards: polys.map { radarHazard($0) }, waypoints: []))
+        assertPathClear(conflict.deviationPath, of: polys)
+    }
+
     // MARK: - Engages-weather protection (no mint line in clear air)
 
     /// A reroute that runs entirely in clear air, far from every cell, must be recognized

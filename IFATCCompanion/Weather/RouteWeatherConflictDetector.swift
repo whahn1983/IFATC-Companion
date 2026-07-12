@@ -740,6 +740,12 @@ struct RouteWeatherConflictDetector {
         if !pathIsClear(deviationPath, cells: intenseBerths, origin: position) {
             deviationPath = chosen.path
         }
+        // Guarantee the WHOLE drawn path — the return leg included — clears every cell. When
+        // the fixed rejoin left the return leg cutting through weather (nothing there was
+        // fully clear), hold the offset longer and turn back farther past it, widening only
+        // if needed, until the entire path is clear. A path already clear is untouched.
+        deviationPath = extendedToClear(deviationPath, position: position, course: course,
+                                        cells: cellBerths, capAlong: capAlong)
         let throughPoint = deviationPath.count >= 2 ? deviationPath[1] : chosen.path[1]
 
         // Speak the deviation the drawn line actually flies: the initial turn from the
@@ -1296,6 +1302,62 @@ struct RouteWeatherConflictDetector {
         guard target > sLast.along else { return path }
         let v = Geo.destination(from: position, bearingDegrees: course, distanceNM: target)
         return Array(path.dropLast()) + [v]
+    }
+
+    /// Deterministically make the **whole** drawn hug — the return leg included — clear
+    /// every cell by its berth. The candidate search rejoins at a fixed point just past the
+    /// weather, so when the route re-enters weather there (or off to the side of the return
+    /// leg) nothing at that rejoin is fully clear and the selector falls back to a path that
+    /// cuts through it. This repair fixes that the way a pilot would: hold the offset
+    /// *longer* — extend the parallel leg and turn back later, past the weather the return
+    /// would otherwise cross — and, only if holding longer still can't clear it, step the
+    /// offset *wider*, re-checking the entire path each time. It is a pure try → check →
+    /// adjust → re-check loop, bounded by the rejoin cap and `maxDetourOffsetNM`.
+    ///
+    /// Applies to the 4-point parallel hug (`[turn-out, parallel-in, parallel-out, rejoin]`)
+    /// — the shape whose return leg can strand in weather; a triangle/degenerate path is
+    /// left as-is. A path that already clears every cell is returned unchanged, so a good
+    /// reroute is never disturbed. Best-effort: if nothing within the bounds clears, the
+    /// original (least-bad) path is kept rather than looping forever.
+    private func extendedToClear(_ path: [CLLocationCoordinate2D], position: CLLocationCoordinate2D,
+                                 course: Double,
+                                 cells: [(polygon: [CLLocationCoordinate2D], clearance: Double)],
+                                 capAlong: Double?) -> [CLLocationCoordinate2D] {
+        guard path.count == 4, !cells.isEmpty else { return path }
+        if pathIsClear(path, cells: cells, origin: position) { return path }
+        let sOut = project(path[1], from: position, course: course)   // turn-out onto the offset
+        let sPar = project(path[2], from: position, course: course)   // parallel-leg far end
+        guard abs(sPar.cross) > 0.5 else { return path }
+        let side = sPar.cross >= 0 ? 1.0 : -1.0
+        let sideBearing = course + (side >= 0 ? 90 : -90)
+        let nearAlong = max(0, sOut.along)                            // reach the offset by the near edge
+        var offset = max(config.lateralBufferNM, max(abs(sOut.cross), abs(sPar.cross)))
+        while offset <= config.maxDetourOffsetNM {
+            // A ~30° turn-out onto (and off) the offset, re-established for each width so a
+            // wider hug starts its turn earlier instead of jutting sideways.
+            let lead = turnOutLead(forOffset: side * offset)
+            let startAlong = max(0, nearAlong - lead)
+            let v0 = Geo.destination(from: position, bearingDegrees: course, distanceNM: startAlong)
+            let nearOn = Geo.destination(from: position, bearingDegrees: course, distanceNM: nearAlong)
+            let pNear = Geo.destination(from: nearOn, bearingDegrees: sideBearing, distanceNM: offset)
+            var farAlong = max(nearAlong + 1, sPar.along)
+            var steps = 0
+            while steps < 80 {
+                steps += 1
+                if let capAlong { farAlong = min(farAlong, capAlong) }   // never past the cap
+                let farOn = Geo.destination(from: position, bearingDegrees: course, distanceNM: farAlong)
+                let pFar = Geo.destination(from: farOn, bearingDegrees: sideBearing, distanceNM: offset)
+                var rejoinAlong = farAlong + lead
+                if let capAlong { rejoinAlong = min(rejoinAlong, capAlong) }
+                let rejoin = Geo.destination(from: position, bearingDegrees: course, distanceNM: rejoinAlong)
+                let candidate = [v0, pNear, pFar, rejoin]
+                if pathIsClear(candidate, cells: cells, origin: position) { return candidate }
+                if let capAlong, farAlong >= capAlong { break }   // no room to hold longer
+                farAlong += 8   // hold the offset longer; turn back farther past the weather
+            }
+            offset += 5   // widen and try again
+        }
+        return path   // nothing within the bounds cleared — keep the best-effort original
     }
 
     /// The spoken deviation amount: the initial turn from the turn-out point to the
