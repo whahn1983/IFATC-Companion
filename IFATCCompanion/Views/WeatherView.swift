@@ -248,6 +248,10 @@ struct WeatherView: View {
                             VStack(alignment: .trailing, spacing: 2) {
                                 if let d = item.distanceAheadNM, item.distanceIsFromAircraft {
                                     Text("\(Int(d.rounded())) NM ahead").font(.subheadline.weight(.semibold))
+                                } else {
+                                    // No live aircraft fix — the distance would be
+                                    // origin-relative, so show a route-relative label instead.
+                                    Text("Along route").font(.subheadline.weight(.semibold))
                                 }
                                 if let band = item.altitudeBand {
                                     Text("\(band.lowerBound)–\(band.upperBound) ft").font(.caption).foregroundStyle(.secondary)

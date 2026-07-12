@@ -202,8 +202,9 @@ final class WeatherTests: XCTestCase {
 
     /// Without a live aircraft fix the analysis falls back to the departure airport, so the
     /// along-track distance is origin-relative. It must be flagged and NOT presented as
-    /// "… miles ahead" — that was the distance-from-origin bug on the ride-report response.
-    func testRideReportOmitsDistanceWhenPositionIsNotLiveAircraft() {
+    /// "… miles ahead" (the distance-from-origin bug); instead the report falls back to a
+    /// route-relative phrase ("along your route near LIT").
+    func testRideReportUsesRouteFallbackWhenPositionIsNotLiveAircraft() {
         var analyzer = WeatherRouteAnalyzer()
         analyzer.config.corridorNM = 100
         analyzer.config.altitudeBandFt = 5000
@@ -214,7 +215,8 @@ final class WeatherTests: XCTestCase {
                           altitudeFt: 36000, turbulence: .severe, icing: nil, time: nil, aircraftType: "A319")
 
         let items = analyzer.relevantReports(pireps: [pirep], position: departure, routeEnd: end,
-                                             altitudeFt: 36000, positionIsLiveAircraft: false)
+                                             altitudeFt: 36000, nearestFix: "LIT",
+                                             positionIsLiveAircraft: false)
         XCTAssertEqual(items.count, 1)
         XCTAssertFalse(items.first?.distanceIsFromAircraft ?? true)
         // The distance is still computed (the turbulence model weights by it) — only the
@@ -231,6 +233,9 @@ final class WeatherTests: XCTestCase {
         XCTAssertFalse(tx.displayText.contains("miles ahead"),
                        "no origin-relative distance is presented without a live aircraft fix")
         XCTAssertFalse(tx.spokenText.contains("miles ahead"))
+        XCTAssertTrue(tx.displayText.contains("along your route near LIT"),
+                      "falls back to a route-relative phrase")
+        XCTAssertTrue(tx.spokenText.contains("along your route"))
     }
 
     /// With a live aircraft fix the distance is aircraft-relative and IS presented.
