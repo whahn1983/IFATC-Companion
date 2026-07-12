@@ -259,10 +259,10 @@ final class AppModel: ObservableObject {
     /// Every recommended deviation across the **entire** flight plan, found in one pass
     /// from the origin to the destination and then **locked in place**. Each is a clean
     /// turn-out / parallel-hug / turn-back maneuver around one weather system on the route.
-    /// Computed once when the flight's radar data first lands (and re-computed when the
-    /// route changes or the pilot taps "Refresh Deviations") — never every telemetry tick —
-    /// so the mint lines stop shifting, flickering, or drawing crazy triangles. Faint until
-    /// the aircraft is within draw range of each (`weatherDeviationLine` draws that one
+    /// Computed once when the flight's radar data first lands (and re-computed on a route
+    /// change, on a pull-to-refresh, and automatically every ~5 min) — never every telemetry
+    /// tick — so the mint lines stop shifting, flickering, or drawing crazy triangles. Faint
+    /// until the aircraft is within draw range of each (`weatherDeviationLine` draws that one
     /// solid); they stay put until the next refresh.
     @Published var lockedDeviations: [RouteWeatherConflict] = []
     /// Diagnostics overlay: when on, the route map draws the **sampled radar cells** (the
@@ -271,8 +271,9 @@ final class AppModel: ObservableObject {
     /// actual radar returns. Off by default and transient (resets each launch), like
     /// `simulateStaffedATC` — it's a verification aid, not a normal display layer.
     @Published var showSampledRadarCells = false
-    /// Whether `lockedDeviations` has been computed for the current route+radar. Cleared on
-    /// a route change or a "Refresh Deviations" tap so the set is recomputed once, then held.
+    /// Whether `lockedDeviations` has been computed for the current route+radar. Cleared on a
+    /// route change, a pull-to-refresh, or the 5-min auto-refresh, so the set is recomputed
+    /// once, then held.
     private var deviationsLocked = false
     /// Identifies the route `lockedDeviations` was computed for; a change re-locks a fresh set.
     private var lockedRouteKey = ""
@@ -2495,8 +2496,8 @@ final class AppModel: ObservableObject {
     ///
     /// The same tick also **auto-refreshes the deviation set** (`autoRefreshDeviationsUnlessDeviating`),
     /// right after the weather sample lands, so every deviation across the plan is re-solved
-    /// against fresh radar every ~5 min — the "Refresh Deviations" button, run automatically —
-    /// unless the pilot is committed to and flying a deviation.
+    /// against fresh radar every ~5 min — a manual pull-to-refresh, run automatically — unless
+    /// the pilot is committed to and flying a deviation.
     private func armWeatherRefreshTimer() {
         weatherRefreshTimer?.cancel()
         weatherRefreshTimer = Task { @MainActor [weak self] in
@@ -2515,16 +2516,14 @@ final class AppModel: ObservableObject {
     /// deviation lock and re-solves the whole plan against the just-sampled cells — **unless**
     /// the pilot is committed to and flying a deviation, whose mint line is locked to the path
     /// being flown and must never be re-proposed under them. This is the automatic counterpart
-    /// to the "Refresh Deviations" button; the button always refreshes, this one steps aside
-    /// while a deviation is being worked. The unlock and re-lock happen together (no await
+    /// to the manual pull-to-refresh, which always refreshes; this one steps aside while a
+    /// deviation is being worked. The unlock and re-lock happen together (no await
     /// between), so a telemetry tick can't slip in and re-lock the stale set first. Returns
     /// whether it refreshed, so it reads as "auto-refreshed" vs "skipped, deviation in progress".
     @discardableResult
     func autoRefreshDeviationsUnlessDeviating() -> Bool {
         guard !weatherDeviation.state.isCommittedDeviation else { return false }
-        deviationsLocked = false           // force a fresh lock…
-        lastConflictSeenAt = nil           // …a clean slate, like the manual refresh…
-        recomputeWeatherHazards()          // …and re-solve now, against the current cells
+        refreshDeviationsFromCurrentRadar()
         return true
     }
 
@@ -2720,8 +2719,9 @@ final class AppModel: ObservableObject {
             return
         }
         // Find every deviation across the whole flight plan once and lock them in place
-        // (route change / "Refresh Deviations" recomputes them; a telemetry tick never
-        // does). The mint lines are then drawn from this fixed set, so they stop shifting.
+        // (a route change, a pull-to-refresh, or the 5-min auto-refresh recomputes them; a
+        // telemetry tick never does). The mint lines are drawn from this fixed set, so they
+        // stop shifting.
         ensureLockedDeviationsComputed()
         // The deviation the aircraft is currently working is *selected* from that locked
         // set by its position along the route — with the range flags (banner / draw / solid)
@@ -2806,10 +2806,10 @@ final class AppModel: ObservableObject {
     /// Recompute the locked deviation set once per route+radar. The set is found in a
     /// single pass across the whole flight plan and then held (locked in place) — a
     /// telemetry tick never re-solves the geometry, so the mint lines stop shifting,
-    /// flickering, or drawing crazy triangles. It re-locks only when the route changes
-    /// (new flight plan) or the pilot taps "Refresh Deviations" (`refreshDeviations`).
-    /// Locking waits until the flight's radar has actually been sampled, so it never locks
-    /// an empty set before the first fetch lands.
+    /// flickering, or drawing crazy triangles. It re-locks only when the route changes (new
+    /// flight plan), on a pull-to-refresh (`refreshDeviationsFromCurrentRadar`), or on the
+    /// 5-min auto-refresh. Locking waits until the flight's radar has actually been sampled,
+    /// so it never locks an empty set before the first fetch lands.
     private func ensureLockedDeviationsComputed() {
         let key = routeFingerprint()
         if key != lockedRouteKey {          // a new/edited route → discard the old lock
@@ -2913,19 +2913,26 @@ final class AppModel: ObservableObject {
             results, hazards: weatherHazards, route: upcomingRouteCoordinates(from: origin))
     }
 
-    /// Re-run the whole-route deviation search now and re-lock the result — the action
-    /// behind the "Refresh Deviations" button. Samples fresh radar first (live mode) so a
-    /// pilot who sees the weather has moved can update every deviation across the plan at
-    /// once. Everything else (ATC calls, the auto-called turns, timings) is unchanged.
+    /// Re-run the whole-route deviation search now and re-lock the result. Samples fresh
+    /// radar first (live mode), then re-solves every deviation across the plan. Everything
+    /// else (ATC calls, the auto-called turns, timings) is unchanged.
     func refreshDeviations() async {
         if !settings.mockMode {
             await sampleLivePrecipitation()
         }
-        deviationsLocked = false           // force a fresh lock on the next recompute
-        // An explicit refresh is a clean slate: don't let the confirm-clear hold keep a
-        // pre-refresh conflict alive when the re-locked set no longer contains it.
+        refreshDeviationsFromCurrentRadar()
+    }
+
+    /// Re-solve every deviation across the whole plan against the **current** radar sample
+    /// and re-lock the result — the shared core of the manual pull-to-refresh, the automatic
+    /// 5-min refresh, and `refreshDeviations`. It does not itself fetch radar; the caller
+    /// decides whether to sample fresh cells first (pull-to-refresh does, via `refreshWeather`).
+    func refreshDeviationsFromCurrentRadar() {
+        deviationsLocked = false           // force a fresh lock…
+        // …a clean slate, so a stale confirm-clear hold can't keep a pre-refresh conflict the
+        // re-locked set no longer contains…
         lastConflictSeenAt = nil
-        recomputeWeatherHazards()          // rebuilds hazards, re-locks, re-selects, redraws
+        recomputeWeatherHazards()          // …then rebuild hazards, re-lock, re-select, redraw.
     }
 
     /// Select the deviation the aircraft is currently working from the locked set: the

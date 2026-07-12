@@ -597,15 +597,18 @@ request, which re-freezes it.
 **Refreshing the whole-route set.** The locked deviation set is re-solved in one
 synchronous pass (`computeDeviations` → the full optimized search per system, then the
 adjacent-hug fold — there is no longer a "quick hug first, refine in the background"
-two-step; that only existed to bridge the slow radar-polygon sampling, since fixed). It
-re-locks on a route change, on the **Refresh Deviations** button (`refreshDeviations`,
-which samples fresh radar first), and **automatically every ~5 min**
-(`autoRefreshDeviationsUnlessDeviating`, driven off the weather-refresh timer right after
-it samples radar) — the button, run on a cadence, so the reroutes track weather that has
-moved without a tap. The automatic refresh **steps aside while a deviation is being
-flown**: if the state is a committed deviation (`isCommittedDeviation`) it does nothing,
-so the path the pilot is following is never re-proposed under them; the manual button
-always refreshes.
+two-step; that only existed to bridge the slow radar-polygon sampling, since fixed). The
+shared re-solve core is `refreshDeviationsFromCurrentRadar` (drop the lock → recompute
+against the current radar sample). It re-locks on a route change; on a **pull-to-refresh**
+(the Weather view has no refresh buttons — pulling down runs `refreshWeather` first, which
+samples fresh radar, then `refreshDeviationsFromCurrentRadar` against it); and
+**automatically every ~5 min** (`autoRefreshDeviationsUnlessDeviating`, driven off the
+weather-refresh timer right after it samples radar) — a manual refresh, run on a cadence,
+so the reroutes track weather that has moved without any interaction. The automatic refresh
+**steps aside while a deviation is being flown**: if the state is a committed deviation
+(`isCommittedDeviation`) it does nothing, so the path the pilot is following is never
+re-proposed under them; the manual pull-to-refresh always refreshes (the committed line is
+frozen regardless, so it still doesn't move).
 
 **Re-vectoring for new weather.** While flying a lateral deviation, the **Vectors**
 button stays on the card alongside *Clear of Weather*. If new weather pops up ahead
