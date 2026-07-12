@@ -3,14 +3,12 @@ import SwiftUI
 struct WeatherView: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var settings: AppSettings
-    @State private var refreshing = false
-    @State private var deviationsRefreshing = false
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 14) {
-                    refreshButton
+                    pullToRefreshNote
                     routeOverlayCard
                     radarCard
                     statusCard
@@ -33,25 +31,20 @@ struct WeatherView: View {
         }
     }
 
-    /// The Ride Reports / Destination Weather / Lower-Higher requests live on the
-    /// ATC view, so the Weather view keeps only a single refresh control above the
-    /// map. Pull-to-refresh remains available too.
-    private var refreshButton: some View {
-        Button {
-            Task { await refresh() }
-        } label: {
-            Label(refreshing ? "Refreshing…" : "Refresh Weather", systemImage: "arrow.clockwise")
-                .frame(maxWidth: .infinity, minHeight: 44)
-        }
-        .buttonStyle(.bordered)
-        .disabled(refreshing)
+    /// The Ride Reports / Destination Weather / Lower-Higher requests live on the ATC view;
+    /// the Weather view refreshes entirely by **pull-to-refresh** (no buttons). Pulling down
+    /// reloads all weather first, then recomputes the deviations against it.
+    private var pullToRefreshNote: some View {
+        Label("Pull down to refresh", systemImage: "arrow.down.circle")
+            .font(.caption).foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     private var routeOverlayCard: some View {
         Card(title: "Route & Weather Overlay", systemImage: "map") {
             VStack(alignment: .leading, spacing: 8) {
                 RouteMapView()
-                refreshDeviationsButton
                 HStack(spacing: 12) {
                     legendDot(.green, "Light/chop")
                     legendDot(.yellow, "Light")
@@ -59,30 +52,10 @@ struct WeatherView: View {
                     legendDot(.red, "Severe")
                 }
                 .font(.caption2).foregroundStyle(.secondary)
-                Text("Dots are pilot reports; shaded areas are SIGMET/AIRMET advisories and the precipitation overlay where available (NOAA radar in the U.S., or a NASA satellite estimate elsewhere). The mint paths are the simulated recommended reroutes around the precipitation on your route — found for the whole flight plan at once and locked in place, faint until you close within ~75 NM and then drawn solid. Tap “Refresh Deviations” to recompute them if the weather has moved.")
+                Text("Dots are pilot reports; shaded areas are SIGMET/AIRMET advisories and the precipitation overlay where available (NOAA radar in the U.S., or a NASA satellite estimate elsewhere). The mint paths are the simulated recommended reroutes around the precipitation on your route — found for the whole flight plan at once and locked in place, faint until you close within ~75 NM and then drawn solid. They recompute automatically about every 5 minutes, and immediately when you pull to refresh. Once you're flying a deviation its line is locked and won't shift under you, and the automatic refresh pauses until you're clear.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
         }
-    }
-
-    /// Recompute every locked deviation across the whole flight plan against the current
-    /// radar. Deviations are otherwise found once and held in place (they never redraw on
-    /// their own), so this is how the pilot updates them after the weather moves.
-    private var refreshDeviationsButton: some View {
-        Button {
-            Task {
-                deviationsRefreshing = true
-                await model.refreshDeviations()
-                deviationsRefreshing = false
-            }
-        } label: {
-            Label(deviationsRefreshing ? "Refreshing Deviations…" : "Refresh Deviations",
-                  systemImage: "arrow.triangle.turn.up.right.diamond")
-                .frame(maxWidth: .infinity, minHeight: 44)
-        }
-        .buttonStyle(.bordered)
-        .tint(.mint)
-        .disabled(deviationsRefreshing)
     }
 
     private func legendDot(_ color: Color, _ label: String) -> some View {
@@ -314,10 +287,12 @@ struct WeatherView: View {
         }
     }
 
+    /// Pull-to-refresh: reload all weather first (METARs, PIREPs, SIGMETs, and a fresh radar
+    /// sample), then — once that has fully landed — recompute every deviation against it. One
+    /// radar fetch feeds both, and this is a manual refresh, so it re-solves even mid-deviation.
     private func refresh() async {
-        refreshing = true
         await model.refreshWeather()
-        refreshing = false
+        model.refreshDeviationsFromCurrentRadar()
     }
 
     private func categoryLevel(_ cat: String) -> StatusLevel {

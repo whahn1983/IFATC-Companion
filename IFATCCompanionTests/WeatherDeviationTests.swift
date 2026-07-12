@@ -1167,4 +1167,120 @@ final class WeatherDeviationTests: XCTestCase {
         XCTAssertNil(data, "mock precipitation is drawn as polygons, never a radar image")
         XCTAssertNil(mock.exportImageURL(for: bbox, size: CGSize(width: 10, height: 10), frame: frame))
     }
+
+    // MARK: - Merging adjacent deviations
+
+    /// A point `alongNM` up the northbound course.
+    private func onCourse(_ alongNM: Double) -> CLLocationCoordinate2D {
+        Geo.destination(from: usPosition, bearingDegrees: course, distanceNM: alongNM)
+    }
+
+    /// A point `alongNM` up the course and `crossNM` to the side (+ = right of course).
+    private func offCourse(_ alongNM: Double, _ crossNM: Double) -> CLLocationCoordinate2D {
+        Geo.destination(from: onCourse(alongNM), bearingDegrees: course + 90, distanceNM: crossNM)
+    }
+
+    /// A minimal conflict carrying a hand-built deviation path, for the merge geometry.
+    private func makeConflict(path: [CLLocationCoordinate2D], direction: DeviationDirection,
+                              severity: WeatherIntensity = .heavy, hazard: WeatherHazard) -> RouteWeatherConflict {
+        RouteWeatherConflict(
+            hazard: hazard, distanceAheadNM: 30, relativeBearingDegrees: 0,
+            leftClock: 11, centerClock: 12, rightClock: 1, estimatedTimeMinutes: nil,
+            severity: severity, leftBypassScore: 0, rightBypassScore: 0,
+            recommendedDirection: direction, recommendedDeviationDegrees: 20,
+            rejoinFix: nil, originalSegment: nil, shouldPrompt: true,
+            intersectionArea: [], deviationPath: path)
+    }
+
+    /// Two same-side deviations whose rejoin/turn-out sit within the merge window fold into
+    /// one continuous parallel hug: the first turn-out, the last rejoin, and no dip back to
+    /// the route in the gap between them.
+    func testAdjacentSameSideDeviationsMergeIntoOneParallelHug() throws {
+        let cellA = radarHazard(cell(alongNM: 40, crossNM: 0, from: usPosition))    // along 30–50
+        let cellB = radarHazard(cell(alongNM: 100, crossNM: 0, from: usPosition))   // along 90–110
+        let devA = makeConflict(path: [onCourse(25), offCourse(35, -22), offCourse(55, -22), onCourse(65)],
+                                direction: .left, hazard: cellA)
+        let devB = makeConflict(path: [onCourse(85), offCourse(95, -22), offCourse(115, -22), onCourse(125)],
+                                direction: .left, hazard: cellB)
+        let route = [onCourse(0), onCourse(200)]
+
+        let merged = detector.mergeAdjacentDeviations([devA, devB], hazards: [cellA, cellB], route: route)
+
+        XCTAssertEqual(merged.count, 1, "the two adjacent same-side deviations fold into one")
+        let path = merged[0].deviationPath
+        XCTAssertLessThan(Geo.distanceNM(from: path.first!, to: onCourse(25)), 2,
+                          "the folded line keeps the first deviation's turn-out")
+        XCTAssertLessThan(Geo.distanceNM(from: path.last!, to: onCourse(125)), 2,
+                          "the folded line rejoins only at the last deviation's rejoin")
+        assertPathClear(path, of: [cellA.geometry.polygonPoints ?? [], cellB.geometry.polygonPoints ?? []])
+        // Every interior vertex stays out on the offset — the line runs parallel through the
+        // gap instead of dipping back to the course between the two cells.
+        for v in path.dropFirst().dropLast() {
+            XCTAssertGreaterThan(abs(offsetFromCourse(v)), 15, "the hug holds its offset across the gap")
+        }
+    }
+
+    /// A clear gap wider than the merge window leaves the two deviations separate — they are
+    /// distinct systems, each with its own in-and-out maneuver.
+    func testDeviationsSeparatedByAWideGapAreNotMerged() {
+        let cellA = radarHazard(cell(alongNM: 40, crossNM: 0, from: usPosition))
+        let cellB = radarHazard(cell(alongNM: 200, crossNM: 0, from: usPosition))
+        let devA = makeConflict(path: [onCourse(25), offCourse(35, -22), offCourse(55, -22), onCourse(65)],
+                                direction: .left, hazard: cellA)
+        let devB = makeConflict(path: [onCourse(185), offCourse(195, -22), offCourse(215, -22), onCourse(225)],
+                                direction: .left, hazard: cellB)
+        let route = [onCourse(0), onCourse(300)]
+
+        let merged = detector.mergeAdjacentDeviations([devA, devB], hazards: [cellA, cellB], route: route)
+        XCTAssertEqual(merged.count, 2, "a wide clear gap keeps the two systems separate")
+    }
+
+    /// Deviations hugging opposite sides are never joined into one parallel run — connecting
+    /// their offsets would cross the route (and the weather) — even when they sit close.
+    func testOppositeSideDeviationsAreNotMerged() {
+        let cellA = radarHazard(cell(alongNM: 40, crossNM: 0, from: usPosition))
+        let cellB = radarHazard(cell(alongNM: 100, crossNM: 0, from: usPosition))
+        let devA = makeConflict(path: [onCourse(25), offCourse(35, -22), offCourse(55, -22), onCourse(65)],
+                                direction: .left, hazard: cellA)
+        let devB = makeConflict(path: [onCourse(85), offCourse(95, 22), offCourse(115, 22), onCourse(125)],
+                                direction: .right, hazard: cellB)
+        let route = [onCourse(0), onCourse(200)]
+
+        let merged = detector.mergeAdjacentDeviations([devA, devB], hazards: [cellA, cellB], route: route)
+        XCTAssertEqual(merged.count, 2, "opposite-side hugs are left split")
+    }
+
+    /// When the folded line would otherwise rejoin *inside* a cell (the packed-system case
+    /// the user flagged), the rejoin is slid forward along the route until it clears the
+    /// weather, so the merged deviation no longer terminates in a hazard.
+    func testMergedRejoinIsPushedClearWhenItLandsInAHazard() throws {
+        let cellA = radarHazard(cell(alongNM: 40, crossNM: 0, from: usPosition))               // along 30–50
+        let cellB = radarHazard(cell(alongNM: 115, crossNM: 0, halfAlong: 25, from: usPosition)) // along 90–140
+        let devA = makeConflict(path: [onCourse(25), offCourse(35, -22), offCourse(55, -22), onCourse(65)],
+                                direction: .left, hazard: cellA)
+        // devB's own rejoin lands at along 120 — inside cellB.
+        let devB = makeConflict(path: [onCourse(85), offCourse(95, -22), offCourse(135, -22), onCourse(120)],
+                                direction: .left, hazard: cellB)
+        let route = [onCourse(0), onCourse(220)]
+
+        let merged = detector.mergeAdjacentDeviations([devA, devB], hazards: [cellA, cellB], route: route)
+        XCTAssertEqual(merged.count, 1, "the packed cells still fold into one hug")
+        let path = merged[0].deviationPath
+        let polyB = try XCTUnwrap(cellB.geometry.polygonPoints)
+        XCTAssertFalse(WeatherRouteAnalyzer.pointInPolygon(path.last!, polyB),
+                       "the folded line no longer terminates inside the hazard")
+        XCTAssertGreaterThan(alongFromCourse(path.last!), 140,
+                             "the rejoin is slid past the cell's far edge to clear air")
+        assertPathClear(path, of: [polyB])
+    }
+
+    /// A single deviation (nothing adjacent) passes through the merge untouched.
+    func testSingleDeviationIsUnchangedByMerge() {
+        let cellA = radarHazard(cell(alongNM: 40, crossNM: 0, from: usPosition))
+        let devA = makeConflict(path: [onCourse(25), offCourse(35, -22), offCourse(55, -22), onCourse(65)],
+                                direction: .left, hazard: cellA)
+        let merged = detector.mergeAdjacentDeviations([devA], hazards: [cellA], route: [onCourse(0), onCourse(120)])
+        XCTAssertEqual(merged.count, 1)
+        XCTAssertEqual(merged[0].deviationPath.count, devA.deviationPath.count, "an isolated deviation is left as-is")
+    }
 }

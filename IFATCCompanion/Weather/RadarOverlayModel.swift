@@ -263,7 +263,10 @@ struct RouteWeatherConflict: Identifiable {
     var intersectionArea: [CLLocationCoordinate2D]
     /// A recommended deviation path for drawing on the map: `position → turn(s) →
     /// rejoin`. A single-apex dogleg has three points; a side-hug down one edge of a
-    /// long line has four (step-out, run parallel, then close to the rejoin).
+    /// long line has four (step-out, run parallel, then close to the rejoin). A run of
+    /// adjacent hugs folded into one parallel line down a complex multi-cell system
+    /// (`mergeAdjacentDeviations`) carries more: one turn-out, every offset vertex, one
+    /// rejoin — the interior turns are still walked generically at each vertex.
     var deviationPath: [CLLocationCoordinate2D]
 
     var isConvectiveSigmet: Bool { hazard.isConvectiveSigmet }

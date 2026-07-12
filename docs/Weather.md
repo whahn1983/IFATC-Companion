@@ -397,6 +397,24 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      to course just past the far edge. The nearest downstream fix is still selected and
      named for the ATC rejoin call ("proceed direct …"); it simply lies on ahead of where
      the drawn line rejoins.
+   - **Adjacent deviations fold into one parallel run.** The whole-route walk works each
+     system separately, so a *complex* multi-cell system — cells packed just far enough
+     apart that each is its own "system" — produced a string of short in-and-out hugs, each
+     turning out, paralleling one cell, and dipping back to the route right where the next
+     cell begins (so a rejoin often landed *inside* the next hazard). After the walk,
+     `mergeAdjacentDeviations` (in `RouteWeatherConflictDetector`) folds a run of these
+     together whenever the rejoin of one sits within `mergeAdjacentGapNM` (~30 NM) of the
+     next one's turn-out **and both hug the same side**: it keeps the first turn-out, threads
+     every offset vertex of the run into one line, drops the dips back to the route between
+     them, and rejoins only at the last hug's rejoin — one long parallel deviation down the
+     whole system, exactly what a pilot threading it would fly. Only the *connector* legs
+     across the gaps are re-validated (each constituent hug already clears every core), so a
+     hug whose own rejoin lands in the next cell still folds in. A run that would rejoin in a
+     cell has its final rejoin **slid forward along the route to clear air** (closing leg
+     kept clear of the cores), so the merged line no longer terminates in a hazard. Runs that
+     hug opposite sides, or are separated by more than the gap, are left split. The interior
+     turns are still walked generically at each vertex, so the folded line's ATC turn-by-turn
+     is unchanged — it just has more legs.
    - **Red cores get a wide berth.** Clearance is per-cell by intensity: a
      red/extreme return demands a wide berth (`severeBerthNM`, ~20 NM per FAA AC
      00-24C guidance for severe echoes) while moderate/heavy cells keep the base margin. That berth is applied both to path
@@ -575,6 +593,22 @@ the map draws that fixed path (`weatherDeviationLine`) — it no longer shifts o
 blinks as the radar resamples, and confirm-clear hysteresis never tears it down. The
 lock releases only on clear-of-weather (which resets the flow) or on a fresh reroute
 request, which re-freezes it.
+
+**Refreshing the whole-route set.** The locked deviation set is re-solved in one
+synchronous pass (`computeDeviations` → the full optimized search per system, then the
+adjacent-hug fold — there is no longer a "quick hug first, refine in the background"
+two-step; that only existed to bridge the slow radar-polygon sampling, since fixed). The
+shared re-solve core is `refreshDeviationsFromCurrentRadar` (drop the lock → recompute
+against the current radar sample). It re-locks on a route change; on a **pull-to-refresh**
+(the Weather view has no refresh buttons — pulling down runs `refreshWeather` first, which
+samples fresh radar, then `refreshDeviationsFromCurrentRadar` against it); and
+**automatically every ~5 min** (`autoRefreshDeviationsUnlessDeviating`, driven off the
+weather-refresh timer right after it samples radar) — a manual refresh, run on a cadence,
+so the reroutes track weather that has moved without any interaction. The automatic refresh
+**steps aside while a deviation is being flown**: if the state is a committed deviation
+(`isCommittedDeviation`) it does nothing, so the path the pilot is following is never
+re-proposed under them; the manual pull-to-refresh always refreshes (the committed line is
+frozen regardless, so it still doesn't move).
 
 **Re-vectoring for new weather.** While flying a lateral deviation, the **Vectors**
 button stays on the card alongside *Clear of Weather*. If new weather pops up ahead
