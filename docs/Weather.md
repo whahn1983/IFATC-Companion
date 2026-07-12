@@ -469,6 +469,16 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      cell does **not** engage the weather and is **suppressed** rather than shown as a mint
      line with no weather near it. A committed (frozen) line the pilot is already flying is
      never suppressed.
+   - **The faint previews additionally require their apex to hug weather
+     (`previewApexHugsWeather`).** `pathEngagesWeather` only asks that *some* point of the
+     line be near a cell — which a "sharp angle out and back" spike satisfies when its *base*
+     sits by a cell while its *apex bulges into clear air*. That shape is what a preview draws
+     when a straight-corridor reroute is aimed across a route bend (e.g. the arrival turn) and
+     truncated there. The solid line never shows it because it is held until the weather is
+     within `mintLineDrawNM` (route to it essentially straight); the preview has no such gate,
+     so it gets a stricter check — the vertex that bulges **farthest off the filed route** must
+     itself be within a berth (~30 NM) of a moderate-or-greater cell. A preview whose apex is
+     out in clear air, nowhere near precipitation, is hugging nothing and is dropped.
    It also computes distance, clock position(s), estimated time, severity, the spoken
    deviation amount (the actual initial turn onto the threading path), and a
    downstream rejoin fix.

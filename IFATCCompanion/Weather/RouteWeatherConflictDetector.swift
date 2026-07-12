@@ -951,6 +951,59 @@ struct RouteWeatherConflictDetector {
         return false
     }
 
+    /// A stricter engagement test than `pathEngagesWeather`, for the faint **strategic
+    /// previews**. `pathEngagesWeather` only asks whether *some* point of the drawn line
+    /// comes near weather — which a "sharp angle out and back" spike still satisfies when
+    /// its base sits beside a cell (or merely within 45 NM of one) while its **apex bulges
+    /// off into clear air**. That degenerate shape is exactly what a preview draws when a
+    /// straight-corridor reroute is aimed across a route bend (e.g. the arrival turn toward
+    /// the destination) and then truncated at the bend: the kept stub juts out toward — but
+    /// never reaches — weather that is really further along, past the turn. The solid line
+    /// never shows it because it is held until the weather is within `mintLineDrawNM` (where
+    /// the route to it is essentially straight); the preview has no such gate.
+    ///
+    /// A genuine reroute *hugs* the weather: the point where it bulges farthest off the
+    /// filed route (its apex) sits right alongside the cell it is rounding, within a berth
+    /// of it. So require that — the apex vertex must come within `maxDistanceNM` of a
+    /// moderate-or-greater cell; a line whose apex is out in clear air, nowhere near any
+    /// precipitation, is not hugging anything and is suppressed. `maxDistanceNM` is set just
+    /// past the widest berth a hug keeps (a red/extreme core's `severeBerthNM` plus the
+    /// lateral buffer), so real hugs — even wide ones — pass while a clear-air spike does
+    /// not. A line that barely leaves the route (no real apex) is left to
+    /// `pathEngagesWeather`. `route` is the filed route the preview should be hugging
+    /// (`[anchor] + upcoming fixes`).
+    func previewApexHugsWeather(_ path: [CLLocationCoordinate2D], route: [CLLocationCoordinate2D],
+                                hazards: [WeatherHazard], maxDistanceNM: Double = 30) -> Bool {
+        guard path.count >= 2 else { return false }
+        let polys = hazards.compactMap { h -> [CLLocationCoordinate2D]? in
+            guard h.intensity >= .moderate, let p = h.geometry.polygonPoints, p.count >= 3 else { return nil }
+            return p
+        }
+        guard !polys.isEmpty, route.count >= 2 else { return false }
+        // The apex: the drawn vertex that bulges farthest off the filed route.
+        var apex: CLLocationCoordinate2D?
+        var apexExcursion = 0.0
+        for v in path where v.isValid {
+            let d = distanceToPolylineNM(v, route)
+            if d > apexExcursion { apexExcursion = d; apex = v }
+        }
+        // Barely leaves the route — not the out-and-back spike this guards against.
+        guard let apex, apexExcursion >= 5 else { return true }
+        return polys.contains { distanceToPolygonNM(apex, $0) <= maxDistanceNM }
+    }
+
+    /// Distance (NM) from a point to a polyline — the nearest of its segments.
+    private func distanceToPolylineNM(_ p: CLLocationCoordinate2D, _ line: [CLLocationCoordinate2D]) -> Double {
+        guard line.count >= 2 else {
+            return line.first.map { Geo.distanceNM(from: p, to: $0) } ?? .greatestFiniteMagnitude
+        }
+        var best = Double.greatestFiniteMagnitude
+        for i in 0..<(line.count - 1) {
+            best = min(best, pointToSegmentNM(p, line[i], line[i + 1]))
+        }
+        return best
+    }
+
     /// The upper convex hull (the maximal-`y` envelope) of points in an (x, y) plane,
     /// left to right — used to trace the outboard silhouette of a clustered weather line
     /// so a hug can follow a staggered edge with as many legs as the shape needs. Standard

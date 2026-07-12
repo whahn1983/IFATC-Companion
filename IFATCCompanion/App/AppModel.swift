@@ -3100,6 +3100,14 @@ final class AppModel: ObservableObject {
                // Same protection as the solid line: only preview a reroute that actually
                // engages weather, so a degenerate line in clear air is never drawn.
                conflictDetector.pathEngagesWeather(conflict.deviationPath, hazards: weatherHazards),
+               // Stricter still for the preview, which — unlike the solid line — has no
+               // `withinDrawRange` gate: the reroute's apex (its farthest bulge off the
+               // route) must itself hug weather. This drops the "sharp angle out and back"
+               // spike a straight-corridor reroute leaves when aimed across a route bend
+               // (e.g. the arrival turn) and truncated there, jutting into clear air toward
+               // weather that is really further along past the bend.
+               conflictDetector.previewApexHugsWeather(conflict.deviationPath,
+                                                       route: [startPoint] + ahead, hazards: weatherHazards),
                let end = conflict.deviationPath.last, end.isValid,
                Geo.distanceNM(from: startPoint, to: end) > 1 {
                 lines.append(conflict.deviationPath)
