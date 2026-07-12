@@ -22,6 +22,31 @@ import ImageIO
 /// touches CoreGraphics.
 enum RadarImageSampler {
 
+    // MARK: - Pixel → coordinate projection
+
+    /// How a sampled image's pixel rows map to latitude. The live radar/satellite
+    /// overlays are rendered in **Web Mercator (EPSG:3857)** — the projection MapKit
+    /// draws in — so a pixel row is linear in Mercator *y*, not in latitude; reading it
+    /// as linear latitude drifts the sampled cells (tens of NM at route scale, enough to
+    /// push an on-route core outside the deviation corridor). Synthetic test grids and any
+    /// equirectangular source stay `.equirectangular` (the default), where a row *is*
+    /// linear in latitude. Longitude is linear in both (Mercator *x* ∝ longitude).
+    enum PixelProjection {
+        case equirectangular
+        case webMercator
+    }
+
+    /// Web Mercator *y* (unitless; the Earth-radius factor cancels in the inverse) for a
+    /// latitude in degrees, and its inverse. Used to map pixel rows of a 3857 image back
+    /// to latitude non-linearly.
+    private static func mercatorY(_ latDegrees: Double) -> Double {
+        let clamped = min(85.05112878, max(-85.05112878, latDegrees))
+        return log(tan(.pi / 4 + clamped * .pi / 180 / 2))
+    }
+    private static func inverseMercatorLatDegrees(_ y: Double) -> Double {
+        (2 * atan(exp(y)) - .pi / 2) * 180 / .pi
+    }
+
     // MARK: - Color → intensity
 
     /// The color ramp a rendered precipitation image uses, which determines how a
@@ -126,7 +151,8 @@ enum RadarImageSampler {
     /// `bbox`. Clusters smaller than `minCells` pixels are dropped as noise.
     static func cells(from grid: [[WeatherIntensity?]],
                       bbox: RadarBoundingBox,
-                      minCells: Int = 3) -> [RadarCell] {
+                      minCells: Int = 3,
+                      projection: PixelProjection = .equirectangular) -> [RadarCell] {
         let rows = grid.count
         guard rows > 0 else { return [] }
         let cols = grid[0].count
@@ -167,7 +193,8 @@ enum RadarImageSampler {
                 guard count >= minCells else { continue }
                 let polygon = boundingPolygon(minRow: minRow, maxRow: maxRow,
                                               minCol: minCol, maxCol: maxCol,
-                                              rows: rows, cols: cols, bbox: bbox)
+                                              rows: rows, cols: cols, bbox: bbox,
+                                              projection: projection)
                 cells.append(RadarCell(polygon: polygon, intensity: peak))
             }
         }
@@ -178,14 +205,26 @@ enum RadarImageSampler {
     /// Row 0 is the top (max latitude); the block spans whole cells, so its edges
     /// run from `minRow` to `maxRow + 1` and `minCol` to `maxCol + 1`.
     private static func boundingPolygon(minRow: Int, maxRow: Int, minCol: Int, maxCol: Int,
-                                        rows: Int, cols: Int, bbox: RadarBoundingBox) -> [CLLocationCoordinate2D] {
+                                        rows: Int, cols: Int, bbox: RadarBoundingBox,
+                                        projection: PixelProjection = .equirectangular) -> [CLLocationCoordinate2D] {
         let latSpan = bbox.maxLatitude - bbox.minLatitude
         let lonSpan = bbox.maxLongitude - bbox.minLongitude
-        func lat(atRowEdge edge: Int) -> Double {
-            bbox.maxLatitude - (Double(edge) / Double(rows)) * latSpan
-        }
+        // Longitude is linear in both projections (Mercator x ∝ longitude).
         func lon(atColEdge edge: Int) -> Double {
             bbox.minLongitude + (Double(edge) / Double(cols)) * lonSpan
+        }
+        // Latitude: linear for an equirectangular grid; for a Web Mercator image the row
+        // is linear in Mercator y, so interpolate in y and invert the projection.
+        func lat(atRowEdge edge: Int) -> Double {
+            switch projection {
+            case .equirectangular:
+                return bbox.maxLatitude - (Double(edge) / Double(rows)) * latSpan
+            case .webMercator:
+                let f = Double(edge) / Double(rows)   // 0 at top (maxLat) → 1 at bottom (minLat)
+                let yTop = mercatorY(bbox.maxLatitude)
+                let yBottom = mercatorY(bbox.minLatitude)
+                return inverseMercatorLatDegrees(yTop - f * (yTop - yBottom))
+            }
         }
         let north = lat(atRowEdge: minRow)
         let south = lat(atRowEdge: maxRow + 1)
@@ -242,9 +281,10 @@ enum RadarImageSampler {
     /// the region `bbox`, at the given sample resolution and color ramp. Returns `nil`
     /// on decode failure so the caller can fall back to the full SIGMET area.
     static func cells(fromPNG data: Data, columns: Int, rows: Int, bbox: RadarBoundingBox,
-                      palette: Palette = .reflectivity) -> [RadarCell]? {
+                      palette: Palette = .reflectivity,
+                      projection: PixelProjection = .equirectangular) -> [RadarCell]? {
         guard let grid = grid(fromPNG: data, columns: columns, rows: rows, palette: palette) else { return nil }
-        return cells(from: grid, bbox: bbox)
+        return cells(from: grid, bbox: bbox, projection: projection)
     }
 
     // MARK: - SIGMET precipitation cores
