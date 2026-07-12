@@ -6,15 +6,28 @@ enum IFConnectConnectionState: Equatable {
     case discovering
     case connecting
     case connected
-    case failed(String)
+    /// `reason` is the short, space-constrained summary shown in compact UI (e.g.
+    /// the ATC view status pill). `detail`, when present, is the fuller message —
+    /// including any recovery instructions — surfaced where there's room (Settings).
+    case failed(String, detail: String? = nil)
 
+    /// Compact status string for space-constrained UI. Always uses the short reason.
     var title: String {
         switch self {
         case .disconnected: return "Disconnected"
         case .discovering: return "Searching…"
         case .connecting: return "Connecting…"
         case .connected: return "Connected"
-        case .failed(let reason): return "Failed: \(reason)"
+        case .failed(let reason, _): return "Failed: \(reason)"
+        }
+    }
+
+    /// Fuller status string for UI with room for detail (e.g. the Settings page).
+    /// Falls back to `title` when there's no extended detail.
+    var detailedTitle: String {
+        switch self {
+        case .failed(let reason, let detail): return "Failed: \(detail ?? reason)"
+        default: return title
         }
     }
 
@@ -45,10 +58,19 @@ enum IFConnectError: LocalizedError {
         case .invalidHost: return "Invalid host or port."
         case .timeout: return "The connection timed out."
         case .connectionFailed(let r): return "Connection failed: \(r)"
-        case .manifestUnavailable: return "Manifest Unavailable. Try force closing Infinite Flight and IFATC Companion, then open Infinite Flight first and then the Companion again."
+        case .manifestUnavailable: return "Manifest Unavailable"
         case .unknownState: return "Requested state is not available."
         case .decodingFailed: return "Failed to decode a response."
         case .cancelled: return "Operation cancelled."
+        }
+    }
+
+    var recoverySuggestion: String? {
+        switch self {
+        case .manifestUnavailable:
+            return "Try force closing Infinite Flight and IFATC Companion, then open Infinite Flight first and then the Companion again."
+        default:
+            return nil
         }
     }
 }
