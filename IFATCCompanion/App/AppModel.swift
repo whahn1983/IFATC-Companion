@@ -2833,15 +2833,18 @@ final class AppModel: ObservableObject {
     /// telemetry tick never re-solves the geometry, so the mint lines stop shifting,
     /// flickering, or drawing crazy triangles. It re-locks only when the route changes (new
     /// flight plan), on a pull-to-refresh (`refreshDeviationsFromCurrentRadar`), or on the
-    /// 5-min auto-refresh. Locking waits until the flight's radar has actually been sampled,
-    /// so it never locks an empty set before the first fetch lands.
+    /// 5-min auto-refresh.
     ///
-    /// In live mode the first radar frame after connecting can decode empty or partial (a cold
-    /// fetch), so the initial solve finds no weather. That empty result is **not** frozen: the
-    /// set stays unlocked and re-solves each time a *fresher* sample lands, so the mint lines
-    /// appear on their own once the radar cells actually arrive — rather than only after a
-    /// manual pull-to-refresh. The retry is bounded to the sample cadence (keyed on the sample
-    /// stamp) so it never re-runs the whole-route search on the every-tick telemetry path.
+    /// Crucially, only a **non-empty** result is frozen. An empty solve is left unlocked so the
+    /// next recompute re-solves it — because the *first* recompute of a new flight routinely
+    /// runs before the weather cells are in place: in mock mode the simulator's immediate
+    /// telemetry emit fires `recomputeWeatherHazards` before the async `refreshWeather` loads
+    /// the mock cells; in live mode the first radar frame can decode empty or partial (a cold
+    /// fetch). Freezing that empty result is what left the mint lines missing until a manual
+    /// pull-to-refresh. Leaving it unlocked lets the lines appear on their own once the cells
+    /// land. In live mode the re-solve is bounded to the sample cadence (keyed on the sample
+    /// stamp) so it never re-runs the whole-route search on the every-tick telemetry path; in
+    /// mock mode the cells are synchronous and an empty solve is a cheap early return.
     private func ensureLockedDeviationsComputed() {
         let key = routeFingerprint()
         if key != lockedRouteKey {          // a new/edited route → discard the old lock
@@ -2859,21 +2862,22 @@ final class AppModel: ObservableObject {
         // mid-fetch and never re-locks). In Mock Mode the cells are set synchronously before
         // recompute runs, so no wait is needed.
         guard settings.mockMode || livePrecipCellsReady else { return }
-        // Mock Mode: the hand-authored cells are already in place, so lock in one pass.
-        if settings.mockMode {
-            recomputeLockedDeviations()
-            deviationsLocked = true
-            return
-        }
         // Live mode: skip re-solving only when this exact sample was already solved and came
-        // up empty — wait for a fresher one. Any newer sample (or a first solve) re-solves.
-        if lockedDeviations.isEmpty, lockedSampleStamp != nil, lockedSampleStamp == lastPrecipSampleAt {
+        // up empty — wait for a fresher one. (Mock cells are set synchronously, so there is no
+        // in-flight sample to gate on; recomputing an empty set is a cheap early return.)
+        if !settings.mockMode, lockedDeviations.isEmpty,
+           lockedSampleStamp != nil, lockedSampleStamp == lastPrecipSampleAt {
             return
         }
         lockedSampleStamp = lastPrecipSampleAt
         recomputeLockedDeviations()
-        // Only treat the set as locked once it actually produced lines. An empty result (a
-        // clear route, or a partial first frame) stays unlocked so a later sample can fill it.
+        // Only treat the set as locked once it actually produced lines — an empty result must
+        // never freeze the mint lines off. In mock mode the first recompute runs on the
+        // simulator's immediate telemetry emit, *before* `refreshWeather` has loaded the mock
+        // cells; in live mode the first radar frame can decode empty. Leaving an empty result
+        // unlocked lets the next recompute (once the cells are in place) fill it, so the lines
+        // draw on their own instead of only after a manual pull-to-refresh. A non-empty set
+        // still locks and holds (stable across telemetry ticks and transient radar clears).
         deviationsLocked = !lockedDeviations.isEmpty
     }
 
