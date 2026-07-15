@@ -275,6 +275,21 @@ struct WeatherDeviationPhraseology {
         return tx
     }
 
+    /// The pilot asks for vectors while already flying a deviation, but the reroute
+    /// they're on is still clear of precipitation — the controller has them continue on
+    /// the current deviation rather than issuing new vectors. Radar-derived, so
+    /// "precipitation".
+    func continueCurrentDeviation(cs: Callsign, facility: ATCFacility = .center) -> ATCTransmission {
+        var tx = center("\(cs.display), no new precipitation observed on your deviation, continue present deviation, advise clear of weather.",
+                        "\(cs.spoken), no new precipitation observed on your deviation, continue present deviation, advise clear of weather.",
+                        facility: facility)
+        tx.readback = ATCTransmission.Readback(
+            displayText: "Continue present deviation, advise clear of weather, \(cs.display).",
+            spokenText: "Continue present deviation, advise clear of weather, \(cs.spoken).",
+            facility: facility)
+        return tx
+    }
+
     /// Clear of weather — proceed direct the rejoin fix, resume own navigation.
     func clearOfWeatherResume(cs: Callsign, rejoinFix: String?, nearRoute: Bool,
                               facility: ATCFacility = .center) -> ATCTransmission {

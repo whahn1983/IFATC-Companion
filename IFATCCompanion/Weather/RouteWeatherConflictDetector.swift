@@ -1026,6 +1026,26 @@ struct RouteWeatherConflictDetector {
         return false
     }
 
+    /// Whether an already-committed deviation path still clears every current
+    /// precipitation cell by that cell's required berth — the test for "the reroute the
+    /// pilot is flying is still good." Unlike `detectConflict` (whose wide detection
+    /// corridor re-flags the very storm the line hugs as a fresh conflict), this asks the
+    /// narrower question a re-vector needs: has any moderate-or-greater cell **encroached
+    /// onto the committed line** within its clearance? Returns true when the path stays
+    /// clear (ATC can have the pilot continue on the current deviation); false when new
+    /// weather now sits on it (re-vector from the current position). The path's first
+    /// point is the origin (the current aircraft position on a re-vector); its immediate
+    /// vicinity is ignored, matching the construction-time validation (`pathIsClear`).
+    func committedPathStillClear(_ path: [CLLocationCoordinate2D], hazards: [WeatherHazard]) -> Bool {
+        guard path.count >= 2, let origin = path.first else { return true }
+        let cells: [(polygon: [CLLocationCoordinate2D], clearance: Double)] = hazards.compactMap {
+            guard $0.intensity >= .moderate, let poly = $0.geometry.polygonPoints, poly.count >= 3 else { return nil }
+            return (poly, berthNM(for: $0.intensity))
+        }
+        guard !cells.isEmpty else { return true }
+        return pathIsClear(path, cells: cells, origin: origin)
+    }
+
     /// The nearest moderate-or-greater hazard that sits **on the route corridor** anywhere
     /// along the given polyline (`[position] + route`), and how far along the route it
     /// begins (NM). Walks the whole route — no lookahead limit — and tests each sampled
