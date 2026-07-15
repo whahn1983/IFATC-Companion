@@ -680,6 +680,30 @@ final class WeatherDeviationFlowTests: XCTestCase {
                         "the mint line draws automatically after the radar cells arrive")
     }
 
+    /// Regression (mock mode): the simulator feed emits a telemetry state the instant it
+    /// starts — before the async `refreshWeather` has loaded the mock radar cells — so the very
+    /// first `recomputeWeatherHazards` runs with no cells and finds no weather. That empty solve
+    /// must **not** freeze the lock; otherwise the mint lines never draw until a manual
+    /// pull-to-refresh, exactly as reported. Once the cells load the set must fill on its own.
+    func testMockLinesDrawOnceCellsLoadAfterTheFirstEmit() async {
+        let model = makeModel()                  // mock mode, KIAH→KMSP
+        model.flightPlan.waypoints = []          // straight dep→dest so the cells sit on the corridor
+
+        // The immediate-emit ordering: a telemetry tick at the gate arrives while the mock cells
+        // are still empty. The deviation solve finds nothing but must leave the set unlocked.
+        model.radarOverlay.mockCells = []
+        model.ingestStateForTesting(model.mock.state(for: .preflight))
+        XCTAssertTrue(model.lockedDeviations.isEmpty, "no lines yet while the mock cells are empty")
+
+        // `refreshWeather` loads the mock cells a beat later (as it does after start). The
+        // deviation set must fill and the faint previews draw — with no pull-to-refresh.
+        await model.refreshWeather()
+        XCTAssertFalse(model.lockedDeviations.isEmpty,
+                       "the deviations lock once the mock cells load, without a manual refresh")
+        XCTAssertFalse(model.weatherDeviationPreviews.isEmpty,
+                       "the mint preview lines draw at the gate on their own")
+    }
+
     // MARK: - Endpoints resolve from Infinite Flight, not just the built-in hub table
 
     /// The route corridor must resolve for airports **outside** the 21-hub built-in table by
