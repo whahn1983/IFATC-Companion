@@ -481,8 +481,24 @@ enum IFFlightPlanParser {
     /// route (departure, top-of-climb, top-of-descent, destination). These are not
     /// real fixes and must never be shown as waypoints.
     static func isPseudoWaypoint(_ token: String) -> Bool {
-        ["DPT", "DEP", "DEPARTURE", "TOC", "T/C", "TOD", "T/D",
-         "DEST", "DESTINATION", "ARR", "ARRIVAL"].contains(token.uppercased())
+        let upper = token.uppercased()
+        let markers = ["DPT", "DEP", "DEPARTURE", "TOC", "T/C", "TOD", "T/D",
+                       "DEST", "DESTINATION", "ARR", "ARRIVAL"]
+        if markers.contains(upper) { return true }
+        // The detailed JSON also carries compound departure/arrival markers that pair
+        // the marker word with the runway as a *single* identifier, e.g. "DPT RW15L"
+        // or "ARR RW09" — located at the runway threshold/end. The route-string parser
+        // never sees these (space is a token separator there), but in the JSON they
+        // arrive whole, so neither the bare-word check above nor `isRunwayToken`
+        // catches them. Left in, the departure-end point becomes the first "waypoint"
+        // and, sitting straight down the runway from the aircraft, forces the takeoff
+        // clearance to "fly runway heading". Treat "<marker> <runway>" as the same
+        // non-navigational display marker.
+        let parts = upper.split(separator: " ")
+        if parts.count == 2, markers.contains(String(parts[0])), isRunwayToken(String(parts[1])) {
+            return true
+        }
+        return false
     }
 
     /// A runway token such as `RW14`, `14`, `30L`, `09C` — these appear at the

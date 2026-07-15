@@ -1,4 +1,5 @@
 import XCTest
+import CoreLocation
 @testable import IFATCCompanion
 
 /// Covers the Infinite Flight Connect flight-plan parser, with emphasis on the
@@ -356,7 +357,66 @@ final class FlightPlanParserTests: XCTestCase {
         for marker in ["DPT", "TOC", "TOD", "T/C", "T/D", "DEP", "DEST"] {
             XCTAssertTrue(IFFlightPlanParser.isPseudoWaypoint(marker), "\(marker) should be pseudo")
         }
+        // Compound departure/arrival markers (marker word + runway), the form Infinite
+        // Flight emits as a single identifier in the detailed JSON.
+        for marker in ["DPT RW15L", "DEP RW09", "ARR RW09", "DEPARTURE RW04L"] {
+            XCTAssertTrue(IFFlightPlanParser.isPseudoWaypoint(marker), "\(marker) should be pseudo")
+        }
         XCTAssertFalse(IFFlightPlanParser.isPseudoWaypoint("SBJ"))
         XCTAssertFalse(IFFlightPlanParser.isPseudoWaypoint("LRP"))
+        // A real fix whose first token merely resembles a marker word is not dropped —
+        // only "<marker> <runway>" is a marker.
+        XCTAssertFalse(IFFlightPlanParser.isPseudoWaypoint("DPT ABCDE"))
+    }
+
+    /// Infinite Flight's detailed JSON carries a "DPT RW__" marker at the departure end
+    /// of the runway as a single identifier (unlike the route string, where the space
+    /// splits it apart). It is a non-navigational display marker, not a fix. Left in, it
+    /// becomes the first waypoint and — sitting straight down the runway from the
+    /// aircraft — forces the takeoff clearance to "fly runway heading" on every flight.
+    /// Regression for the reported KIAH / MMUGS4 departure.
+    func testDetailedJSONDropsCompoundDepartureRunwayMarker() {
+        let json = """
+        {
+          "flightPlanItems": [
+            { "name": "KIAH", "type": 0, "children": [],
+              "location": { "Latitude": 29.9854, "Longitude": -95.3412 } },
+            { "name": "RW15L", "type": 0, "children": [],
+              "location": { "Latitude": 29.9879, "Longitude": -95.3579 } },
+            { "name": "DPT RW15L", "type": 0, "children": [],
+              "location": { "Latitude": 29.9588, "Longitude": -95.3401 } },
+            { "name": "MMUGS4", "type": 0, "identifier": "MMUGS4", "children": [
+                { "name": "TTAPS", "type": 0, "children": [],
+                  "location": { "Latitude": 29.8884, "Longitude": -95.2389 } },
+                { "name": "BOTLL", "type": 0, "children": [],
+                  "location": { "Latitude": 29.8236, "Longitude": -95.1350 } } ] },
+            { "name": "LLA", "type": 0, "children": [],
+              "location": { "Latitude": 29.6714, "Longitude": -92.8112 } },
+            { "name": "KMIA", "type": 0, "children": [],
+              "location": { "Latitude": 25.7938, "Longitude": -80.2870 } }
+          ]
+        }
+        """
+        guard let plan = IFFlightPlanParser.parse(json) else {
+            return XCTFail("expected a parsed plan")
+        }
+        XCTAssertEqual(plan.departure, "KIAH")
+        XCTAssertEqual(plan.destination, "KMIA")
+        // Both the "DPT RW15L" runway-end marker and the bare "RW15L" runway are dropped.
+        XCTAssertFalse(plan.waypoints.contains { $0.name == "DPT RW15L" })
+        XCTAssertFalse(plan.waypoints.contains { $0.name == "RW15L" })
+        // The first waypoint is the SID's first published fix, not the runway end.
+        XCTAssertEqual(plan.waypoints.first?.name, "TTAPS")
+        XCTAssertEqual(plan.sid, "MMUGS4")
+
+        // The initial departure heading now targets TTAPS (a real turn off the runway),
+        // not the runway-end marker that lay straight down runway 15L (≈150° → the
+        // spurious "fly runway heading").
+        let threshold = CLLocationCoordinate2D(latitude: 29.9879, longitude: -95.3579)
+        let fix = plan.initialDepartureFix(sidFixes: [], origin: threshold)
+        XCTAssertEqual(fix?.name, "TTAPS")
+        let hdg = Geo.bearing(from: threshold, to: fix!.coordinate!)
+        XCTAssertGreaterThan(PhraseologyEngine.angularDiff(hdg, 150), 10,
+                             "bearing to TTAPS should be a real heading off runway 150, got \(hdg)")
     }
 }
