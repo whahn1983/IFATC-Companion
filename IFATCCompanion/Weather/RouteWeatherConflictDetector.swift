@@ -261,6 +261,13 @@ struct RouteWeatherConflictDetector {
                 conflict.deviationPath[conflict.deviationPath.count - 1] = onRoute
             }
         }
+        // Final safety net: after the route-intercept truncation / on-route snapping above (and
+        // the earlier rejoin-cap clamp), reshape any remaining ~90°+ opening or closing leg into
+        // a gentle ~30° intercept, so the mint line never enters or rejoins the flight path with
+        // a square sideways jog or a backwards intercept.
+        conflict.deviationPath = gentleInterceptAngles(conflict.deviationPath, position: position,
+                                                       course: flyCourse,
+                                                       cores: intenseCoreBerths(hazards))
         return conflict
     }
 
@@ -513,10 +520,7 @@ struct RouteWeatherConflictDetector {
         // must *always* clear, each by its berth. Lighter (moderate) precipitation may be
         // skirted to keep the line tight to the storm when clearing everything would force
         // a wide detour; the intense cores never are.
-        let intenseBerths: [(polygon: [CLLocationCoordinate2D], clearance: Double)] = hazards.compactMap {
-            guard $0.intensity >= .heavy, let poly = $0.geometry.polygonPoints, poly.count >= 3 else { return nil }
-            return (poly, berthNM(for: $0.intensity))
-        }
+        let intenseBerths = intenseCoreBerths(hazards)
 
         // A single dogleg abeam the middle of the line at a lateral offset.
         func apexPath(for target: Double) -> [CLLocationCoordinate2D] {
@@ -1630,6 +1634,86 @@ struct RouteWeatherConflictDetector {
             offset += 5   // widen and try again
         }
         return path   // nothing within the bounds cleared — keep the best-effort original
+    }
+
+    /// The intense cores (heavy + extreme returns) a reroute must **always** clear, each
+    /// paired with the wide berth its intensity demands. Lighter (moderate) precipitation is
+    /// deliberately excluded — it may be skirted to keep the line tight to the storm — so this
+    /// is the cell set used to validate turn-out / turn-back reshaping (which may trim the
+    /// parallel leg) without collapsing a tight hug into a wide detour.
+    private func intenseCoreBerths(_ hazards: [WeatherHazard]) -> [(polygon: [CLLocationCoordinate2D], clearance: Double)] {
+        hazards.compactMap {
+            guard $0.intensity >= .heavy, let poly = $0.geometry.polygonPoints, poly.count >= 3 else { return nil }
+            return (poly, berthNM(for: $0.intensity))
+        }
+    }
+
+    /// Reshape the opening (turn-out) and closing (turn-back) legs of a drawn hug so each
+    /// meets the flight path at no more than a gentle intercept angle — never the ~90° sideways
+    /// jog or backwards intercept that route-intercept truncation, on-route snapping, or a
+    /// tight rejoin cap can leave once the earlier per-candidate shaping has run. Only the two
+    /// end legs are touched, by sliding the single adjacent interior vertex (the parallel-leg
+    /// end) along the course so the leg intercepts at ~`initialDeviationTurnDegrees`: the far
+    /// vertex is pulled *back* for the closing leg, the near vertex pushed *forward* for the
+    /// opening leg. Each reshape is kept only when the whole path still clears the intense
+    /// cores, so a valid reroute is never bent into a convective core (best-effort — otherwise
+    /// the original leg stands; near weather packed against the rejoin cap there is genuinely
+    /// no room and the steep leg is left). Applies to parallel hugs (≥ 4 points); a triangle /
+    /// gap-thread dogleg, whose single apex can't move without changing the detour, is left
+    /// as-is. Pure geometry. Internal for direct unit testing.
+    func gentleInterceptAngles(_ path: [CLLocationCoordinate2D],
+                               position: CLLocationCoordinate2D, course: Double,
+                               cores: [(polygon: [CLLocationCoordinate2D], clearance: Double)]) -> [CLLocationCoordinate2D] {
+        guard path.count >= 4 else { return path }
+        // Reshape only a clearly-steep intercept — a normal ~30–45° deviation turn is left be.
+        let maxIntercept = config.initialDeviationTurnDegrees + 20   // ~50°
+        var result = path
+
+        func angleOffCourse(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D) -> Double {
+            abs(normalizedSigned(Geo.bearing(from: a, to: b) - course))
+        }
+        func offsetPoint(along: Double, cross: Double) -> CLLocationCoordinate2D {
+            let onC = Geo.destination(from: position, bearingDegrees: course, distanceNM: max(0, along))
+            return Geo.destination(from: onC, bearingDegrees: course + (cross >= 0 ? 90 : -90),
+                                   distanceNM: abs(cross))
+        }
+
+        // Closing leg: keep the intercept R fixed; slide the parallel-far vertex B back along
+        // course so B→R intercepts at ~the target angle (holds the offset, then a gentle turn).
+        let n = result.count
+        let R = result[n - 1], B = result[n - 2]
+        let sR = project(R, from: position, course: course)
+        let sB = project(B, from: position, course: course)
+        if angleOffCourse(B, R) > maxIntercept, abs(sB.cross) > 0.5, sR.along > 2 {
+            let lead = turnOutLead(forOffset: sB.cross)
+            let newAlong = sR.along - lead
+            let prevAlong = project(result[n - 3], from: position, course: course).along
+            if newAlong > prevAlong + 1, newAlong < sB.along {
+                var candidate = result
+                candidate[n - 2] = offsetPoint(along: newAlong, cross: sB.cross)
+                if pathIsClear(candidate, cells: cores, origin: position) { result = candidate }
+            }
+        }
+
+        // Opening leg: keep the turn-out A fixed; slide the parallel-near vertex C forward along
+        // course so A→C leaves the route at ~the target angle instead of a square step-out.
+        // Skipped when the turn-out sits essentially at the aircraft (along ≈ 0): that is the
+        // "pilot turned late" close-aboard case where a steep step-out is genuinely unavoidable,
+        // and pushing the offset later would only drag the entry leg through the near weather.
+        let A = result[0], C = result[1]
+        let sA = project(A, from: position, course: course)
+        let sC = project(C, from: position, course: course)
+        if angleOffCourse(A, C) > maxIntercept, abs(sC.cross) > 0.5, sA.along > 5 {
+            let lead = turnOutLead(forOffset: sC.cross)
+            let newAlong = sA.along + lead
+            let nextAlong = project(result[2], from: position, course: course).along
+            if newAlong < nextAlong - 1, newAlong > sC.along {
+                var candidate = result
+                candidate[1] = offsetPoint(along: newAlong, cross: sC.cross)
+                if pathIsClear(candidate, cells: cores, origin: position) { result = candidate }
+            }
+        }
+        return result
     }
 
     /// The spoken deviation amount: the initial turn from the turn-out point to the

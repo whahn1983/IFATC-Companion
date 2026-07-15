@@ -2919,13 +2919,27 @@ final class AppModel: ObservableObject {
             lockedDeviations = []
             return
         }
+        // Begin the route walk at least `weatherRejoinAirportMarginNM` past the departure end of
+        // the route, so the first mint line never starts within that distance of the departure
+        // airport — weather on the immediate climb-out is handled by departure vectors, not a
+        // drawn enroute deviation. Only when we actually have the departure end of the route
+        // (not the aircraft-position fallback, where skipping ahead would drop weather right in
+        // front of the aircraft). The turn-out is shaped forward from this start, so no drawn
+        // line begins before it.
+        var walkStart = origin
+        if let departure = resolvedDepartureCoordinate() ?? flightPlan.firstWaypointCoordinate,
+           departure.isValid,
+           let floored = pointAlongRoute(from: departure, through: upcomingRouteCoordinates(from: departure),
+                                         byNM: weatherRejoinAirportMarginNM) {
+            walkStart = floored
+        }
         // Run the full optimized search for every system in one synchronous pass — gap
         // doglegs, edge-following hull hugs, return-leg repair, multi-leg wrap, and the
         // adjacent-hug fold. It is fast enough to render directly (the earlier "quick hug
         // first, then refine in the background" two-step existed only to bridge a slow solve
         // that was really the radar-polygon sampling, since fixed), so there is no longer a
         // preliminary line to paint or a background swap to reconcile.
-        lockedDeviations = computeDeviations(from: origin, cap: weatherRejoinCap())
+        lockedDeviations = computeDeviations(from: walkStart, cap: weatherRejoinCap())
     }
 
     /// Walk the filed route from `origin` to the destination and produce the deviation around

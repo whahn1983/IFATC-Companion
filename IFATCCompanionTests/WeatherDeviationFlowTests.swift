@@ -1308,4 +1308,34 @@ final class WeatherDeviationFlowTests: XCTestCase {
         XCTAssertEqual(Geo.distanceNM(from: cap, to: northboundAirport), 20, accuracy: 1.0,
                        "a close-in approach fix does not let the line end inside the 20 NM floor")
     }
+
+    // MARK: - Departure floor: the first mint line starts at least 20 NM out
+
+    /// No mint line may start within 20 NM of the departure airport — weather on the immediate
+    /// climb-out is worked by departure vectors, not a drawn enroute deviation. A storm close to
+    /// the departure (whose ~30° turn-out lead would otherwise reach right back to the field)
+    /// must have its line begin at least 20 NM out, and a line is still drawn.
+    func testFirstMintLineStartsAtLeast20NMFromDeparture() {
+        let model = makeModel()
+        model.flightPlan.waypoints = []   // straight departure→destination corridor
+        let dep = model.mock.route.depCoord
+        let dest = model.mock.route.destCoord
+        let course = Geo.bearing(from: dep, to: dest)
+        // A heavy storm whose near edge sits ~29 NM off the departure, on the corridor: without
+        // the floor its ~30° turn-out lead would reach right back to the field; the floor holds
+        // the start ≥ 20 NM out.
+        model.radarOverlay.mockCells = [
+            RadarCell(polygon: box(around: Geo.destination(from: dep, bearingDegrees: course, distanceNM: 38),
+                                   half: 0.15),
+                      intensity: .heavy)
+        ]
+        model.recomputeWeatherHazards()   // on the ground at the departure gate
+
+        XCTAssertFalse(model.lockedDeviations.isEmpty, "the storm still draws a mint line")
+        for dev in model.lockedDeviations {
+            guard let start = dev.deviationPath.first else { continue }
+            XCTAssertGreaterThanOrEqual(Geo.distanceNM(from: dep, to: start), 18,
+                                        "no mint line starts within 20 NM of the departure airport")
+        }
+    }
 }

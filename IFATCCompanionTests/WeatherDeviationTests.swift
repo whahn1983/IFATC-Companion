@@ -288,6 +288,68 @@ final class WeatherDeviationTests: XCTestCase {
         assertPathClear(path, of: [wall.geometry.polygonPoints ?? []])
     }
 
+    // MARK: - Gentle-intercept safety net (no ~90° / backwards entries or exits)
+
+    /// A course-aligned point `alongNM` ahead and `crossNM` to the side (+ = right).
+    private func coursePoint(along: Double, cross: Double,
+                             from position: CLLocationCoordinate2D, course: Double) -> CLLocationCoordinate2D {
+        let onC = Geo.destination(from: position, bearingDegrees: course, distanceNM: along)
+        return Geo.destination(from: onC, bearingDegrees: course + (cross >= 0 ? 90 : -90), distanceNM: abs(cross))
+    }
+
+    /// A hug whose closing leg jogs ~90° sideways back onto course — the squeeze that
+    /// truncation / on-route snapping / a tight rejoin cap can leave — must be reshaped into
+    /// a gentle ~30° turn-back, with the rejoin point itself left on the route.
+    func testGentleInterceptReshapesASteepClosingLeg() {
+        let p = usPosition
+        // turn-out(0,0) → parallel-in(35,20) → parallel-out(80,20) → rejoin(82,0): the last leg
+        // is a near-90° sideways jog from a 20 NM offset back to course in just 2 NM.
+        let steep = [coursePoint(along: 0, cross: 0, from: p, course: course),
+                     coursePoint(along: 35, cross: 20, from: p, course: course),
+                     coursePoint(along: 80, cross: 20, from: p, course: course),
+                     coursePoint(along: 82, cross: 0, from: p, course: course)]
+        let out = detector.gentleInterceptAngles(steep, position: p, course: course, cores: [])
+        let n = out.count
+        let closing = Geo.headingDifference(Geo.bearing(from: out[n - 2], to: out[n - 1]), course)
+        XCTAssertLessThanOrEqual(closing, 45, "the closing leg is reshaped to a gentle intercept, not a ~90° jog")
+        XCTAssertEqual(out[n - 1].latitude, steep[3].latitude, accuracy: 1e-6, "the rejoin point stays on the route")
+        XCTAssertEqual(out[n - 1].longitude, steep[3].longitude, accuracy: 1e-6)
+    }
+
+    /// A hug whose opening leg steps out ~90° sideways onto the offset must be reshaped into a
+    /// gentle ~30° turn-out, with the turn-out point itself left on the route.
+    func testGentleInterceptReshapesASteepOpeningLeg() {
+        let p = usPosition
+        // turn-out(40,0) → parallel-in(42,20): a near-90° step-out; the exit is already gentle.
+        let steep = [coursePoint(along: 40, cross: 0, from: p, course: course),
+                     coursePoint(along: 42, cross: 20, from: p, course: course),
+                     coursePoint(along: 90, cross: 20, from: p, course: course),
+                     coursePoint(along: 140, cross: 0, from: p, course: course)]
+        let out = detector.gentleInterceptAngles(steep, position: p, course: course, cores: [])
+        let opening = Geo.headingDifference(Geo.bearing(from: out[0], to: out[1]), course)
+        XCTAssertLessThanOrEqual(opening, 45, "the opening leg is reshaped to a gentle turn-out, not a ~90° step")
+        XCTAssertEqual(out[0].latitude, steep[0].latitude, accuracy: 1e-6, "the turn-out point stays on the route")
+        XCTAssertEqual(out[0].longitude, steep[0].longitude, accuracy: 1e-6)
+    }
+
+    /// Best-effort: when the only way to gentle the intercept would drag the closing leg through
+    /// an intense core, the reshape is declined and the original (steep-but-clear) leg is kept —
+    /// a valid reroute is never bent into weather.
+    func testGentleInterceptKeepsSteepLegRatherThanCutACore() {
+        let p = usPosition
+        let steep = [coursePoint(along: 0, cross: 0, from: p, course: course),
+                     coursePoint(along: 35, cross: 20, from: p, course: course),
+                     coursePoint(along: 80, cross: 20, from: p, course: course),
+                     coursePoint(along: 82, cross: 0, from: p, course: course)]
+        // A heavy core sitting where the pulled-back closing leg would descend through it.
+        let core = cell(alongNM: 65, crossNM: 5, halfAlong: 12, halfCross: 10, from: p)
+        let out = detector.gentleInterceptAngles(steep, position: p, course: course,
+                                                 cores: [(polygon: core, clearance: 3.0)])
+        let n = out.count
+        let closing = Geo.headingDifference(Geo.bearing(from: out[n - 2], to: out[n - 1]), course)
+        XCTAssertGreaterThan(closing, 50, "the steep leg is kept rather than reshaping it through a core")
+    }
+
     // MARK: - Whole-path clearance (the return leg too)
 
     /// The entire drawn reroute — every leg, the return included — must clear every cell,
