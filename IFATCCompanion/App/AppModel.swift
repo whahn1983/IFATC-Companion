@@ -2312,6 +2312,17 @@ final class AppModel: ObservableObject {
                                              targetAltitude: assignedAltitude,
                                              onGround: aircraftState.onGround ?? false))
         advanceAndPost(to: target, context: c, announceHandoff: false)
+        // Arrival taxi-in: hold the conversation on Ground until the pilot reads the
+        // taxi-to-gate back. A check-in-driven call does not normally close the
+        // read-back gate (the pilot is driving), but on arrival nothing else holds
+        // the flow at `.groundArrival` — so if telemetry reports the aircraft parked
+        // on the very next tick (a short taxi-in that ends right at the gate), the
+        // flow would race straight to "flight complete", eating the taxi read-back
+        // and closing the arrival Ramp (taxi-to-gate) window before the pilot could
+        // use it. Gating here keeps `.groundArrival` live until the pilot responds.
+        if target == .groundArrival, let taxiCall = lastATCTransmission {
+            engageReadbackGate(taxiCall)
+        }
         if target == .parked, !arrivalAnnounced {
             announceArrival()
             arrivalAnnounced = true

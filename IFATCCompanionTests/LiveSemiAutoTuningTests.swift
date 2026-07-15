@@ -105,6 +105,64 @@ final class LiveSemiAutoTuningTests: XCTestCase {
                       "Tower should automatically issue the runway-exit / contact-Ground call")
     }
 
+    /// Regression: on arrival the Ground taxi-to-gate must hold the conversation on
+    /// Ground until the pilot reads it back. A "parked" telemetry reading on the very
+    /// next tick — a short taxi-in that ends right at the gate — must NOT race the flow
+    /// to the parked / flight-complete state. That race is what stranded the taxi
+    /// read-back as a bare callsign and hid the arrival Ramp (taxi-to-gate) frequency
+    /// before the pilot could use it.
+    func testArrivalTaxiToGateHoldsForReadbackBeforeParking() {
+        let model = makeLiveModel()
+        model.flightPlan.arrivalGate = "C10"
+
+        // Fly the whole flight (semi-automatic, manual tuning) down to the runway exit.
+        model.requestClearance();        model.readBack()
+        model.requestPushback();         model.readBack()
+        model.requestEngineStart();      model.readBack()
+        model.requestTaxi();             model.readBack()
+        model.requestTaxi();             model.readBack()
+        model.reportReadyForDeparture(); model.readBack()
+        model.tuneTo(.tower);     model.requestHandoff(); model.readBack()
+        feed(model, .takeoff)
+        feed(model, .initialClimb)
+        model.tuneTo(.departure); model.requestHandoff(); model.readBack()
+        feed(model, .climb, times: 2)
+        model.tuneTo(.center);    model.requestHandoff(); model.readBack()
+        feed(model, .cruise)
+        feed(model, .descent)
+        feed(model, .descent, times: 2)
+        model.tuneTo(.approach);  model.requestHandoff(); model.readBack()
+        feed(model, .approach, times: 2)
+        model.tuneTo(.tower);     model.requestHandoff(); model.readBack()
+        feed(model, .landing, times: 2)
+        XCTAssertTrue(contains(model, "exit the runway when able, contact Ground", sender: .atc))
+
+        // Clear of the runway: the pilot tunes Ground and checks in for the taxi-in.
+        model.tuneTo(.ground); model.requestHandoff()
+        XCTAssertTrue(contains(model, "taxi to gate C10", sender: .atc),
+                      "Ground should issue the taxi-to-gate on check-in")
+
+        // A parked telemetry reading now arrives — before the pilot has read back.
+        model.ingestStateForTesting(model.mock.state(for: .parked))
+        model.ingestStateForTesting(model.mock.state(for: .parked))
+
+        // The arrival stays on Ground with the Ramp hand-off still available — it must
+        // not have collapsed to the parked / flight-complete state.
+        XCTAssertEqual(model.atcState, .groundArrival,
+                       "the taxi-to-gate must hold for the read-back, not race to parked")
+        XCTAssertFalse(contains(model, "Flight complete"),
+                       "the flight must not complete over an unacknowledged taxi instruction")
+        XCTAssertTrue(model.isArrivalRamp)
+        XCTAssertTrue(model.canContactRamp,
+                      "the arrival Ramp (taxi-to-gate) frequency must still be offered")
+
+        // The Read Back button echoes the taxi-to-gate routing, never a bare callsign.
+        model.readBack()
+        let lastPilot = model.transcript.last { $0.sender == .pilot }
+        XCTAssertTrue(lastPilot?.displayText.lowercased().contains("taxi to gate c10") ?? false,
+                      "read-back should echo the taxi-to-gate: \(lastPilot?.displayText ?? "nil")")
+    }
+
     /// Tuning the controller you're already being handed to must not produce a
     /// redundant "contact <that facility>" — the original bug where requesting taxi
     /// on Ground replied "contact Ground" and then cleared the taxi.

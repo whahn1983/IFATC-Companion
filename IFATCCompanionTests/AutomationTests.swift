@@ -204,6 +204,24 @@ final class AutomationTests: XCTestCase {
         XCTAssertTrue(e.taxiToParking(cs: cs, gate: "", via: "A").displayText.contains("taxi to parking"))
     }
 
+    /// The arrival taxi carries a precomposed read-back echoing the taxi-to-gate
+    /// routing, so the Read Back button never collapses to a bare callsign even if the
+    /// conversation has drifted to the gate/parked state by the time the pilot taps it.
+    func testTaxiToParkingCarriesTaxiReadback() {
+        let e = engine()
+        let cs = e.callsign(airline: "United", flightNumber: "598", fallback: "")
+        let tx = e.taxiToParking(cs: cs, gate: "B44", via: "A")
+        XCTAssertEqual(tx.readback?.facility, .ground)
+        XCTAssertTrue(tx.readback?.displayText.contains("Taxi to gate B44 via A") ?? false,
+                      "read-back should echo the taxi routing: \(tx.readback?.displayText ?? "nil")")
+        XCTAssertTrue(tx.readback?.displayText.contains(cs.display) ?? false,
+                      "read-back should carry the callsign: \(tx.readback?.displayText ?? "nil")")
+        // No gate → "parking", still a full read-back (never empty).
+        let noGate = e.taxiToParking(cs: cs, gate: "", via: "A")
+        XCTAssertTrue(noGate.readback?.displayText.contains("Taxi to parking via A") ?? false,
+                      "read-back should echo parking routing: \(noGate.readback?.displayText ?? "nil")")
+    }
+
     // MARK: - State machine wiring
 
     func testTowerDepartureUsesDepartureHeadingWhenProvided() {
