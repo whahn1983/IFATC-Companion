@@ -4141,12 +4141,17 @@ final class AppModel: ObservableObject {
     /// standard turn-anticipation distance (turn radius × tan(½ course change)) plus a
     /// short lead for the pilot to hear the call and roll in. Sharper turns and faster
     /// aircraft anticipate more.
+    ///
+    /// The full geometric + reaction lead called the turn a touch too early, so we split
+    /// the difference back toward the prior timing: keep the full geometric anticipation
+    /// (the distance actually needed to roll out on the next leg through the vertex) but
+    /// halve the reaction lead.
     private func turnAnticipationNM(turnDegrees: Double) -> Double {
         let gs = aircraftState.groundSpeed ?? 300
         let half = (min(abs(turnDegrees), 170) / 2) * .pi / 180
         let geometric = turnRadiusNM(groundspeedKnots: gs) * tan(half)
         let reaction = max(0.5, gs / 360)           // ~10 s to react and roll in
-        return geometric + reaction
+        return geometric + reaction * 0.5           // split the difference: half the reaction lead
     }
 
     /// The angular course change (0…180°) from an inbound leg bearing to an outbound
