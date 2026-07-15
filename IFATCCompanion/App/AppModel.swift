@@ -273,10 +273,28 @@ final class AppModel: ObservableObject {
     @Published var showSampledRadarCells = false
     /// Whether `lockedDeviations` has been computed for the current route+radar. Cleared on a
     /// route change, a pull-to-refresh, or the 5-min auto-refresh, so the set is recomputed
-    /// once, then held.
+    /// once, then held. In live mode it is only set once the lock actually produces lines —
+    /// an empty result (e.g. from a partial first radar frame after connect) stays unlocked and
+    /// re-solves as fresher samples land, so the mint lines still appear on their own.
     private var deviationsLocked = false
     /// Identifies the route `lockedDeviations` was computed for; a change re-locks a fresh set.
     private var lockedRouteKey = ""
+    /// The radar sample (`lastPrecipSampleAt`) the current locked set was last solved against.
+    /// While a live solve comes up empty the set is left unlocked (see
+    /// `ensureLockedDeviationsComputed`) and re-solved only when a *fresher* sample lands —
+    /// never every telemetry tick.
+    private var lockedSampleStamp: Date?
+    /// Quick-resample budget for the window right after a corridor change. The first live radar
+    /// frame after connecting can come back partial (a cold fetch), so the deviation set locks
+    /// empty and — on the normal 60 s staleness cadence — the mint lines wouldn't appear until a
+    /// manual pull-to-refresh. While no lines have locked yet and this budget is unspent,
+    /// `maybeResamplePrecipitation` retries on a short interval so a complete frame is picked up
+    /// within seconds. Spent down per quick retry; refilled on each route change.
+    private var emptyLockResampleRetries = 0
+    /// How many quick resamples are allowed after a corridor change (see `emptyLockResampleRetries`).
+    private let emptyLockResampleRetryBudget = 6
+    /// The short staleness interval used for those quick retries, vs. the normal 60 s cadence.
+    private let emptyLockResampleInterval: TimeInterval = 8
     /// The active simulated weather-deviation interaction (state + assignments).
     @Published var weatherDeviation = WeatherDeviationContext()
     /// A read-only snapshot for the Weather Diagnostics panel.
@@ -2676,6 +2694,8 @@ final class AppModel: ObservableObject {
         lockedDeviations = []
         deviationsLocked = false
         lockedRouteKey = ""
+        lockedSampleStamp = nil
+        emptyLockResampleRetries = 0
         lastPrecipSampleAt = nil
         lastPrecipSamplePos = nil
         livePrecipCellsReady = false
@@ -2815,11 +2835,22 @@ final class AppModel: ObservableObject {
     /// flight plan), on a pull-to-refresh (`refreshDeviationsFromCurrentRadar`), or on the
     /// 5-min auto-refresh. Locking waits until the flight's radar has actually been sampled,
     /// so it never locks an empty set before the first fetch lands.
+    ///
+    /// In live mode the first radar frame after connecting can decode empty or partial (a cold
+    /// fetch), so the initial solve finds no weather. That empty result is **not** frozen: the
+    /// set stays unlocked and re-solves each time a *fresher* sample lands, so the mint lines
+    /// appear on their own once the radar cells actually arrive — rather than only after a
+    /// manual pull-to-refresh. The retry is bounded to the sample cadence (keyed on the sample
+    /// stamp) so it never re-runs the whole-route search on the every-tick telemetry path.
     private func ensureLockedDeviationsComputed() {
         let key = routeFingerprint()
         if key != lockedRouteKey {          // a new/edited route → discard the old lock
             lockedRouteKey = key
             deviationsLocked = false
+            lockedSampleStamp = nil
+            // A fresh corridor: allow a few quick resamples so a partial first radar frame
+            // doesn't leave the mint lines missing until a manual refresh.
+            emptyLockResampleRetries = emptyLockResampleRetryBudget
         }
         guard !deviationsLocked else { return }
         // Don't lock before there's radar data for this flight: in live mode wait for the
@@ -2828,8 +2859,22 @@ final class AppModel: ObservableObject {
         // mid-fetch and never re-locks). In Mock Mode the cells are set synchronously before
         // recompute runs, so no wait is needed.
         guard settings.mockMode || livePrecipCellsReady else { return }
+        // Mock Mode: the hand-authored cells are already in place, so lock in one pass.
+        if settings.mockMode {
+            recomputeLockedDeviations()
+            deviationsLocked = true
+            return
+        }
+        // Live mode: skip re-solving only when this exact sample was already solved and came
+        // up empty — wait for a fresher one. Any newer sample (or a first solve) re-solves.
+        if lockedDeviations.isEmpty, lockedSampleStamp != nil, lockedSampleStamp == lastPrecipSampleAt {
+            return
+        }
+        lockedSampleStamp = lastPrecipSampleAt
         recomputeLockedDeviations()
-        deviationsLocked = true
+        // Only treat the set as locked once it actually produced lines. An empty result (a
+        // clear route, or a partial first frame) stays unlocked so a later sample can fill it.
+        deviationsLocked = !lockedDeviations.isEmpty
     }
 
     /// Walk the entire filed route from the origin to the destination and, at each weather
@@ -3113,8 +3158,17 @@ final class AppModel: ObservableObject {
               !isSamplingPrecip, let pos = aircraftState.coordinate, pos.isValid else { return }
         let now = Date()
         let movedFar = lastPrecipSamplePos.map { Geo.distanceNM(from: $0, to: pos) > 100 } ?? true
-        let stale = lastPrecipSampleAt.map { now.timeIntervalSince($0) > 60 } ?? true
+        // Right after a corridor change the deviation set hasn't locked any lines yet, and the
+        // first radar frame can come back partial — so retry on a short interval (spending the
+        // quick-retry budget) until a complete frame locks the mint lines, then fall back to the
+        // normal cadence. This is what makes the lines appear moments after the radar loads
+        // instead of only on a manual pull-to-refresh. (The active providers return small
+        // server-cropped PNGs, so the extra fetches are cheap.)
+        let quickRetry = !deviationsLocked && emptyLockResampleRetries > 0
+        let staleInterval = quickRetry ? emptyLockResampleInterval : 60
+        let stale = lastPrecipSampleAt.map { now.timeIntervalSince($0) > staleInterval } ?? true
         guard movedFar || stale else { return }
+        if quickRetry { emptyLockResampleRetries -= 1 }
         isSamplingPrecip = true
         Task { @MainActor in
             await sampleLivePrecipitation()

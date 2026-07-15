@@ -644,6 +644,42 @@ final class WeatherDeviationFlowTests: XCTestCase {
         XCTAssertNotNil(model.weatherDeviationLine, "a mint line is still drawn")
     }
 
+    /// Regression: on a new flight the first live radar frame after connecting can decode empty
+    /// (a cold fetch renders a partial/blank image), so the initial whole-route solve finds no
+    /// weather. That empty result must **not** freeze the lock — otherwise the mint lines never
+    /// draw until a manual pull-to-refresh, even though a later resample lands the storm cells.
+    /// The set stays unlocked while empty and re-solves once real cells arrive.
+    func testEmptyInitialLockRecomputesWhenRadarCellsLandLater() {
+        let model = makeModel()
+        model.settings.mockMode = false          // live path: hazards come from sampledCells
+        model.flightPlan.waypoints = []          // straight dep→dest so the cell sits on the route
+
+        guard let dep = AirportDatabase.shared.coordinate(for: model.flightPlan.departure),
+              let dest = AirportDatabase.shared.coordinate(for: model.flightPlan.destination) else {
+            return XCTFail("test needs located CONUS endpoints for radar coverage")
+        }
+
+        // First sample lands "ready" but the decoded frame is blank (no cells) — the cold-fetch
+        // case. The solve finds nothing, but it must NOT lock that empty result permanently.
+        model.radarOverlay.sampledCells = []
+        model.livePrecipCellsReady = true
+        model.recomputeWeatherHazards()
+        XCTAssertTrue(model.lockedDeviations.isEmpty, "a blank first frame yields no lines yet")
+        XCTAssertNil(model.weatherDeviationLine, "no mint line while the radar frame decoded empty")
+
+        // A later resample lands the storm on the route. Detection must re-solve on its own —
+        // no pull-to-refresh — and draw the reroute, proving the empty lock was not frozen.
+        let course = Geo.bearing(from: dep, to: dest)
+        let stormCenter = Geo.destination(from: dep, bearingDegrees: course, distanceNM: 45)
+        model.radarOverlay.sampledCells = [RadarCell(polygon: box(around: stormCenter, half: 0.3),
+                                                     intensity: .heavy)]
+        model.recomputeWeatherHazards()
+        XCTAssertFalse(model.lockedDeviations.isEmpty,
+                       "the deviation locks once real radar cells land, without a manual refresh")
+        XCTAssertNotNil(model.weatherDeviationLine,
+                        "the mint line draws automatically after the radar cells arrive")
+    }
+
     // MARK: - Endpoints resolve from Infinite Flight, not just the built-in hub table
 
     /// The route corridor must resolve for airports **outside** the 21-hub built-in table by
