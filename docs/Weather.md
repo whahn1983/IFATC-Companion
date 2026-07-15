@@ -458,12 +458,27 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      would point further back is pulled onto the bound. The assigned vector and the
      auto rejoin turn are derived from the clamped line, so they can't command a
      near-180° reversal either.
-   - **Never past the destination / approach.** The reroute rejoins the route no
-     deeper than a **cap** (`rejoinCap`) — the first fix of the ILS/approach when the
-     plan names one (`FlightPlan.approachStartCoordinate`), else the destination.
-     Even with weather sitting right on the field, the mint line intercepts the route
-     at or before that cap instead of routing past it. Every vertex past the cap's
-     along-course distance is pulled back to it (`clampPathToAlong`).
+   - **Always ends short of the airport — at least 20 NM out.** The reroute rejoins the
+     route no deeper than a **cap** (`rejoinCap`), set by `AppModel.weatherRejoinCap()` to
+     the point on the filed route **at least `weatherRejoinAirportMarginNM` (20 NM) before
+     the airport**, measured along the route — and, when the plan names an approach fix
+     farther out than that (`FlightPlan.approachStartCoordinate`), held at the fix instead
+     (whichever is farther from the field). So a mint line always terminates on the flight
+     path well short of the field rather than ending right on top of it — even with weather
+     sitting on the destination — and never routes into the approach. Every vertex past the
+     cap's along-course distance is pulled back to it (`clampPathToAlong`); the merged-hug
+     rejoin slide is likewise bounded by truncating its route at the cap, so a folded
+     multi-cell system can't step its rejoin past the 20 NM margin either.
+   - **Never starts within 20 NM of the departure — the mirror of the airport cap.** The
+     whole-route deviation walk (`recomputeLockedDeviations` → `computeDeviations`) begins the
+     search `weatherRejoinAirportMarginNM` (20 NM) along the route *past* the departure end,
+     so the first mint line never starts within that distance of the departure airport —
+     weather on the immediate climb-out is worked by departure vectors, not a drawn enroute
+     deviation. Because the turn-out is only ever shaped *forward* from the detection start
+     (`startAtTurnOut` never moves it behind the start), flooring the walk floors every drawn
+     line's turn-out. Applied only when the departure end of the route is known — not the
+     aircraft-position fallback, where skipping ahead would drop weather right in front of the
+     aircraft.
    - **Starts at the turn-out, not the aircraft — a ~30° dogleg out and back.** A reroute
      drawn far ahead must not drift shallowly from the aircraft across the whole distance
      to the weather. The chosen path is reshaped so it **begins at the turn-out point** —
@@ -495,6 +510,20 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
        unavoidable. As a final guard the whole reshaped line is re-validated against the
        intense cores, and only if no clear ~30° transition could be fitted is the validated
        original kept.
+     - **A final gentle-intercept safety net (`gentleInterceptAngles`).** The per-candidate
+       shaping above runs *before* the route-intercept truncation, on-route snapping, and
+       rejoin-cap clamp in `detectConflict` — any of which can re-introduce a ~90° sideways
+       jog or even a backwards intercept (a bent route whose rejoin lands off the course axis,
+       or weather packed against the cap). So as the very last step every drawn hug (≥ 4
+       points) has its opening and closing legs re-checked: a leg steeper than ~50° off course
+       is reshaped to a gentle ~30° intercept by sliding the single adjacent parallel-leg
+       vertex along course — the far vertex pulled back for the exit, the near vertex pushed
+       forward for the entry — keeping the turn-out / rejoin points themselves on the route.
+       Each reshape is kept only when the whole path still clears the intense cores, so a valid
+       reroute is never bent into a core; where weather is genuinely packed against the rejoin
+       cap and no gentle leg fits, the steep-but-clear leg is left. A triangle / gap-thread
+       dogleg (< 4 points), whose single apex can't move without changing the detour, is left
+       as-is.
    - **Must actually engage the weather (`pathEngagesWeather`).** Clearance validation
      (`pathIsClear`) only proves a candidate stays *clear* of every cell — a line drawn out
      in clear air, nowhere near the storm, passes it trivially (and can even rank as the
