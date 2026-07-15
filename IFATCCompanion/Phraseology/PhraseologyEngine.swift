@@ -369,9 +369,18 @@ struct PhraseologyEngine {
         let destSpoken = gateTrim.isEmpty ? "parking" : "gate \(Phonetic.spellToken(gateTrim, icao: icao))"
         let viaText = via.isEmpty ? "available taxiways" : via
         let viaSpoken = via.isEmpty ? "available taxiways" : Phonetic.spellToken(via, icao: icao)
-        return tx(.ground,
+        var t = tx(.ground,
            display: "\(cs.display), taxi to \(destDisplay) via \(viaText).",
            spoken: "\(cs.spoken), taxi to \(destSpoken) via \(viaSpoken).")
+        // Precompose the read-back so the Read Back button always echoes the taxi-in
+        // instruction — even if telemetry has already advanced the conversation to the
+        // gate/parked state. Without this, a read-back re-derived from a drifted state
+        // collapses to a bare callsign ("United five niner eight") with no taxi routing.
+        t.readback = ATCTransmission.Readback(
+            displayText: "Taxi to \(destDisplay) via \(viaText), \(cs.display).",
+            spokenText: "Taxi to \(destSpoken) via \(viaSpoken), \(cs.spoken).",
+            facility: .ground)
+        return t
     }
 
     // Generic handoff.
