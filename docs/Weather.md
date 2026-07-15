@@ -458,12 +458,17 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      would point further back is pulled onto the bound. The assigned vector and the
      auto rejoin turn are derived from the clamped line, so they can't command a
      near-180° reversal either.
-   - **Never past the destination / approach.** The reroute rejoins the route no
-     deeper than a **cap** (`rejoinCap`) — the first fix of the ILS/approach when the
-     plan names one (`FlightPlan.approachStartCoordinate`), else the destination.
-     Even with weather sitting right on the field, the mint line intercepts the route
-     at or before that cap instead of routing past it. Every vertex past the cap's
-     along-course distance is pulled back to it (`clampPathToAlong`).
+   - **Always ends short of the airport — at least 20 NM out.** The reroute rejoins the
+     route no deeper than a **cap** (`rejoinCap`), set by `AppModel.weatherRejoinCap()` to
+     the point on the filed route **at least `weatherRejoinAirportMarginNM` (20 NM) before
+     the airport**, measured along the route — and, when the plan names an approach fix
+     farther out than that (`FlightPlan.approachStartCoordinate`), held at the fix instead
+     (whichever is farther from the field). So a mint line always terminates on the flight
+     path well short of the field rather than ending right on top of it — even with weather
+     sitting on the destination — and never routes into the approach. Every vertex past the
+     cap's along-course distance is pulled back to it (`clampPathToAlong`); the merged-hug
+     rejoin slide is likewise bounded by truncating its route at the cap, so a folded
+     multi-cell system can't step its rejoin past the 20 NM margin either.
    - **Starts at the turn-out, not the aircraft — a ~30° dogleg out and back.** A reroute
      drawn far ahead must not drift shallowly from the aircraft across the whole distance
      to the weather. The chosen path is reshaped so it **begins at the turn-out point** —

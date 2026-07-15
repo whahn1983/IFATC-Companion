@@ -346,6 +346,13 @@ final class AppModel: ObservableObject {
     /// stopping at the first one. A little under the detector's lookahead so windows
     /// overlap and a system straddling a boundary isn't skipped.
     private let previewScanStepNM: Double = 150
+    /// The minimum distance (NM) before the airport that every weather-deviation mint line
+    /// must rejoin the filed route. A deviation around weather sitting on or near the field
+    /// then terminates on the flight path well short of the airport, rather than drawing a
+    /// line that ends right on top of it. Enforced through the rejoin cap
+    /// (`weatherRejoinCap`), so it bounds every drawn line — the live reroute, the locked
+    /// previews, and the re-vector while deviating.
+    private let weatherRejoinAirportMarginNM: Double = 20
     /// Timestamp of the last aviation-weather refresh, for the diagnostics panel.
     private var lastAviationWeatherUpdate: Date?
 
@@ -831,6 +838,12 @@ final class AppModel: ObservableObject {
     /// distance-from-departure test that drops upcoming fixes once telemetry is live.
     func upcomingRouteCoordinatesForTesting(from pos: CLLocationCoordinate2D) -> [CLLocationCoordinate2D] {
         upcomingRouteCoordinates(from: pos)
+    }
+
+    /// Test hook: the rejoin cap the mint line is clamped to, so a test can verify it sits
+    /// at least the airport margin before the field (and short of the approach fix).
+    func weatherRejoinCapForTesting() -> CLLocationCoordinate2D? {
+        weatherRejoinCap()
     }
     #endif
 
@@ -2968,9 +2981,12 @@ final class AppModel: ObservableObject {
         // Fold runs of short, back-to-back deviations (each rejoin within reach of the next
         // turn-out, same side) into one continuous parallel hug down the whole system, so a
         // complex multi-cell system draws a single long parallel line instead of a string of
-        // little in-and-out jogs that each rejoin inside the next cell.
+        // little in-and-out jogs that each rejoin inside the next cell. The route the fold may
+        // slide a merged rejoin along is truncated at the cap, so that slide can't push a
+        // rejoin past the airport margin either.
+        let mergeRoute = routeTruncated(upcomingRouteCoordinates(from: origin), at: cap)
         return conflictDetector.mergeAdjacentDeviations(
-            results, hazards: weatherHazards, route: upcomingRouteCoordinates(from: origin))
+            results, hazards: weatherHazards, route: mergeRoute)
     }
 
     /// Re-run the whole-route deviation search now and re-lock the result. Samples fresh
@@ -3314,6 +3330,19 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// The full filed route polyline, in order: departure, located enroute fixes,
+    /// destination — exactly the line drawn on the map. The shared base for the
+    /// aircraft-relative `upcomingRouteCoordinates` and the airport-margin rejoin cap.
+    private func fullFiledRoutePolyline() -> [CLLocationCoordinate2D] {
+        var full: [CLLocationCoordinate2D] = []
+        if let dep = resolvedDepartureCoordinate() ?? flightPlan.firstWaypointCoordinate,
+           dep.isValid { full.append(dep) }
+        full.append(contentsOf: flightPlan.waypoints.compactMap { $0.coordinate }.filter { $0.isValid })
+        if let dest = resolvedDestinationCoordinate() ?? flightPlan.lastWaypointCoordinate,
+           dest.isValid { full.append(dest) }
+        return full
+    }
+
     /// The upcoming route as ordered coordinates — the located fixes still ahead of
     /// the aircraft, then the destination — so the conflict detector can follow the
     /// route's bends into the weather rather than a straight bearing to the next fix.
@@ -3324,12 +3353,7 @@ final class AppModel: ObservableObject {
     private func upcomingRouteCoordinates(from pos: CLLocationCoordinate2D) -> [CLLocationCoordinate2D] {
         // The full filed route polyline, in order: departure, located enroute fixes,
         // destination — exactly the line drawn on the map.
-        var full: [CLLocationCoordinate2D] = []
-        if let dep = resolvedDepartureCoordinate() ?? flightPlan.firstWaypointCoordinate,
-           dep.isValid { full.append(dep) }
-        full.append(contentsOf: flightPlan.waypoints.compactMap { $0.coordinate }.filter { $0.isValid })
-        if let dest = resolvedDestinationCoordinate() ?? flightPlan.lastWaypointCoordinate,
-           dest.isValid { full.append(dest) }
+        let full = fullFiledRoutePolyline()
         guard full.count >= 2 else { return full }
 
         // The route *ahead* of the aircraft, found by projecting it onto the polyline and
@@ -3915,19 +3939,108 @@ final class AppModel: ObservableObject {
                                                rejoinCap: weatherRejoinCap())
     }
 
-    /// The deepest point a weather deviation may rejoin the route: never past the
-    /// destination, and at most the first fix of the ILS/approach when the plan names
-    /// one. So the mint line always intercepts the filed route at or before this
-    /// point — even when weather sits right on the destination.
+    /// The deepest point a weather deviation may rejoin the route — the rejoin cap the
+    /// detector clamps every drawn line to. Two rules, whichever is farther from the field:
+    ///   • **At least `weatherRejoinAirportMarginNM` before the airport**, measured along
+    ///     the filed route, so a mint line always terminates on the flight path short of the
+    ///     field instead of ending right on top of it (even with weather sitting on the
+    ///     destination); and
+    ///   • **never past the first fix of the ILS/approach** when the plan names one farther
+    ///     out than that margin, so the reroute never routes into the approach.
+    /// Falls back to the old point cap (approach fix → destination → last fix) when the route
+    /// polyline is too sparse to walk.
     private func weatherRejoinCap() -> CLLocationCoordinate2D? {
+        let route = fullFiledRoutePolyline()
+        guard route.count >= 2, let airport = route.last else {
+            return flightPlan.approachStartCoordinate
+                ?? resolvedDestinationCoordinate() ?? flightPlan.lastWaypointCoordinate
+        }
+        // Hold the rejoin at least the airport margin before the field; if the plan's approach
+        // fix sits farther out, hold it there instead (the more restrictive of the two).
+        var marginNM = weatherRejoinAirportMarginNM
         if let approachFix = flightPlan.approachStartCoordinate, approachFix.isValid {
-            return approachFix
+            marginNM = max(marginNM, alongRouteDistanceFromEnd(route, to: approachFix))
         }
-        if let dest = resolvedDestinationCoordinate(),
-           dest.isValid {
-            return dest
+        return pointBeforeEndAlongRoute(route, byNM: marginNM) ?? airport
+    }
+
+    /// The point on a route polyline a given distance back from its final vertex (the
+    /// airport), walking the legs in reverse and clamped to the route start. Used to hold a
+    /// weather-deviation rejoin a fixed margin short of the field, on the flight path.
+    private func pointBeforeEndAlongRoute(_ route: [CLLocationCoordinate2D],
+                                          byNM target: Double) -> CLLocationCoordinate2D? {
+        let pts = route.filter { $0.isValid }
+        guard let end = pts.last else { return nil }
+        guard pts.count >= 2, target > 0 else { return end }
+        var remaining = target
+        for i in stride(from: pts.count - 1, to: 0, by: -1) {
+            let a = pts[i], b = pts[i - 1]
+            let seg = Geo.distanceNM(from: a, to: b)
+            if seg >= remaining {
+                return Geo.destination(from: a, bearingDegrees: Geo.bearing(from: a, to: b),
+                                       distanceNM: remaining)
+            }
+            remaining -= seg
         }
-        return flightPlan.lastWaypointCoordinate
+        return pts.first
+    }
+
+    /// A route polyline truncated at `cap`: the vertices up to the leg the cap projects
+    /// onto, then the cap itself as the final point. Used to bound the merged-deviation
+    /// rejoin slide, so it can never step a rejoin past the airport-margin cap. Returns the
+    /// route unchanged when there is no cap or it can't be placed on the polyline.
+    private func routeTruncated(_ route: [CLLocationCoordinate2D],
+                                at cap: CLLocationCoordinate2D?) -> [CLLocationCoordinate2D] {
+        guard let cap, cap.isValid, route.count >= 2 else { return route }
+        var bestSeg = 0
+        var bestDist = Double.greatestFiniteMagnitude
+        for i in 0..<(route.count - 1) {
+            let d = distanceToSegmentNM(cap, route[i], route[i + 1])
+            if d < bestDist { bestDist = d; bestSeg = i }
+        }
+        return Array(route[0...bestSeg]) + [cap]
+    }
+
+    /// The along-route distance (NM) from the route's final vertex (the airport) back to the
+    /// point on the route nearest `target` — how far before the field a fix sits. Projects
+    /// `target` onto the nearest leg, then sums the route length from that projection to the
+    /// end, so an approach fix off the drawn polyline still measures sensibly.
+    private func alongRouteDistanceFromEnd(_ route: [CLLocationCoordinate2D],
+                                           to target: CLLocationCoordinate2D) -> Double {
+        let pts = route.filter { $0.isValid }
+        guard pts.count >= 2, target.isValid else { return 0 }
+        var bestSeg = 0
+        var bestDist = Double.greatestFiniteMagnitude
+        for i in 0..<(pts.count - 1) {
+            let d = distanceToSegmentNM(target, pts[i], pts[i + 1])
+            if d < bestDist { bestDist = d; bestSeg = i }
+        }
+        let proj = closestPointOnSegmentNM(target, pts[bestSeg], pts[bestSeg + 1])
+        var total = Geo.distanceNM(from: proj, to: pts[bestSeg + 1])
+        if bestSeg + 1 < pts.count - 1 {
+            for i in (bestSeg + 1)..<(pts.count - 1) {
+                total += Geo.distanceNM(from: pts[i], to: pts[i + 1])
+            }
+        }
+        return total
+    }
+
+    /// The point on segment a→b nearest `p`, in the same local NM plane as
+    /// `distanceToSegmentNM` (which returns only the distance) — used to project a fix onto
+    /// the filed route when measuring its distance before the field.
+    private func closestPointOnSegmentNM(_ p: CLLocationCoordinate2D,
+                                         _ a: CLLocationCoordinate2D,
+                                         _ b: CLLocationCoordinate2D) -> CLLocationCoordinate2D {
+        let latScale = 60.0
+        let lonScale = 60.0 * cos(p.latitude * .pi / 180)
+        let px = p.longitude * lonScale, py = p.latitude * latScale
+        let ax = a.longitude * lonScale, ay = a.latitude * latScale
+        let bx = b.longitude * lonScale, by = b.latitude * latScale
+        let dx = bx - ax, dy = by - ay
+        let lenSq = dx * dx + dy * dy
+        let t = lenSq <= 0 ? 0 : max(0, min(1, ((px - ax) * dx + (py - ay) * dy) / lenSq))
+        return CLLocationCoordinate2D(latitude: (ay + t * dy) / latScale,
+                                      longitude: (ax + t * dx) / lonScale)
     }
 
     /// The committed mint line from the vertex nearest the aircraft to its end — the

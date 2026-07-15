@@ -1245,4 +1245,67 @@ final class WeatherDeviationFlowTests: XCTestCase {
         XCTAssertTrue(ext.lowerBound < hvy.lowerBound && hvy.lowerBound < mod.lowerBound,
                       "breakdown is ordered most-severe first: \(summary)")
     }
+
+    // MARK: - Rejoin cap: mint lines end at least 20 NM before the airport
+
+    /// A straight northbound plan on one meridian — departure, three enroute fixes, then
+    /// the airport — so along-route distance is just the latitude span. When
+    /// `approachFixBeforeAirportNM > 0`, a named approach fix is inserted that far before
+    /// the field. Used to exercise the rejoin cap in isolation.
+    private func northboundPlanModel(approachFixBeforeAirportNM: Double = 0) -> AppModel {
+        let model = AppModel()
+        model.settings.mockMode = true
+        let lon = -95.0
+        var plan = FlightPlan()
+        plan.departure = "KAAA"
+        plan.destination = "KZZZ"
+        plan.departureLatitude = 30.0;  plan.departureLongitude = lon
+        plan.destinationLatitude = 34.0; plan.destinationLongitude = lon
+        var wps = [Waypoint(name: "WPTA", latitude: 31.0, longitude: lon),
+                   Waypoint(name: "WPTB", latitude: 32.0, longitude: lon),
+                   Waypoint(name: "WPTC", latitude: 33.0, longitude: lon)]
+        if approachFixBeforeAirportNM > 0 {
+            wps.append(Waypoint(name: "APPFX",
+                                latitude: 34.0 - approachFixBeforeAirportNM / 60.0, longitude: lon))
+            plan.approachStartFixName = "APPFX"
+        }
+        plan.waypoints = wps
+        model.flightPlan = plan
+        return model
+    }
+
+    private var northboundAirport: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: 34.0, longitude: -95.0)
+    }
+
+    /// With no approach fix, the rejoin cap sits ~20 NM before the airport, on the filed
+    /// route — so the mint line always terminates on the flight path short of the field.
+    func testRejoinCapEndsAtLeast20NMBeforeAirport() {
+        guard let cap = northboundPlanModel().weatherRejoinCapForTesting() else {
+            return XCTFail("expected a rejoin cap for a plan with a destination")
+        }
+        XCTAssertEqual(Geo.distanceNM(from: cap, to: northboundAirport), 20, accuracy: 1.0,
+                       "the cap sits ~20 NM before the airport")
+        XCTAssertEqual(cap.longitude, -95.0, accuracy: 0.02, "the cap lies on the filed route")
+    }
+
+    /// An approach fix farther out than the 20 NM floor still bounds the rejoin: the cap
+    /// holds at the approach fix, so the line never routes into the approach.
+    func testRejoinCapHoldsShortOfAFartherApproachFix() {
+        guard let cap = northboundPlanModel(approachFixBeforeAirportNM: 40).weatherRejoinCapForTesting() else {
+            return XCTFail("expected a rejoin cap")
+        }
+        XCTAssertEqual(Geo.distanceNM(from: cap, to: northboundAirport), 40, accuracy: 1.5,
+                       "an approach fix farther out than the margin caps the line there")
+    }
+
+    /// A close-in approach fix (inside the floor) does not let the line end nearer than
+    /// 20 NM: the airport margin wins, so the mint line still terminates ≥ 20 NM out.
+    func testRejoinCapKeepsThe20NMFloorOverACloseApproachFix() {
+        guard let cap = northboundPlanModel(approachFixBeforeAirportNM: 8).weatherRejoinCapForTesting() else {
+            return XCTFail("expected a rejoin cap")
+        }
+        XCTAssertEqual(Geo.distanceNM(from: cap, to: northboundAirport), 20, accuracy: 1.0,
+                       "a close-in approach fix does not let the line end inside the 20 NM floor")
+    }
 }
