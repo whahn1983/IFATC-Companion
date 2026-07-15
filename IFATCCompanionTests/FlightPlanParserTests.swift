@@ -408,6 +408,8 @@ final class FlightPlanParserTests: XCTestCase {
         // The first waypoint is the SID's first published fix, not the runway end.
         XCTAssertEqual(plan.waypoints.first?.name, "TTAPS")
         XCTAssertEqual(plan.sid, "MMUGS4")
+        // The SID's own fix structure is recovered from the procedure group.
+        XCTAssertEqual(plan.sidFixNames, ["TTAPS", "BOTLL"])
 
         // The initial departure heading now targets TTAPS (a real turn off the runway),
         // not the runway-end marker that lay straight down runway 15L (≈150° → the
@@ -418,5 +420,44 @@ final class FlightPlanParserTests: XCTestCase {
         let hdg = Geo.bearing(from: threshold, to: fix!.coordinate!)
         XCTAssertGreaterThan(PhraseologyEngine.angularDiff(hdg, 150), 10,
                              "bearing to TTAPS should be a real heading off runway 150, got \(hdg)")
+    }
+
+    /// A pilot may file an intermediate "buffer" fix between the runway and the SID so
+    /// the autopilot doesn't turn the instant it activates at rotation. The initial
+    /// departure heading must still target the SID's own first fix (matched by name via
+    /// the recovered SID structure), not the buffer fix filed ahead of it.
+    func testInitialDepartureFixTargetsSIDFixPastAnIntermediateBufferFix() {
+        let json = """
+        {
+          "flightPlanItems": [
+            { "name": "KIAH", "type": 0, "children": [],
+              "location": { "Latitude": 29.9854, "Longitude": -95.3412 } },
+            { "name": "RW15L", "type": 0, "children": [],
+              "location": { "Latitude": 29.9879, "Longitude": -95.3579 } },
+            { "name": "DPT RW15L", "type": 0, "children": [],
+              "location": { "Latitude": 29.9588, "Longitude": -95.3401 } },
+            { "name": "BUF01", "type": 0, "children": [],
+              "location": { "Latitude": 29.9300, "Longitude": -95.3100 } },
+            { "name": "MMUGS4", "type": 0, "identifier": "MMUGS4", "children": [
+                { "name": "TTAPS", "type": 0, "children": [],
+                  "location": { "Latitude": 29.8884, "Longitude": -95.2389 } },
+                { "name": "BOTLL", "type": 0, "children": [],
+                  "location": { "Latitude": 29.8236, "Longitude": -95.1350 } } ] },
+            { "name": "KMIA", "type": 0, "children": [],
+              "location": { "Latitude": 25.7938, "Longitude": -80.2870 } }
+          ]
+        }
+        """
+        guard let plan = IFFlightPlanParser.parse(json) else {
+            return XCTFail("expected a parsed plan")
+        }
+        // The buffer fix is a real waypoint that sits ahead of the SID in route order …
+        XCTAssertEqual(plan.waypoints.first?.name, "BUF01")
+        XCTAssertEqual(plan.sidFixNames, ["TTAPS", "BOTLL"])
+        // … yet the initial departure fix is the SID's own first fix, TTAPS — matched by
+        // name from the SID structure, not by "the next fix after the runway".
+        let threshold = CLLocationCoordinate2D(latitude: 29.9879, longitude: -95.3579)
+        let fix = plan.initialDepartureFix(sidFixes: [], origin: threshold)
+        XCTAssertEqual(fix?.name, "TTAPS")
     }
 }

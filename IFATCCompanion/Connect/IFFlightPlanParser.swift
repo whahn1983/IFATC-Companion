@@ -229,10 +229,25 @@ enum IFFlightPlanParser {
                 // the STAR. The departure airport doesn't count as enroute.
                 let procType = number(dict, ["type", "Type"]).map { Int($0) }
                 let hadEnrouteFix = fixes.contains { !isICAO($0.name) }
+                let sidWasEmpty = plan.sid.isEmpty
                 classifyProcedure(name: name, type: procType, into: &plan, hasFixesBefore: hadEnrouteFix)
                 let isApproach = procType == 2 || (procType == nil && isApproachName(name))
+                // Whether classifying this group just populated the (previously empty)
+                // SID slot — i.e. this is the departure procedure whose own first fix
+                // drives the takeoff heading.
+                let isSID = sidWasEmpty && plan.sid == name && plan.sidFixNames.isEmpty
                 for (i, child) in children.enumerated() {
                     appendFix(child, to: &fixes, maxAltitude: &maxAltitude, seen: &seen)
+                    // Record the SID's published fixes in order (skipping runway /
+                    // display markers) so the initial departure heading can target the
+                    // SID's own first fix rather than an intermediate buffer fix filed
+                    // ahead of it.
+                    if isSID {
+                        let cn = childName(child)
+                        if !cn.isEmpty, !isRunwayToken(cn), !isPseudoWaypoint(cn) {
+                            plan.sidFixNames.append(cn)
+                        }
+                    }
                     // The intercept altitude is the first altitude in the approach
                     // section of the flight plan.
                     if isApproach, i == 0, let dict = child as? [String: Any],
