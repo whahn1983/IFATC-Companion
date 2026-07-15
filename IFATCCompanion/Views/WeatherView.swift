@@ -52,7 +52,7 @@ struct WeatherView: View {
                     legendDot(.red, "Severe")
                 }
                 .font(.caption2).foregroundStyle(.secondary)
-                Text("Dots are pilot reports; shaded areas are SIGMET/AIRMET advisories and the precipitation overlay where available (NOAA radar in the U.S., or a NASA satellite estimate elsewhere). The mint paths are the simulated recommended reroutes around the precipitation on your route — found for the whole flight plan at once and locked in place, faint until you close within ~75 NM and then drawn solid. They recompute automatically about every 5 minutes, and immediately when you pull to refresh. Once you're flying a deviation its line is locked and won't shift under you, and the automatic refresh pauses until you're clear.")
+                Text("Dots are pilot reports; shaded areas are SIGMET/AIRMET advisories and the precipitation overlay where available (NOAA radar in the U.S., or a NASA satellite estimate elsewhere). The mint paths are the simulated recommended reroutes around the precipitation on your route.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
         }
