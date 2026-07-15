@@ -899,6 +899,47 @@ final class WeatherDeviationFlowTests: XCTestCase {
                      "the held turn is consumed once issued")
     }
 
+    /// The turn is called a little *early* — a lead distance before the turn-out — so the
+    /// aircraft rolls onto the reroute through the vertex instead of overshooting the mint
+    /// line. It fires while still short of the turn-out (beyond the old fixed capture
+    /// radius), not only once the vertex is reached.
+    func testDeviationBeginningTurnIsAnticipatedBeforeTheTurnOut() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)
+        guard let pos = model.aircraftState.coordinate else { return XCTFail("no cruise position") }
+
+        // A narrow cell ~60 NM ahead so its reroute is drawn ahead with the turn-out well
+        // in front of the aircraft (the deferred / held-turn flow).
+        let course = Geo.bearing(from: model.mock.route.depCoord, to: model.mock.route.destCoord)
+        let center = Geo.destination(from: pos, bearingDegrees: course, distanceNM: 60)
+        model.radarOverlay.mockCells = [RadarCell(polygon: box(around: center, half: 0.15), intensity: .moderate)]
+        await model.refreshDeviations()
+        guard let v0 = model.activeWeatherConflict?.deviationPath.first else {
+            return XCTFail("expected a drawn-ahead conflict")
+        }
+        model.requestWeatherDeviation(.right)
+        XCTAssertEqual(model.weatherDeviationState, .deviationApproved)
+        XCTAssertNotNil(model.weatherDeviation.deviationStartLatitude, "the beginning turn is armed")
+
+        // A point 5 NM short of the turn-out along the leg into it. Under the old behaviour
+        // the turn was only called within one capture radius (max(2, gs/120) ≈ 3.8 NM at
+        // cruise) of the vertex, so 5 NM short would NOT have fired; with turn anticipation
+        // the turn is called earlier and fires here.
+        let base = max(2.0, (model.aircraftState.groundSpeed ?? 300) / 120)
+        XCTAssertLessThan(base, 5.0, "the test point must lie beyond the old fixed capture radius")
+        let legBearing = Geo.bearing(from: pos, to: v0)
+        let short = Geo.destination(from: v0, bearingDegrees: legBearing + 180, distanceNM: 5)
+        var near = model.mock.state(for: .cruise)
+        near.latitude = short.latitude
+        near.longitude = short.longitude
+        model.ingestStateForTesting(near)
+
+        XCTAssertEqual(model.weatherDeviationState, .vectoringAroundWeather,
+                       "the beginning turn is anticipated — issued while still short of the turn-out")
+        XCTAssertTrue(atcContains(model, "fly heading"), "the anticipated beginning turn is issued")
+        XCTAssertNil(model.weatherDeviation.deviationStartLatitude, "the held turn is consumed once issued")
+    }
+
     // MARK: - Auto-call the advisory when the turn is imminent (banner ignored)
 
     /// Because the mint lines are locked and drawn ahead, a pilot who never taps the
@@ -1050,6 +1091,53 @@ final class WeatherDeviationFlowTests: XCTestCase {
         XCTAssertNotNil(model.weatherDeviation.pendingRejoinHeading,
                         "a fresh re-vector re-arms the rejoin turn")
         XCTAssertTrue(atcContains(model, "fly heading"), "the re-vector assigns a fresh heading")
+    }
+
+    /// While already flying a deviation, tapping Vectors when the reroute ahead is still
+    /// clear must NOT re-vector: the controller has the pilot continue on the current
+    /// deviation, and the committed line and its armed turns are left untouched.
+    func testReVectorWhileCommittedContinuesWhenRerouteStillClear() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)
+
+        model.requestVectorAroundWeather()
+        XCTAssertEqual(model.weatherDeviationState, .vectoringAroundWeather)
+        guard let committed = model.weatherDeviation.committedDeviationPath, committed.count >= 2 else {
+            return XCTFail("expected a committed mint line after the first vector")
+        }
+        let firstStart = committed.first!.coordinate
+        let lastEnd = committed.last!.coordinate
+        let armedTurn = model.weatherDeviation.pendingRejoinHeading
+
+        // No new weather sits on the reroute ahead (here the storm clears entirely). The
+        // committed deviation is locked, so it stays drawn while the pilot flies it.
+        model.radarOverlay.mockCells = []
+        model.recomputeWeatherHazards()
+        XCTAssertNotNil(model.weatherDeviationLine, "the committed line stays locked through the clear")
+
+        let atcBefore = model.transcript.filter { $0.sender == .atc }.count
+        model.requestVectorAroundWeather()
+
+        // ATC has the pilot continue on the current deviation — no fresh vector issued.
+        XCTAssertEqual(model.weatherDeviationState, .vectoringAroundWeather,
+                       "a clear reroute keeps the pilot on the current deviation")
+        XCTAssertTrue(atcContains(model, "continue present deviation"),
+                      "the controller has the pilot continue on the current deviation")
+        XCTAssertGreaterThan(model.transcript.filter { $0.sender == .atc }.count, atcBefore,
+                             "the controller answers the request")
+
+        // The committed line and its armed turn are preserved (nothing is re-planned).
+        guard let stillCommitted = model.weatherDeviation.committedDeviationPath,
+              let newStart = stillCommitted.first?.coordinate,
+              let newEnd = stillCommitted.last?.coordinate else {
+            return XCTFail("the committed line must be preserved on continue")
+        }
+        XCTAssertEqual(newStart.latitude, firstStart.latitude,
+                       "the committed line's start is not moved when continuing")
+        XCTAssertEqual(newEnd.longitude, lastEnd.longitude,
+                       "the committed line's rejoin is not moved when continuing")
+        XCTAssertEqual(model.weatherDeviation.pendingRejoinHeading, armedTurn,
+                       "the armed rejoin turn is preserved when continuing")
     }
 
     // MARK: - Existing weather features still work

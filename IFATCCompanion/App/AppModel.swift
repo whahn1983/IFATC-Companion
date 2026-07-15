@@ -3756,31 +3756,55 @@ final class AppModel: ObservableObject {
 
     /// Pilot requests a vector around the weather; the controller assigns a heading.
     ///
-    /// When the pilot is **already** committed to a deviation and requests vectors
-    /// again — new weather has popped up ahead of the reroute they're flying — the
-    /// new vector is re-planned from where the aircraft is *now*, treating the
-    /// committed mint line as the current route. So the fresh heading, mint line and
-    /// rejoin turn are computed against the new weather and rejoin the line the
-    /// aircraft was already following, rather than the original filed course.
+    /// When the pilot is **already** flying a committed deviation and taps Vectors again,
+    /// it means there may be new weather on the reroute they're on. The controller
+    /// re-evaluates the committed line ahead of the aircraft:
+    ///   • if new precipitation now sits on it, the deviation is **recalculated from the
+    ///     aircraft's current position** and fresh vectors are issued (the new heading,
+    ///     mint line and rejoin turn rejoin the line the aircraft was already following,
+    ///     not the original filed course); but
+    ///   • if the reroute ahead is **still clear**, the controller has the pilot
+    ///     **continue on the current deviation** rather than re-vectoring needlessly.
     func requestVectorAroundWeather() {
         guard !companionStandby, weatherFlowAllowed, !establishedOnFinal else { return }
         // A deviation whose turn is still held (drawn ahead) is committed but not yet
         // being flown, so a fresh request re-holds rather than re-vectoring in place.
         let held = weatherDeviation.deviationStartLatitude != nil
         let alreadyCommitted = weatherDeviation.state.isCommittedDeviation && !held
-        if alreadyCommitted,
-           let pos = aircraftState.coordinate, pos.isValid,
-           let fresh = detectConflictAlong(route: revectorRouteAhead(from: pos)) {
-            activeWeatherConflict = fresh
-            lastConflictSeenAt = Date()
+
+        // Already flying a deviation and the pilot taps Vectors again: re-evaluate the
+        // reroute they're on.
+        if alreadyCommitted, let pos = aircraftState.coordinate, pos.isValid {
+            let tail = committedTailAhead(from: pos)
+            let stillClear = tail.count < 2
+                || conflictDetector.committedPathStillClear([pos] + tail, hazards: weatherHazards)
+            if stillClear {
+                // The reroute ahead is still clear — continue on the current deviation.
+                continueOnCurrentDeviation()
+                return
+            }
+            // New weather sits on the committed line — recompute it from here and
+            // re-vector, treating the reroute (plus the filed route past it) as the route.
+            if let fresh = detectConflictAlong(route: revectorRouteAhead(from: pos)) {
+                activeWeatherConflict = fresh
+                lastConflictSeenAt = Date()
+            }
+            let cs = callsignNow()
+            let side = activeWeatherConflict?.recommendedDirection ?? .right
+            applyDeviationResult(deviationEngine.requestVectors(
+                cs: cs, inputs: deviationInputs(direction: side), context: weatherDeviation,
+                facility: weatherFacility))
+            freezeCommittedDeviationPath()
+            captureWeatherRejoinTurn()
+            return
         }
+
         let cs = callsignNow()
         let side = activeWeatherConflict?.recommendedDirection ?? .right
         // A fresh request with the reroute still drawn ahead holds the turn, exactly like
         // a lateral deviation request — continue on course, expect the turn in X miles —
-        // then vectors onto the reroute at the turn-out. A re-vector while already
-        // committed (new weather ahead of the line being flown) turns now.
-        if !alreadyCommitted, let ahead = deviationTurnOutAhead() {
+        // then vectors onto the reroute at the turn-out.
+        if let ahead = deviationTurnOutAhead() {
             applyDeviationResult(deviationEngine.deferDeviation(
                 cs: cs, conflict: activeWeatherConflict, direction: side, distanceNM: ahead.distanceNM,
                 inputs: deviationInputs(direction: side), context: weatherDeviation,
@@ -3794,6 +3818,15 @@ final class AppModel: ObservableObject {
             facility: weatherFacility))
         freezeCommittedDeviationPath()
         captureWeatherRejoinTurn()
+    }
+
+    /// The pilot taps Vectors while already flying a deviation, but the reroute ahead is
+    /// still clear of weather — the controller has them continue on the current
+    /// deviation. The committed line and its armed turns are left untouched (the engine
+    /// changes no deviation state).
+    private func continueOnCurrentDeviation() {
+        applyDeviationResult(deviationEngine.continueCurrentDeviation(
+            cs: callsignNow(), context: weatherDeviation, facility: weatherFacility))
     }
 
     /// Detect a route-weather conflict along an explicit route polyline from the
@@ -3828,20 +3861,25 @@ final class AppModel: ObservableObject {
         return flightPlan.lastWaypointCoordinate
     }
 
-    /// The route ahead to protect on a re-vector: the committed mint line from the
-    /// vertex nearest the aircraft to its end (the part still being flown), then the
-    /// filed route beyond the committed line's rejoin. Falls back to the plain filed
-    /// route ahead when nothing is committed.
-    private func revectorRouteAhead(from pos: CLLocationCoordinate2D) -> [CLLocationCoordinate2D] {
-        guard let frozen = weatherDeviation.committedDeviationPath else {
-            return upcomingRouteCoordinates(from: pos)
-        }
+    /// The committed mint line from the vertex nearest the aircraft to its end — the
+    /// portion of the reroute still ahead of the aircraft (the part it's still flying).
+    /// Empty when nothing is committed or the frozen path is degenerate.
+    private func committedTailAhead(from pos: CLLocationCoordinate2D) -> [CLLocationCoordinate2D] {
+        guard let frozen = weatherDeviation.committedDeviationPath else { return [] }
         let committed = frozen.map { $0.coordinate }.filter { $0.isValid }
-        guard committed.count >= 2 else { return upcomingRouteCoordinates(from: pos) }
+        guard committed.count >= 2 else { return [] }
         let nearestIdx = committed.enumerated().min {
             Geo.distanceNM(from: pos, to: $0.element) < Geo.distanceNM(from: pos, to: $1.element)
         }?.offset ?? 0
-        let tail = Array(committed[nearestIdx...])
+        return Array(committed[nearestIdx...])
+    }
+
+    /// The route ahead to protect on a re-vector: the committed mint line still ahead
+    /// (`committedTailAhead`), then the filed route beyond the committed line's rejoin.
+    /// Falls back to the plain filed route ahead when nothing is committed.
+    private func revectorRouteAhead(from pos: CLLocationCoordinate2D) -> [CLLocationCoordinate2D] {
+        let tail = committedTailAhead(from: pos)
+        guard tail.count >= 2 else { return upcomingRouteCoordinates(from: pos) }
         let beyond = tail.last.map { upcomingRouteCoordinates(from: $0) } ?? []
         return tail + beyond
     }
@@ -3876,6 +3914,57 @@ final class AppModel: ObservableObject {
         weatherDeviation.vectorApexLatitude = nil
         weatherDeviation.vectorApexLongitude = nil
         weatherDeviation.vectorLegBearing = nil
+    }
+
+    // MARK: - Weather deviation — turn anticipation (call the turn early)
+
+    /// The nominal turn radius (NM) at the aircraft's current groundspeed, assuming a
+    /// typical ~25° bank. Faster aircraft carve a wider arc, so their turns must be called
+    /// proportionally earlier. R = V² / (g · tan bank).
+    private func turnRadiusNM(groundspeedKnots gs: Double) -> Double {
+        let v = max(60, gs)                        // guard a zero / missing telemetry speed
+        let vFPS = v * 1.68781                      // knots → ft/s
+        let g = 32.174                              // ft/s²
+        let radiusFT = (vFPS * vFPS) / (g * tan(25.0 * .pi / 180))
+        return radiusFT / 6076.12                   // ft → NM
+    }
+
+    /// How far (NM) ahead of a turn vertex the turn should be issued so the aircraft rolls
+    /// out on the next leg *through* the vertex instead of overshooting the mint line: the
+    /// standard turn-anticipation distance (turn radius × tan(½ course change)) plus a
+    /// short lead for the pilot to hear the call and roll in. Sharper turns and faster
+    /// aircraft anticipate more.
+    private func turnAnticipationNM(turnDegrees: Double) -> Double {
+        let gs = aircraftState.groundSpeed ?? 300
+        let half = (min(abs(turnDegrees), 170) / 2) * .pi / 180
+        let geometric = turnRadiusNM(groundspeedKnots: gs) * tan(half)
+        let reaction = max(0.5, gs / 360)           // ~10 s to react and roll in
+        return geometric + reaction
+    }
+
+    /// The angular course change (0…180°) from an inbound leg bearing to an outbound
+    /// heading.
+    private func courseChangeDegrees(inbound: Double, outbound: Double) -> Double {
+        var d = abs(outbound - inbound).truncatingRemainder(dividingBy: 360)
+        if d > 180 { d = 360 - d }
+        return d
+    }
+
+    /// The distance (NM) ahead of a turn vertex at which to issue the turn: the base
+    /// capture reach (~30 s of travel, min 2 NM — the prior behaviour) plus the
+    /// turn-anticipation lead, so the turn is called early enough that the aircraft rolls
+    /// out on the next leg rather than overshooting. When the vertex is reached down a
+    /// mint-line leg (`inboundLegNM`), the added lead is capped so the total never exceeds
+    /// 60% of that leg — a turn is never called while the aircraft is still most of a leg
+    /// away (e.g. sitting at the previous vertex), preserving the "don't fire before the
+    /// apex" behaviour. The beginning turn (`inboundLegNM == nil`, flown in from the filed
+    /// course rather than a prior vertex) applies the full lead uncapped.
+    private func turnLeadNM(turnDegrees: Double, inboundLegNM: Double?) -> Double {
+        let base = max(2.0, (aircraftState.groundSpeed ?? 300) / 120)
+        let anticipation = turnAnticipationNM(turnDegrees: turnDegrees)
+        guard let leg = inboundLegNM else { return base + anticipation }
+        let room = max(0, leg * 0.6 - base)
+        return base + min(anticipation, room)
     }
 
     // MARK: - Weather deviation — held beginning turn (reroute drawn ahead)
@@ -3930,14 +4019,20 @@ final class AppModel: ObservableObject {
               let heading = weatherDeviation.deviationStartHeading,
               let pos = aircraftState.coordinate, pos.isValid else { return false }
         let v0 = CLLocationCoordinate2D(latitude: sLat, longitude: sLon)
-        let captureNM = max(2.0, (aircraftState.groundSpeed ?? 300) / 120)
+        // Call the beginning turn a lead distance before the turn-out so the aircraft
+        // rolls onto the reroute *through* it rather than overshooting. The turn-out is
+        // flown in from the filed course (no prior mint-line vertex), so the full
+        // turn-anticipation lead applies uncapped.
+        let turnDegrees = weatherDeviation.deviationStartLegBearing
+            .map { courseChangeDegrees(inbound: $0, outbound: Double(heading)) } ?? 30
+        let leadNM = turnLeadNM(turnDegrees: turnDegrees, inboundLegNM: nil)
         let dist = Geo.distanceNM(from: pos, to: v0)
         let reached: Bool
-        if dist <= captureNM {
+        if dist <= leadNM {
             reached = true
         } else if let leg = weatherDeviation.deviationStartLegBearing {
             let v0ToAircraft = Geo.bearing(from: v0, to: pos)
-            reached = dist * cos((v0ToAircraft - leg) * .pi / 180) >= 0
+            reached = dist * cos((v0ToAircraft - leg) * .pi / 180) >= -leadNM
         } else {
             reached = false
         }
@@ -4002,27 +4097,35 @@ final class AppModel: ObservableObject {
               let pos = aircraftState.coordinate, pos.isValid else { return false }
         let apex = CLLocationCoordinate2D(latitude: apexLat, longitude: apexLon)
         let distance = Geo.distanceNM(from: pos, to: apex)
-        // Fire when near the turn vertex, or once the aircraft has passed abeam/beyond
-        // it along the leg into it (so flying wide of it still triggers the turn). The
-        // capture radius scales with groundspeed (~30 s of travel), min 2 NM, so a fast
-        // aircraft does not skip past the turn between telemetry ticks.
-        let captureNM = max(2.0, (aircraftState.groundSpeed ?? 300) / 120)
+        let path = committedMintLineCoordinates()
+        // Call the turn a lead distance *before* the vertex so the aircraft rolls out on
+        // the next leg through it rather than overshooting the mint line. The lead is the
+        // base capture reach (~30 s of travel) plus the turn-anticipation distance for
+        // this vertex's course change, bounded so a turn is never called while still most
+        // of a leg away.
+        let inboundLeg: Double? = (index >= 1 && index < path.count && path[index - 1].isValid)
+            ? Geo.distanceNM(from: path[index - 1], to: apex) : nil
+        let turnDegrees = weatherDeviation.vectorLegBearing
+            .map { courseChangeDegrees(inbound: $0, outbound: Double(heading)) } ?? 30
+        let leadNM = turnLeadNM(turnDegrees: turnDegrees, inboundLegNM: inboundLeg)
+        // Fire when within the lead of the turn vertex, or once the aircraft has passed
+        // abeam/beyond it along the leg into it (so flying wide of it still triggers the
+        // turn), pre-tripped by the same lead so a wide pass also anticipates.
         let reached: Bool
-        if distance <= captureNM {
+        if distance <= leadNM {
             reached = true
         } else if let legBearing = weatherDeviation.vectorLegBearing {
-            // Along-track distance from the vertex in the inbound leg direction; ≥ 0
-            // means the aircraft is at or beyond the vertex's abeam line.
+            // Along-track distance from the vertex in the inbound leg direction; ≥ −lead
+            // means the aircraft is within the anticipation lead of the vertex's abeam line.
             let apexToAircraft = Geo.bearing(from: apex, to: pos)
             let alongNM = distance * cos((apexToAircraft - legBearing) * .pi / 180)
-            reached = alongNM >= 0
+            reached = alongNM >= -leadNM
         } else {
             reached = false
         }
         guard reached else { return false }
         // The turn onto the last leg (toward the rejoin, the final point) is the final
         // turn; earlier interior vertices are intermediate turns that keep vectoring.
-        let path = committedMintLineCoordinates()
         let isFinalTurn = index >= path.count - 2
         applyDeviationResult(deviationEngine.rejoinTurn(
             cs: callsignNow(), heading: heading, rejoinFix: weatherDeviation.rejoinFix,

@@ -202,6 +202,19 @@ struct WeatherDeviationEngine {
         return Result(pilot: nil, atc: [tx], context: ctx)
     }
 
+    /// Pilot requests vectors while already flying a deviation, but the committed reroute
+    /// ahead is still clear — the controller has them continue on the current deviation.
+    /// No deviation state changes: the committed line and its armed turns are preserved,
+    /// so the pilot keeps flying the line they're on (only the last-call text is updated).
+    func continueCurrentDeviation(cs: Callsign, context: WeatherDeviationContext,
+                                  facility: ATCFacility) -> Result {
+        var ctx = context
+        let pilotTx = phraseology.pilotRequestVectors(cs: cs, facility: facility)
+        let atc = phraseology.continueCurrentDeviation(cs: cs, facility: facility)
+        ctx.lastATCWeatherCall = atc.displayText
+        return Result(pilot: pilotTx, atc: [atc], context: ctx)
+    }
+
     /// Pilot requests higher/lower for weather; controller assigns the altitude.
     func requestAltitude(cs: Callsign, higher: Bool, targetAltitude: Int,
                          context: WeatherDeviationContext, facility: ATCFacility) -> Result {
