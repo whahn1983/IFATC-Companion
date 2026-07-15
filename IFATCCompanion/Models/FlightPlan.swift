@@ -50,6 +50,14 @@ struct FlightPlan: Equatable, Codable {
     /// deviation may rejoin the route — the mint line never routes past it toward the
     /// destination. Empty when no approach is known.
     var approachStartFixName: String = ""
+    /// Ordered fix names of the filed departure procedure (SID), recovered from the
+    /// SID group in the flight plan — Infinite Flight nests the SID's own fixes under
+    /// the procedure. Empty when no SID is filed (or its fixes aren't known). The
+    /// initial departure heading targets the first of these that is a located
+    /// waypoint, so an intermediate "buffer" fix a pilot files between the runway and
+    /// the SID (to keep the autopilot from turning at rotation) never displaces the
+    /// SID's true first fix.
+    var sidFixNames: [String] = []
     var waypoints: [Waypoint] = []
 
     /// Coordinate Infinite Flight reports for the departure field, captured from the
@@ -147,26 +155,34 @@ struct FlightPlan: Equatable, Codable {
     /// field being in a built-in table.
     ///
     ///   1. When a SID is filed, the SID's first published fix that is present as a
-    ///      located flight-plan waypoint. `sidFixes` is the parsed SID's ordered fix
-    ///      list (empty when unknown); the first one that matches a located filed
-    ///      waypoint wins.
-    ///   2. Otherwise the next filed fix after the runway — the first located fix that
-    ///      is clear of the field (≥ 1 NM from `origin`), so a fix sitting on the field
-    ///      is never chosen. Falls back to the first located fix, then the first filed
-    ///      fix (which may be unlocated).
+    ///      located flight-plan waypoint. The SID's own fix list is taken from the
+    ///      filed procedure structure (`sidFixNames`, recovered from the SID group in
+    ///      the plan) first, then from any caller-supplied list (`sidFixes` — the
+    ///      built-in library for the demo airports). The first name that matches a
+    ///      located filed waypoint wins. Because the match is by name — not by route
+    ///      position — an intermediate "buffer" fix filed between the runway and the
+    ///      SID never displaces the SID's true first fix.
+    ///   2. Only when no SID structure is known: the next filed fix after the runway —
+    ///      the first located fix clear of the field (≥ 1 NM from `origin`), so a fix
+    ///      sitting on the field is never chosen. Falls back to the first located fix,
+    ///      then the first filed fix (which may be unlocated).
     ///
     /// Returns nil only when the plan carries no fixes at all. When the chosen fix has
     /// no coordinate the caller cannot form a bearing and should issue "runway
     /// heading" — it must never fall back to a bearing toward the destination, which
     /// for a northern departure to a southern destination points ~180° the wrong way.
     func initialDepartureFix(sidFixes: [String], origin: CLLocationCoordinate2D?) -> Waypoint? {
-        if let sidFix = sidFixes.lazy.compactMap({ name in
-            waypoints.first {
+        // The SID's own first published fix, matched by name to a located waypoint. The
+        // filed SID structure (`sidFixNames`) is authoritative; `sidFixes` covers the
+        // demo airports whose fixes come from the built-in library.
+        for name in sidFixNames + sidFixes {
+            if let sidFix = waypoints.first(where: {
                 $0.coordinate != nil && $0.name.caseInsensitiveCompare(name) == .orderedSame
+            }) {
+                return sidFix
             }
-        }).first {
-            return sidFix
         }
+        // No SID structure: the next filed fix after the runway.
         let located = waypoints.filter { $0.coordinate != nil }
         if let origin,
            let ahead = located.first(where: { Geo.distanceNM(from: origin, to: $0.coordinate!) >= 1 }) {

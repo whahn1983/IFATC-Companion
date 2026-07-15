@@ -1627,7 +1627,13 @@ final class AppModel: ObservableObject {
         fill(&plan.sid, live.sid)
         fill(&plan.star, live.star)
         fill(&plan.approach, live.approach)
-        if (!manual || plan.waypoints.isEmpty), !live.waypoints.isEmpty { plan.waypoints = live.waypoints }
+        if (!manual || plan.waypoints.isEmpty), !live.waypoints.isEmpty {
+            plan.waypoints = live.waypoints
+            // The SID's fix structure belongs to the same live parse as the waypoints,
+            // so it travels with them — the initial departure heading targets the SID's
+            // own first fix rather than a buffer fix filed ahead of it.
+            plan.sidFixNames = live.sidFixNames
+        }
         // Carry the endpoint coordinates Infinite Flight reports for the fields (they
         // place the departure/destination markers on the real field even when it's
         // outside the built-in coordinate database). Only sync when the endpoint ICAO

@@ -229,10 +229,25 @@ enum IFFlightPlanParser {
                 // the STAR. The departure airport doesn't count as enroute.
                 let procType = number(dict, ["type", "Type"]).map { Int($0) }
                 let hadEnrouteFix = fixes.contains { !isICAO($0.name) }
+                let sidWasEmpty = plan.sid.isEmpty
                 classifyProcedure(name: name, type: procType, into: &plan, hasFixesBefore: hadEnrouteFix)
                 let isApproach = procType == 2 || (procType == nil && isApproachName(name))
+                // Whether classifying this group just populated the (previously empty)
+                // SID slot — i.e. this is the departure procedure whose own first fix
+                // drives the takeoff heading.
+                let isSID = sidWasEmpty && plan.sid == name && plan.sidFixNames.isEmpty
                 for (i, child) in children.enumerated() {
                     appendFix(child, to: &fixes, maxAltitude: &maxAltitude, seen: &seen)
+                    // Record the SID's published fixes in order (skipping runway /
+                    // display markers) so the initial departure heading can target the
+                    // SID's own first fix rather than an intermediate buffer fix filed
+                    // ahead of it.
+                    if isSID {
+                        let cn = childName(child)
+                        if !cn.isEmpty, !isRunwayToken(cn), !isPseudoWaypoint(cn) {
+                            plan.sidFixNames.append(cn)
+                        }
+                    }
                     // The intercept altitude is the first altitude in the approach
                     // section of the flight plan.
                     if isApproach, i == 0, let dict = child as? [String: Any],
@@ -481,8 +496,24 @@ enum IFFlightPlanParser {
     /// route (departure, top-of-climb, top-of-descent, destination). These are not
     /// real fixes and must never be shown as waypoints.
     static func isPseudoWaypoint(_ token: String) -> Bool {
-        ["DPT", "DEP", "DEPARTURE", "TOC", "T/C", "TOD", "T/D",
-         "DEST", "DESTINATION", "ARR", "ARRIVAL"].contains(token.uppercased())
+        let upper = token.uppercased()
+        let markers = ["DPT", "DEP", "DEPARTURE", "TOC", "T/C", "TOD", "T/D",
+                       "DEST", "DESTINATION", "ARR", "ARRIVAL"]
+        if markers.contains(upper) { return true }
+        // The detailed JSON also carries compound departure/arrival markers that pair
+        // the marker word with the runway as a *single* identifier, e.g. "DPT RW15L"
+        // or "ARR RW09" — located at the runway threshold/end. The route-string parser
+        // never sees these (space is a token separator there), but in the JSON they
+        // arrive whole, so neither the bare-word check above nor `isRunwayToken`
+        // catches them. Left in, the departure-end point becomes the first "waypoint"
+        // and, sitting straight down the runway from the aircraft, forces the takeoff
+        // clearance to "fly runway heading". Treat "<marker> <runway>" as the same
+        // non-navigational display marker.
+        let parts = upper.split(separator: " ")
+        if parts.count == 2, markers.contains(String(parts[0])), isRunwayToken(String(parts[1])) {
+            return true
+        }
+        return false
     }
 
     /// A runway token such as `RW14`, `14`, `30L`, `09C` — these appear at the
