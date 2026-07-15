@@ -1824,11 +1824,17 @@ final class AppModel: ObservableObject {
         let approachName = approachProc?.displayName
             ?? (flightPlan.approach.isEmpty ? "the ILS" : flightPlan.approach)
 
-        // Initial departure heading: bearing from the field toward the first fix,
-        // or the destination when no located fixes are available.
+        // Initial departure heading: the bearing the aircraft must fly off the
+        // runway to reach the first fix of the departure. The origin is the live
+        // on-ground position (the aircraft lined up / holding on the runway) when
+        // telemetry is available, otherwise the departure field reference. For a fix
+        // a few miles out the two agree to within a degree, but on the runway the
+        // live position is the most faithful to "from the aircraft's position on the
+        // runway".
         let depCoord = resolvedDepartureCoordinate()
+        let onRunwayPosition = (aircraftState.onGround == true) ? aircraftState.coordinate : nil
+        let headingOrigin = onRunwayPosition ?? depCoord
         let firstWaypoint = flightPlan.waypoints.first
-        let firstLocated = flightPlan.waypoints.first { $0.coordinate != nil }
         // The "resume own navigation, direct …" fix in the departure climb: once
         // airborne, the next fix *ahead* of the aircraft (not the runway-end fix the
         // aircraft has already passed); on the ground, simply the first filed fix.
@@ -1839,20 +1845,19 @@ final class AppModel: ObservableObject {
             directFix = firstWaypoint
         }
         // Initial departure heading intercepts the first fix off the runway: the
-        // SID's first published fix when a SID is filed, otherwise the first filed
-        // waypoint after the runway. The SID fix is matched to a located flight-plan
-        // waypoint so it carries a coordinate; falls back to the first located
-        // waypoint, then the destination bearing, when no fix can be located.
-        let sidFirstFix: Waypoint? = sidProc?.fixes.lazy.compactMap { name in
-            self.flightPlan.waypoints.first {
-                $0.coordinate != nil && $0.name.caseInsensitiveCompare(name) == .orderedSame
-            }
-        }.first
-        let intercept = (sidFirstFix ?? firstLocated)?.coordinate
-            ?? resolvedDestinationCoordinate()
+        // SID's first published fix when a SID is filed, otherwise the next filed fix
+        // after the runway (see `initialDepartureFix`). Airport-agnostic — it never
+        // depends on the field being in a built-in table. When no located fix can be
+        // found the heading is left unknown (0) so the takeoff clearance says "fly
+        // runway heading"; it is deliberately *not* the bearing toward the
+        // destination, which for a northern departure to a southern destination would
+        // point ~180° the wrong way.
+        let interceptFix = flightPlan.initialDepartureFix(sidFixes: sidProc?.fixes ?? [],
+                                                          origin: headingOrigin)
         let depHeading: Int
-        if let depCoord, let intercept {
-            depHeading = Int(Geo.bearing(from: depCoord, to: intercept).rounded())
+        if let headingOrigin, let intercept = interceptFix?.coordinate,
+           Geo.distanceNM(from: headingOrigin, to: intercept) >= 0.5 {
+            depHeading = Int(Geo.bearing(from: headingOrigin, to: intercept).rounded())
         } else {
             depHeading = 0
         }

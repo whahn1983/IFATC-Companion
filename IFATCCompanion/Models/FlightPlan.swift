@@ -140,4 +140,38 @@ struct FlightPlan: Equatable, Codable {
             Geo.distanceNM(from: coordinate, to: $1.coordinate!)
         }) ?? waypoints.first
     }
+
+    /// The fix the initial departure heading should intercept off the runway — the
+    /// bearing to it (from the aircraft's position on the runway) is the heading the
+    /// takeoff clearance issues. This is airport-agnostic: it never depends on the
+    /// field being in a built-in table.
+    ///
+    ///   1. When a SID is filed, the SID's first published fix that is present as a
+    ///      located flight-plan waypoint. `sidFixes` is the parsed SID's ordered fix
+    ///      list (empty when unknown); the first one that matches a located filed
+    ///      waypoint wins.
+    ///   2. Otherwise the next filed fix after the runway — the first located fix that
+    ///      is clear of the field (≥ 1 NM from `origin`), so a fix sitting on the field
+    ///      is never chosen. Falls back to the first located fix, then the first filed
+    ///      fix (which may be unlocated).
+    ///
+    /// Returns nil only when the plan carries no fixes at all. When the chosen fix has
+    /// no coordinate the caller cannot form a bearing and should issue "runway
+    /// heading" — it must never fall back to a bearing toward the destination, which
+    /// for a northern departure to a southern destination points ~180° the wrong way.
+    func initialDepartureFix(sidFixes: [String], origin: CLLocationCoordinate2D?) -> Waypoint? {
+        if let sidFix = sidFixes.lazy.compactMap({ name in
+            waypoints.first {
+                $0.coordinate != nil && $0.name.caseInsensitiveCompare(name) == .orderedSame
+            }
+        }).first {
+            return sidFix
+        }
+        let located = waypoints.filter { $0.coordinate != nil }
+        if let origin,
+           let ahead = located.first(where: { Geo.distanceNM(from: origin, to: $0.coordinate!) >= 1 }) {
+            return ahead
+        }
+        return located.first ?? waypoints.first
+    }
 }
