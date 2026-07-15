@@ -92,8 +92,13 @@ fix it has already passed. Center's first call after the Departure hand-off (ste
 
 The **initial climb altitude** (default 5,000 ft) and the **TRACON ceiling**
 (default FL180) are configurable. The **departure heading** is the bearing from
-the field to the first filed fix (or the destination), spoken as a heading unless
-it is within 10° of the runway heading, in which case "fly runway heading".
+the aircraft's position on the runway (the live on-ground position when telemetry
+is available, otherwise the departure field reference) to the first fix of the
+departure — the SID's first published fix when a SID is filed, otherwise the next
+filed fix after the runway. It is airport-agnostic and never uses the bearing to
+the destination. When no such fix can be located the heading is unknown and the
+clearance says "fly runway heading"; the heading is likewise spoken as "fly runway
+heading" whenever it lands within 10° of the runway heading.
 
 ## 2. Enroute / Cruise
 

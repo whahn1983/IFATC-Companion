@@ -1,4 +1,5 @@
 import XCTest
+import CoreLocation
 @testable import IFATCCompanion
 
 /// Tests for the automatic ATC flow building blocks: flight-plan parsing,
@@ -225,6 +226,78 @@ final class AutomationTests: XCTestCase {
         let tx = m.advance(to: .initialClimb, context: ctx)
         XCTAssertTrue(tx?.displayText.contains("FL180") ?? false)
         XCTAssertTrue(tx?.displayText.contains("direct WAGON") ?? false)
+    }
+
+    // MARK: - Initial departure-heading fix selection
+
+    // Houston Intercontinental (KIAH) field reference, a fix to the north, and a
+    // destination to the south — the geometry from the reported IAH bug where a
+    // northern departure was read "fly heading 178" (a bearing toward the southern
+    // destination) instead of the bearing toward the northern first fix.
+    private let iah = CLLocationCoordinate2D(latitude: 29.9844, longitude: -95.3414)
+    private func wp(_ name: String, _ lat: Double?, _ lon: Double?) -> Waypoint {
+        Waypoint(name: name, latitude: lat, longitude: lon)
+    }
+
+    /// With a SID filed, the initial heading intercepts the SID's first published
+    /// fix — matched to a located flight-plan waypoint — not just the first filed fix.
+    func testInitialDepartureFixPrefersSIDFirstFix() {
+        var plan = FlightPlan()
+        plan.waypoints = [wp("HOBTT", 30.60, -95.10), wp("WAGON", 30.40, -95.30)]
+        // SID lists WAGON first even though HOBTT appears first in the filed route.
+        let fix = plan.initialDepartureFix(sidFixes: ["WAGON", "HOBTT"], origin: iah)
+        XCTAssertEqual(fix?.name, "WAGON")
+    }
+
+    /// With no SID, the initial heading intercepts the next filed fix after the
+    /// runway — the first located enroute fix.
+    func testInitialDepartureFixUsesNextFiledFixWhenNoSID() {
+        var plan = FlightPlan()
+        plan.waypoints = [wp("NORTH", 30.60, -95.20), wp("FARN", 31.50, -95.10)]
+        let fix = plan.initialDepartureFix(sidFixes: [], origin: iah)
+        XCTAssertEqual(fix?.name, "NORTH")
+    }
+
+    /// A fix sitting on the field (no meaningful bearing) is skipped in favor of the
+    /// next real fix clear of the airport.
+    func testInitialDepartureFixSkipsFixOnTheField() {
+        var plan = FlightPlan()
+        plan.waypoints = [wp("RW15", 29.9846, -95.3416), wp("NORTH", 30.60, -95.20)]
+        let fix = plan.initialDepartureFix(sidFixes: [], origin: iah)
+        XCTAssertEqual(fix?.name, "NORTH")
+    }
+
+    /// An unlocated first fix yields no usable bearing (nil coordinate) so the caller
+    /// falls back to "runway heading" — never a bearing toward the destination.
+    func testInitialDepartureFixReturnsUnlocatedFixWhenNoneLocated() {
+        var plan = FlightPlan()
+        plan.waypoints = [wp("PANIC", nil, nil)]
+        let fix = plan.initialDepartureFix(sidFixes: [], origin: iah)
+        XCTAssertEqual(fix?.name, "PANIC")
+        XCTAssertNil(fix?.coordinate, "no coordinate ⇒ caller issues runway heading, not a destination bearing")
+    }
+
+    /// Regression for the IAH report: the initial heading must intercept the northern
+    /// first fix (a northerly bearing), not the southern destination (~178°).
+    func testInitialDepartureHeadingTargetsFirstFixNotDestination() {
+        var plan = FlightPlan()
+        let northFix = wp("NORTH", 30.60, -95.20)
+        plan.waypoints = [northFix]
+        // A destination to the south, as it would sit on the plan.
+        let southDestination = CLLocationCoordinate2D(latitude: 29.00, longitude: -95.20)
+
+        let fix = plan.initialDepartureFix(sidFixes: [], origin: iah)
+        XCTAssertEqual(fix?.name, "NORTH")
+
+        // The heading the fix produces is northerly (NE quadrant here) …
+        let heading = Geo.bearing(from: iah, to: fix!.coordinate!)
+        XCTAssertLessThan(heading, 90, "bearing to the northern fix should be northerly, got \(heading)")
+
+        // … while the old destination fallback would have been southerly — the ~178°
+        // the pilot saw. Guarantees the two are not confused.
+        let destinationHeading = Geo.bearing(from: iah, to: southDestination)
+        XCTAssertGreaterThan(destinationHeading, 135,
+                             "bearing to the southern destination should be southerly, got \(destinationHeading)")
     }
 
     // MARK: - Read-backs echo heading + altitude and "resume own navigation"
