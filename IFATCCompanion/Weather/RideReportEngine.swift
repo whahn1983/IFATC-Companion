@@ -71,7 +71,11 @@ struct RideReportEngine {
             .min(by: { ($0.distanceAheadNM ?? .greatestFiniteMagnitude) < ($1.distanceAheadNM ?? .greatestFiniteMagnitude) })
             ?? items.max(by: { $0.severity < $1.severity })
 
-        let sev = assessment.severity
+        // When a relevant PIREP leads the report, relay that pilot report's own severity —
+        // ATC is quoting the pilot, not the advisory. The composite assessment severity
+        // (which a SIGMET or the wind-shear proxy can raise above every PIREP) is spoken only
+        // when there is no PIREP to reference and the advisory rests on SIGMET data alone.
+        let sev = lead?.severity ?? assessment.severity
         // Altitude: the report's own level when known, else the pilot's level.
         let altFt = lead?.reportedAltitudeFt ?? (referenceAltitudeFt > 0 ? referenceAltitudeFt : nil)
         let altDisplay = altFt.map { " at \(engine.formatAltDisplay($0))" } ?? ""

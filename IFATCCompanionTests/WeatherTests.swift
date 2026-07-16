@@ -315,6 +315,40 @@ final class WeatherTests: XCTestCase {
                       "a live aircraft fix yields an aircraft-relative distance")
     }
 
+    /// A SIGMET (or the wind-shear proxy) can raise the composite ride index above every
+    /// PIREP. When the report still references a specific PIREP, ATC relays *that pilot
+    /// report's* severity — it must not override it with the SIGMET-driven composite severity.
+    func testRideReportRelaysPIREPSeverityNotSIGMETElevatedSeverity() {
+        let engine = PhraseologyEngine(digitStyle: .individual)
+        let ride = RideReportEngine(engine: engine)
+        let cs = engine.callsign(airline: "United", flightNumber: "598", fallback: "")
+        // The only relevant PIREP is light chop; a route SIGMET pushed the composite to severe.
+        let lead = RideReportItem(severity: .lightChop, altitudeBand: nil, distanceAheadNM: 40,
+                                  bearing: 0, nearFix: nil, sourceRaw: "", ageMinutes: 10,
+                                  reportedAltitudeFt: 35000, aircraftType: "B738")
+        let assessment = RideAssessment(index: 0.85, severity: .severe,
+                                        contributors: ["pilot reports", "SIGMET convective turbulence"])
+        let tx = ride.rideReport(assessment: assessment, items: [lead],
+                                 referenceAltitudeFt: 35000, smoother: nil, callsign: cs)
+        XCTAssertTrue(tx.displayText.contains("light chop"), "relays the referenced PIREP's own severity")
+        XCTAssertFalse(tx.displayText.contains("severe"), "does not override with the SIGMET-driven severity")
+        XCTAssertFalse(tx.spokenText.contains("severe"))
+    }
+
+    /// With no PIREP to reference, the advisory rests on SIGMET data alone, so the composite
+    /// (SIGMET-driven) severity is the one ATC speaks.
+    func testRideReportUsesSIGMETSeverityWhenNoPIREP() {
+        let engine = PhraseologyEngine(digitStyle: .individual)
+        let ride = RideReportEngine(engine: engine)
+        let cs = engine.callsign(airline: "United", flightNumber: "598", fallback: "")
+        let assessment = RideAssessment(index: 0.85, severity: .severe,
+                                        contributors: ["SIGMET convective turbulence"])
+        let tx = ride.rideReport(assessment: assessment, items: [],
+                                 referenceAltitudeFt: 35000, smoother: nil, callsign: cs)
+        XCTAssertTrue(tx.displayText.contains("severe turbulence"),
+                      "SIGMET severity is used when there is no relevant PIREP")
+    }
+
     func testDestinationWeatherSpoken() {
         let engine = PhraseologyEngine(digitStyle: .individual)
         let ride = RideReportEngine(engine: engine)
