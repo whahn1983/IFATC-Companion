@@ -10,13 +10,28 @@ import Network
 ///   - Request a state/manifest: send Int32 id (LE) + 1 byte (0 = read).
 ///   - Response framing: Int32 id (LE) + Int32 length (LE) + `length` payload bytes.
 ///   - Run a command / write: send Int32 id (LE) + 1 byte (1 = write) + payload.
-///   - The manifest is requested with id == -1; its payload is a UTF-8 string.
+///   - The manifest is requested with id == -1; its payload is a length-prefixed
+///     UTF-8 string (Int32 length (LE) + bytes).
+///
+/// TCP delivers those framed responses as an arbitrary stream of chunks, so all
+/// reads go through a persistent `IFConnectFrameBuffer`: every chunk is appended and
+/// a frame is only surfaced once its full declared length has arrived. A partial
+/// response is therefore never mistaken for a missing/empty one.
 actor IFConnectClient {
 
     static let manifestCommandID: Int32 = -1
 
+    /// The canonical TCP port for Connect API v2. The handshake always dials this
+    /// unless an explicit, valid override is supplied.
+    static let defaultPort = 10112
+
     private var connection: NWConnection?
     private let queue = DispatchQueue(label: "com.h3consultingpartners.ifatccompanion.connect")
+
+    /// Persistent receive buffer. Holds bytes across TCP callbacks and can carry
+    /// more than one frame at a time; reset whenever a new exchange begins or the
+    /// link is (re)connected so a fresh request never reads stale bytes.
+    private var receiveBuffer = IFConnectFrameBuffer()
 
     var isConnected: Bool { connection?.state == .ready }
 
@@ -24,7 +39,10 @@ actor IFConnectClient {
 
     func connect(host: String, port: Int, timeout: TimeInterval = 6) async throws {
         let trimmed = host.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty, port > 0, let nwPort = NWEndpoint.Port(rawValue: UInt16(truncatingIfNeeded: port)) else {
+        // Connect API v2 always speaks TCP/10112; fall back to it if the supplied
+        // port is missing or out of range rather than failing outright.
+        let resolvedPort = (port > 0 && port <= 65535) ? port : Self.defaultPort
+        guard !trimmed.isEmpty, let nwPort = NWEndpoint.Port(rawValue: UInt16(resolvedPort)) else {
             throw IFConnectError.invalidHost
         }
         disconnect()
@@ -59,6 +77,8 @@ actor IFConnectClient {
         connection?.stateUpdateHandler = nil
         connection?.cancel()
         connection = nil
+        // Drop any half-received frame so a later reconnect starts from a clean slate.
+        receiveBuffer.reset()
     }
 
     private func activeConnection() throws -> NWConnection {
@@ -69,23 +89,36 @@ actor IFConnectClient {
     // MARK: - High-level requests
 
     /// Request and parse the Connect manifest.
-    func requestManifest(timeout: TimeInterval = 8) async throws -> [IFManifestEntry] {
+    ///
+    /// Uses an inactivity timeout: the read waits up to `timeout` seconds for *more*
+    /// bytes, and the clock resets every time a chunk arrives — so a large manifest
+    /// that trickles in over several callbacks is never cut off mid-transfer. The
+    /// request is retried once on the same connection (a stale/partial first response
+    /// right after backgrounding is common); reconnect-and-retry is the caller's job.
+    ///
+    /// `onEvent` receives granular progress for diagnostics and the "Receiving
+    /// manifest…" status. It defaults to a no-op so existing callers are unaffected.
+    func requestManifest(timeout: TimeInterval = 15,
+                         onEvent: @Sendable (IFConnectManifestEvent) -> Void = { _ in }) async throws -> [IFManifestEntry] {
         _ = try activeConnection()
-        try await sendStateRequest(id: Self.manifestCommandID, write: false)
-        let frame = try await withTimeout(timeout) { try await self.readFrame() }
-        guard let raw = String(data: frame.payload, encoding: .utf8), !raw.isEmpty else {
-            throw IFConnectError.manifestUnavailable
-        }
-        let entries = IFManifestParser.parse(raw)
-        if entries.isEmpty { throw IFConnectError.manifestUnavailable }
-        return entries
+        // Delegate the framing/validation/retry to the pure, testable reader; back its
+        // injected transport with this connection. Each chunk read is bounded by its
+        // own `timeout`, so the inactivity clock resets every time bytes arrive.
+        let reader = IFManifestReader()
+        return try await reader.read(
+            sendRequest: { try await self.sendStateRequest(id: Self.manifestCommandID, write: false) },
+            nextChunk: { try await self.receiveChunk(timeout: timeout) },
+            onEvent: onEvent)
     }
 
     /// Read a single state by its manifest entry, decoding per its declared type.
     func readState(_ entry: IFManifestEntry, timeout: TimeInterval = 4) async throws -> IFStateValue {
         _ = try activeConnection()
+        // Each state read is a self-contained request/response; start from an empty
+        // buffer so a leftover byte from a prior timed-out read can't misalign it.
+        receiveBuffer.reset()
         try await sendStateRequest(id: Int32(entry.id), write: false)
-        let frame = try await withTimeout(timeout) { try await self.readFrame() }
+        let frame = try await readFrame(timeout: timeout)
         return try decode(frame.payload, as: entry.type)
     }
 
@@ -106,13 +139,21 @@ actor IFConnectClient {
         try await send(data)
     }
 
-    private func readFrame() async throws -> Frame {
-        let header = try await receive(exactly: 8)
-        let id = header.readInt32LE(at: 0)
-        let length = header.readInt32LE(at: 4)
-        guard length >= 0, length < 5_000_000 else { throw IFConnectError.decodingFailed }
-        let payload = length == 0 ? Data() : try await receive(exactly: Int(length))
-        return Frame(id: id, payload: payload)
+    /// Read exactly one complete frame, buffering partial TCP chunks until the full
+    /// framed response has arrived. `timeout` is per-chunk inactivity, so slow but
+    /// steady delivery is tolerated.
+    private func readFrame(timeout: TimeInterval) async throws -> Frame {
+        while true {
+            switch receiveBuffer.nextFrame() {
+            case .frame(let id, let payload):
+                return Frame(id: id, payload: payload)
+            case .invalidLength:
+                throw IFConnectError.decodingFailed
+            case .needMoreData:
+                let chunk = try await withTimeout(timeout) { try await self.receiveChunk() }
+                receiveBuffer.append(chunk)
+            }
+        }
     }
 
     private func decode(_ data: Data, as type: IFDataType) throws -> IFStateValue {
@@ -158,24 +199,26 @@ actor IFConnectClient {
         }
     }
 
-    private func receive(exactly count: Int) async throws -> Data {
-        var buffer = Data()
-        buffer.reserveCapacity(count)
-        while buffer.count < count {
-            let conn = try activeConnection()
-            let remaining = count - buffer.count
-            let chunk: Data = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, Error>) in
-                conn.receive(minimumIncompleteLength: 1, maximumLength: remaining) { content, _, isComplete, error in
-                    if let error { cont.resume(throwing: IFConnectError.connectionFailed(error.localizedDescription)); return }
-                    if let content, !content.isEmpty { cont.resume(returning: content); return }
-                    if isComplete { cont.resume(throwing: IFConnectError.connectionFailed("Connection closed")); return }
-                    cont.resume(returning: Data())
-                }
+    /// Receive the next chunk, bounded by a per-chunk inactivity `timeout`. Because
+    /// each call gets its own timeout, the clock effectively resets every time bytes
+    /// arrive — a large response that trickles in over many chunks is not cut off.
+    private func receiveChunk(timeout: TimeInterval) async throws -> Data {
+        try await withTimeout(timeout) { try await self.receiveChunk() }
+    }
+
+    /// Receive the next available chunk of bytes (up to 64 KB). Callers append the
+    /// result to `receiveBuffer` and re-attempt frame extraction; a closed connection
+    /// throws so the manifest path can report "closed before full manifest".
+    private func receiveChunk() async throws -> Data {
+        let conn = try activeConnection()
+        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, Error>) in
+            conn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { content, _, isComplete, error in
+                if let error { cont.resume(throwing: IFConnectError.connectionFailed(error.localizedDescription)); return }
+                if let content, !content.isEmpty { cont.resume(returning: content); return }
+                if isComplete { cont.resume(throwing: IFConnectError.connectionFailed("Connection closed")); return }
+                cont.resume(returning: Data())
             }
-            if chunk.isEmpty { throw IFConnectError.connectionFailed("Connection closed") }
-            buffer.append(chunk)
         }
-        return buffer
     }
 
     // MARK: - Timeout helper
@@ -191,28 +234,5 @@ actor IFConnectClient {
             group.cancelAll()
             return result
         }
-    }
-}
-
-// MARK: - Byte helpers
-
-private extension Data {
-    mutating func append(littleEndian value: Int32) {
-        var le = value.littleEndian
-        Swift.withUnsafeBytes(of: &le) { append(contentsOf: $0) }
-    }
-
-    func readInt32LE(at offset: Int) -> Int32 {
-        let start = startIndex.advanced(by: offset)
-        var value: UInt32 = 0
-        for i in 0..<4 { value |= UInt32(self[start.advanced(by: i)]) << (8 * i) }
-        return Int32(bitPattern: value)
-    }
-
-    func readUInt64LE(at offset: Int) -> UInt64 {
-        let start = startIndex.advanced(by: offset)
-        var value: UInt64 = 0
-        for i in 0..<8 { value |= UInt64(self[start.advanced(by: i)]) << (8 * i) }
-        return value
     }
 }
