@@ -5,6 +5,10 @@ enum IFConnectConnectionState: Equatable {
     case disconnected
     case discovering
     case connecting
+    /// TCP is up and the manifest is being read — partial data is still arriving.
+    /// Distinct from `.connecting` so the UI can show "Receiving manifest…" and the
+    /// user knows the link is progressing rather than stalled.
+    case receivingManifest
     case connected
     /// `reason` is the short, space-constrained summary shown in compact UI (e.g.
     /// the ATC view status pill). `detail`, when present, is the fuller message —
@@ -17,6 +21,7 @@ enum IFConnectConnectionState: Equatable {
         case .disconnected: return "Disconnected"
         case .discovering: return "Searching…"
         case .connecting: return "Connecting…"
+        case .receivingManifest: return "Receiving manifest…"
         case .connected: return "Connected"
         case .failed(let reason, _): return "Failed: \(reason)"
         }
@@ -34,7 +39,7 @@ enum IFConnectConnectionState: Equatable {
     var isConnected: Bool { if case .connected = self { return true }; return false }
     var isActive: Bool {
         switch self {
-        case .connecting, .discovering, .connected: return true
+        case .connecting, .discovering, .receivingManifest, .connected: return true
         default: return false
         }
     }
@@ -68,7 +73,7 @@ enum IFConnectError: LocalizedError {
     var recoverySuggestion: String? {
         switch self {
         case .manifestUnavailable:
-            return "Try force closing Infinite Flight and IFATC Companion, then open Infinite Flight first and then the Companion again."
+            return "Try force closing Infinite Flight and IFATC Companion, then open Infinite Flight first and then the Companion again. Make sure Infinite Flight is fully loaded into an active flight — not the main menu — before connecting."
         default:
             return nil
         }

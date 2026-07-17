@@ -48,6 +48,10 @@ final class IFConnectManager: ObservableObject {
     var connectMaxAttempts = 4
     /// Base delay between connect attempts; backs off linearly per attempt.
     var connectRetryDelay: TimeInterval = 0.6
+    /// How long to wait after the TCP socket opens before requesting the manifest.
+    /// A short settle (300–500 ms) avoids the partial/garbled first frame Infinite
+    /// Flight sometimes serves the instant the connection is ready.
+    var manifestSettleDelay: TimeInterval = 0.4
 
     func configure(diagnostics: DiagnosticsStore) {
         self.diagnostics = diagnostics
@@ -100,10 +104,30 @@ final class IFConnectManager: ObservableObject {
     /// once the manifest has been read successfully.
     private func performConnect(host: String, port: Int, attempt: Int) async throws {
         try await client.connect(host: host, port: port)
-        diagnostics?.log(.connect, attempt > 1
-            ? "TCP connected (attempt \(attempt)). Requesting manifest…"
-            : "TCP connected. Requesting manifest…")
-        let entries = try await manifestService.discover(using: client, into: mappingStore)
+        diagnostics?.log(.connect, attempt > 1 ? "TCP connected (attempt \(attempt))." : "TCP connected.")
+        // Give Infinite Flight a beat after the socket opens before asking for the
+        // manifest — requesting the instant it's ready often returns a partial or
+        // garbled first frame (especially right after returning from the background).
+        try? await Task.sleep(nanoseconds: UInt64(manifestSettleDelay * 1_000_000_000))
+        connectionState = .receivingManifest
+        diagnostics?.log(.manifest, "Requesting manifest…")
+        let onEvent: @Sendable (IFConnectManifestEvent) -> Void = { [weak self] event in
+            Task { @MainActor in self?.handleManifestEvent(event) }
+        }
+        let entries: [IFManifestEntry]
+        do {
+            entries = try await manifestService.discover(using: client, into: mappingStore, onEvent: onEvent)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch IFConnectError.cancelled {
+            throw IFConnectError.cancelled
+        } catch {
+            // The specific cause (timeout, decode/UTF-8 failure, closed early, …) is
+            // already in Diagnostics via `onEvent`. Collapse it to the single
+            // user-facing "Manifest Unavailable" — which the connect loop only lets
+            // reach the UI once its reconnect-and-retry attempts are exhausted.
+            throw IFConnectError.manifestUnavailable
+        }
         manifestEntries = entries
         diagnostics?.discoveredStates = entries
         diagnostics?.log(.manifest, "Manifest discovered: \(entries.count) entries. Resolved \(mappingStore.resolved.count) logical states.")
@@ -115,6 +139,49 @@ final class IFConnectManager: ObservableObject {
         connectionState = .connected
         await readFlightPlan()
         startPolling()
+    }
+
+    /// Map a granular manifest event to the Diagnostics log and, while the handshake
+    /// is still in progress, to the "Receiving manifest…" status. Replaces the old
+    /// opaque "Manifest Unavailable" line with a step-by-step trace so a stuck read
+    /// can be diagnosed from the log alone.
+    private func handleManifestEvent(_ event: IFConnectManifestEvent) {
+        switch event {
+        case .requestSent(let attempt):
+            diagnostics?.log(.manifest, attempt > 1 ? "Manifest request sent (retry \(attempt))." : "Manifest request sent.")
+        case .headerReceived(let id, let payloadLength):
+            markReceivingManifest()
+            diagnostics?.log(.manifest, "Header bytes received (id \(id)). Expected payload size: \(payloadLength) bytes.")
+        case .progress(let received, let expected):
+            markReceivingManifest()
+            diagnostics?.log(.manifest, "Receiving manifest: \(received)/\(expected) bytes.")
+        case .waitingForHeader(let received):
+            diagnostics?.log(.manifest, "Partial manifest — waiting for more data (\(received) header byte(s) so far).")
+        case .invalidResponseID(let id):
+            diagnostics?.log(.manifest, "Invalid response ID: \(id) (expected \(IFConnectClient.manifestCommandID)).")
+        case .invalidPayloadLength(let len):
+            diagnostics?.log(.manifest, "Invalid payload length: \(len).")
+        case .invalidStringLength(let len):
+            diagnostics?.log(.manifest, "Invalid string length: \(len).")
+        case .utf8DecodeFailed:
+            diagnostics?.log(.manifest, "UTF-8 decode failure while reading the manifest.")
+        case .connectionClosedEarly:
+            diagnostics?.log(.manifest, "Connection closed before the full manifest arrived.")
+        case .parsed(let stateCount):
+            diagnostics?.log(.manifest, "Manifest parsed successfully: \(stateCount) states.")
+        }
+    }
+
+    /// Move to `.receivingManifest` only while still handshaking, so a late progress
+    /// event (e.g. from an abandoned read) can't downgrade an already-`.connected`
+    /// or `.failed` link.
+    private func markReceivingManifest() {
+        switch connectionState {
+        case .connecting, .receivingManifest:
+            connectionState = .receivingManifest
+        default:
+            break
+        }
     }
 
     private func errorMessage(_ error: Error) -> String {
