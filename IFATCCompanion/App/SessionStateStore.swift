@@ -21,6 +21,16 @@ struct SessionSnapshot: Codable {
     /// restores the deviation card (and its "clear of weather" button) rather than
     /// dropping it. Optional so snapshots written before this field decode cleanly.
     var weatherDeviation: WeatherDeviationContext? = nil
+    /// The ATIS information code letter the pilot has received (by tuning ATIS) for the
+    /// departure / arrival, so a reconnect keeps appending "information X" to the taxi
+    /// request / approach check-in. Optional so older snapshots decode cleanly.
+    var reportedDepartureInfo: String? = nil
+    var reportedArrivalInfo: String? = nil
+    /// Whether the information code has already been reported to ATC for each phase, so
+    /// a reconnect doesn't repeat it on the next taxi request / Approach check-in.
+    /// Optional so older snapshots decode cleanly (missing key → nil → treated as false).
+    var departureInfoAppended: Bool? = nil
+    var arrivalInfoAppended: Bool? = nil
     var transcript: [ATCTransmission]
     /// Flight-plan endpoints, recorded so a stale snapshot from a different flight
     /// can be recognized if needed.

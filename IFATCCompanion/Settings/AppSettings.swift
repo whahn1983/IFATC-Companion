@@ -117,6 +117,8 @@ final class AppSettings: ObservableObject {
     @Published var voiceDeparture: String { didSet { save(voiceDeparture, .voiceDeparture) } }
     @Published var voiceCenter: String { didSet { save(voiceCenter, .voiceCenter) } }
     @Published var voiceApproach: String { didSet { save(voiceApproach, .voiceApproach) } }
+    /// Voice used for the one-way ATIS broadcast (configurable like the frequencies).
+    @Published var voiceATIS: String { didSet { save(voiceATIS, .voiceATIS) } }
     /// Voice used for the pilot's own transmissions (readbacks/requests).
     @Published var voicePilot: String { didSet { save(voicePilot, .voicePilot) } }
     /// Speak the pilot's readbacks/requests aloud when they are triggered by a
@@ -208,6 +210,7 @@ final class AppSettings: ObservableObject {
         voiceDeparture = defaults.string(forKey: Key.voiceDeparture.rawValue) ?? ""
         voiceCenter = defaults.string(forKey: Key.voiceCenter.rawValue) ?? ""
         voiceApproach = defaults.string(forKey: Key.voiceApproach.rawValue) ?? ""
+        voiceATIS = defaults.string(forKey: Key.voiceATIS.rawValue) ?? ""
         voicePilot = defaults.string(forKey: Key.voicePilot.rawValue) ?? ""
         speakPilot = defaults.object(forKey: Key.speakPilot.rawValue) as? Bool ?? true
 
@@ -257,7 +260,7 @@ final class AppSettings: ObservableObject {
         respectSilentSwitch = other.respectSilentSwitch
         voiceGround = other.voiceGround; voiceTower = other.voiceTower
         voiceDeparture = other.voiceDeparture; voiceCenter = other.voiceCenter
-        voiceApproach = other.voiceApproach
+        voiceApproach = other.voiceApproach; voiceATIS = other.voiceATIS
         voicePilot = other.voicePilot; speakPilot = other.speakPilot
         phraseologyMode = other.phraseologyMode; digitStyle = other.digitStyle
         initialClimbAltitudeFt = other.initialClimbAltitudeFt
@@ -281,7 +284,7 @@ final class AppSettings: ObservableObject {
         case callsign, airline, flightNumber, departure, destination, alternate
         case cruiseAltitude, runway, sid, star, approach, departureGate, arrivalGate
         case voiceEnabled, defaultVoiceID, speechRate, speechPitch, voiceVolume, respectSilentSwitch
-        case voiceGround, voiceTower, voiceDeparture, voiceCenter, voiceApproach
+        case voiceGround, voiceTower, voiceDeparture, voiceCenter, voiceApproach, voiceATIS
         case voicePilot, speakPilot
         case phraseologyMode, digitStyle
         case initialClimbAltitudeFt, traconCeilingFL
