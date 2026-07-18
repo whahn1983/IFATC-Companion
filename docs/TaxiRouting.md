@@ -73,6 +73,28 @@ Ground taxi phraseology (`TaxiPhraseology`) is generated from the calculated rou
 routing is unavailable; taxi toward runway 27, hold short of all runways, and continue using
 the simulator airport diagram."*
 
+### Load‑time caching
+
+Both the **departure** and **arrival** airport surfaces are cached at flight load — as soon as
+the endpoints are known (from the entered plan or Infinite Flight), not lazily right before taxi.
+The departure surface is loaded into the coordinator so its taxi routes **synchronously** and
+Ground issues the detailed clearance immediately; the arrival surface is fetched into the
+provider cache (disk + memory) so its later load is instant and works offline. Pre‑caching is
+live‑only (mock airports build synthetic surfaces on demand) and never disturbs a taxi already in
+progress. On a cold start the departure surface is typically ready by the time the pilot requests
+taxi.
+
+### Asynchronous surface loading
+
+When a live airport is **not yet cached** at the moment the pilot requests taxi (pre‑cache still
+in flight, an unknown‑coordinate field, or a cleared cache), the fetch is still resolving, so the
+route does not yet exist and Ground issues the **generic** clearance up front. As soon as the
+fetch resolves and a credible route is calculated, the coordinator **supersedes** it with the
+detailed OSM route clearance (assigned runway + taxiway sequence + hold‑short) and re‑arms the
+read‑back, so the pilot's acknowledgement reveals the taxi map. A **cached** airport routes
+synchronously and issues the detailed clearance immediately. If the pilot has already been handed
+to Tower by the time the fetch resolves, the superseding clearance is suppressed.
+
 ## Route tracking & off‑route
 
 `RouteTracker` tracks progress along the route: current segment, completed segments, next turn,
