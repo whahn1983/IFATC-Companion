@@ -842,8 +842,11 @@ final class AppModel: ObservableObject {
         cancelTakeoffClearanceTimer()
         applyRadarProvider()
         resetWeatherDeviation()
-        // Clear the cached ATIS reports (they re-fetch on connect); keep the reported
-        // information codes for now — a resumed session restores them below.
+        // Reset ATIS visibility but keep any already-fetched reports and received codes:
+        // a reconnect (returning from another app) continues the same flight, so blanking
+        // them here just made the ATIS line flap "received → not available → received"
+        // until the connect-time refresh below re-populated it. The fresh-flight branch
+        // clears them outright when there's no session to resume.
         resetATISState(clearReported: false)
         // Resume a recent in-progress session if one was saved (reconnect / relaunch);
         // otherwise start the conversation fresh. Restoring is what keeps a parked
@@ -856,11 +859,15 @@ final class AppModel: ObservableObject {
             awaitingGateArrival = false
             gateMonitored = false
             currentFacility = .clearance
-            // A genuinely fresh flight: no ATIS has been received yet.
+            // A genuinely fresh flight: no ATIS has been fetched or received yet.
+            departureATIS = nil
+            arrivalATIS = nil
+            lastArrivalATISAttempt = nil
             reportedDepartureInfo = nil
             reportedArrivalInfo = nil
             departureInfoAppended = false
             arrivalInfoAppended = false
+            updateATISDiagnostics()
         }
         if settings.autoDiscover && settings.host.isEmpty {
             connect.startAutoDiscover { [weak self] device in
@@ -4879,7 +4886,14 @@ extension AppModel {
         do {
             let atis = try await atisService.atis(for: icao, forceRefresh: force)
             // Guard against a late response after the origin changed.
-            if icao == flightPlan.departure { departureATIS = atis }
+            if icao == flightPlan.departure {
+                // A routine background refresh that momentarily comes back empty (a
+                // transient 200 with no parseable body) must not blank an ATIS we already
+                // have — that produced the "received → not available → received" flapping.
+                // Keep the last good report; only a forced pull (a tune) is authoritative
+                // enough to clear it.
+                if let atis { departureATIS = atis } else if force { departureATIS = nil }
+            }
         } catch {
             diagnostics.log(.atis, "Departure ATIS \(icao) unavailable: \(error.localizedDescription)")
         }
@@ -4891,7 +4905,11 @@ extension AppModel {
         guard !icao.isEmpty else { arrivalATIS = nil; return }
         do {
             let atis = try await atisService.atis(for: icao, forceRefresh: force)
-            if icao == flightPlan.destination { arrivalATIS = atis }
+            if icao == flightPlan.destination {
+                // See fetchDepartureATIS: don't let a transient empty refresh blank a
+                // report we already hold.
+                if let atis { arrivalATIS = atis } else if force { arrivalATIS = nil }
+            }
         } catch {
             diagnostics.log(.atis, "Arrival ATIS \(icao) unavailable: \(error.localizedDescription)")
         }
@@ -5015,12 +5033,19 @@ extension AppModel {
     /// Whether the phraseology engine is on the ICAO pack (drives ATIS digit words).
     private var engineUsesICAO: Bool { settings.phraseologyMode == .icao }
 
-    /// Clear cached ATIS reports (they re-fetch); optionally clear the reported
-    /// information codes too (on a fresh flight, but not on a resume that restores them).
+    /// Reset per-flight ATIS visibility, and — only for a genuinely fresh flight —
+    /// clear the fetched reports and the received information codes.
+    ///
+    /// `clearReported` distinguishes a **fresh flight** (new flight / mock start /
+    /// Clear Flight → `true`) from a **reconnect or resume of the same flight**
+    /// (`false`, e.g. returning from another app, which runs `disconnect()` +
+    /// `startLive()`). On a reconnect the already-fetched `departureATIS`/`arrivalATIS`
+    /// are kept in memory rather than blanked: nulling them made the Diagnostics ATIS
+    /// line (and the tune button) flap "received → not available → received" on every
+    /// app switch, because the connect-time refresh only re-populated them a beat later.
+    /// The refresh now updates them in place, and an endpoint change still drops the
+    /// stale report via `updateFlightPlan`.
     func resetATISState(clearReported: Bool) {
-        departureATIS = nil
-        arrivalATIS = nil
-        lastArrivalATISAttempt = nil
         // Tune / dismissal state is per-flight visibility: always reset it so a fresh
         // (or re-derived) flight shows the ATIS button again. A resume restores the
         // dismissal flags afterwards from the snapshot.
@@ -5028,6 +5053,9 @@ extension AppModel {
         departureATISDismissed = false
         arrivalATISDismissed = false
         if clearReported {
+            departureATIS = nil
+            arrivalATIS = nil
+            lastArrivalATISAttempt = nil
             reportedDepartureInfo = nil
             reportedArrivalInfo = nil
             departureInfoAppended = false

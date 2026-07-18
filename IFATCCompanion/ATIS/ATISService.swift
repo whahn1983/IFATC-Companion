@@ -126,6 +126,15 @@ actor ATISService {
                 guard (200...299).contains(http.statusCode) else { throw ATISError.http(http.statusCode) }
             }
             let atis = ATISParser.parse(data, airport: id, now: Date())
+            // A 200 that yields no parseable ATIS for a field we *did* have one for is
+            // almost always a momentary feed hiccup, not the field losing D-ATIS. Keep
+            // serving the last good report and leave its cache entry (and timestamp)
+            // intact, so we retry on the normal cadence instead of latching "no ATIS" for
+            // the whole TTL. (A genuine "no D-ATIS" arrives as a 404, cached above.)
+            if atis == nil, let prior = cache[key], prior.atis != nil {
+                clearBackoff()
+                return prior.atis
+            }
             cache[key] = CacheEntry(atis: atis, timestamp: Date())
             clearBackoff()
             return atis

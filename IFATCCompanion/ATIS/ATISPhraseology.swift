@@ -425,7 +425,11 @@ enum ATISPhraseology {
         ("CONT", "continuous"), ("CONTINUOS", "continuous"),
         ("LAHSO", "land and hold short operations"), ("EFCT", "effect"),
         ("IM", "inner marker"), ("MM", "middle marker"), ("OM", "outer marker"), ("GS", "glideslope"),
-        ("NOTAMS", "notams"), ("NOTAM", "notam"), ("RDBK", "read back"), ("HS", "hold short")
+        ("NOTAMS", "notams"), ("NOTAM", "notam"), ("RDBK", "read back"),
+        // Hold short appears as both "HS" and the slashed "H/S"; the slash is a literal in
+        // the escaped pattern, so "H/S" needs its own entry ("\bHS\b" can't reach across it).
+        ("HS", "hold short"), ("H/S", "hold short"),
+        ("HAZDS", "hazards"), ("HAZD", "hazard")
     ]
 
     // MARK: - Regex helpers
