@@ -152,7 +152,8 @@ enum OSMSurfaceNormalizer {
         let line = e.polyline
         guard line.count >= 2 else { return nil }
         let name = (tags["ref"] ?? tags["name"] ?? "").trimmingCharacters(in: .whitespaces)
-        let oneway = (tags["oneway"]?.lowercased()).map { $0 == "yes" || $0 == "true" || $0 == "1" } ?? false
+        let onewayRaw = tags["oneway"]?.lowercased()
+        let oneway = onewayRaw == "yes" || onewayRaw == "true" || onewayRaw == "1"
         let width = parseWidth(tags["width"])?.0
         return SurfaceTaxiway(osmID: e.stableID,
                               tags: tags,
