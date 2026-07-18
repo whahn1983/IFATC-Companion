@@ -1,0 +1,155 @@
+import Foundation
+
+/// Deterministic Ground taxi + runway-crossing phraseology derived from a calculated
+/// `SurfaceTaxiRoute`. Wraps the existing `PhraseologyEngine` for callsign / phonetics
+/// so the output flows through the same transcript/read-back machinery.
+///
+/// Rules enforced here (also covered by tests):
+///  - never says "cleared to taxi";
+///  - always names the assigned runway and the ordered taxiway sequence;
+///  - always includes an explicit hold-short instruction;
+///  - never implies a runway crossing is included in the taxi clearance — crossings are
+///    issued as **separate** Ground clearances with their own read-back;
+///  - never says "cross all runways" or gives vague crossing authority;
+///  - never invents taxiway names (an empty sequence renders as "available taxiways");
+///  - a crossing read-back always contains the runway identifier;
+///  - low-confidence data downgrades to conservative language.
+///
+/// Everything here is framed as simulated ATC.
+struct TaxiPhraseology {
+
+    let engine: PhraseologyEngine
+    private var icao: Bool { engine.icao }
+
+    // MARK: - Departure taxi clearance
+
+    /// Ground taxi clearance to the assigned departure runway from a calculated route.
+    /// Names the runway, the taxiway sequence, and an explicit hold-short. Crossings are
+    /// NOT authorized here.
+    func taxiClearance(cs: PhraseologyEngine.Callsign, route: SurfaceTaxiRoute, runway: String) -> ATCTransmission {
+        let seq = sequenceText(route)
+        let rwySpoken = Phonetic.runway(runway, icao: icao)
+        let display = "\(cs.display), taxi to runway \(runway) via \(seq.display), hold short runway \(runway)."
+        let spoken = "\(cs.spoken), taxi to runway \(rwySpoken) via \(seq.spoken), hold short runway \(rwySpoken)."
+        var tx = ATCTransmission(sender: .atc, facility: .ground, displayText: display, spokenText: spoken)
+        tx.readback = ATCTransmission.Readback(
+            displayText: "Taxi to runway \(runway) via \(seq.display), hold short runway \(runway), \(cs.display).",
+            spokenText: "Taxi to runway \(rwySpoken) via \(seq.spoken), hold short runway \(rwySpoken), \(cs.spoken).",
+            facility: .ground)
+        return tx
+    }
+
+    /// Conservative Ground instruction used when routing confidence is too low to issue
+    /// a detailed route. Names the runway but no specific taxiways, and holds short of
+    /// all runways.
+    func lowConfidenceTaxi(cs: PhraseologyEngine.Callsign, runway: String) -> ATCTransmission {
+        let rwySpoken = Phonetic.runway(runway, icao: icao)
+        let display = "\(cs.display), detailed taxi routing is unavailable. Taxi toward runway \(runway), hold short of all runways, and continue using the simulator airport diagram."
+        let spoken = "\(cs.spoken), detailed taxi routing is unavailable. Taxi toward runway \(rwySpoken), hold short of all runways, and continue using the simulator airport diagram."
+        var tx = ATCTransmission(sender: .atc, facility: .ground, displayText: display, spokenText: spoken)
+        tx.readback = ATCTransmission.Readback(
+            displayText: "Taxi toward runway \(runway), hold short of all runways, \(cs.display).",
+            spokenText: "Taxi toward runway \(rwySpoken), hold short of all runways, \(cs.spoken).",
+            facility: .ground)
+        return tx
+    }
+
+    // MARK: - Arrival taxi-to-gate
+
+    func arrivalTaxi(cs: PhraseologyEngine.Callsign, route: SurfaceTaxiRoute, gate: String) -> ATCTransmission {
+        let seq = sequenceText(route)
+        let g = gate.trimmingCharacters(in: .whitespaces)
+        let destDisplay = g.isEmpty ? "parking" : "gate \(g)"
+        let destSpoken = g.isEmpty ? "parking" : "gate \(Phonetic.spellToken(g, icao: icao))"
+        let display = "\(cs.display), taxi to \(destDisplay) via \(seq.display)."
+        let spoken = "\(cs.spoken), taxi to \(destSpoken) via \(seq.spoken)."
+        var tx = ATCTransmission(sender: .atc, facility: .ground, displayText: display, spokenText: spoken)
+        tx.readback = ATCTransmission.Readback(
+            displayText: "Taxi to \(destDisplay) via \(seq.display), \(cs.display).",
+            spokenText: "Taxi to \(destSpoken) via \(seq.spoken), \(cs.spoken).",
+            facility: .ground)
+        return tx
+    }
+
+    // MARK: - Runway crossing
+
+    /// A **separate** Ground runway-crossing clearance. Includes the runway id, the
+    /// taxiway/intersection name when known, and an optional continuation. The read-back
+    /// contains the runway identifier.
+    func crossingClearance(cs: PhraseologyEngine.Callsign, runwayIdent: String,
+                           atTaxiway: String? = nil, continueVia: String? = nil) -> ATCTransmission {
+        let rwySpoken = Phonetic.runway(runwayIdent, icao: icao)
+        let atDisplay = atTaxiway.flatMap { $0.isEmpty ? nil : " at \($0)" } ?? ""
+        let atSpoken = atTaxiway.flatMap { $0.isEmpty ? nil : " at \(Phonetic.spellToken($0, icao: icao))" } ?? ""
+        let contDisplay = continueVia.flatMap { $0.isEmpty ? nil : ", then continue on \($0)" } ?? ""
+        let contSpoken = continueVia.flatMap { $0.isEmpty ? nil : ", then continue on \(Phonetic.spellToken($0, icao: icao))" } ?? ""
+        let display = "\(cs.display), cross runway \(runwayIdent)\(atDisplay)\(contDisplay)."
+        let spoken = "\(cs.spoken), cross runway \(rwySpoken)\(atSpoken)\(contSpoken)."
+        var tx = ATCTransmission(sender: .atc, facility: .ground, displayText: display, spokenText: spoken)
+        tx.readback = ATCTransmission.Readback(
+            displayText: "Cross runway \(runwayIdent), \(cs.display).",
+            spokenText: "Cross runway \(rwySpoken), \(cs.spoken).",
+            facility: .ground)
+        return tx
+    }
+
+    /// Ground hold-short instruction issued as the aircraft approaches a crossing before
+    /// it has been cleared.
+    func holdShort(cs: PhraseologyEngine.Callsign, runwayIdent: String) -> ATCTransmission {
+        let rwySpoken = Phonetic.runway(runwayIdent, icao: icao)
+        var tx = ATCTransmission(sender: .atc, facility: .ground,
+                                 displayText: "\(cs.display), hold short of runway \(runwayIdent).",
+                                 spokenText: "\(cs.spoken), hold short of runway \(rwySpoken).")
+        tx.readback = ATCTransmission.Readback(
+            displayText: "Hold short runway \(runwayIdent), \(cs.display).",
+            spokenText: "Hold short runway \(rwySpoken), \(cs.spoken).",
+            facility: .ground)
+        return tx
+    }
+
+    /// Continuation after a crossing is vacated — resume the remaining taxi route.
+    func resumeTaxi(cs: PhraseologyEngine.Callsign, runway: String, isDeparture: Bool, gate: String) -> ATCTransmission {
+        if isDeparture {
+            let rwySpoken = Phonetic.runway(runway, icao: icao)
+            return ATCTransmission(sender: .atc, facility: .ground,
+                                   displayText: "\(cs.display), continue taxi to runway \(runway).",
+                                   spokenText: "\(cs.spoken), continue taxi to runway \(rwySpoken).")
+        } else {
+            let g = gate.trimmingCharacters(in: .whitespaces)
+            let destDisplay = g.isEmpty ? "parking" : "gate \(g)"
+            let destSpoken = g.isEmpty ? "parking" : "gate \(Phonetic.spellToken(g, icao: icao))"
+            return ATCTransmission(sender: .atc, facility: .ground,
+                                   displayText: "\(cs.display), continue taxi to \(destDisplay).",
+                                   spokenText: "\(cs.spoken), continue taxi to \(destSpoken).")
+        }
+    }
+
+    // MARK: - Unauthorized-entry warnings
+
+    /// Simulated hold-position warning (aircraft moving toward a runway before a
+    /// crossing clearance / read-back).
+    func holdPositionWarning(cs: PhraseologyEngine.Callsign, runwayIdent: String) -> ATCTransmission {
+        let rwySpoken = Phonetic.runway(runwayIdent, icao: icao)
+        return ATCTransmission(sender: .atc, facility: .ground,
+                               displayText: "\(cs.display), hold position, hold short of runway \(runwayIdent).",
+                               spokenText: "\(cs.spoken), hold position, hold short of runway \(rwySpoken).")
+    }
+
+    /// Simulated stop-immediately warning (aircraft already entering the runway corridor
+    /// without authorization).
+    func stopWarning(cs: PhraseologyEngine.Callsign, runwayIdent: String) -> ATCTransmission {
+        let rwySpoken = Phonetic.runway(runwayIdent, icao: icao)
+        return ATCTransmission(sender: .atc, facility: .ground,
+                               displayText: "\(cs.display), stop immediately, you are entering runway \(runwayIdent).",
+                               spokenText: "\(cs.spoken), stop immediately, you are entering runway \(rwySpoken).")
+    }
+
+    // MARK: - Helpers
+
+    private func sequenceText(_ route: SurfaceTaxiRoute) -> (display: String, spoken: String) {
+        let seq = route.taxiwaySequence.filter { !$0.isEmpty }
+        guard !seq.isEmpty else { return ("available taxiways", "available taxiways") }
+        return (seq.joined(separator: ", "),
+                seq.map { Phonetic.spellToken($0, icao: icao) }.joined(separator: " "))
+    }
+}

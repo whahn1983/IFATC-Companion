@@ -10,6 +10,8 @@ struct SettingsView: View {
     @EnvironmentObject var speech: SpeechService
     @State private var showResetConfirm = false
     @State private var showSubscription = false
+    @State private var osmCacheICAOs: [String] = []
+    @State private var osmCacheBytes = 0
 
     private let voices = SpeechService.availableVoices()
 
@@ -25,11 +27,14 @@ struct SettingsView: View {
                 automationSection
                 sigmetPirepSection
                 weatherDataSection
+                dataSourcesSection
+                aboutLegalSection
                 etiquetteSection
                 advancedSection
             }
             .navigationTitle("Settings")
             .scrollContentBackground(.visible)
+            .task { await loadOSMCacheInfo() }
             .sheet(isPresented: $showSubscription) {
                 SubscriptionView().environmentObject(entitlements)
             }
@@ -306,6 +311,88 @@ struct SettingsView: View {
             }
         } header: {
             Text("Weather Data")
+        }
+    }
+
+    // MARK: - Data Sources (OpenStreetMap airport surface)
+
+    private var osmCrossingBinding: Binding<Bool> {
+        Binding(get: { model.airportSurface.autoCrossingCalls },
+                set: { model.airportSurface.autoCrossingCalls = $0 })
+    }
+    private var osmRecalcBinding: Binding<Bool> {
+        Binding(get: { model.airportSurface.autoRecalculate },
+                set: { model.airportSurface.autoRecalculate = $0 })
+    }
+    private var osmCacheSuffix: String {
+        osmCacheICAOs.isEmpty ? "" : " (\(osmCacheICAOs.count), \(osmCacheBytes / 1024) KB)"
+    }
+
+    @MainActor private func loadOSMCacheInfo() async {
+        let info = await model.airportSurface.cacheInfo()
+        osmCacheICAOs = info.icaos
+        osmCacheBytes = info.bytes
+    }
+
+    private var dataSourcesSection: some View {
+        Section {
+            HStack {
+                Text("Airport surface")
+                Spacer()
+                Text("OpenStreetMap").foregroundStyle(.secondary)
+            }
+            HStack {
+                Text("License")
+                Spacer()
+                Text(OSMSurface.licenseShortName).foregroundStyle(.secondary)
+            }
+            Link(destination: OSMSurface.copyrightURL) {
+                Label(OSMSurface.attributionText, systemImage: "link")
+            }
+            HStack {
+                Text("Overpass endpoint")
+                Spacer()
+                Text(OSMSurface.primaryOverpassEndpoint)
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.middle)
+            }
+            Toggle("Automatic runway-crossing calls", isOn: osmCrossingBinding)
+            Toggle("Auto-recalculate when off route", isOn: osmRecalcBinding)
+            Button {
+                model.airportSurface.refreshData()
+            } label: {
+                Label("Refresh current airport data", systemImage: "arrow.clockwise")
+            }
+            Button(role: .destructive) {
+                model.airportSurface.clearCache()
+                Task { await loadOSMCacheInfo() }
+            } label: {
+                Label("Clear cached airport data\(osmCacheSuffix)", systemImage: "trash")
+            }
+        } header: {
+            Text("Data Sources")
+        } footer: {
+            Text("Airport surface geometry and taxi routes are derived from OpenStreetMap (\(OSMSurface.licenseName)) via a public Overpass API. Community-sourced and best-effort — cached locally (~75 days) and refreshed on demand. Not authoritative and not guaranteed to match Infinite Flight scenery. Simulation only.")
+        }
+    }
+
+    // MARK: - About / Legal
+
+    private var aboutLegalSection: some View {
+        Section {
+            Link(destination: OSMSurface.copyrightURL) {
+                Label(OSMSurface.attributionText, systemImage: "map")
+            }
+            Link(destination: OSMSurface.odblLicenseURL) {
+                Label("Open Database License (ODbL) 1.0", systemImage: "doc.text")
+            }
+            Link(destination: OSMSurface.publicDocumentationURL) {
+                Label("Airport data & licensing documentation", systemImage: "book")
+            }
+        } header: {
+            Text("About & Legal")
+        } footer: {
+            Text("\(OSMSurface.simulationDisclaimer)\n\nOpenStreetMap® is open data licensed under the ODbL by the OpenStreetMap Foundation. IFATC Companion is not endorsed by or affiliated with OpenStreetMap or any Overpass operator.")
         }
     }
 

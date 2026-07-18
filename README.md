@@ -30,7 +30,7 @@ IFATC Companion is organized into five tabs:
 - **Real-world ATIS.** At the gate you can tune the departure airport's **ATIS** and hear the current broadcast (real FAA Digital ATIS, read in proper phraseology on its own configurable voice); within 100 NM of your destination the arrival ATIS becomes available too. The information code you hear ("information Alpha") is remembered and added to your taxi request and your arrival check-in, just like real life. ATIS is sourced from free public data for US airports that publish it — where a field has no ATIS, the feature simply doesn't appear and nothing is added to your calls.
 - **Call sign recognition.** Enter a call sign like `UA598` or `UAL598` and it's spoken as its real radio name ("United five niner eight") using a built-in airline database; tail numbers like `N123AB` are spelled out phonetically.
 - **Procedure-aware.** SID, STAR, and approach names are recognized and referenced in your clearances.
-- **Modeled taxi routing** with taxiways, runway crossings, and ramp routes.
+- **OpenStreetMap taxi map, routing & runway crossings.** A dedicated MapKit taxi map animates into the ATC view after you read back your taxi clearance, showing your assigned route, aircraft, gates, holding positions, and upcoming runway crossings drawn from **OpenStreetMap** airport‑surface data. It calculates a best‑effort taxi route to the correct runway end (and taxi‑to‑gate after landing), tracks you along it, and runs a simulated Ground **runway‑crossing** workflow — a separate crossing clearance you must read back before it's authorized, an early‑entry hold/stop warning, and an off‑route recalculation prompt. The map disappears when Ground hands you to Tower and reappears for arrival. See [docs/AirportSurfaceData.md](docs/AirportSurfaceData.md), [docs/TaxiRouting.md](docs/TaxiRouting.md), and [docs/RunwayCrossingAutomation.md](docs/RunwayCrossingAutomation.md).
 - **Ramp handling** as a first-class facility — pushback, engine-start coordination, and the hand-off to Ground — modeled separately from ATC ground control.
 - **Push-to-talk.** Hold to talk and speak your read-backs and requests. Recognition runs entirely on your device.
 - **Distinct voices** for each controller position and a separate pilot voice, all spoken offline.
@@ -129,3 +129,11 @@ See the [Privacy Policy](https://whahn1983.github.io/IFATC-Companion/privacy-pol
 IFATC Companion is proprietary software. Copyright © 2026 H3 Consulting Partners LLC. All rights reserved.
 
 IFATC Companion is an independent app and is **not** affiliated with, endorsed by, or sponsored by Infinite Flight Corporation. "Infinite Flight" and all related names and marks are trademarks of their respective owners.
+
+### Airport surface data
+
+Airport surface maps, taxi routes, and runway‑crossing instructions are derived from **OpenStreetMap** data, © OpenStreetMap contributors, licensed under the **Open Database License (ODbL) 1.0** — not CC BY 4.0. Data is fetched from a public Overpass API, cached locally, and rendered as custom overlays on Apple MapKit (OpenStreetMap tiles and logos are not used). See [docs/OpenStreetMapLicensing.md](docs/OpenStreetMapLicensing.md) for the full licensing, attribution, and derived‑database notice.
+
+**Surface data © OpenStreetMap contributors.** OpenStreetMap, the OpenStreetMap Foundation, and Overpass operators do not endorse and are not affiliated with IFATC Companion.
+
+> **Simulation only.** Airport surface maps, taxi routes, and runway‑crossing instructions are for flight simulation only and must not be used for real‑world aviation.

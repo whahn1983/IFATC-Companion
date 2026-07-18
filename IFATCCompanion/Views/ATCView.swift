@@ -24,6 +24,7 @@ struct ATCView: View {
                     if model.companionStandby { standbyBanner }
                     if model.weatherBannerVisible { weatherBanner }
                     currentTransmissionCard
+                    TaxiMapSlot(surface: model.airportSurface)
                     frequencyCard
                     if model.atisButtonVisible { atisCard }
                     if model.weatherDeviationCardVisible { weatherDeviationCard }

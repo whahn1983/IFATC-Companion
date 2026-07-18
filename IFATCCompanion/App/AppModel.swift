@@ -79,6 +79,11 @@ final class AppModel: ObservableObject {
     private let airports = AirportDatabase.shared
     private let runways = RunwayDatabase.shared
 
+    /// OpenStreetMap airport-surface / taxi-routing / runway-crossing coordinator.
+    /// Owns the surface data, the temporary taxi map, and the simulated Ground
+    /// runway-crossing workflow. Observed directly by the taxi map view.
+    let airportSurface = AirportSurfaceCoordinator()
+
     // Published UI state.
     @Published var aircraftState = AircraftState.empty
     @Published var flightPlan = FlightPlan.empty
@@ -520,6 +525,78 @@ final class AppModel: ObservableObject {
         rampEngine = RampPhraseologyEngine(engine: engine)
         rideEngine = RideReportEngine(engine: engine)
         deviationEngine = WeatherDeviationEngine(phraseology: WeatherDeviationPhraseology(engine: engine))
+        airportSurface.updateEngine(engine)
+    }
+
+    // MARK: - Airport surface (OpenStreetMap taxi mapping)
+
+    /// Wire the airport-surface coordinator into the transcript/speech pipeline and
+    /// react to facility / ATC-state changes so the taxi map appears and disappears at
+    /// the right lifecycle points.
+    private func configureAirportSurface() {
+        airportSurface.configure(diagnostics: diagnostics, engine: engine,
+                                 emit: { [weak self] tx in self?.post(tx, speak: true) },
+                                 callsign: { [weak self] in self?.currentCallsign()
+                                     ?? PhraseologyEngine.Callsign(display: "Aircraft", spoken: "aircraft") })
+        // Hide the taxi map once Ground hands a departing aircraft to Tower.
+        $currentFacility
+            .removeDuplicates()
+            .sink { [weak self] facility in
+                guard let self else { return }
+                if facility == .tower, self.airportSurface.kind == .departure, self.airportSurface.taxiMapVisible {
+                    self.airportSurface.hideTaxiMap()
+                }
+            }
+            .store(in: &cancellables)
+        // Prepare the arrival taxi map when Ground issues taxi-to-gate; hide once parked.
+        $atcState
+            .removeDuplicates()
+            .sink { [weak self] state in
+                guard let self else { return }
+                switch state {
+                case .groundArrival:
+                    self.prepareArrivalTaxi()
+                    self.airportSurface.taxiClearanceIssued()
+                case .parked:
+                    self.airportSurface.hideTaxiMap()
+                default:
+                    break
+                }
+            }
+            .store(in: &cancellables)
+    }
+
+    /// The callsign as the phraseology engine renders it right now.
+    private func currentCallsign() -> PhraseologyEngine.Callsign {
+        engine.callsign(airline: flightPlan.airline, flightNumber: flightPlan.flightNumber,
+                        fallback: flightPlan.callsign)
+    }
+
+    /// Begin the OSM departure taxi (loads/normalizes/routes; async when uncached).
+    private func prepareDepartureTaxi() {
+        let icao = flightPlan.departure
+        guard !icao.isEmpty else { return }
+        let ref = resolvedDepartureCoordinate() ?? aircraftState.coordinate
+        guard let ref, ref.isValid else { return }
+        let ctx = buildContext(for: .groundTaxi)
+        airportSurface.beginDeparture(icao: icao, reference: ref,
+                                      aircraftName: aircraftState.aircraftName,
+                                      runway: ctx.runway, gate: flightPlan.departureGate,
+                                      startCoordinate: aircraftState.coordinate ?? ref,
+                                      mock: settings.mockMode)
+    }
+
+    /// Begin the OSM arrival taxi-to-gate (Ground issues taxi-in after landing).
+    private func prepareArrivalTaxi() {
+        let icao = flightPlan.destination
+        guard !icao.isEmpty else { return }
+        let ref = resolvedDestinationCoordinate() ?? aircraftState.coordinate
+        guard let ref, ref.isValid else { return }
+        airportSurface.beginArrival(icao: icao, reference: ref,
+                                    aircraftName: aircraftState.aircraftName,
+                                    gate: flightPlan.arrivalGate,
+                                    startCoordinate: aircraftState.coordinate ?? ref,
+                                    mock: settings.mockMode)
     }
 
     // MARK: - Lifecycle
@@ -553,6 +630,7 @@ final class AppModel: ObservableObject {
 
         observeSettings()
         observeEntitlements()
+        configureAirportSurface()
         syncFlightPlanFromSettings()
 
         // Without an active subscription the app is locked to Mock Mode. Settle
@@ -790,6 +868,7 @@ final class AppModel: ObservableObject {
             return
         }
         settings.mockMode = on
+        airportSurface.clear()
         if on { startMock() } else { startLive() }
     }
 
@@ -923,6 +1002,12 @@ final class AppModel: ObservableObject {
         // Pull the destination ATIS the moment the aircraft comes within 100 NM, so the
         // arrival ATIS button appears promptly rather than waiting for the ~5-min timer.
         maybeFetchArrivalATIS()
+        // Track the aircraft along the taxi route and run the runway-crossing workflow.
+        // Pure/cheap; no-op unless a live taxi map is active (mock is self-driven).
+        airportSurface.updateLive(coordinate: state.coordinate,
+                                  heading: state.trueHeading ?? state.heading,
+                                  onGround: state.onGround,
+                                  groundSpeed: state.groundSpeed)
 
         if !phase.isGround { hasDeparted = true }
 
@@ -1072,7 +1157,8 @@ final class AppModel: ObservableObject {
     /// it with a "contact …" handoff whenever the controlling facility changes.
     private func advanceAndPost(to target: ATCState, context c: ATCContext,
                                 speak: Bool = true, announceHandoff: Bool = true,
-                                automatic: Bool = false) {
+                                automatic: Bool = false,
+                                overrideTransmission: ATCTransmission? = nil) {
         let previous = stateMachine.current
         // The conversation is advancing, so any pending manual tune has now been
         // acted on — the controller working the new state speaks for itself. Capture
@@ -1081,11 +1167,15 @@ final class AppModel: ObservableObject {
         // it (they're already there).
         let wasTuned = tunedFacility
         tunedFacility = nil
-        guard let tx = stateMachine.advance(to: target, context: c) else {
+        guard let stateTx = stateMachine.advance(to: target, context: c) else {
             atcState = stateMachine.current
             currentFacility = controller(for: stateMachine.current)
             return
         }
+        // Callers can substitute the controller's transmission (e.g. the OSM
+        // route-based Ground taxi clearance) while keeping the state advance,
+        // hand-off, and read-back-gate behavior identical.
+        let tx = overrideTransmission ?? stateTx
         let fromFacility = controller(for: previous)
         let toFacility = controller(for: target)
         // Announce a handoff only between two established controllers (not the very
@@ -1464,6 +1554,8 @@ final class AppModel: ObservableObject {
         gateMonitored = false
         awaitingGateArrival = true
         atcState = .groundArrival
+        // The ramp/gate phase has taken over from Ground — hide the taxi map.
+        airportSurface.hideTaxiMap()
         // In mock mode advance the scripted aircraft to the gate so the monitored
         // block-in plays out (the brake is set in the parked mock state).
         if settings.mockMode { mock.setPhase(.parked) }
@@ -2164,6 +2256,16 @@ final class AppModel: ObservableObject {
     // MARK: - Pilot button actions
 
     func readBack() {
+        // A pending simulated runway-crossing clearance: reading it back authorizes the
+        // crossing (never before). The crossing clearance carries its own read-back.
+        if airportSurface.awaitingCrossingReadback {
+            if let rb = lastATCTransmission?.readback {
+                postPilot(ATCTransmission(sender: .pilot, facility: rb.facility,
+                                          displayText: rb.displayText, spokenText: rb.spokenText))
+            }
+            airportSurface.crossingReadbackReceived()
+            return
+        }
         // Prefer the read-back the controller composed for its *last* call (frequency
         // hand-offs, vectors, altitude changes) so the Read Back button always echoes
         // the message actually on the radio — not a read-back re-derived from the
@@ -2182,10 +2284,13 @@ final class AppModel: ObservableObject {
                 if manualTuning { pendingCheckInFacility = tune }
                 persistSession()
             }
+            // Reading back the Ground taxi clearance reveals the temporary taxi map.
+            if airportSurface.awaitingTaxiReadback { airportSurface.taxiReadBackComplete() }
             return
         }
         let c = buildContext(for: atcState)
         postPilot(pilotEngine.readback(for: atcState, context: c))
+        if airportSurface.awaitingTaxiReadback { airportSurface.taxiReadBackComplete() }
     }
 
     func wilco() {
@@ -2428,12 +2533,22 @@ final class AppModel: ObservableObject {
             handOffDepartureRampToGround()
             return
         }
+        // Kick off the OpenStreetMap departure taxi (surface load + route calc). When a
+        // credible route is ready its Ground clearance replaces the generic one; the
+        // taxi map then animates in after the pilot reads back.
+        prepareDepartureTaxi()
         // Real-world phraseology: the pilot reports the ATIS code on the initial taxi
         // request ("…request taxi, information Alpha"). Appended only when the pilot has
         // actually received the departure ATIS; otherwise nothing is added.
         let request = appendingATISInfo(pilotEngine.requestTaxi(context: buildContext(for: .groundTaxi)),
                                         word: consumeATISInfoWord(arrival: false))
-        groundFlow(request, to: .groundTaxi)
+        postPilot(request)
+        let ctx = buildContext(for: .groundTaxi)
+        let osmClearance = airportSurface.taxiClearance(callsign: ctx.callsign)
+        advanceAndPost(to: .groundTaxi, context: ctx, overrideTransmission: osmClearance)
+        // Reveal the taxi map on the pilot's read-back (whether the OSM route or the
+        // generic clearance was issued; the map appears once a route is available).
+        airportSurface.taxiClearanceIssued()
     }
 
     /// True when the pilot is still on the departure Ramp frequency (after pushback /
@@ -2466,6 +2581,8 @@ final class AppModel: ObservableObject {
     /// and the pilot drives every controller change from there with the frequency
     /// buttons.
     func reportReadyForDeparture() {
+        // Ground has handed the aircraft to Tower — hide the departure taxi map.
+        airportSurface.hideTaxiMap()
         groundFlow(pilotEngine.readyForDeparture(context: buildContext(for: .lineUpWait)), to: .lineUpWait)
     }
 
@@ -4548,6 +4665,7 @@ final class AppModel: ObservableObject {
         resetWeatherDeviation()
         radarOverlay.mockCells = []
         radarOverlay.sampledCells = []
+        airportSurface.clear()
         settings.resetAll()
         syncFlightPlanFromSettings()
         diagnostics.log(.app, "App data reset.")
@@ -4566,6 +4684,7 @@ final class AppModel: ObservableObject {
         clearSavedSession()
         resetWeatherDeviation()
         resetATISState(clearReported: true)
+        airportSurface.clear()
         speech.stop()
         transcript.removeAll()
         latestTransmission = nil
