@@ -185,6 +185,25 @@ final class ATISPhraseologyTests: XCTestCase {
         XCTAssertEqual(ATISPhraseology.spokenText("TWY B CLSD").lowercased(), "taxiway bravo closed")
     }
 
+    // MARK: - Hold short / hazard abbreviations
+
+    func testHoldShortAbbreviation() {
+        // Both the bare "HS" and the slashed "H/S" expand — the slash blocks the "HS"
+        // word boundary, so "H/S" needs its own table entry.
+        XCTAssertEqual(spoken("HS"), "hold short")
+        XCTAssertEqual(spoken("H/S"), "hold short")
+        let s = ATISPhraseology.spokenText("TWY A H/S RWY 10L.").lowercased()
+        XCTAssertTrue(s.contains("hold short"), s)
+        XCTAssertFalse(s.contains("h/s"), s)
+    }
+
+    func testHazardAbbreviation() {
+        XCTAssertEqual(spoken("HAZD"), "hazard")
+        XCTAssertEqual(spoken("HAZDS"), "hazards")
+        let s = ATISPhraseology.spokenText("BIRD HAZD INVOF ARPT.").lowercased()
+        XCTAssertTrue(s.contains("hazard"), s)
+    }
+
     // MARK: - A full, real broadcast
 
     func testFullRealBroadcastDecodes() {

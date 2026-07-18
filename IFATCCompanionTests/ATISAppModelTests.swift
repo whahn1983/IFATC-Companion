@@ -84,6 +84,33 @@ final class ATISAppModelTests: XCTestCase {
         XCTAssertFalse(model.arrivalATISAvailable)
     }
 
+    // MARK: - Reconnect stability (the app-switch flap)
+
+    func testReconnectKeepsReceivedATIS() {
+        let model = makeModel()
+        model.setATISReportsForTesting(departure: report("KIAH", "C"), arrival: report("KMSP", "D"))
+        XCTAssertTrue(model.departureATISAvailable)
+        XCTAssertTrue(model.atisDiagnostics.departureReceived)
+        XCTAssertTrue(model.atisDiagnostics.arrivalReceived)
+        XCTAssertEqual(model.atisDiagnostics.departureLetter, "C")
+
+        // Returning from another app runs disconnect()/startLive(), which resets ATIS with
+        // clearReported: false. That must NOT blank an ATIS already received for the ongoing
+        // flight — nulling it made the Diagnostics line flap "received → not available →
+        // received" on every app switch, until the connect-time refresh re-populated it.
+        model.resetATISState(clearReported: false)
+        XCTAssertTrue(model.departureATISAvailable, "a reconnect must keep the received departure ATIS")
+        XCTAssertTrue(model.atisDiagnostics.departureReceived)
+        XCTAssertTrue(model.atisDiagnostics.arrivalReceived)
+        XCTAssertEqual(model.atisDiagnostics.departureLetter, "C")
+
+        // A genuinely fresh flight (clearReported: true) still wipes everything.
+        model.resetATISState(clearReported: true)
+        XCTAssertFalse(model.departureATISAvailable)
+        XCTAssertFalse(model.atisDiagnostics.departureReceived)
+        XCTAssertFalse(model.atisDiagnostics.arrivalReceived)
+    }
+
     // MARK: - Tune button: activation & per-phase dismissal
 
     func testTuningATISMarksItActiveAndCapturesCode() {
