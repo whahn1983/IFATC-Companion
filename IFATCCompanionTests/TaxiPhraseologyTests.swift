@@ -32,6 +32,23 @@ final class TaxiPhraseologyTests: XCTestCase {
         XCTAssertEqual(tx.facility, .ground)
     }
 
+    func testTaxiClearanceHoldsShortOfFirstCrossing() {
+        let e = engine()
+        let phr = TaxiPhraseology(engine: e)
+        // When the route crosses a runway, the clearance holds the pilot short of that first
+        // crossing (real-world "taxi to runway 36 … hold short runway 09"), not the
+        // destination runway.
+        let tx = phr.taxiClearance(cs: cs(e), route: departureRoute(runway: "36"), runway: "36",
+                                   holdShortCrossing: "09")
+        let text = tx.displayText.lowercased()
+        XCTAssertTrue(text.contains("taxi to runway 36"), tx.displayText)
+        XCTAssertTrue(text.contains("hold short runway 09"), "must hold short of the first crossing: \(tx.displayText)")
+        XCTAssertFalse(text.contains("hold short runway 36"),
+                       "the crossing hold-short replaces the destination-runway hold-short: \(tx.displayText)")
+        XCTAssertTrue(tx.readback?.displayText.lowercased().contains("hold short runway 09") ?? false,
+                      tx.readback?.displayText ?? "")
+    }
+
     func testTaxiClearanceNeverSaysClearedToTaxiOrCrossAllRunways() {
         let e = engine()
         let phr = TaxiPhraseology(engine: e)

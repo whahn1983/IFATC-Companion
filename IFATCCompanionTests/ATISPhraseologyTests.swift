@@ -185,6 +185,15 @@ final class ATISPhraseologyTests: XCTestCase {
         XCTAssertEqual(ATISPhraseology.spokenText("TWY B CLSD").lowercased(), "taxiway bravo closed")
     }
 
+    func testMultiLetterTaxiwayIsSpelledPhonetically() {
+        // A two-letter taxiway ident must read phonetically ("Sierra Bravo"), not as the
+        // bare letters the synthesizer would otherwise voice as "S B".
+        XCTAssertEqual(ATISPhraseology.spokenText("TWY SB CLSD").lowercased(), "taxiway sierra bravo closed")
+        // A trailing number stays part of the ident ("Bravo four"), and the following
+        // abbreviation word is left intact.
+        XCTAssertEqual(ATISPhraseology.spokenText("TWY B4 CLSD").lowercased(), "taxiway bravo four closed")
+    }
+
     // MARK: - Hold short / hazard abbreviations
 
     func testHoldShortAbbreviation() {

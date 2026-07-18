@@ -35,10 +35,13 @@ final class RunwayCrossingWorkflowTests: XCTestCase {
         tick(coord, until: { coord.awaitingCrossingReadback })
         XCTAssertTrue(coord.awaitingCrossingReadback, "a separate crossing clearance should await a read-back")
 
-        // A hold-short and a crossing clearance were issued.
+        // A high-confidence crossing clearance is issued automatically as the aircraft nears
+        // the runway — with no redundant hold-short call (the taxi clearance already held the
+        // pilot short of this first crossing).
         let text = messages().map { $0.displayText.lowercased() }
-        XCTAssertTrue(text.contains { $0.contains("hold short") }, "a hold-short instruction is issued")
         XCTAssertTrue(text.contains { $0.contains("cross runway") }, "a separate crossing clearance is issued")
+        XCTAssertFalse(text.contains { $0.contains("hold short") },
+                       "no redundant hold-short precedes an automatic crossing clearance")
 
         // NOT authorized before the read-back.
         XCTAssertFalse(coord.crossingState.isAuthorized, "crossing must not be authorized before read-back")
@@ -105,6 +108,29 @@ final class RunwayCrossingWorkflowTests: XCTestCase {
         coord.requestCrossing()
         for _ in 0..<10 { coord.mockTickForTesting() }
         XCTAssertTrue(coord.awaitingCrossingReadback, "Request Crossing yields the clearance")
+    }
+
+    func testRequestCrossingIssuesClearanceBeforeSettlingAtHold() {
+        // Regression: at the runway threshold the Request Crossing button did nothing when
+        // the aircraft hadn't tripped the settle-at-hold heuristics (the OSM hold point not
+        // matching the sim scenery). Tapping it must issue the clearance regardless.
+        let (coord, _) = makeCoordinator()
+        coord.autoCrossingCalls = false   // force the manual Request-Crossing path
+        coord.beginMockTaxiForTesting(kind: .departure, reference: ref, runway: "36", gate: "A1")
+        guard let route = coord.routeForTesting, let crossing = route.crossings.first else {
+            return XCTFail("expected a crossing")
+        }
+        // Approach the crossing but stay moving and short of the mapped hold point, so the
+        // "holding short + settled" gate has NOT been met.
+        let line = route.clGeometry
+        let approach = SurfaceGeometry.pointAlong(line, meters: max(0, crossing.alongMeters - 60)) ?? crossing.point.clLocation
+        let heading = Geo.bearing(from: approach, to: crossing.point.clLocation)
+        coord.feedForTesting(coordinate: approach, heading: heading, groundSpeed: 10)
+        XCTAssertFalse(coord.awaitingCrossingReadback, "no automatic clearance with auto calls off")
+
+        coord.requestCrossing()
+        XCTAssertTrue(coord.awaitingCrossingReadback,
+                      "Request Crossing must issue the clearance even before settling at the hold")
     }
 
     func testAutoCrossingCallsOverrideDisablesAutomation() {

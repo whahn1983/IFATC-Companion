@@ -62,7 +62,9 @@ conservative language instead (see below).
 Ground taxi phraseology (`TaxiPhraseology`) is generated from the calculated route and:
 
 - includes the assigned runway and the ordered taxiway sequence;
-- includes an explicit hold‑short instruction;
+- includes an explicit hold‑short instruction — of the **first runway crossing** in the route
+  when the route crosses a runway ("taxi to runway 36 via A, C, hold short runway 09"),
+  otherwise of the assigned runway itself;
 - never says "cleared to taxi", never says "cross all runways", never invents taxiway names,
   and never implies a runway crossing is included — **crossings are issued separately** (see
   [RunwayCrossingAutomation.md](RunwayCrossingAutomation.md));

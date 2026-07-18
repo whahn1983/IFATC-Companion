@@ -95,10 +95,11 @@ final class TaxiMapStateTests: XCTestCase {
         coord.simulateDeferredDepartureForTesting(model: model, runway: "36", gate: "A1")
 
         // A detailed route clearance (runway + taxiway sequence + hold-short) was issued,
-        // not the generic "detailed taxi routing is unavailable" fallback.
+        // not the generic "detailed taxi routing is unavailable" fallback. The route crosses a
+        // runway, so it holds short of that first crossing (09), not the destination runway.
         let last = emitted.last?.displayText.lowercased() ?? ""
         XCTAssertTrue(last.contains("taxi to runway 36 via"), "detailed OSM route clearance issued: \(last)")
-        XCTAssertTrue(last.contains("hold short runway 36"))
+        XCTAssertTrue(last.contains("hold short runway 09"), "holds short of the first crossing: \(last)")
         XCTAssertFalse(last.contains("unavailable"), "must not fall back to the generic clearance")
         XCTAssertNotNil(coord.routeForTesting)
 
@@ -211,7 +212,7 @@ final class TaxiMapStateTests: XCTestCase {
         coord.beginMockTaxiForTesting(kind: .departure, reference: ref, runway: "36", gate: "A1")
         // 1) taxi map visible after read-back
         XCTAssertTrue(coord.taxiMapVisible)
-        // 2) approach the crossing → hold-short + separate crossing clearance
+        // 2) approach the crossing → automatic separate crossing clearance
         var n = 0
         while !coord.awaitingCrossingReadback && n < 800 { coord.mockTickForTesting(); n += 1 }
         XCTAssertTrue(coord.awaitingCrossingReadback)
@@ -226,9 +227,13 @@ final class TaxiMapStateTests: XCTestCase {
         coord.hideTaxiMap()
         XCTAssertFalse(coord.taxiMapVisible)
 
-        // The transcript carried the hold-short, the separate crossing clearance, and a resume.
+        // The transcript carried the separate crossing clearance and the resume. The
+        // first-crossing hold-short now rides in the initial Ground taxi clearance (issued by
+        // AppModel, not the coordinator), so the workflow no longer repeats it before an
+        // automatic high-confidence crossing.
         let text = emitted.map { $0.displayText.lowercased() }
-        XCTAssertTrue(text.contains { $0.contains("hold short") })
+        XCTAssertFalse(text.contains { $0.contains("hold short") },
+                       "no redundant hold-short before an automatic crossing clearance")
         XCTAssertTrue(text.contains { $0.contains("cross runway") })
         XCTAssertTrue(text.contains { $0.contains("continue taxi") })
     }
