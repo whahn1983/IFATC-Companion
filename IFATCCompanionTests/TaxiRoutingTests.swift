@@ -104,6 +104,35 @@ final class TaxiRoutingTests: XCTestCase {
         XCTAssertNil(route, "no credible connected route → nil (Unavailable fallback)")
     }
 
+    func testDepartureRouteAnchorsAtStandWhileParked() {
+        // Parked at the stand (start coordinate == the gate): the route begins at the gate.
+        let route = departureRoute(runway: "36", gate: "A1")
+        XCTAssertNotNil(route)
+        let start = route!.startCoordinate.clLocation
+        XCTAssertLessThan(SurfaceGeometry.distanceMeters(start, MockAirportSurface.gateCoordinate(reference: ref)), 30,
+                          "while parked at the stand the route still starts at the gate")
+    }
+
+    func testDepartureRouteStartsFromAircraftAfterPushback() {
+        // After pushback the aircraft has moved off its stand onto taxiway A. The route
+        // must no longer be anchored at the gate node (whose lead-in leg the aircraft has
+        // already left, which is what read as "off route") — it starts on the taxiway,
+        // and the post-pushback position tracks as on-route.
+        let (_, _, engine) = mockEngine(runway: "36", gate: "A1")
+        let gate = MockAirportSurface.gateCoordinate(reference: ref)
+        let pushback = CLLocationCoordinate2D(latitude: ref.latitude + 0.0010, longitude: ref.longitude + 0.0030)
+        let route = engine.route(.init(startCoordinate: pushback, startGateName: "A1", isDeparture: true,
+                                       assignedRunwayIdent: "36", arrivalGateName: nil, aircraft: .medium))
+        XCTAssertNotNil(route)
+        XCTAssertEqual(route?.holdShortRunway, "36", "still routes to the assigned runway")
+        let start = route!.startCoordinate.clLocation
+        XCTAssertGreaterThan(SurfaceGeometry.distanceMeters(start, gate), 40,
+                             "the route no longer starts at the gate node once pushed back")
+        // The post-pushback position tracks as on-route.
+        let prog = RouteTracker().progress(aircraft: pushback, route: route!)
+        XCTAssertTrue(prog.onRoute, "the post-pushback position is on the route")
+    }
+
     func testRecalculationFromMidRouteStillRoutes() {
         let (_, _, engine) = mockEngine()
         // Start from a point partway along the route (near the crossing) rather than the gate.

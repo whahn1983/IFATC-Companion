@@ -225,20 +225,16 @@ struct TaxiMapCanvas: View {
 
     var body: some View {
         Map(position: $position) {
-            if let model = surface.surface {
-                // Runways (thick).
-                ForEach(model.runways) { rwy in
-                    MapPolyline(coordinates: rwy.centerline.clLocations)
-                        .stroke(.gray, style: StrokeStyle(lineWidth: expanded ? 10 : 6, lineCap: .round))
-                }
-                // Taxiways + taxilanes.
-                ForEach(model.taxiways) { twy in
-                    MapPolyline(coordinates: twy.geometry.clLocations)
-                        .stroke(taxiwayColor(twy),
-                                style: StrokeStyle(lineWidth: twy.isTaxilane ? 1.5 : 2.5,
-                                                   lineCap: .round,
-                                                   dash: (twy.isClosed || twy.isTaxilane) ? [4, 4] : []))
-                }
+            // Only the geometry that is part of the assigned taxi route is drawn — the
+            // route itself, and the runways it crosses or ends at. The rest of the field
+            // is left to the base map. Drawing every runway and taxiway of a large airport
+            // as overlays at the fit-to-route zoom overwhelmed MapKit's overlay layer
+            // (constant re-tiling, then a crash); zooming in — which culls off-screen
+            // overlays — was the tell that overlay volume, not the map itself, was the
+            // problem. Restricting overlays to the route keeps the count small at any zoom.
+            ForEach(relevantRunways) { rwy in
+                MapPolyline(coordinates: rwy.centerline.clLocations)
+                    .stroke(.gray, style: StrokeStyle(lineWidth: expanded ? 10 : 6, lineCap: .round))
             }
 
             // Assigned route (emphasized).
@@ -269,14 +265,14 @@ struct TaxiMapCanvas: View {
                             .background(Circle().fill(.white.opacity(0.6)))
                     }
                 }
-                // Departure gate — where you're starting out. Placed at the departure
-                // location (the route start, which snaps to the pilot's gate when it's in
-                // the data, else the aircraft's position) and labeled with the entered gate.
-                // On arrival the gate you taxi to is the destination marker below, so no
-                // separate start-gate marker is drawn.
+                // Departure gate — the stand you're leaving. Placed at the actual gate from
+                // the surface data (the route itself now starts at the post-pushback
+                // position, not the stand) and labeled with the entered gate. On arrival the
+                // gate you taxi to is the destination marker below, so no separate start-gate
+                // marker is drawn.
                 if route.isDeparture {
                     Marker(departureGateLabel, systemImage: "parkingsign",
-                           coordinate: route.startCoordinate.clLocation)
+                           coordinate: departureGateCoordinate)
                         .tint(.mint)
                 }
                 // Destination — the runway on departure, the arrival gate / parking on
@@ -314,11 +310,30 @@ struct TaxiMapCanvas: View {
         return "\(surface.route?.destinationLabel ?? "")|\(n)|\(surface.surface?.icao ?? "")"
     }
 
-    private func taxiwayColor(_ t: SurfaceTaxiway) -> Color {
-        if t.isClosed { return .orange.opacity(0.7) }
-        if t.isTaxilane { return .gray.opacity(0.6) }
-        if !t.hasName { return .gray.opacity(0.55) }
-        return Color(red: 0.55, green: 0.75, blue: 0.9)
+    /// The runways that are part of the taxi route — those the route crosses plus, on a
+    /// departure, the runway it holds short of. Everything else is left to the base map so
+    /// the overlay count stays small (see the note in `body`).
+    private var relevantRunways: [SurfaceRunway] {
+        guard let model = surface.surface else { return [] }
+        var idents = Set(surface.route?.crossings.map { $0.runwayIdent.uppercased() } ?? [])
+        if let dep = surface.route, dep.isDeparture, let rwy = dep.holdShortRunway, !rwy.isEmpty {
+            idents.insert(rwy.uppercased())
+        }
+        guard !idents.isEmpty else { return [] }
+        return model.runways.filter { rwy in rwy.idents.contains { idents.contains($0.uppercased()) } }
+    }
+
+    /// Where to place the departure-gate marker: the actual stand from the surface data
+    /// when the pilot's gate is known, else the route start. Since the route now begins at
+    /// the aircraft's post-pushback position rather than the stand, the marker is sourced
+    /// from the gate itself so it still sits on the gate the pilot left.
+    private var departureGateCoordinate: CLLocationCoordinate2D {
+        let gate = surface.activeGate.trimmingCharacters(in: .whitespaces)
+        if !gate.isEmpty, let parking = surface.surface?.parking(named: gate) {
+            return parking.coordinate.clLocation
+        }
+        return surface.route?.startCoordinate.clLocation ?? surface.surface?.reference.clLocation
+            ?? CLLocationCoordinate2D()
     }
 
     // MARK: On-map content bounding

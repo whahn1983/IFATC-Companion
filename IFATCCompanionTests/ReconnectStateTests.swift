@@ -151,6 +151,80 @@ final class ReconnectStateTests: XCTestCase {
         XCTAssertTrue(model.weatherActions.contains(.clearOfWeather))
     }
 
+    // MARK: - Taxi map is restored after a swipe-away / relaunch
+
+    private func groundSnapshot(atcState: ATCState, stateMachine: ATCState,
+                                hasDeparted: Bool) -> SessionSnapshot {
+        SessionSnapshot(
+            atcState: atcState,
+            stateMachineCurrent: stateMachine,
+            currentFacility: .ground,
+            phase: hasDeparted ? .taxiIn : .taxiOut,
+            assignedAltitude: 0,
+            hasDeparted: hasDeparted,
+            arrivalAnnounced: false,
+            awaitingGateArrival: false,
+            manualTuning: false,
+            transcript: [],
+            departure: "KIAH",
+            destination: "KMSP",
+            mockMode: false,
+            savedAt: Date())
+    }
+
+    /// A snapshot captured during the departure ground taxi arms a departure-taxi restore;
+    /// the arrival taxi-to-gate (gate entered) arms an arrival restore; anything else arms
+    /// nothing.
+    func testRelaunchArmsTaxiRestoreFromSnapshotState() {
+        let model = makeLiveModel()
+        model.flightPlan.arrivalGate = "B44"
+
+        model.armTaxiMapRestoreForTesting(from:
+            groundSnapshot(atcState: .groundTaxi, stateMachine: .groundTaxi, hasDeparted: false))
+        XCTAssertEqual(model.pendingTaxiMapRestoreForTesting, .departure,
+                       "a mid departure-taxi snapshot arms the departure map restore")
+
+        model.armTaxiMapRestoreForTesting(from:
+            groundSnapshot(atcState: .groundArrival, stateMachine: .groundArrival, hasDeparted: true))
+        XCTAssertEqual(model.pendingTaxiMapRestoreForTesting, .arrival,
+                       "a mid arrival-taxi snapshot (gate entered) arms the arrival map restore")
+
+        model.armTaxiMapRestoreForTesting(from:
+            groundSnapshot(atcState: .cruise, stateMachine: .cruise, hasDeparted: true))
+        XCTAssertEqual(model.pendingTaxiMapRestoreForTesting, .none,
+                       "a snapshot that isn't mid-taxi arms nothing")
+    }
+
+    /// The arrival restore only arms when a gate was entered — a generic "taxi to parking"
+    /// with no gate has nothing to route a map to.
+    func testArrivalRestoreRequiresAGate() {
+        let model = makeLiveModel()
+        model.flightPlan.arrivalGate = ""
+        model.armTaxiMapRestoreForTesting(from:
+            groundSnapshot(atcState: .groundArrival, stateMachine: .groundArrival, hasDeparted: true))
+        XCTAssertEqual(model.pendingTaxiMapRestoreForTesting, .none,
+                       "no arrival gate → no arrival map to restore")
+    }
+
+    /// An armed restore is dropped if the first fix after relaunch shows the aircraft
+    /// airborne (the taxi is long over) — the map is never resurrected in the air.
+    func testPendingRestoreDroppedWhenAirborne() {
+        let model = makeLiveModel()
+        model.armTaxiMapRestoreForTesting(from:
+            groundSnapshot(atcState: .groundTaxi, stateMachine: .groundTaxi, hasDeparted: false))
+        XCTAssertEqual(model.pendingTaxiMapRestoreForTesting, .departure)
+
+        var airborne = AircraftState.empty
+        airborne.onGround = false
+        airborne.altitudeMSL = 30000
+        airborne.latitude = 30.0
+        airborne.longitude = -95.0
+        model.ingestStateForTesting(airborne)
+
+        XCTAssertEqual(model.pendingTaxiMapRestoreForTesting, .none, "the pending restore is consumed/dropped")
+        XCTAssertNotEqual(model.airportSurface.kind, .departure, "no taxi map is restored in the air")
+    }
+
     /// A live snapshot taken mid-diversion carries the deviation state, so a
     /// reconnect has the weather card to resume from.
     func testSnapshotCapturesInProgressDiversion() {

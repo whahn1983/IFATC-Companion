@@ -26,6 +26,13 @@ struct TaxiRouteEngine {
     let graph: SurfaceGraph
     let model: AirportSurfaceModel
 
+    /// Distance (m) from the named gate within which the route is still anchored at the
+    /// stand. Once the aircraft has pushed back and moved farther than this, the route
+    /// starts from where the aircraft actually is instead — otherwise its first leg is
+    /// the gate→pushback segment the aircraft has already left, which tracks as
+    /// "off route" the moment the map appears.
+    private let gateAnchorMeters = 30.0
+
     struct Request {
         var startCoordinate: CLLocationCoordinate2D
         var startGateName: String?
@@ -57,7 +64,10 @@ struct TaxiRouteEngine {
            let node = graph.nodes.first(where: { ($0.kind == .gate || $0.kind == .parking)
                && ($0.name?.uppercased() == gate.uppercased()) }) {
             let d = SurfaceGeometry.distanceMeters(req.startCoordinate, node.clLocation)
-            return (node.id, d)
+            // Anchor at the stand only while the aircraft is still parked there. After
+            // pushback it has moved off the gate, so fall through to snap the route to
+            // its real position instead of drawing a leg it has already taxied past.
+            if d <= gateAnchorMeters { return (node.id, d) }
         }
         guard let nearest = graph.nearestNode(to: req.startCoordinate) else { return nil }
         return (nearest.node.id, nearest.distanceMeters)

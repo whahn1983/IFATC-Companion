@@ -143,6 +143,7 @@ final class AirportSurfaceCoordinator: ObservableObject {
     private let vacateMarginMeters = 42.0
     private let holdBeforeCrossingMeters = 25.0
     private let settleTicks = 2
+    private let offRouteTickThreshold = 4
     private let mockStepMeters = 4.0
     private let mockTickSeconds: UInt64 = 400_000_000
 
@@ -444,6 +445,19 @@ final class AirportSurfaceCoordinator: ObservableObject {
         if mockMode { startMockDrive() }
     }
 
+    /// Re-reveal the taxi map after an app relaunch mid-taxi. The pilot already read the
+    /// clearance back before the app was swiped away, so there is no fresh read-back to
+    /// wait on — mark it acknowledged and show the map as soon as the route is available
+    /// (immediately if the surface was cached, otherwise once the async load resolves via
+    /// `recomputeRoute`). No-op unless a taxi is being serviced. Live only: the map is
+    /// then driven by resuming telemetry, not the mock ticker.
+    func resumeTaxiAfterRelaunch() {
+        guard kind != .none else { return }
+        awaitingTaxiReadback = false
+        taxiReadBack = true
+        revealIfReady()
+    }
+
     // MARK: - Hide / clear
 
     /// Hide the taxi map (Ground→Tower hand-off, or ramp/gate phase after arrival).
@@ -551,11 +565,14 @@ final class AirportSurfaceCoordinator: ObservableObject {
         lastAlong = max(lastAlong, prog.alongMeters)
         progress = prog
 
-        // Off-route (live only; mock stays on the synthetic line).
+        // Off-route (live only; mock stays on the synthetic line). Requires the aircraft
+        // to stay beyond the (generous) cross-track threshold for several consecutive
+        // ticks before the banner shows, so a brief wander or an OSM/scenery mismatch
+        // near a turn doesn't flap the "off route" state.
         if !mockMode {
             if !prog.onRoute {
                 offRouteTicks += 1
-                if offRouteTicks >= 3 { offRoute = true }
+                if offRouteTicks >= offRouteTickThreshold { offRoute = true }
             } else {
                 offRouteTicks = 0
                 offRoute = false
