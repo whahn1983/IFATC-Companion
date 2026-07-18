@@ -6,7 +6,11 @@ import CoreLocation
 struct RouteTracker {
 
     /// Perpendicular offset (m) beyond which the aircraft is considered off-route.
-    static let offRouteMeters = 35.0
+    /// Generous on purpose: OSM taxiway centerlines rarely line up exactly with the
+    /// Infinite Flight scenery the aircraft is driving on, so a tight threshold flags
+    /// "off route" while the pilot is taxiing correctly. The coordinator adds tick
+    /// hysteresis on top of this before it ever surfaces the banner.
+    static let offRouteMeters = 55.0
     /// Distance (m) within which the destination (runway hold / gate) is "reached".
     static let destinationReachedMeters = 30.0
 

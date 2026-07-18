@@ -108,6 +108,37 @@ final class TaxiMapStateTests: XCTestCase {
         XCTAssertTrue(coord.taxiMapVisible, "taxi map appears after the superseding clearance is read back")
     }
 
+    func testResumeAfterRelaunchRevealsMapWithoutFreshReadback() {
+        // The app was swiped away mid-taxi. On relaunch the taxi is re-begun but there is
+        // no fresh read-back — `resumeTaxiAfterRelaunch` must reveal the map once the route
+        // is ready, picking up where it left off.
+        let coord = AirportSurfaceCoordinator()
+        let engine = PhraseologyEngine(digitStyle: .individual, mode: .faa)
+        coord.configure(diagnostics: nil, engine: engine, emit: { _ in },
+                        callsign: { engine.callsign(airline: "United", flightNumber: "598", fallback: "") })
+
+        // Re-begin the departure taxi (as the relaunch restore does) — no read-back yet.
+        coord.beginDeparture(icao: "KTEST", reference: ref, aircraftName: "Boeing 737-800",
+                             runway: "36", gate: "A1",
+                             startCoordinate: MockAirportSurface.gateCoordinate(reference: ref), mock: true)
+        XCTAssertFalse(coord.taxiMapVisible, "map stays hidden until the taxi is resumed")
+
+        coord.resumeTaxiAfterRelaunch()
+        XCTAssertTrue(coord.taxiMapVisible, "the taxi map is restored on relaunch without a fresh read-back")
+        XCTAssertNotNil(coord.routeForTesting)
+
+        coord.hideTaxiMap()   // stop the mock ticker started by the reveal
+    }
+
+    func testResumeAfterRelaunchIsANoOpWithNoActiveTaxi() {
+        let coord = AirportSurfaceCoordinator()
+        let engine = PhraseologyEngine(digitStyle: .individual, mode: .faa)
+        coord.configure(diagnostics: nil, engine: engine, emit: { _ in },
+                        callsign: { engine.callsign(airline: "United", flightNumber: "598", fallback: "") })
+        coord.resumeTaxiAfterRelaunch()
+        XCTAssertFalse(coord.taxiMapVisible, "nothing to resume when no taxi is active")
+    }
+
     func testLoadTimePrefetchDoesNotClobberActiveTaxiSurface() {
         // Pre-caching both airports at flight load must never disturb the surface of a
         // taxi already in progress (the departure load is gated on `kind == .none`).

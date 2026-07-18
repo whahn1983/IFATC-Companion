@@ -424,6 +424,13 @@ final class AppModel: ObservableObject {
     /// changed, so `savedAt` stays fresh through long level phases.
     private let persistHeartbeat: TimeInterval = 120
 
+    /// Set when a restored session was mid-taxi (the app was swiped away / relaunched
+    /// during the ground taxi). The taxi map is re-established on the first real telemetry
+    /// fix — deferred so the route starts from the aircraft's actual position rather than
+    /// the airport reference (which is all that's known before telemetry resumes).
+    /// `.none` when there is nothing to restore.
+    private var pendingTaxiMapRestore: TaxiKind = .none
+
     /// Once airborne, automatic telemetry-driven controller calls run. Before the
     /// first departure the pre-departure ground flow (clearance → pushback →
     /// engine start → taxi → ready) is always pilot-driven via the response
@@ -861,6 +868,7 @@ final class AppModel: ObservableObject {
         // aircraft from being re-derived straight to cruise after a dropped link.
         if !restoreSession() {
             manualTuning = false
+            pendingTaxiMapRestore = .none
             stateMachine.reset()
             hasDeparted = false
             arrivalAnnounced = false
@@ -980,6 +988,13 @@ final class AppModel: ObservableObject {
     /// can verify the conversation resumes where it left off.
     func applySnapshotForTesting(_ snapshot: SessionSnapshot) { apply(snapshot: snapshot) }
 
+    /// Test hook: arm the taxi-map restore from a snapshot (the half of `restoreSession`
+    /// that decides whether a swiped-away taxi should be re-established on the next fix).
+    func armTaxiMapRestoreForTesting(from snapshot: SessionSnapshot) { armTaxiMapRestore(from: snapshot) }
+
+    /// Test hook: the pending taxi-map restore kind (`.none` when nothing is queued).
+    var pendingTaxiMapRestoreForTesting: TaxiKind { pendingTaxiMapRestore }
+
     /// Test hook: force the confirm-clear window to have elapsed, so the next recompute
     /// drops a held (no-longer-detected) conflict instead of waiting out the real
     /// hysteresis window. Only affects a conflict no longer present in the locked set.
@@ -1046,6 +1061,9 @@ final class AppModel: ObservableObject {
         // Pull the destination ATIS the moment the aircraft comes within 100 NM, so the
         // arrival ATIS button appears promptly rather than waiting for the ~5-min timer.
         maybeFetchArrivalATIS()
+        // Re-establish a taxi map that was interrupted by a swipe-away / relaunch, now
+        // that a real position fix is in hand to route from. No-op unless one is pending.
+        performPendingTaxiMapRestore(for: state)
         // Track the aircraft along the taxi route and run the runway-crossing workflow.
         // Pure/cheap; no-op unless a live taxi map is active (mock is self-driven).
         airportSurface.updateLive(coordinate: state.coordinate,
@@ -1992,6 +2010,10 @@ final class AppModel: ObservableObject {
         guard !settings.mockMode,
               let snap = sessionStore.loadResumable(),
               !snap.mockMode else { return false }
+        // Decide the taxi-map restore before applying the snapshot: `apply` re-fires the
+        // arrival-taxi setup via the `$atcState` observer, which would flip the
+        // coordinator off `.none` and defeat the "genuine relaunch only" guard.
+        armTaxiMapRestore(from: snap)
         apply(snapshot: snap)
         diagnostics.log(.app, "Resumed session at \(snap.atcState.title) "
             + "(\(snap.transcript.count) messages) — picking up where the flight left off.")
@@ -2028,6 +2050,54 @@ final class AppModel: ObservableObject {
             latestTransmission = lastATC
             lastATCTransmission = lastATC
         }
+    }
+
+    /// If the restored session was mid-taxi, arm the taxi-map restore. The map itself is
+    /// re-established on the first real telemetry fix (`performPendingTaxiMapRestore`), not
+    /// here, because the aircraft's live position isn't known yet — restoring now would
+    /// route from the airport reference and immediately read as "off route". Departure taxi
+    /// runs from the taxi read-back until the Ground→Tower hand-off (`.groundTaxi`);
+    /// arrival taxi-to-gate runs from the taxi-in read-back until parked (`.groundArrival`).
+    private func armTaxiMapRestore(from snap: SessionSnapshot) {
+        guard !settings.mockMode else { return }
+        // Only a genuine relaunch needs restoring. On a background→foreground reconnect the
+        // app was never torn down, so the coordinator still holds the live taxi (and its
+        // crossing progress) — re-beginning it would needlessly reset that. A fresh launch
+        // has an idle coordinator (`kind == .none`).
+        guard airportSurface.kind == .none else { pendingTaxiMapRestore = .none; return }
+        if snap.stateMachineCurrent == .groundTaxi, !snap.hasDeparted {
+            pendingTaxiMapRestore = .departure
+        } else if snap.atcState == .groundArrival || snap.stateMachineCurrent == .groundArrival {
+            // Only the gate-bound arrival taxi drives a map; a generic "taxi to parking"
+            // with no entered gate has nothing to route to (mirrors the arrival-taxi gate
+            // check on the normal path).
+            let hasArrivalGate = !flightPlan.arrivalGate
+                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            pendingTaxiMapRestore = hasArrivalGate ? .arrival : .none
+        } else {
+            pendingTaxiMapRestore = .none
+        }
+    }
+
+    /// Re-establish the taxi map after a relaunch, once a real telemetry fix is in hand so
+    /// the route starts from the aircraft's actual position. Re-runs the same taxi setup
+    /// the pilot's request/hand-off would, then reveals the map without waiting for a fresh
+    /// read-back (the clearance was already read back before the app was closed).
+    private func performPendingTaxiMapRestore(for state: AircraftState) {
+        let kind = pendingTaxiMapRestore
+        guard kind != .none else { return }
+        // Give up if the aircraft is clearly no longer taxiing (e.g. it departed while the
+        // app was away) so a stale snapshot can't resurrect the map in the air.
+        guard state.onGround != false else { pendingTaxiMapRestore = .none; return }
+        guard let coord = state.coordinate, coord.isValid else { return }
+        pendingTaxiMapRestore = .none
+        switch kind {
+        case .departure: prepareDepartureTaxi()
+        case .arrival:   prepareArrivalTaxi()
+        case .none:      return
+        }
+        airportSurface.resumeTaxiAfterRelaunch()
+        diagnostics.log(.app, "Restored the \(kind == .departure ? "departure" : "arrival") taxi map after relaunch.")
     }
 
     /// Forget any saved session so the next connect starts fresh (used when the
@@ -4724,6 +4794,7 @@ final class AppModel: ObservableObject {
         radarOverlay.mockCells = []
         radarOverlay.sampledCells = []
         airportSurface.clear()
+        pendingTaxiMapRestore = .none
         settings.resetAll()
         syncFlightPlanFromSettings()
         diagnostics.log(.app, "App data reset.")
@@ -4743,6 +4814,7 @@ final class AppModel: ObservableObject {
         resetWeatherDeviation()
         resetATISState(clearReported: true)
         airportSurface.clear()
+        pendingTaxiMapRestore = .none
         speech.stop()
         transcript.removeAll()
         latestTransmission = nil
