@@ -122,13 +122,24 @@ as periodic Center check-ins (additional sector frequencies are not simulated).
 | 19 | Short final | **Approach → Tower** | "Contact Tower on *freq*." | `handoff(from:to:)` | IF hand-off |
 | 20 | Final | **Tower** | "Wind *…*, runway *XX*, cleared to land." | `clearedToLand` | IF landing clearance |
 | 21 | Rollout | **Tower** | "Exit the runway when able, contact Ground on *freq* once on the taxiway." | `exitRunwayContactGround` | IF rollout |
-| 22 | Taxi in | **Ground** | "Taxi to parking via *taxiways*." | `taxiToParking` | IF taxi |
+| 22 | Taxi in | **Ground** | "Taxi to gate *X* via *taxiways*." (or "taxi to parking" with no gate) | `arrivalTaxi` / `taxiToParking` | IF taxi |
 | 23 | At gate | **Ground** | "Welcome to *city*, good day." (shutdown) | `welcomeArrival` | courtesy |
+
+When an arrival gate is entered, the **taxi-in clearance routes to the gate** over the
+OpenStreetMap airport surface, the same way the departure taxi routes to the runway.
+The destination surface is **pre-loaded when the aircraft exits the runway** so the
+route is ready by the time Ground gives the clearance (rather than falling back to a
+generic "taxi to parking"); at an uncached field a generic clearance goes out and is
+**superseded** by the detailed gate route the moment the surface finishes loading. With
+no gate entered there is nothing to route to, so a plain "taxi to parking" stands alone
+(no map). The taxi map's geometry is **cleared each time the map is removed**, so the
+arrival map never briefly shows the departure field while the destination surface loads.
 
 On arrival the simulated **Ramp** taxi-in is staged so the calls never all fire at
 once: *"proceed to gate B44 via the ramp"* when you contact Ramp, then *"monitor
 ramp to the gate"* as the aircraft slows to a stop, then the *"Flight complete"*
-block-in once it is actually parked with the parking brake set. The **arrival gate**
+block-in once it is actually parked with the parking brake set **near the gate** (a
+parking brake set out on a taxiway does not end the flight). The **arrival gate**
 is taken from the manual-override **Gate** field (Infinite Flight does not expose
 it); when no gate is entered the calls say "the gate".
 

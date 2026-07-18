@@ -113,15 +113,16 @@ final class ATISAppModelTests: XCTestCase {
 
     // MARK: - Tune button: activation & per-phase dismissal
 
-    func testTuningATISMarksItActiveAndCapturesCode() {
+    func testPlayingATISCapturesCodeAndStaysOnCurrentFrequency() {
         let model = makeModel()   // mock mode → tuneATIS replays the injected report
         model.setATISReportsForTesting(departure: report("KIAH", "C"), arrival: nil)
         XCTAssertTrue(model.atisButtonVisible)
         XCTAssertFalse(model.atisButtonActive)
 
         model.tuneATIS()
-        XCTAssertTrue(model.atisTuned)
-        XCTAssertTrue(model.atisButtonActive, "ATIS reads as the active frequency once tuned")
+        // ATIS is a momentary listen: it plays and captures the code but never becomes the
+        // active/tuned frequency — the pilot stays on their current frequency.
+        XCTAssertFalse(model.atisButtonActive, "ATIS never reads as the active frequency")
         XCTAssertEqual(model.currentATISCode, "C")
         XCTAssertEqual(model.atisReceiptSummary, "KIAH departure information Charlie — added to your taxi request.")
     }
@@ -130,12 +131,13 @@ final class ATISAppModelTests: XCTestCase {
         let model = makeModel()
         model.setATISReportsForTesting(departure: report("KIAH", "C"), arrival: nil)
         model.tuneATIS()
-        XCTAssertTrue(model.atisButtonActive)
+        XCTAssertFalse(model.atisButtonActive, "ATIS is a momentary listen, not the active frequency")
+        XCTAssertTrue(model.atisButtonVisible, "the ATIS button stays available after listening")
 
-        // Tuning any controller / ramp frequency leaves ATIS: it drops out of the grid.
+        // Tuning any controller / ramp frequency means the pilot has moved on: the ATIS
+        // button drops out of the grid for this phase.
         model.tuneTo(.ramp)
-        XCTAssertFalse(model.atisTuned)
-        XCTAssertFalse(model.atisButtonVisible, "ATIS button hides once the pilot tunes away")
+        XCTAssertFalse(model.atisButtonVisible, "ATIS button hides once the pilot tunes a controller")
     }
 
     func testTuningAwayAtGateStillLetsArrivalATISReappear() {

@@ -380,20 +380,26 @@ final class AirportSurfaceCoordinator: ObservableObject {
         if taxiReadBack { revealIfReady() }
     }
 
-    /// Issue the detailed OSM departure taxi clearance that couldn't be sent when the
-    /// pilot first requested taxi because the live surface was still loading. Emits the
-    /// route clearance (superseding the generic one) and re-arms its read-back so the
-    /// pilot's acknowledgement reveals the taxi map. Implements `requestTaxi()`'s
-    /// documented "its Ground clearance replaces the generic one" for asynchronously
-    /// loaded surfaces.
+    /// Issue the detailed OSM taxi clearance that couldn't be sent when the taxi began
+    /// because the live surface was still loading (an uncached field loads asynchronously).
+    /// Emits the route clearance — the departure runway route, or the arrival gate route —
+    /// superseding the generic one, and re-arms its read-back so the pilot's acknowledgement
+    /// reveals the taxi map. Implements the "its Ground clearance replaces the generic one"
+    /// behavior for both departure and arrival asynchronously loaded surfaces.
     private func issueDeferredTaxiClearanceIfNeeded() {
-        guard pendingDetailedClearance, kind == .departure,
+        guard pendingDetailedClearance, kind != .none,
               let route, routeConfidence.allowsDetailedRouting else { return }
         pendingDetailedClearance = false
-        let runway = route.holdShortRunway ?? assignedRunway
-        emit(phraseology.taxiClearance(cs: cs(), route: route, runway: runway))
+        if kind == .departure {
+            let runway = route.holdShortRunway ?? assignedRunway
+            emit(phraseology.taxiClearance(cs: cs(), route: route, runway: runway))
+            diagnostics?.log(.atc, "OSM taxi route ready — superseding generic clearance with detailed route to runway \(runway)")
+        } else {
+            let g = route.arrivalGate ?? gate
+            emit(phraseology.arrivalTaxi(cs: cs(), route: route, gate: g))
+            diagnostics?.log(.atc, "OSM taxi route ready — superseding generic clearance with detailed route to \(g.isEmpty ? "parking" : "gate \(g)")")
+        }
         awaitingTaxiReadback = true
-        diagnostics?.log(.atc, "OSM taxi route ready — superseding generic clearance with detailed route to runway \(runway)")
     }
 
     // MARK: - Taxi clearance text (for AppModel to post)
@@ -468,6 +474,28 @@ final class AirportSurfaceCoordinator: ObservableObject {
         // supersede the clearance with a stray Ground call after the hand-off.
         pendingDetailedClearance = false
         stopMockDrive()
+        // Clear the drawn geometry so a removed map never briefly shows the previous
+        // airport's surface while the next one loads (e.g. the arrival map popping up
+        // still showing the departure field). The correct field's surface reloads —
+        // from the warm cache — when the next taxi begins.
+        clearMapGeometry()
+    }
+
+    /// Drop the drawn map geometry (route, surface, graph, aircraft) so a removed map
+    /// leaves nothing behind for the next taxi to briefly show. `beginDeparture` /
+    /// `beginArrival` reload the correct field's surface before the map is shown again.
+    private func clearMapGeometry() {
+        route = nil
+        surface = nil
+        graph = nil
+        routeConfidence = .unavailable
+        datasetConfidence = .unavailable
+        displayAircraft = nil
+        progress = nil
+        nextInstruction = ""
+        offRoute = false
+        reachedDestination = false
+        status = .idle
     }
 
     /// Fully reset the taxi feature (clear flight / reset app data).
@@ -832,6 +860,19 @@ final class AirportSurfaceCoordinator: ObservableObject {
     /// when none was set.
     var activeGate: String { gate }
 
+    /// The coordinate of the arrival gate this taxi routes to — the stand matching the
+    /// entered gate name in the loaded surface. Used to confirm the aircraft is actually
+    /// parked at the gate before the flight is completed. Nil when there is no arrival
+    /// taxi, no entered gate, or the gate isn't in the surface data, so the caller keeps
+    /// its default full-stop completion. Live only: in Mock Mode the scripted telemetry
+    /// and the synthetic surface are decoupled, so a distance check would be meaningless.
+    var arrivalGateCoordinate: CLLocationCoordinate2D? {
+        guard kind == .arrival, !mockMode else { return nil }
+        let name = gate.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty, let parking = surface?.parking(named: name) else { return nil }
+        return parking.coordinate.clLocation
+    }
+
     // MARK: - Test hooks
     //
     // Used by @testable unit tests to drive the mock taxi / runway-crossing workflow
@@ -895,6 +936,31 @@ final class AirportSurfaceCoordinator: ObservableObject {
         applyLoaded(model, generation: gen)
     }
 
+    /// Reproduce the uncached live-arrival race: a generic Ground "taxi to parking" goes
+    /// out while the destination surface is still loading, then the asynchronous load
+    /// resolves with `model` and the detailed gate route supersedes it. Mirrors
+    /// `beginArrival` + `taxiClearanceIssued(supersedeWhenRouteReady:)` + the async
+    /// `applyLoaded` without a network fetch.
+    func simulateDeferredArrivalForTesting(model: AirportSurfaceModel, gate: String) {
+        kind = .arrival
+        aircraftClass = .medium
+        assignedRunway = ""
+        self.gate = gate
+        self.startGate = ""
+        self.mockMode = false
+        resetTaxiProgress()
+        pendingStart = MockAirportSurface.runwayExitCoordinate(reference: model.reference.clLocation)
+        loadGeneration += 1
+        let gen = loadGeneration
+        self.icao = model.icao
+        self.reference = model.reference.clLocation
+        status = .loading
+        // Generic clearance issued because the route wasn't ready yet.
+        taxiClearanceIssued(supersedeWhenRouteReady: true)
+        // Surface finishes loading → route computed → deferred detailed clearance emitted.
+        applyLoaded(model, generation: gen)
+    }
+
     /// Advance the mock aircraft one step (mirrors one async tick).
     func mockTickForTesting() { mockTick() }
 
@@ -908,6 +974,7 @@ final class AirportSurfaceCoordinator: ObservableObject {
     /// The current calculated route (test inspection).
     var routeForTesting: SurfaceTaxiRoute? { route }
     var graphForTesting: SurfaceGraph? { graph }
+    var surfaceForTesting: AirportSurfaceModel? { surface }
 
     // MARK: - Diagnostics snapshot
 

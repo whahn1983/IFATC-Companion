@@ -1,4 +1,5 @@
 import XCTest
+import CoreLocation
 @testable import IFATCCompanion
 
 /// The "Ramp" button is context-aware: pushback before departure, taxi-to-gate on
@@ -76,6 +77,44 @@ final class RampFlowTests: XCTestCase {
         // Parked at the gate with the brake set → block-in / flight complete.
         model.ingestStateForTesting(model.mock.state(for: .parked))
         XCTAssertTrue(has(model, "Flight complete"), "parked at the gate should complete the flight")
+    }
+
+    /// The block-in only fires when the parking brake is set **near the gate** — a brake
+    /// set out on an active taxiway (far from the gate the taxi map routed to) must not end
+    /// the flight. When the gate position is unknown, the plain full-stop-with-brake check
+    /// stands.
+    func testParkingBrakeCompletesOnlyNearTheGate() {
+        let model = makeModel(mock: false)
+        let gate = CLLocationCoordinate2D(latitude: 44.8820, longitude: -93.2220)
+
+        // Stopped with the parking brake set, but ~300 m from the gate (still on a taxiway).
+        var onTaxiway = AircraftState()
+        onTaxiway.onGround = true
+        onTaxiway.groundSpeed = 0
+        onTaxiway.parkingBrakeSet = true
+        let far = Geo.destination(from: gate, bearingDegrees: 90, distanceNM: 300 / 1852.0)
+        onTaxiway.latitude = far.latitude
+        onTaxiway.longitude = far.longitude
+        XCTAssertFalse(model.isParkedAtGateForTesting(onTaxiway, gate: gate),
+                       "parking brake set far from the gate must not complete the flight")
+
+        // Parked at the gate → completes.
+        var atGate = onTaxiway
+        atGate.latitude = gate.latitude
+        atGate.longitude = gate.longitude
+        XCTAssertTrue(model.isParkedAtGateForTesting(atGate, gate: gate),
+                      "parking brake set at the gate completes the flight")
+
+        // Gate position unknown (no arrival taxi / gate not in the surface) → plain
+        // full-stop-with-brake completion, wherever the aircraft stopped.
+        XCTAssertTrue(model.isParkedAtGateForTesting(onTaxiway, gate: nil),
+                      "with no known gate the full-stop-with-brake check stands")
+
+        // Brake released is never parked, even at the gate.
+        var rolling = atGate
+        rolling.parkingBrakeSet = false
+        XCTAssertFalse(model.isParkedAtGateForTesting(rolling, gate: gate),
+                       "a stop without the parking brake set is not parked")
     }
 
     /// Reading back on the arrival Ramp must echo the ramp routing ("proceed to gate
