@@ -572,6 +572,21 @@ final class AppModel: ObservableObject {
                         fallback: flightPlan.callsign)
     }
 
+    /// Pre-cache the departure and arrival airport surfaces at flight load (live mode
+    /// only) so the taxi clearance and taxi map are ready without a network wait at taxi
+    /// time. Mock airports build synthetic surfaces synchronously, so there's nothing to
+    /// pre-cache. Safe to call repeatedly — the coordinator/provider dedupe by ICAO and
+    /// never disturb an active taxi.
+    private func prefetchAirportSurfaces() {
+        guard !settings.mockMode else { return }
+        guard !flightPlan.departure.isEmpty || !flightPlan.destination.isEmpty else { return }
+        airportSurface.prefetchFlightSurfaces(
+            departure: flightPlan.departure,
+            departureReference: resolvedDepartureCoordinate(),
+            arrival: flightPlan.destination,
+            arrivalReference: resolvedDestinationCoordinate())
+    }
+
     /// Begin the OSM departure taxi (loads/normalizes/routes; async when uncached).
     private func prepareDepartureTaxi() {
         let icao = flightPlan.departure
@@ -1836,6 +1851,8 @@ final class AppModel: ObservableObject {
             // until the fresh sample lands rather than re-locking against the old route.
             livePrecipCellsReady = false
             Task { await refreshWeather() }
+            // New endpoints from Infinite Flight — cache both airports' surfaces now.
+            prefetchAirportSurfaces()
         } else if plan.waypoints.map(\.name) != beforeWaypoints {
             lastPrecipSampleAt = nil
             livePrecipCellsReady = false
@@ -2163,6 +2180,8 @@ final class AppModel: ObservableObject {
         // covers the new corridor rather than the old one.
         if routeChanged { lastPrecipSampleAt = nil }
         recomputeWeatherHazards()
+        // Cache both airports' surfaces now (on load), not lazily right before taxi.
+        prefetchAirportSurfaces()
     }
 
     func applyManualOverrides() {

@@ -108,6 +108,25 @@ final class TaxiMapStateTests: XCTestCase {
         XCTAssertTrue(coord.taxiMapVisible, "taxi map appears after the superseding clearance is read back")
     }
 
+    func testLoadTimePrefetchDoesNotClobberActiveTaxiSurface() {
+        // Pre-caching both airports at flight load must never disturb the surface of a
+        // taxi already in progress (the departure load is gated on `kind == .none`).
+        let coord = AirportSurfaceCoordinator()
+        let engine = PhraseologyEngine(digitStyle: .individual, mode: .faa)
+        coord.configure(diagnostics: nil, engine: engine, emit: { _ in },
+                        callsign: { engine.callsign(airline: "United", flightNumber: "598", fallback: "") })
+        coord.beginMockTaxiForTesting(kind: .departure, reference: ref, runway: "36", gate: "A1")
+        XCTAssertEqual(coord.diagnosticsSnapshot().airportID, "KTEST")
+
+        // A load-time prefetch naming a different departure is skipped mid-taxi (arrival is
+        // empty so no provider/network warm is triggered either).
+        coord.prefetchFlightSurfaces(departure: "KOTHER",
+                                     departureReference: CLLocationCoordinate2D(latitude: 41, longitude: -74),
+                                     arrival: "", arrivalReference: nil)
+        XCTAssertEqual(coord.diagnosticsSnapshot().airportID, "KTEST", "active taxi surface unchanged")
+        XCTAssertTrue(coord.taxiMapVisible)
+    }
+
     func testMockModeCompletesFullFlow() {
         let coord = AirportSurfaceCoordinator()
         var emitted: [ATCTransmission] = []

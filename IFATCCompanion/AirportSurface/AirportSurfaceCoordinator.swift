@@ -173,6 +173,46 @@ final class AirportSurfaceCoordinator: ObservableObject {
         Task { await loadSurface(icao: key, reference: reference, mock: mock, forceRefresh: false) }
     }
 
+    /// Cache both the flight's departure and arrival airport surfaces at flight load,
+    /// rather than lazily right before taxi. The departure surface is loaded into the
+    /// coordinator so its taxi routes synchronously and issues the detailed clearance
+    /// immediately; the arrival surface is fetched into the provider cache (disk + memory)
+    /// so its later load is instant and works offline. Live surfaces only — mock airports
+    /// build synthetic surfaces on demand, so there is nothing to pre-cache.
+    func prefetchFlightSurfaces(departure: String, departureReference: CLLocationCoordinate2D?,
+                                arrival: String, arrivalReference: CLLocationCoordinate2D?) {
+        let dep = departure.uppercased()
+        let arr = arrival.uppercased()
+        // The departure surface goes into the coordinator so its taxi routes synchronously
+        // — but only between flights, never clobbering an active taxi's loaded surface.
+        if kind == .none, dep.count >= 3, let ref = departureReference, ref.isValid {
+            prefetch(icao: dep, reference: ref, mock: false)
+        }
+        // The arrival only warms the provider cache (it never touches the coordinator's
+        // active surface), so it is always safe to run — including in cruise before the
+        // arrival taxi begins.
+        if arr.count >= 3, arr != dep, let ref = arrivalReference, ref.isValid {
+            warmCache(icao: arr, reference: ref)
+        }
+    }
+
+    /// Warm the disk/memory surface cache for an airport without disturbing the active
+    /// taxi surface. Used to pre-cache the arrival field while the departure surface stays
+    /// loaded in the coordinator, so the arrival's later load is instant and offline.
+    private func warmCache(icao: String, reference: CLLocationCoordinate2D) {
+        let key = icao.uppercased()
+        guard key.count >= 3, reference.isValid else { return }
+        Task {
+            do {
+                _ = try await provider.surface(for: key, reference: reference, forceRefresh: false)
+                diagnostics?.log(.app, "OSM surface pre-cached for \(key)")
+            } catch {
+                let message = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+                diagnostics?.log(.app, "OSM pre-cache failed for \(key): \(message)")
+            }
+        }
+    }
+
     private func loadSurface(icao: String, reference: CLLocationCoordinate2D, mock: Bool, forceRefresh: Bool) async {
         let key = icao.uppercased()
         guard key.count >= 3, reference.isValid else { return }
