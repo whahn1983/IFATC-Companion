@@ -248,23 +248,14 @@ struct TaxiMapCanvas: View {
                                                       dash: route.confidence <= .low ? [8, 5] : []))
             }
 
-            // Gates / parking (context).
-            if let model = surface.surface {
-                ForEach(model.parkingPositions) { p in
-                    Annotation(expanded ? p.name : "", coordinate: p.coordinate.clLocation) {
-                        Image(systemName: "parkingsign.circle.fill")
-                            .font(.caption)
-                            .foregroundStyle(.mint)
-                    }
-                }
-                // Holding positions.
-                ForEach(model.holdingPositions) { hold in
-                    Annotation("", coordinate: hold.coordinate.clLocation) {
-                        Image(systemName: "minus")
-                            .font(.system(size: 12, weight: .heavy))
-                            .foregroundStyle(.yellow)
-                            .rotationEffect(.degrees(90))
-                    }
+            // Holding positions (bounded to those nearest the route so a dense field never
+            // floods MapKit with annotation host views).
+            ForEach(visibleHolds) { hold in
+                Annotation("", coordinate: hold.coordinate.clLocation) {
+                    Image(systemName: "minus")
+                        .font(.system(size: 12, weight: .heavy))
+                        .foregroundStyle(.yellow)
+                        .rotationEffect(.degrees(90))
                 }
             }
 
@@ -278,7 +269,19 @@ struct TaxiMapCanvas: View {
                             .background(Circle().fill(.white.opacity(0.6)))
                     }
                 }
-                // Destination marker.
+                // Departure gate — where you're starting out. Placed at the departure
+                // location (the route start, which snaps to the pilot's gate when it's in
+                // the data, else the aircraft's position) and labeled with the entered gate.
+                // On arrival the gate you taxi to is the destination marker below, so no
+                // separate start-gate marker is drawn.
+                if route.isDeparture {
+                    Marker(departureGateLabel, systemImage: "parkingsign",
+                           coordinate: route.startCoordinate.clLocation)
+                        .tint(.mint)
+                }
+                // Destination — the runway on departure, the arrival gate / parking on
+                // arrival. The arrival route usually terminates at an airport marker rather
+                // than the exact stand, which is expected.
                 Marker(route.destinationLabel.capitalizedFirst,
                        systemImage: route.isDeparture ? "airplane.departure" : "parkingsign",
                        coordinate: route.endCoordinate.clLocation)
@@ -318,6 +321,28 @@ struct TaxiMapCanvas: View {
         return Color(red: 0.55, green: 0.75, blue: 0.9)
     }
 
+    // MARK: On-map content bounding
+    //
+    // Only the gate that matters is drawn — the departure gate on taxi out; the arrival
+    // gate is the route destination marker — and holding positions are capped to those
+    // nearest the route, so a dense field never floods MapKit with annotation host views.
+
+    private var holdLimit: Int { expanded ? 30 : 16 }
+    private var routePath: [CLLocationCoordinate2D] { surface.route?.clGeometry ?? [] }
+
+    /// Label for the departure gate marker: the pilot's entered gate, or a generic tag
+    /// when they set none (the marker is then just the departure location).
+    private var departureGateLabel: String {
+        let gate = surface.activeGate.trimmingCharacters(in: .whitespaces)
+        return gate.isEmpty ? "Gate" : gate
+    }
+
+    /// Holding positions to draw for context: the nearest to the route, capped.
+    private var visibleHolds: [SurfaceHoldingPosition] {
+        guard let all = surface.surface?.holdingPositions else { return [] }
+        return TaxiMapContent.nearestToRoute(all, route: routePath, limit: holdLimit) { $0.coordinate.clLocation }
+    }
+
     /// Fit the camera to the route (falling back to the airport geometry).
     private func fit() {
         if let region = routeRegion() {
@@ -345,6 +370,34 @@ struct TaxiMapCanvas: View {
 }
 
 // MARK: - Shared helpers
+
+/// Pure geometry helpers for the taxi map's on-map content. Kept out of the SwiftUI
+/// view so the annotation-bounding rule can be unit-tested directly.
+enum TaxiMapContent {
+    /// Select the features nearest the route, capped to `limit`.
+    ///
+    /// A large airport has hundreds of OSM stands and dozens of hold points. MapKit for
+    /// SwiftUI creates a hosting view for every `Annotation`, so drawing the full set at
+    /// the fit-to-route zoom overwhelms the map content builder and crashes the app. Only
+    /// the closest `limit` features to the assigned route are drawn for context; the route,
+    /// runways, taxiways, crossings, destination, and aircraft are always shown in full.
+    ///
+    /// Returns the input unchanged when it already fits under `limit`; with no usable route
+    /// the first `limit` features are kept (still bounded).
+    static func nearestToRoute<T>(_ features: [T],
+                                  route: [CLLocationCoordinate2D],
+                                  limit: Int,
+                                  coordinate: (T) -> CLLocationCoordinate2D) -> [T] {
+        guard limit > 0 else { return [] }
+        guard features.count > limit else { return features }
+        guard route.count >= 2 else { return Array(features.prefix(limit)) }
+        return features
+            .map { (feature: $0, distance: SurfaceGeometry.nearestPointOnPath(coordinate($0), route)?.distanceMeters ?? .infinity) }
+            .sorted { $0.distance < $1.distance }
+            .prefix(limit)
+            .map { $0.feature }
+    }
+}
 
 func confidenceLevel(_ c: SurfaceConfidence) -> StatusLevel {
     switch c {
