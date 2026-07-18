@@ -13,6 +13,7 @@ final class DiagnosticsStore: ObservableObject {
         case command = "COMMAND"
         case weather = "WEATHER"
         case atc = "ATC"
+        case atis = "ATIS"
         case app = "APP"
     }
 
@@ -26,6 +27,7 @@ final class DiagnosticsStore: ObservableObject {
     @Published private(set) var entries: [Entry] = []
     @Published var discoveredStates: [IFManifestEntry] = []
     @Published var weatherEndpointStatus: String = "Not checked"
+    @Published var atisEndpointStatus: String = "Not checked"
     @Published var lastRawMessage: String = ""
 
     private let maxEntries = 500

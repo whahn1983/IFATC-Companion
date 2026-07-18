@@ -45,7 +45,13 @@ final class SpeechService: NSObject, ObservableObject {
 
         let isPilot = transmission.sender == .pilot
         let utterance = AVSpeechUtterance(string: transmission.spokenText)
-        utterance.voice = isPilot ? pilotVoice() : voice(for: transmission.facility)
+        // ATIS is a one-way broadcast on its own configurable voice; otherwise the
+        // pilot voice for own-ship calls, or the per-facility controller voice.
+        if transmission.isATISLine {
+            utterance.voice = atisVoice()
+        } else {
+            utterance.voice = isPilot ? pilotVoice() : voice(for: transmission.facility)
+        }
         // Map our 0...1 setting onto AVSpeechUtterance's rate range.
         let rate = Float(settings.speechRate)
         utterance.rate = min(max(rate, AVSpeechUtteranceMinimumSpeechRate),
@@ -126,6 +132,17 @@ final class SpeechService: NSObject, ObservableObject {
         case .clearance: id = settings.defaultVoiceID
         }
         if !id.isEmpty, let v = AVSpeechSynthesisVoice(identifier: id) { return v }
+        if !settings.defaultVoiceID.isEmpty,
+           let v = AVSpeechSynthesisVoice(identifier: settings.defaultVoiceID) { return v }
+        return AVSpeechSynthesisVoice(language: "en-US")
+    }
+
+    /// Voice for the one-way ATIS broadcast. Uses the dedicated ATIS voice setting,
+    /// falling back to the default controller voice, then a system English voice.
+    private func atisVoice() -> AVSpeechSynthesisVoice? {
+        guard let settings else { return nil }
+        if !settings.voiceATIS.isEmpty,
+           let v = AVSpeechSynthesisVoice(identifier: settings.voiceATIS) { return v }
         if !settings.defaultVoiceID.isEmpty,
            let v = AVSpeechSynthesisVoice(identifier: settings.defaultVoiceID) { return v }
         return AVSpeechSynthesisVoice(language: "en-US")

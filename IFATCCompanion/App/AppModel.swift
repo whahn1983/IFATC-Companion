@@ -54,6 +54,9 @@ final class AppModel: ObservableObject {
     let entitlements: EntitlementManager
 
     private let weatherService: AviationWeatherService
+    /// Fetches real-world FAA D-ATIS (datis.clowd.io). Independent of the weather
+    /// service; the whole ATIS feature degrades to "absent" whenever it returns nothing.
+    private let atisService = ATISService()
 
     // Deterministic engines.
     private var engine: PhraseologyEngine
@@ -356,6 +359,34 @@ final class AppModel: ObservableObject {
     /// Timestamp of the last aviation-weather refresh, for the diagnostics panel.
     private var lastAviationWeatherUpdate: Date?
 
+    // MARK: - ATIS state
+    //
+    // Real-world FAA D-ATIS for the origin (while pre-departure at the gate) and the
+    // destination (within 100 NM on arrival). Everything is best-effort: when the feed
+    // returns nothing for a field, the report stays nil and the whole feature vanishes
+    // for that field — no button, and no information code appended to any call.
+
+    /// Latest D-ATIS report for the departure field (nil = none published / not fetched).
+    @Published var departureATIS: AirportATIS?
+    /// Latest D-ATIS report for the destination field (fetched within 100 NM).
+    @Published var arrivalATIS: AirportATIS?
+    /// Read-only ATIS status for the Diagnostics tab.
+    @Published var atisDiagnostics = ATISDiagnostics()
+
+    /// The information code letter the pilot has actually received by **tuning** ATIS
+    /// for the departure / arrival. This is what gets appended ("…information Alpha") to
+    /// the taxi request and the approach check-in. Nil until the pilot tunes ATIS for
+    /// that phase, so a call never claims information the pilot never received.
+    private var reportedDepartureInfo: String?
+    private var reportedArrivalInfo: String?
+    /// One-shot guards so the information code is reported to ATC only on the *initial*
+    /// contact — the taxi request, and the first Approach check-in — not on every
+    /// re-tap of the same button.
+    private var departureInfoAppended = false
+    private var arrivalInfoAppended = false
+    /// Throttle for the opportunistic arrival-ATIS fetch driven from the telemetry loop.
+    private var lastArrivalATISAttempt: Date?
+
     private var lastATCTransmission: ATCTransmission?
     private var cancellables = Set<AnyCancellable>()
     private var started = false
@@ -503,6 +534,7 @@ final class AppModel: ObservableObject {
         speech.configure(settings: settings)
         connect.configure(diagnostics: diagnostics)
         Task { await weatherService.configure(baseURL: settings.weatherBaseURL, diagnostics: diagnostics) }
+        Task { await atisService.configure(diagnostics: diagnostics) }
         precipService.configure(diagnostics: diagnostics)
         // An async OPERA/ORD overlay render finished — nudge the map to re-request the
         // now-cached image (touch the published overlay model without recomputing).
@@ -682,6 +714,7 @@ final class AppModel: ObservableObject {
         applyLiveATC(simulateStaffedATC ? mockStaffedStatus() : .none)
         applyRadarProvider()
         resetWeatherDeviation()
+        resetATISState(clearReported: true)
         mock.start()
         diagnostics.log(.app, "Mock simulator feed started.")
         Task { await refreshWeather() }
@@ -702,6 +735,9 @@ final class AppModel: ObservableObject {
         cancelTakeoffClearanceTimer()
         applyRadarProvider()
         resetWeatherDeviation()
+        // Clear the cached ATIS reports (they re-fetch on connect); keep the reported
+        // information codes for now — a resumed session restores them below.
+        resetATISState(clearReported: false)
         // Resume a recent in-progress session if one was saved (reconnect / relaunch);
         // otherwise start the conversation fresh. Restoring is what keeps a parked
         // aircraft from being re-derived straight to cruise after a dropped link.
@@ -713,6 +749,11 @@ final class AppModel: ObservableObject {
             awaitingGateArrival = false
             gateMonitored = false
             currentFacility = .clearance
+            // A genuinely fresh flight: no ATIS has been received yet.
+            reportedDepartureInfo = nil
+            reportedArrivalInfo = nil
+            departureInfoAppended = false
+            arrivalInfoAppended = false
         }
         if settings.autoDiscover && settings.host.isEmpty {
             connect.startAutoDiscover { [weak self] device in
@@ -879,6 +920,9 @@ final class AppModel: ObservableObject {
         // so the deviation line tracks the weather ahead instead of going stale and
         // dropping between manual refreshes.
         maybeResamplePrecipitation()
+        // Pull the destination ATIS the moment the aircraft comes within 100 NM, so the
+        // arrival ATIS button appears promptly rather than waiting for the ~5-min timer.
+        maybeFetchArrivalATIS()
 
         if !phase.isGround { hasDeparted = true }
 
@@ -1688,6 +1732,13 @@ final class AppModel: ObservableObject {
         // — otherwise the mint-line geometry re-runs against cells still covering the old
         // route. Detection itself re-runs every telemetry tick, so no explicit recompute
         // is needed here.
+        // Drop ATIS state for an endpoint that changed, so a new origin/destination
+        // never inherits the previous field's ATIS or reported information code. The
+        // weather refresh below re-fetches ATIS for the new endpoints.
+        if before.0 != plan.departure { departureATIS = nil; reportedDepartureInfo = nil }
+        if before.1 != plan.destination {
+            arrivalATIS = nil; reportedArrivalInfo = nil; lastArrivalATISAttempt = nil
+        }
         if before != (plan.departure, plan.destination) {
             // The corridor moved: the current cells are stale, so hold the deviation lock
             // until the fresh sample lands rather than re-locking against the old route.
@@ -1760,6 +1811,10 @@ final class AppModel: ObservableObject {
             awaitingGateArrival: awaitingGateArrival,
             manualTuning: manualTuning,
             weatherDeviation: weatherDeviation,
+            reportedDepartureInfo: reportedDepartureInfo,
+            reportedArrivalInfo: reportedArrivalInfo,
+            departureInfoAppended: departureInfoAppended,
+            arrivalInfoAppended: arrivalInfoAppended,
             transcript: transcript,
             departure: flightPlan.departure,
             destination: flightPlan.destination,
@@ -1776,7 +1831,8 @@ final class AppModel: ObservableObject {
         let sig = [stateMachine.current.rawValue, atcState.rawValue, currentFacility.rawValue,
                    phase.rawValue, String(assignedAltitude), String(hasDeparted),
                    String(arrivalAnnounced), String(awaitingGateArrival), String(manualTuning),
-                   weatherDeviation.state.rawValue, String(transcript.count)].joined(separator: "|")
+                   weatherDeviation.state.rawValue, String(transcript.count),
+                   reportedDepartureInfo ?? "-", reportedArrivalInfo ?? "-"].joined(separator: "|")
         let now = Date()
         let heartbeatDue = lastPersistedAt.map { now.timeIntervalSince($0) >= persistHeartbeat } ?? true
         guard sig != lastPersistSignature || heartbeatDue else { return }
@@ -1815,6 +1871,12 @@ final class AppModel: ObservableObject {
         // tick may still clear a non-committed lifecycle if the weather is gone, but
         // a committed diversion stays put until the pilot reports clear of weather.
         if let deviation = snap.weatherDeviation { weatherDeviation = deviation }
+        // Restore the ATIS information the pilot had already received so a reconnect
+        // keeps appending "information X" to the taxi request / approach check-in.
+        reportedDepartureInfo = snap.reportedDepartureInfo
+        reportedArrivalInfo = snap.reportedArrivalInfo
+        departureInfoAppended = snap.departureInfoAppended ?? false
+        arrivalInfoAppended = snap.arrivalInfoAppended ?? false
         if !snap.transcript.isEmpty {
             transcript = snap.transcript
             let lastATC = snap.transcript.last { $0.sender == .atc }
@@ -2288,15 +2350,20 @@ final class AppModel: ObservableObject {
         // Checking in satisfies any pending hand-off the controller prompted: the new
         // controller now speaks for itself, so the semi-automatic flow resumes.
         pendingCheckInFacility = nil
+        // On arrival, the pilot reports the destination ATIS code when first checking in
+        // with Approach ("…with you at seven thousand, information Bravo"). Only Approach
+        // gets it, only when the arrival ATIS has been received, and only once.
+        let atisWord = (currentFacility == .approach) ? consumeATISInfoWord(arrival: true) : nil
         guard let target = nextState(workedBy: currentFacility, after: stateMachine.current),
               target != stateMachine.current else {
             // Nothing new ahead for this controller — a plain check-in / radar-contact
             // exchange (e.g. a same-sector Center re-check-in).
             let c = buildContext(for: atcState)
-            postPilot(pilotEngine.requestHandoff(context: c, facility: currentFacility,
+            postPilot(appendingATISInfo(pilotEngine.requestHandoff(context: c, facility: currentFacility,
                                                  currentAltitude: checkInAltitude(),
                                                  targetAltitude: assignedAltitude,
-                                                 onGround: aircraftState.onGround ?? false))
+                                                 onGround: aircraftState.onGround ?? false),
+                                        word: atisWord))
             post(engine.radarContact(cs: c.callsign, facility: currentFacility), speak: true)
             return
         }
@@ -2307,10 +2374,11 @@ final class AppModel: ObservableObject {
         // hand-off (announceHandoff: false). The pilot reports altitude relative to
         // the currently assigned altitude (still the previous controller's assignment
         // here — advanceAndPost updates it afterwards).
-        postPilot(pilotEngine.requestHandoff(context: c, facility: currentFacility,
+        postPilot(appendingATISInfo(pilotEngine.requestHandoff(context: c, facility: currentFacility,
                                              currentAltitude: checkInAltitude(),
                                              targetAltitude: assignedAltitude,
-                                             onGround: aircraftState.onGround ?? false))
+                                             onGround: aircraftState.onGround ?? false),
+                                    word: atisWord))
         advanceAndPost(to: target, context: c, announceHandoff: false)
         // Arrival taxi-in: hold the conversation on Ground until the pilot reads the
         // taxi-to-gate back. A check-in-driven call does not normally close the
@@ -2360,7 +2428,12 @@ final class AppModel: ObservableObject {
             handOffDepartureRampToGround()
             return
         }
-        groundFlow(pilotEngine.requestTaxi(context: buildContext(for: .groundTaxi)), to: .groundTaxi)
+        // Real-world phraseology: the pilot reports the ATIS code on the initial taxi
+        // request ("…request taxi, information Alpha"). Appended only when the pilot has
+        // actually received the departure ATIS; otherwise nothing is added.
+        let request = appendingATISInfo(pilotEngine.requestTaxi(context: buildContext(for: .groundTaxi)),
+                                        word: consumeATISInfoWord(arrival: false))
+        groundFlow(request, to: .groundTaxi)
     }
 
     /// True when the pilot is still on the departure Ramp frequency (after pushback /
@@ -2601,6 +2674,7 @@ final class AppModel: ObservableObject {
             recomputeWeatherHazards()
             weatherStatus = "Mock weather loaded (\(metars.count) METARs, \(pireps.count) PIREPs)."
             diagnostics.weatherEndpointStatus = "Mock mode — sample data"
+            await refreshATIS()
             return
         }
 
@@ -2635,6 +2709,10 @@ final class AppModel: ObservableObject {
             diagnostics.log(.weather, "Weather fetch failed: \(msg)")
             recomputeWeatherHazards()
         }
+        // ATIS is independent of the weather fetch — refresh it on the same cadence
+        // (connect, route change, pull-to-refresh, and the periodic timer) regardless
+        // of whether weather succeeded.
+        await refreshATIS()
     }
 
     func recomputeRideItems() {
@@ -4487,6 +4565,7 @@ final class AppModel: ObservableObject {
         cancelTakeoffClearanceTimer()
         clearSavedSession()
         resetWeatherDeviation()
+        resetATISState(clearReported: true)
         speech.stop()
         transcript.removeAll()
         latestTransmission = nil
@@ -4514,5 +4593,280 @@ final class AppModel: ObservableObject {
             stateMachine.setConnected()
         }
         diagnostics.log(.app, "Flight cleared — ready for a new flight.")
+    }
+}
+
+// MARK: - ATIS
+
+extension AppModel {
+
+    // MARK: Availability
+
+    /// Whether the aircraft is within the arrival-ATIS range: departed, position and
+    /// destination both known, and within 100 NM of the destination field.
+    var withinArrivalATISRange: Bool {
+        guard hasDeparted,
+              let pos = aircraftState.coordinate, pos.isValid,
+              let dest = resolvedDestinationCoordinate(), dest.isValid else { return false }
+        return Geo.distanceNM(from: pos, to: dest) <= 100
+    }
+
+    /// Whether the **departure** ATIS tune button should be offered: pre-departure (at
+    /// the gate / on the ground before the first takeoff) and ATIS data is available.
+    var departureATISAvailable: Bool { isPreDeparture && departureATIS != nil }
+
+    /// Whether the **arrival** ATIS tune button should be offered: airborne/arriving,
+    /// within 100 NM of the destination, not yet parked, and ATIS data is available.
+    var arrivalATISAvailable: Bool {
+        hasDeparted && atcState != .parked && withinArrivalATISRange && arrivalATIS != nil
+    }
+
+    /// The ATIS report relevant to the current phase (arrival preferred once in range,
+    /// else the departure ATIS), or nil when no ATIS applies right now.
+    var currentATIS: AirportATIS? {
+        if arrivalATISAvailable { return arrivalATIS }
+        if departureATISAvailable { return departureATIS }
+        return nil
+    }
+
+    /// Whether the currently-relevant ATIS is the arrival (destination) ATIS.
+    var currentATISIsArrival: Bool { arrivalATISAvailable }
+
+    /// Whether the ATIS tune button/card should be shown at all.
+    var atisButtonVisible: Bool { currentATIS != nil }
+
+    /// The ICAO whose ATIS is relevant right now (destination on arrival, else origin).
+    var atisAirport: String {
+        currentATISIsArrival ? flightPlan.destination : flightPlan.departure
+    }
+
+    /// The information code letter carried by the currently-relevant ATIS report
+    /// ("A"), or nil when none is known.
+    var currentATISCode: String? {
+        currentATIS?.letter(arrival: currentATISIsArrival)
+    }
+
+    /// Secondary label for the ATIS tune button: the current info code when known
+    /// ("Info B"), else a prompt to listen.
+    var atisButtonSubtitle: String {
+        if let code = currentATISCode { return "Info \(code)" }
+        return "Listen"
+    }
+
+    /// A one-line receipt summary shown under the ATIS button once the pilot has tuned
+    /// in and captured the information code, e.g. "KLAX arrival information Bravo —
+    /// added to your check-in." Nil until the pilot has tuned ATIS for this phase.
+    var atisReceiptSummary: String? {
+        let arrival = currentATISIsArrival
+        guard let letter = arrival ? reportedArrivalInfo : reportedDepartureInfo else { return nil }
+        let word = ATISPhraseology.phoneticLetter(letter)
+        let field = arrival ? flightPlan.destination : flightPlan.departure
+        let kind = arrival ? "arrival" : "departure"
+        let where_ = arrival ? "check-in" : "taxi request"
+        return "\(field) \(kind) information \(word) — added to your \(where_)."
+    }
+
+    // MARK: Fetching
+
+    /// Refresh ATIS on the same cadence as weather (connect, route change,
+    /// pull-to-refresh, and the periodic timer): the departure ATIS while pre-departure,
+    /// the arrival ATIS once within 100 NM of the destination.
+    ///
+    /// ATIS is a real-world, live-data feature keyed to your actual flight, so it only
+    /// fetches in **live mode** — Mock Mode stays a fully offline demo (and unit tests
+    /// that drive the mock feed never touch the network). Availability, tuning, and the
+    /// append logic remain mode-agnostic so injected reports can still be exercised.
+    func refreshATIS() async {
+        guard !settings.mockMode else { updateATISDiagnostics(); return }
+        if isPreDeparture, !flightPlan.departure.isEmpty {
+            await fetchDepartureATIS(force: false)
+        }
+        if hasDeparted, atcState != .parked, withinArrivalATISRange, !flightPlan.destination.isEmpty {
+            await fetchArrivalATIS(force: false)
+        }
+        updateATISDiagnostics()
+    }
+
+    /// Opportunistic destination-ATIS fetch from the telemetry loop, so the arrival
+    /// button appears within seconds of crossing 100 NM rather than at the next timer
+    /// tick. Throttled to at most once a minute and skipped once we already have it.
+    func maybeFetchArrivalATIS() {
+        guard !settings.mockMode else { return }   // live-data feature; see refreshATIS
+        guard hasDeparted, atcState != .parked, arrivalATIS == nil,
+              withinArrivalATISRange, !flightPlan.destination.isEmpty else { return }
+        let now = Date()
+        if let last = lastArrivalATISAttempt, now.timeIntervalSince(last) < 60 { return }
+        lastArrivalATISAttempt = now
+        Task { await fetchArrivalATIS(force: false) }
+    }
+
+    private func fetchDepartureATIS(force: Bool) async {
+        let icao = flightPlan.departure
+        guard !icao.isEmpty else { departureATIS = nil; return }
+        do {
+            let atis = try await atisService.atis(for: icao, forceRefresh: force)
+            // Guard against a late response after the origin changed.
+            if icao == flightPlan.departure { departureATIS = atis }
+        } catch {
+            diagnostics.log(.atis, "Departure ATIS \(icao) unavailable: \(error.localizedDescription)")
+        }
+        updateATISDiagnostics()
+    }
+
+    private func fetchArrivalATIS(force: Bool) async {
+        let icao = flightPlan.destination
+        guard !icao.isEmpty else { arrivalATIS = nil; return }
+        do {
+            let atis = try await atisService.atis(for: icao, forceRefresh: force)
+            if icao == flightPlan.destination { arrivalATIS = atis }
+        } catch {
+            diagnostics.log(.atis, "Arrival ATIS \(icao) unavailable: \(error.localizedDescription)")
+        }
+        updateATISDiagnostics()
+    }
+
+    // MARK: Tuning
+
+    /// Tune the ATIS frequency for the current phase (origin pre-departure, or the
+    /// destination within 100 NM). Immediately pulls the **latest** ATIS, plays it on
+    /// the ATIS voice, and stores the information code so it is appended to the taxi
+    /// request (departure) / approach check-in (arrival). No controller replies — ATIS
+    /// is a one-way broadcast — so this never advances the state machine or the
+    /// read-back gate.
+    func tuneATIS() {
+        guard atisButtonVisible else { return }
+        let arrival = currentATISIsArrival
+        let icao = arrival ? flightPlan.destination : flightPlan.departure
+        guard !icao.isEmpty else { return }
+        diagnostics.log(.atis, "Tuning \(icao) ATIS — pulling latest.")
+        Task { @MainActor in
+            do {
+                let atis = try await atisService.atis(for: icao, forceRefresh: true)
+                applyTunedATIS(atis, arrival: arrival, icao: icao)
+            } catch {
+                diagnostics.log(.atis, "ATIS tune \(icao) failed: \(error.localizedDescription)")
+                updateATISDiagnostics()
+            }
+        }
+    }
+
+    private func applyTunedATIS(_ atis: AirportATIS?, arrival: Bool, icao: String) {
+        guard let atis, let part = atis.part(arrival: arrival) else {
+            // ATIS disappeared since the button was shown — drop it so the button hides.
+            if arrival { arrivalATIS = nil } else { departureATIS = nil }
+            diagnostics.log(.atis, "\(icao): no ATIS available on tune.")
+            updateATISDiagnostics()
+            return
+        }
+        if arrival { arrivalATIS = atis } else { departureATIS = atis }
+        // Store the information code the pilot now "has" — this is what gets reported.
+        let letter = atis.letter(arrival: arrival)
+        if arrival { reportedArrivalInfo = letter } else { reportedDepartureInfo = letter }
+
+        // Post the ATIS broadcast to the transcript on the ATIS voice. It is not a
+        // controller call: no read-back, no hand-off bookkeeping, and it does not become
+        // `latestTransmission`/`lastATCTransmission`.
+        let tx = atisTransmission(for: part)
+        transcript.append(tx)
+        if transcript.count > 200 { transcript.removeFirst(transcript.count - 200) }
+        diagnostics.log(.atis, "[ATIS] \(icao) information \(letter ?? part.letter): received.")
+        speech.speak(tx)
+        updateATISDiagnostics()
+        persistSession()
+    }
+
+    /// Build the one-way ATIS transcript line: the verbatim text for display, and the
+    /// abbreviation-expanded, digit-by-digit reading for speech.
+    private func atisTransmission(for part: AirportATIS.Part) -> ATCTransmission {
+        ATCTransmission(sender: .system,
+                        facility: .ground,   // label overridden to "ATIS" in the transcript row
+                        displayText: ATISPhraseology.displayText(part.text),
+                        spokenText: ATISPhraseology.spokenText(part.text, icao: engineUsesICAO),
+                        isATIS: true)
+    }
+
+    // MARK: Appending the information code
+
+    /// The phonetic information word ("Alpha") the pilot reports for the given phase —
+    /// **once**. Returns nil when no ATIS was received or the code has already been
+    /// reported, so it is never repeated on a re-tap. Marks the phase reported.
+    private func consumeATISInfoWord(arrival: Bool) -> String? {
+        if arrival {
+            guard !arrivalInfoAppended, let letter = reportedArrivalInfo else { return nil }
+            arrivalInfoAppended = true
+            return ATISPhraseology.phoneticLetter(letter)
+        } else {
+            guard !departureInfoAppended, let letter = reportedDepartureInfo else { return nil }
+            departureInfoAppended = true
+            return ATISPhraseology.phoneticLetter(letter)
+        }
+    }
+
+    /// Append ", information <word>" before the trailing period of a pilot transmission
+    /// (both display and spoken forms). A nil/empty word returns the transmission
+    /// unchanged, so nothing is ever appended when no ATIS was received.
+    func appendingATISInfo(_ tx: ATCTransmission, word: String?) -> ATCTransmission {
+        guard let word = word?.trimmingCharacters(in: .whitespaces), !word.isEmpty else { return tx }
+        func withInfo(_ s: String) -> String {
+            if s.hasSuffix(".") { return String(s.dropLast()) + ", information \(word)." }
+            return s + ", information \(word)"
+        }
+        var out = tx
+        out.displayText = withInfo(tx.displayText)
+        out.spokenText = withInfo(tx.spokenText)
+        return out
+    }
+
+    // MARK: State + diagnostics
+
+    /// Whether the phraseology engine is on the ICAO pack (drives ATIS digit words).
+    private var engineUsesICAO: Bool { settings.phraseologyMode == .icao }
+
+    /// Clear cached ATIS reports (they re-fetch); optionally clear the reported
+    /// information codes too (on a fresh flight, but not on a resume that restores them).
+    func resetATISState(clearReported: Bool) {
+        departureATIS = nil
+        arrivalATIS = nil
+        lastArrivalATISAttempt = nil
+        if clearReported {
+            reportedDepartureInfo = nil
+            reportedArrivalInfo = nil
+            departureInfoAppended = false
+            arrivalInfoAppended = false
+        }
+        updateATISDiagnostics()
+    }
+
+    #if DEBUG
+    /// Test hook: set the information codes the pilot has "received", so the taxi
+    /// request / approach check-in append path can be exercised without the network.
+    func setReportedATISForTesting(departure: String?, arrival: String?) {
+        reportedDepartureInfo = departure
+        reportedArrivalInfo = arrival
+        updateATISDiagnostics()
+    }
+
+    /// Test hook: inject ATIS reports directly (bypassing the network) so availability
+    /// and tune behavior can be exercised deterministically.
+    func setATISReportsForTesting(departure: AirportATIS?, arrival: AirportATIS?) {
+        departureATIS = departure
+        arrivalATIS = arrival
+        updateATISDiagnostics()
+    }
+    #endif
+
+    /// Refresh the read-only ATIS diagnostics snapshot shown on the Diagnostics tab.
+    func updateATISDiagnostics() {
+        var d = atisDiagnostics
+        d.departureAirport = flightPlan.departure
+        d.departureReceived = departureATIS != nil
+        d.departureLetter = departureATIS?.letter(arrival: false)
+        d.arrivalAirport = flightPlan.destination
+        d.arrivalReceived = arrivalATIS != nil
+        d.arrivalLetter = arrivalATIS?.letter(arrival: true)
+        d.withinArrivalRange = withinArrivalATISRange
+        d.reportedDeparture = reportedDepartureInfo
+        d.reportedArrival = reportedArrivalInfo
+        atisDiagnostics = d
     }
 }

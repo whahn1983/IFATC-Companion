@@ -151,6 +151,7 @@ struct SettingsView: View {
             voicePicker("Departure", selection: $settings.voiceDeparture)
             voicePicker("Center", selection: $settings.voiceCenter)
             voicePicker("Approach", selection: $settings.voiceApproach)
+            voicePicker("ATIS", selection: $settings.voiceATIS)
         }
     }
 

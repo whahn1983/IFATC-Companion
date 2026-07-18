@@ -25,6 +25,7 @@ struct ATCView: View {
                     if model.weatherBannerVisible { weatherBanner }
                     currentTransmissionCard
                     frequencyCard
+                    if model.atisButtonVisible { atisCard }
                     if model.weatherDeviationCardVisible { weatherDeviationCard }
                     responseButtons
                     transcriptCard
@@ -393,6 +394,35 @@ struct ATCView: View {
         AppModel.tunableFacilities.filter { model.relevantFacilities.contains($0) }
     }
 
+    // MARK: - ATIS
+
+    /// The ATIS tune card. Appears only when real-world D-ATIS is available for the
+    /// current field — at the gate for the origin, and within 100 NM for the
+    /// destination. Tuning pulls the latest broadcast, plays it on repeat on the ATIS
+    /// voice, and captures the information code for the taxi request / arrival check-in.
+    private var atisCard: some View {
+        Card(title: "ATIS", systemImage: "antenna.radiowaves.left.and.right") {
+            VStack(alignment: .leading, spacing: 10) {
+                FrequencyButton(title: "ATIS",
+                                systemImage: "antenna.radiowaves.left.and.right",
+                                frequency: model.atisButtonSubtitle,
+                                active: false,
+                                enabled: true) {
+                    model.tuneATIS()
+                }
+                if let summary = model.atisReceiptSummary {
+                    Label(summary, systemImage: "checkmark.seal.fill")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                Text("Real-world ATIS for \(model.atisAirport). Tune to hear the latest broadcast — no controller replies; tune again anytime to pull the current information. The code is added to your taxi request and arrival check-in.")
+                    .font(.caption2).foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
     // MARK: - Response buttons
 
     private var responseButtons: some View {
@@ -578,6 +608,7 @@ struct TranscriptRow: View {
     }
 
     private var senderLabel: String {
+        if tx.isATISLine { return "ATIS" }
         switch tx.sender {
         case .pilot: return "PILOT"
         case .atc: return tx.facility.title.uppercased()

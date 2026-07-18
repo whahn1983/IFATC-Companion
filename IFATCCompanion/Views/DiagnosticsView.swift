@@ -14,6 +14,7 @@ struct DiagnosticsView: View {
                     mockCard
                     liveATCCard
                     phaseCard
+                    atisCard
                     weatherStatusCard
                     weatherDiagnosticsCard
                     manifestCard
@@ -96,6 +97,29 @@ struct DiagnosticsView: View {
                         .font(.caption).foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
+            }
+        }
+    }
+
+    private var atisCard: some View {
+        let d = model.atisDiagnostics
+        func receipt(_ received: Bool, _ letter: String?) -> String {
+            guard received else { return "Not available" }
+            return "Received (\(letter.map { "info \($0)" } ?? "no code"))"
+        }
+        return Card(title: "ATIS", systemImage: "antenna.radiowaves.left.and.right") {
+            VStack(alignment: .leading, spacing: 6) {
+                DataRow(label: "Endpoint", value: diagnostics.atisEndpointStatus)
+                DataRow(label: "Departure airport", value: d.departureAirport.isEmpty ? "—" : d.departureAirport)
+                DataRow(label: "Departure ATIS", value: receipt(d.departureReceived, d.departureLetter))
+                DataRow(label: "Reported (dep)", value: d.reportedDeparture.map { "Information \($0)" } ?? "—")
+                DataRow(label: "Arrival airport", value: d.arrivalAirport.isEmpty ? "—" : d.arrivalAirport)
+                DataRow(label: "Within 100 NM", value: d.withinArrivalRange ? "Yes" : "No")
+                DataRow(label: "Arrival ATIS", value: receipt(d.arrivalReceived, d.arrivalLetter))
+                DataRow(label: "Reported (arr)", value: d.reportedArrival.map { "Information \($0)" } ?? "—")
+                Text("Real-world FAA D-ATIS (US airports, via datis.clowd.io). When a field has no D-ATIS, the ATIS button and information code simply don't appear — nothing is fabricated.")
+                    .font(.caption2).foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }

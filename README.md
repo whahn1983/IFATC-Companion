@@ -27,6 +27,7 @@ IFATC Companion is organized into five tabs:
 - **Smart, context-aware buttons.** Only the calls that make sense right now are shown — Clearance at the gate, pushback and start on the Ramp, taxi on Ground, takeoff on Tower, and the en-route and arrival requests on their controllers — instead of every button all the time.
 - **Tune Frequency card.** Change controllers yourself with a button. It shows the controller you're working plus the next one ahead, and once you start tuning manually, the flow waits for you to make each frequency change.
 - **Reads your Infinite Flight flight plan.** Your filed departure, destination, and route are used for clearances and departure vectors. Manual overrides always win when you want to set something yourself.
+- **Real-world ATIS.** At the gate you can tune the departure airport's **ATIS** and hear the current broadcast (real FAA Digital ATIS, read in proper phraseology on its own configurable voice); within 100 NM of your destination the arrival ATIS becomes available too. The information code you hear ("information Alpha") is remembered and added to your taxi request and your arrival check-in, just like real life. ATIS is sourced from free public data for US airports that publish it — where a field has no ATIS, the feature simply doesn't appear and nothing is added to your calls.
 - **Call sign recognition.** Enter a call sign like `UA598` or `UAL598` and it's spoken as its real radio name ("United five niner eight") using a built-in airline database; tail numbers like `N123AB` are spelled out phonetically.
 - **Procedure-aware.** SID, STAR, and approach names are recognized and referenced in your clearances.
 - **Modeled taxi routing** with taxiways, runway crossings, and ramp routes.
@@ -116,7 +117,7 @@ IFATC Companion is built to be private and self-contained:
 - **No accounts, no login, no sign-up.**
 - **No ads and no analytics or tracking.**
 - **No AI or chatbot** — every call is produced by deterministic, real-world-style phraseology on your device.
-- **No cloud servers of ours.** The only network connections are the local link to Infinite Flight on your own Wi-Fi and free public NOAA weather.
+- **No cloud servers of ours.** The only network connections are the local link to Infinite Flight on your own Wi-Fi, free public NOAA weather, and free public FAA Digital ATIS.
 - **Push-to-talk stays on your device** — speech recognition uses Apple's on-device framework and makes no calls to us.
 
 See the [Privacy Policy](https://whahn1983.github.io/IFATC-Companion/privacy-policy.html) for details.

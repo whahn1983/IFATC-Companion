@@ -93,9 +93,18 @@ This is the boundary between the app and Infinite Flight, deliberately isolated 
 - **TurbulenceModel** — a composite, deterministic ride-quality model blending PIREPs (weighted by distance ahead and report age), **route-relevant** SIGMET advisories (filtered by `WeatherRouteAnalyzer`), and a low-level wind-shear proxy from the surface METAR into a continuous ride index and severity.
 - **RouteMapView** — a MapKit route/weather overlay (route line, departure/destination, live aircraft position, severity-colored PIREP turbulence markers).
 
+## ATIS (real-world D-ATIS)
+
+The **ATIS** layer surfaces the real airport ATIS at the origin and destination, sourced from free public data — never fabricated. If a field has no ATIS, the feature simply does not exist for that field (no button, no information code appended anywhere).
+
+- **AirportATIS / ATISParser** — the ATIS model and its parser. ATIS text comes from the FAA **Digital ATIS (D-ATIS)** feed at `datis.clowd.io` — a free, public, keyless endpoint (built by the vATIS project, sourced from the FAA SWIM system), used the same "direct-to-public-service" way as the NOAA weather. Coverage is the set of US airports that publish D-ATIS. The feed returns a JSON array of `{airport, type, code, datis}` objects; `ATISParser` turns that into an `AirportATIS` of one or more `Part`s (a **combined** ATIS, or separate **arrival**/**departure** ATIS each with its own information letter). Any shape it doesn't recognize (an error object, an empty array, malformed JSON) parses to `nil`, which the app treats as "no ATIS for this field." The information **letter** is taken from the feed's `code`, falling back to the "…INFORMATION X" phrase in the text.
+- **ATISService** — an `actor` that fetches D-ATIS, mirroring `AviationWeatherService`: a short TTL cache, request coalescing, a descriptive User-Agent, exponential backoff with a stale-serve fallback on transient failures, and a cached **nil miss** on a 4xx (the field has no D-ATIS). A successful fetch may legitimately return `nil`; it only *throws* on a transient failure with no cached fallback. Tuning ATIS passes `forceRefresh` to always pull the latest broadcast.
+- **ATISPhraseology** — deterministic rendering of raw D-ATIS text into what the app shows and speaks. The transcript keeps the text essentially verbatim; for TTS it expands the common ATIS abbreviations (RWY → "runway", ILS → "I L S", …), speaks runway designators ("24R" → "two four right"), and reads digit groups one digit at a time — Zulu time, altimeter, wind, temperatures — exactly how a real ATIS is read on the air. No AI: every transform is a fixed rule.
+- **AppModel wiring** — because ATIS is real live data keyed to your actual flight, it is fetched only in **live mode** (Mock Mode stays a fully offline demo). The departure ATIS is fetched while parked/pre-departure at the origin; the arrival ATIS is fetched once the aircraft comes **within 100 NM** of the destination (opportunistically from the telemetry loop, plus on the weather-refresh cadence). The ATC tab shows a **Tune ATIS** button whenever ATIS is available for the current field; tuning pulls the latest broadcast, plays it on repeat on the configurable **ATIS voice**, and stores the information code. Because ATIS is a one-way broadcast, tuning never advances the state machine or the read-back gate. The stored information code is appended to real-world contacts — the **initial taxi request** on departure ("…request taxi, information Alpha") and the **first Approach check-in** on arrival ("…information Bravo") — once each, and only when the pilot has actually received that ATIS. The received information codes are persisted in the session snapshot so a reconnect keeps reporting them correctly. The **Diagnostics** tab shows the departure/arrival airport and whether ATIS was received for each.
+
 ## Speech
 
-- **SpeechService** — text-to-speech via `AVSpeechSynthesizer`, fully offline. Supports per-facility controller voices plus a separate pilot voice (with a subtle pitch offset) so the controller and own-ship calls are distinguishable. Pilot transmissions are spoken when triggered by a button/text tap; push-to-talk input is not re-spoken because the user already said it.
+- **SpeechService** — text-to-speech via `AVSpeechSynthesizer`, fully offline. Supports per-facility controller voices, a configurable **ATIS voice** for the one-way broadcast, plus a separate pilot voice (with a subtle pitch offset) so the controller and own-ship calls are distinguishable. Pilot transmissions are spoken when triggered by a button/text tap; push-to-talk input is not re-spoken because the user already said it.
 
 ## Settings
 
@@ -139,6 +148,7 @@ IFATCCompanion/
 ├── Models/           # AircraftState, FlightPlan, FlightPhase
 ├── Connect/          # IFConnectManager, IFConnectClient, IFConnectManifestService, LiveATCDetector
 ├── ATC/              # PhaseDetector, ATCStateMachine, PilotResponseEngine, ProcedureLibrary, TaxiRoutePlanner, PilotIntentParser
+├── ATIS/             # AirportATIS, ATISParser, ATISPhraseology, ATISService (real-world D-ATIS)
 ├── Phraseology/      # Phonetic, PhraseologyEngine, PhraseologyProfile (+Store)
 ├── Weather/          # AviationWeatherService, parsers, WeatherRouteAnalyzer, RideReportEngine, TurbulenceModel
 ├── Speech/           # SpeechService, SpeechRecognitionService

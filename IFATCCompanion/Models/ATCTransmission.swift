@@ -32,19 +32,30 @@ struct ATCTransmission: Identifiable, Equatable, Codable {
     var timestamp: Date
     /// Optional precomposed pilot read-back for this controller call.
     var readback: Readback?
+    /// True for a one-way ATIS broadcast line. It is spoken on the dedicated ATIS
+    /// voice and is never treated as a controller instruction (no read-back, no
+    /// hand-off bookkeeping). Optional (rather than a defaulted `Bool`) so transcripts
+    /// persisted before this field decode cleanly — the synthesized `Decodable` treats a
+    /// missing key as `nil`. Read it via `isATISLine`, which maps `nil`/`false` alike.
+    var isATIS: Bool?
+
+    /// Whether this line is an ATIS broadcast (nil and false read as "no").
+    var isATISLine: Bool { isATIS == true }
 
     init(sender: Sender,
          facility: ATCFacility,
          displayText: String,
          spokenText: String? = nil,
          timestamp: Date = Date(),
-         readback: Readback? = nil) {
+         readback: Readback? = nil,
+         isATIS: Bool? = nil) {
         self.sender = sender
         self.facility = facility
         self.displayText = displayText
         self.spokenText = spokenText ?? displayText
         self.timestamp = timestamp
         self.readback = readback
+        self.isATIS = isATIS
     }
 
     static func == (lhs: ATCTransmission, rhs: ATCTransmission) -> Bool {
