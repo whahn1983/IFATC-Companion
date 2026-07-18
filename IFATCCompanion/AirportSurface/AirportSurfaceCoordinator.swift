@@ -180,7 +180,8 @@ final class AirportSurfaceCoordinator: ObservableObject {
         self.mockMode = mock
 
         if mock {
-            let model = MockAirportSurface.model(icao: key, reference: reference)
+            let model = MockAirportSurface.model(icao: key, reference: reference,
+                                                 primaryRunwayIdent: mockPrimaryRunway(), gate: mockGate())
             applyLoaded(model, generation: generation)
             return
         }
