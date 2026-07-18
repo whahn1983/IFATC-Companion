@@ -248,17 +248,6 @@ struct TaxiMapCanvas: View {
                                                       dash: route.confidence <= .low ? [8, 5] : []))
             }
 
-            // Departure gate — the only stand that matters on taxi out (the one you're
-            // leaving). On arrival the gate you're heading to is the route destination,
-            // drawn as the marker below, so no other stands are shown. Drawing a large
-            // field's full set of OSM stands as individual annotations overwhelmed MapKit
-            // for SwiftUI and crashed the app.
-            if let gate = departureGate {
-                Marker(gate.name.isEmpty ? "Gate" : gate.name,
-                       systemImage: "parkingsign",
-                       coordinate: gate.coordinate.clLocation)
-                    .tint(.mint)
-            }
             // Holding positions (bounded to those nearest the route so a dense field never
             // floods MapKit with annotation host views).
             ForEach(visibleHolds) { hold in
@@ -280,7 +269,19 @@ struct TaxiMapCanvas: View {
                             .background(Circle().fill(.white.opacity(0.6)))
                     }
                 }
-                // Destination marker.
+                // Departure gate — where you're starting out. Placed at the departure
+                // location (the route start, which snaps to the pilot's gate when it's in
+                // the data, else the aircraft's position) and labeled with the entered gate.
+                // On arrival the gate you taxi to is the destination marker below, so no
+                // separate start-gate marker is drawn.
+                if route.isDeparture {
+                    Marker(departureGateLabel, systemImage: "parkingsign",
+                           coordinate: route.startCoordinate.clLocation)
+                        .tint(.mint)
+                }
+                // Destination — the runway on departure, the arrival gate / parking on
+                // arrival. The arrival route usually terminates at an airport marker rather
+                // than the exact stand, which is expected.
                 Marker(route.destinationLabel.capitalizedFirst,
                        systemImage: route.isDeparture ? "airplane.departure" : "parkingsign",
                        coordinate: route.endCoordinate.clLocation)
@@ -329,11 +330,11 @@ struct TaxiMapCanvas: View {
     private var holdLimit: Int { expanded ? 30 : 16 }
     private var routePath: [CLLocationCoordinate2D] { surface.route?.clGeometry ?? [] }
 
-    /// The gate to highlight on a departure taxi: the stand nearest the route start (the
-    /// one you're leaving). Nil on arrival — that gate is already the destination marker.
-    private var departureGate: SurfaceParking? {
-        guard let route = surface.route, route.isDeparture, let model = surface.surface else { return nil }
-        return model.nearestParking(to: route.startCoordinate.clLocation, within: 150)
+    /// Label for the departure gate marker: the pilot's entered gate, or a generic tag
+    /// when they set none (the marker is then just the departure location).
+    private var departureGateLabel: String {
+        let gate = surface.activeGate.trimmingCharacters(in: .whitespaces)
+        return gate.isEmpty ? "Gate" : gate
     }
 
     /// Holding positions to draw for context: the nearest to the route, capped.

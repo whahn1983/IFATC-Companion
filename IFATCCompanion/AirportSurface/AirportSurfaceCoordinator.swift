@@ -810,6 +810,11 @@ final class AirportSurfaceCoordinator: ObservableObject {
         offRoute ? [.recalculate, .continueOriginalRoute, .requestNewTaxi] : []
     }
 
+    /// The pilot's entered gate for the active taxi — the departure gate on the way out,
+    /// the arrival gate on the way in — used to label the taxi map's gate marker. Empty
+    /// when none was set.
+    var activeGate: String { gate }
+
     // MARK: - Test hooks
     //
     // Used by @testable unit tests to drive the mock taxi / runway-crossing workflow

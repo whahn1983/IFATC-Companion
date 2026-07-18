@@ -82,4 +82,38 @@ final class HandoffAndTaxiTests: XCTestCase {
         XCTAssertTrue(model.transcript.contains { $0.displayText.contains("gate B44") },
                       "arrival ramp routing should name the manually-entered gate")
     }
+
+    private func arrivalModel(arrivalGate: String) -> AppModel {
+        let model = AppModel()
+        model.settings.voiceEnabled = false
+        model.settings.mockMode = false
+        var plan = FlightPlan()
+        plan.airline = "United"; plan.flightNumber = "598"
+        plan.departure = "KIAH"; plan.destination = "KMSP"
+        plan.arrivalGate = arrivalGate
+        plan.waypoints = model.mock.route.waypoints
+        model.flightPlan = plan
+        for phase in [FlightPhase.takeoff, .climb, .cruise, .descent, .approach, .landing, .taxiIn] {
+            model.ingestStateForTesting(model.mock.state(for: phase))
+        }
+        return model
+    }
+
+    func testArrivalWithoutGateSkipsTaxiMapAndRouting() {
+        // No arrival gate entered: there's no destination to route to, so the OSM taxi map
+        // and routing are never armed — Ground's generic "taxi to parking" call stands on
+        // its own.
+        let model = arrivalModel(arrivalGate: "")
+        XCTAssertFalse(model.airportSurface.awaitingTaxiReadback,
+                       "no arrival gate → the OSM taxi clearance/map is not armed")
+        XCTAssertFalse(model.airportSurface.taxiMapVisible, "no taxi map without an arrival gate")
+    }
+
+    func testArrivalWithGateArmsTaxiMap() {
+        // Positive control: a manually-entered arrival gate arms the OSM taxi clearance so
+        // the map reveals on read-back.
+        let model = arrivalModel(arrivalGate: "B44")
+        XCTAssertTrue(model.airportSurface.awaitingTaxiReadback,
+                      "an arrival gate arms the OSM taxi clearance")
+    }
 }

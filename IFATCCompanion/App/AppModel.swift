@@ -569,8 +569,16 @@ final class AppModel: ObservableObject {
                 guard let self else { return }
                 switch state {
                 case .groundArrival:
-                    self.prepareArrivalTaxi()
-                    self.airportSurface.taxiClearanceIssued()
+                    // Only drive the OSM taxi map + routing when the pilot has entered an
+                    // arrival gate to taxi to. With none, there is no destination to route
+                    // to, so Ground's generic "taxi to parking" call stands on its own — no
+                    // map, no routing. (Mock mode always supplies a demo gate.)
+                    let hasArrivalGate = !self.flightPlan.arrivalGate
+                        .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    if self.settings.mockMode || hasArrivalGate {
+                        self.prepareArrivalTaxi()
+                        self.airportSurface.taxiClearanceIssued()
+                    }
                 case .parked:
                     self.airportSurface.hideTaxiMap()
                 default:
