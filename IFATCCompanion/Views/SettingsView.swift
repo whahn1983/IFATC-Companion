@@ -341,7 +341,7 @@ struct SettingsView: View {
         } header: {
             Text("Advanced")
         } footer: {
-            Text("IFATC Companion v1.0 — local-only, no accounts, no analytics, no AI.\n© 2026 H3 Consulting Partners LLC.")
+            Text("© 2026 H3 Consulting Partners LLC.")
         }
     }
 }
