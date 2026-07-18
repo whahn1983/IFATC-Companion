@@ -79,10 +79,23 @@ Both the **departure** and **arrival** airport surfaces are cached at flight loa
 the endpoints are known (from the entered plan or Infinite Flight), not lazily right before taxi.
 The departure surface is loaded into the coordinator so its taxi routes **synchronously** and
 Ground issues the detailed clearance immediately; the arrival surface is fetched into the
-provider cache (disk + memory) so its later load is instant and works offline. Pre‑caching is
-live‑only (mock airports build synthetic surfaces on demand) and never disturbs a taxi already in
-progress. On a cold start the departure surface is typically ready by the time the pilot requests
-taxi.
+provider cache (disk + memory) so its later load is instant and works offline. Pre‑caching never
+disturbs a taxi already in progress. On a cold start the departure surface is typically ready by
+the time the pilot requests taxi.
+
+### Mock Mode (simulated demo)
+
+Mock Mode pre‑caches the **whole** origin and destination airports of the demo route (KIAH → KMSP)
+just like live mode, and taxis the **real** fields so the demo shows realistic routing. The
+aircraft is driven by the simulated ticker (there is no live telemetry), but the surface underneath
+is the real, pre‑cached OSM extract. The demo defaults to a realistic **United gate** at each hub
+(Houston Terminal C, Minneapolis Concourse C); any gate the pilot enters wins. The departure taxi
+starts at the real gate stand and routes to the assigned runway; the arrival taxi starts at the
+arrival runway's exit and routes to the gate — so the taxi map appears with simulated movement on
+**both** departure and arrival. If a real extract can't be fetched (offline first run, no OSM
+data) or can't be routed, the demo falls back to the built‑in **synthetic** field so the map and
+drive still work. The entered gate is resolved to a real stand (exact → same concourse → any
+stand), keeping the taxi on an actual United‑area gate even when the exact gate isn't mapped.
 
 ### Asynchronous surface loading
 

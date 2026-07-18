@@ -108,8 +108,20 @@ final class AirportSurfaceCoordinator: ObservableObject {
     private var aircraftClass: AircraftSizeClass = .medium
     private var assignedRunway = ""
     private var gate = ""
+    /// Whether the aircraft is driven by the simulated (mock) ticker rather than live
+    /// telemetry. The surface itself may still be the real, pre-cached OSM field.
     private var mockMode = false
     private var startGate = ""
+    /// The arrival runway (simulated demo): where the rollout starts on a real surface.
+    private var arrivalRunway = ""
+    /// Whether the loaded surface is the synthetic offline fallback rather than a real OSM
+    /// extract. Drives whether a route uses the synthetic demo geometry or the real field's
+    /// gates and runways.
+    private var syntheticSurface = false
+    /// Real, pre-cached OSM surfaces for the simulated (mock) demo's airports, keyed by
+    /// ICAO. When a simulated taxi begins for one of these fields the real field is used —
+    /// so the demo taxis the actual airport — otherwise the synthetic fallback is built.
+    private var simulatedSurfaces: [String: AirportSurfaceModel] = [:]
 
     private var taxiReadBack = false
     /// A generic Ground taxi clearance was issued before the surface finished loading
@@ -197,6 +209,36 @@ final class AirportSurfaceCoordinator: ObservableObject {
         }
     }
 
+    /// Pre-cache the real OSM surfaces for the simulated (mock) demo's origin and
+    /// destination, so the demo taxis the actual airports (not the synthetic offline field)
+    /// and works offline afterward. Each real extract is fetched into the provider cache
+    /// (disk + memory) and held for synchronous use when the simulated taxi begins.
+    /// Best-effort: a field that can't be fetched (offline first-run, no OSM data) simply
+    /// falls back to the synthetic surface when its taxi begins.
+    func prepareSimulatedSurfaces(_ airports: [(icao: String, reference: CLLocationCoordinate2D?)]) {
+        for a in airports {
+            let key = a.icao.uppercased().trimmingCharacters(in: .whitespaces)
+            guard key.count >= 3, let ref = a.reference, ref.isValid,
+                  simulatedSurfaces[key] == nil else { continue }
+            Task { [weak self] in
+                guard let self else { return }
+                do {
+                    let model = try await self.provider.surface(for: key, reference: ref, forceRefresh: false)
+                    self.storeSimulatedSurface(model, key: key)
+                } catch {
+                    let message = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+                    self.diagnostics?.log(.app, "Mock demo surface unavailable for \(key): \(message) (synthetic fallback)")
+                }
+            }
+        }
+    }
+
+    private func storeSimulatedSurface(_ model: AirportSurfaceModel, key: String) {
+        guard model.hasUsableGeometry else { return }
+        simulatedSurfaces[key] = model
+        diagnostics?.log(.app, "Mock demo surface pre-cached for \(key): \(model.runways.count) rwy, \(model.taxiways.count) twy, \(model.confidence.title)")
+    }
+
     /// Warm the disk/memory surface cache for an airport without disturbing the active
     /// taxi surface. Used to pre-cache the arrival field while the departure surface stays
     /// loaded in the coordinator, so the arrival's later load is instant and offline.
@@ -225,9 +267,7 @@ final class AirportSurfaceCoordinator: ObservableObject {
         self.mockMode = mock
 
         if mock {
-            let model = MockAirportSurface.model(icao: key, reference: reference,
-                                                 primaryRunwayIdent: mockPrimaryRunway(), gate: mockGate())
-            applyLoaded(model, generation: generation)
+            loadSimulatedSurface(generation: generation)
             return
         }
 
@@ -271,6 +311,7 @@ final class AirportSurfaceCoordinator: ObservableObject {
         kind = .departure
         aircraftClass = AircraftSizeClass.classify(aircraftName: aircraftName)
         assignedRunway = runway
+        arrivalRunway = ""
         self.gate = gate
         self.startGate = gate
         self.mockMode = mock
@@ -279,12 +320,16 @@ final class AirportSurfaceCoordinator: ObservableObject {
         loadForTaxi(icao: icao, reference: reference, mock: mock)
     }
 
-    /// Prepare an arrival taxi to the gate from the runway exit / current position.
+    /// Prepare an arrival taxi to the gate from the runway exit / current position. The
+    /// arrival runway lets the simulated demo start the rollout where an aircraft exits
+    /// after landing on a real surface (ignored for the synthetic field / live telemetry).
     func beginArrival(icao: String, reference: CLLocationCoordinate2D, aircraftName: String?,
-                      gate: String, startCoordinate: CLLocationCoordinate2D, mock: Bool) {
+                      gate: String, startCoordinate: CLLocationCoordinate2D, mock: Bool,
+                      arrivalRunway: String = "") {
         kind = .arrival
         aircraftClass = AircraftSizeClass.classify(aircraftName: aircraftName)
         assignedRunway = ""
+        self.arrivalRunway = arrivalRunway
         self.gate = gate
         self.startGate = ""
         self.mockMode = mock
@@ -304,9 +349,7 @@ final class AirportSurfaceCoordinator: ObservableObject {
             self.reference = reference
             self.mockMode = true
             status = .loading
-            let model = MockAirportSurface.model(icao: icao, reference: reference,
-                                                 primaryRunwayIdent: mockPrimaryRunway(), gate: mockGate())
-            applyLoaded(model, generation: generation)
+            loadSimulatedSurface(generation: generation)
         } else if surface?.icao == icao.uppercased(), graph != nil {
             self.reference = reference
             recomputeRoute()
@@ -317,7 +360,30 @@ final class AirportSurfaceCoordinator: ObservableObject {
 
     private var pendingStart: CLLocationCoordinate2D?
 
+    /// Load the surface for a simulated (mock) taxi: the real, pre-cached OSM field when it
+    /// is available (so the demo taxis the actual airport), otherwise the synthetic offline
+    /// field. `icao`/`reference` are already set by the caller.
+    private func loadSimulatedSurface(generation: Int) {
+        if let real = simulatedSurfaces[icao], real.hasUsableGeometry {
+            syntheticSurface = false
+            applyLoaded(real, generation: generation)
+        } else {
+            installSyntheticSurface(generation: generation)
+        }
+    }
+
+    /// Build and load the synthetic offline field for the current `icao`/`reference`.
+    /// Used both when no real surface is pre-cached and as a fallback when a real surface
+    /// can't be routed in the demo.
+    private func installSyntheticSurface(generation: Int) {
+        syntheticSurface = true
+        let model = MockAirportSurface.model(icao: icao, reference: reference,
+                                             primaryRunwayIdent: mockPrimaryRunway(), gate: mockGate())
+        applyLoaded(model, generation: generation)
+    }
+
     private func resetTaxiProgress() {
+        syntheticSurface = false
         taxiReadBack = false
         pendingDetailedClearance = false
         lastAlong = 0
@@ -344,21 +410,22 @@ final class AirportSurfaceCoordinator: ObservableObject {
     private func recomputeRoute() {
         guard let graph, let surface, kind != .none else { return }
         let engine = TaxiRouteEngine(graph: graph, model: surface)
-        let start = pendingStart ?? reference
         let request: TaxiRouteEngine.Request
         if kind == .departure {
-            request = .init(startCoordinate: mockMode ? MockAirportSurface.gateCoordinate(reference: reference) : start,
-                            startGateName: mockMode ? mockGate() : (startGate.isEmpty ? nil : startGate),
+            let p = departureRouteParams(surface: surface)
+            request = .init(startCoordinate: p.start,
+                            startGateName: p.gate,
                             isDeparture: true,
-                            assignedRunwayIdent: mockMode ? mockPrimaryRunway() : assignedRunway,
+                            assignedRunwayIdent: p.runway,
                             arrivalGateName: nil,
                             aircraft: aircraftClass)
         } else {
-            request = .init(startCoordinate: mockMode ? MockAirportSurface.runwayExitCoordinate(reference: reference) : start,
+            let p = arrivalRouteParams(surface: surface)
+            request = .init(startCoordinate: p.start,
                             startGateName: nil,
                             isDeparture: false,
                             assignedRunwayIdent: nil,
-                            arrivalGateName: mockMode ? mockGate() : (gate.isEmpty ? nil : gate),
+                            arrivalGateName: p.gate,
                             aircraft: aircraftClass)
         }
 
@@ -367,6 +434,12 @@ final class AirportSurfaceCoordinator: ObservableObject {
             routeConfidence = r.confidence
             if mockMode { assignedRunway = r.holdShortRunway ?? assignedRunway; gate = r.arrivalGate ?? gate }
             diagnostics?.log(.app, "Taxi route \(kind == .departure ? "DEP" : "ARR") \(r.destinationLabel): \(Int(r.distanceMeters)) m, \(r.crossings.count) crossing(s), \(r.confidence.title)")
+        } else if mockMode, !syntheticSurface {
+            // A real, pre-cached surface couldn't be routed in the simulated demo — swap to
+            // the synthetic field so the mock taxi map and drive still work.
+            diagnostics?.log(.app, "Mock demo: real surface unroutable for \(icao); using synthetic fallback")
+            installSyntheticSurface(generation: loadGeneration)
+            return
         } else {
             route = nil
             routeConfidence = surface.hasUsableGeometry ? .low : .unavailable
@@ -378,6 +451,75 @@ final class AirportSurfaceCoordinator: ObservableObject {
         issueDeferredTaxiClearanceIfNeeded()
         // If the pilot already read back the taxi clearance, reveal the map now.
         if taxiReadBack { revealIfReady() }
+    }
+
+    /// Start coordinate, gate name, and runway for the departure route request.
+    /// The synthetic field uses its built-in demo gate/runway; a real surface (live or the
+    /// pre-cached mock demo) uses the entered gate + assigned runway. In the simulated demo
+    /// the start is anchored at the real gate stand, since the mock ticker teleports the
+    /// aircraft to the route start.
+    private func departureRouteParams(surface: AirportSurfaceModel) -> (start: CLLocationCoordinate2D, gate: String?, runway: String) {
+        if syntheticSurface {
+            return (MockAirportSurface.gateCoordinate(reference: reference), mockGate(), mockPrimaryRunway())
+        }
+        if mockMode, let stand = simulatedGateStand(in: surface, named: startGate) {
+            return (stand.coordinate.clLocation, stand.name, assignedRunway)
+        }
+        return (pendingStart ?? reference, startGate.isEmpty ? nil : startGate, assignedRunway)
+    }
+
+    /// Start coordinate and gate name for the arrival route request. The synthetic field
+    /// uses its built-in runway-exit / demo gate; a real surface uses the entered gate,
+    /// starting the rollout where an aircraft would exit after landing.
+    private func arrivalRouteParams(surface: AirportSurfaceModel) -> (start: CLLocationCoordinate2D, gate: String?) {
+        if syntheticSurface {
+            return (MockAirportSurface.runwayExitCoordinate(reference: reference), mockGate())
+        }
+        if mockMode {
+            let start = simulatedRolloutStart(in: surface) ?? pendingStart ?? reference
+            // Resolve the entered gate to a real stand so the taxi ends at (and names) an
+            // actual United-area gate even when the exact gate isn't in the OSM data.
+            let resolved = simulatedGateStand(in: surface, named: gate)?.name
+                ?? (gate.isEmpty ? nil : gate)
+            return (start, resolved)
+        }
+        return (pendingStart ?? reference, gate.isEmpty ? nil : gate)
+    }
+
+    /// Resolve the pilot's entered gate to a real stand on the loaded surface for the mock
+    /// demo: the exact gate when present, else a gate on the same concourse (same leading
+    /// letter — e.g. a United "C…" gate), else any gate/stand. This keeps the simulated taxi
+    /// starting/ending at a real stand even when the exact gate isn't mapped.
+    private func simulatedGateStand(in surface: AirportSurfaceModel, named name: String) -> SurfaceParking? {
+        let key = name.trimmingCharacters(in: .whitespaces)
+        if !key.isEmpty, let exact = surface.parking(named: key) { return exact }
+        let letter = key.prefix { $0.isLetter }.uppercased()
+        if !letter.isEmpty,
+           let sameConcourse = surface.gates.first(where: { $0.name.uppercased().hasPrefix(letter) }) {
+            return sameConcourse
+        }
+        return surface.gates.first ?? surface.parkingPositions.first
+    }
+
+    /// Where the simulated arrival rollout begins on a real surface: the far end of the
+    /// arrival runway (where an aircraft exits after landing), snapped to the surface by the
+    /// route engine. Falls back to the longest runway's far end when the specific runway
+    /// isn't known or mapped.
+    private func simulatedRolloutStart(in surface: AirportSurfaceModel) -> CLLocationCoordinate2D? {
+        let ident = arrivalRunway.trimmingCharacters(in: .whitespaces)
+        if !ident.isEmpty, let end = surface.runwayEnd(ident: ident) {
+            return end.oppositeThreshold.clLocation
+        }
+        if let longest = surface.runways.max(by: { runwayLengthMeters($0) < runwayLengthMeters($1) }),
+           let firstIdent = longest.idents.first, let end = surface.runwayEnd(ident: firstIdent) {
+            return end.oppositeThreshold.clLocation
+        }
+        return surface.runwayEnds.first?.oppositeThreshold.clLocation
+    }
+
+    private func runwayLengthMeters(_ r: SurfaceRunway) -> Double {
+        guard let a = r.centerline.first?.clLocation, let b = r.centerline.last?.clLocation else { return 0 }
+        return SurfaceGeometry.distanceMeters(a, b)
     }
 
     /// Issue the detailed OSM taxi clearance that couldn't be sent when the taxi began
@@ -770,7 +912,10 @@ final class AirportSurfaceCoordinator: ObservableObject {
     }
 
     /// Delete cached surfaces (Settings).
-    func clearCache() { Task { await provider.clearCache() } }
+    func clearCache() {
+        simulatedSurfaces.removeAll()
+        Task { await provider.clearCache() }
+    }
     func cacheInfo() async -> (icaos: [String], bytes: Int) { await provider.cacheInfo() }
 
     // MARK: - Helpers
@@ -902,6 +1047,9 @@ final class AirportSurfaceCoordinator: ObservableObject {
         self.startGate = gate
         self.mockMode = true
         resetTaxiProgress()
+        // A directly-installed test surface is treated as the synthetic demo field so the
+        // route uses the demo gate/runway geometry.
+        syntheticSurface = true
         loadGeneration += 1
         let gen = loadGeneration
         self.icao = model.icao
@@ -975,6 +1123,15 @@ final class AirportSurfaceCoordinator: ObservableObject {
     var routeForTesting: SurfaceTaxiRoute? { route }
     var graphForTesting: SurfaceGraph? { graph }
     var surfaceForTesting: AirportSurfaceModel? { surface }
+    /// Whether the loaded surface is the synthetic offline fallback (test inspection).
+    var usingSyntheticSurfaceForTesting: Bool { syntheticSurface }
+
+    /// Inject a pre-cached "real" surface for a mock airport, as `prepareSimulatedSurfaces`
+    /// would after fetching from OSM — so the simulated-taxi-over-a-real-surface path can be
+    /// driven without a network fetch.
+    func injectSimulatedSurfaceForTesting(_ model: AirportSurfaceModel, icao: String) {
+        simulatedSurfaces[icao.uppercased()] = model
+    }
 
     // MARK: - Diagnostics snapshot
 

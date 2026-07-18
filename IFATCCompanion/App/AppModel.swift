@@ -609,8 +609,16 @@ final class AppModel: ObservableObject {
     /// pre-cache. Safe to call repeatedly — the coordinator/provider dedupe by ICAO and
     /// never disturb an active taxi.
     private func prefetchAirportSurfaces() {
-        guard !settings.mockMode else { return }
         guard !flightPlan.departure.isEmpty || !flightPlan.destination.isEmpty else { return }
+        if settings.mockMode {
+            // Pre-cache the whole origin and destination airports so the mock demo taxis the
+            // real fields (with a synthetic fallback when offline / no OSM data).
+            airportSurface.prepareSimulatedSurfaces([
+                (flightPlan.departure, resolvedDepartureCoordinate()),
+                (flightPlan.destination, resolvedDestinationCoordinate())
+            ])
+            return
+        }
         airportSurface.prefetchFlightSurfaces(
             departure: flightPlan.departure,
             departureReference: resolvedDepartureCoordinate(),
@@ -638,11 +646,15 @@ final class AppModel: ObservableObject {
         guard !icao.isEmpty else { return }
         let ref = resolvedDestinationCoordinate() ?? aircraftState.coordinate
         guard let ref, ref.isValid else { return }
+        // The arrival runway lets the simulated demo start the rollout at the runway exit on
+        // a real surface. Derived the same way the taxi-in clearance resolves it.
+        let arrivalRunway = buildContext(for: .groundArrival, arrivalOverride: true).runway
         airportSurface.beginArrival(icao: icao, reference: ref,
                                     aircraftName: aircraftState.aircraftName,
                                     gate: flightPlan.arrivalGate,
                                     startCoordinate: aircraftState.coordinate ?? ref,
-                                    mock: settings.mockMode)
+                                    mock: settings.mockMode,
+                                    arrivalRunway: arrivalRunway)
     }
 
     /// Whether the pilot filed an arrival gate to taxi to. Drives the arrival taxi map and
@@ -997,7 +1009,14 @@ final class AppModel: ObservableObject {
         }
         settings.mockMode = on
         airportSurface.clear()
-        if on { startMock() } else { startLive() }
+        if on {
+            // Rebuild the plan from the mock route so its realistic default gates apply and
+            // both airports are pre-cached for a realistic taxi demo.
+            syncFlightPlanFromSettings()
+            startMock()
+        } else {
+            startLive()
+        }
     }
 
     func reconnect() {
@@ -2413,8 +2432,12 @@ final class AppModel: ObservableObject {
         plan.sid = settings.sid
         plan.star = settings.star
         plan.approach = settings.approach
-        plan.departureGate = settings.departureGate
-        plan.arrivalGate = settings.arrivalGate
+        // In Mock Mode default to the route's realistic United gate so the demo taxis
+        // from/to a plausible gate; any gate the pilot enters wins.
+        plan.departureGate = settings.departureGate.isEmpty && settings.mockMode
+            ? mock.route.departureGate : settings.departureGate
+        plan.arrivalGate = settings.arrivalGate.isEmpty && settings.mockMode
+            ? mock.route.arrivalGate : settings.arrivalGate
         plan.manualOverride = !settings.departure.isEmpty || !settings.destination.isEmpty
         if settings.mockMode { plan.waypoints = mock.route.waypoints }
         let routeChanged = plan.departure != flightPlan.departure
