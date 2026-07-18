@@ -248,23 +248,24 @@ struct TaxiMapCanvas: View {
                                                       dash: route.confidence <= .low ? [8, 5] : []))
             }
 
-            // Gates / parking (context).
-            if let model = surface.surface {
-                ForEach(model.parkingPositions) { p in
-                    Annotation(expanded ? p.name : "", coordinate: p.coordinate.clLocation) {
-                        Image(systemName: "parkingsign.circle.fill")
-                            .font(.caption)
-                            .foregroundStyle(.mint)
-                    }
+            // Gates / parking (context). Bounded to the stands nearest the route: a large
+            // field (e.g. KJFK) has hundreds of OSM stands, and MapKit for SwiftUI builds a
+            // hosting view per Annotation — rendering them all at the fit-to-route zoom
+            // overwhelmed the map content builder and crashed the app. See `visibleParking`.
+            ForEach(visibleParking) { p in
+                Annotation(expanded ? p.name : "", coordinate: p.coordinate.clLocation) {
+                    Image(systemName: "parkingsign.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.mint)
                 }
-                // Holding positions.
-                ForEach(model.holdingPositions) { hold in
-                    Annotation("", coordinate: hold.coordinate.clLocation) {
-                        Image(systemName: "minus")
-                            .font(.system(size: 12, weight: .heavy))
-                            .foregroundStyle(.yellow)
-                            .rotationEffect(.degrees(90))
-                    }
+            }
+            // Holding positions (bounded the same way).
+            ForEach(visibleHolds) { hold in
+                Annotation("", coordinate: hold.coordinate.clLocation) {
+                    Image(systemName: "minus")
+                        .font(.system(size: 12, weight: .heavy))
+                        .foregroundStyle(.yellow)
+                        .rotationEffect(.degrees(90))
                 }
             }
 
@@ -318,6 +319,28 @@ struct TaxiMapCanvas: View {
         return Color(red: 0.55, green: 0.75, blue: 0.9)
     }
 
+    // MARK: Context-annotation bounding
+    //
+    // Only a bounded number of parking stands / holding positions are drawn — the ones
+    // nearest the assigned route — so a dense field never floods MapKit with annotation
+    // host views. The inline card gets a tighter cap than the expanded full-screen map.
+
+    private var parkingLimit: Int { expanded ? 45 : 14 }
+    private var holdLimit: Int { expanded ? 30 : 16 }
+    private var routePath: [CLLocationCoordinate2D] { surface.route?.clGeometry ?? [] }
+
+    /// Parking stands to draw for context: the nearest to the route, capped.
+    private var visibleParking: [SurfaceParking] {
+        guard let all = surface.surface?.parkingPositions else { return [] }
+        return TaxiMapContent.nearestToRoute(all, route: routePath, limit: parkingLimit) { $0.coordinate.clLocation }
+    }
+
+    /// Holding positions to draw for context: the nearest to the route, capped.
+    private var visibleHolds: [SurfaceHoldingPosition] {
+        guard let all = surface.surface?.holdingPositions else { return [] }
+        return TaxiMapContent.nearestToRoute(all, route: routePath, limit: holdLimit) { $0.coordinate.clLocation }
+    }
+
     /// Fit the camera to the route (falling back to the airport geometry).
     private func fit() {
         if let region = routeRegion() {
@@ -345,6 +368,34 @@ struct TaxiMapCanvas: View {
 }
 
 // MARK: - Shared helpers
+
+/// Pure geometry helpers for the taxi map's on-map content. Kept out of the SwiftUI
+/// view so the annotation-bounding rule can be unit-tested directly.
+enum TaxiMapContent {
+    /// Select the features nearest the route, capped to `limit`.
+    ///
+    /// A large airport has hundreds of OSM stands and dozens of hold points. MapKit for
+    /// SwiftUI creates a hosting view for every `Annotation`, so drawing the full set at
+    /// the fit-to-route zoom overwhelms the map content builder and crashes the app. Only
+    /// the closest `limit` features to the assigned route are drawn for context; the route,
+    /// runways, taxiways, crossings, destination, and aircraft are always shown in full.
+    ///
+    /// Returns the input unchanged when it already fits under `limit`; with no usable route
+    /// the first `limit` features are kept (still bounded).
+    static func nearestToRoute<T>(_ features: [T],
+                                  route: [CLLocationCoordinate2D],
+                                  limit: Int,
+                                  coordinate: (T) -> CLLocationCoordinate2D) -> [T] {
+        guard limit > 0 else { return [] }
+        guard features.count > limit else { return features }
+        guard route.count >= 2 else { return Array(features.prefix(limit)) }
+        return features
+            .map { (feature: $0, distance: SurfaceGeometry.nearestPointOnPath(coordinate($0), route)?.distanceMeters ?? .infinity) }
+            .sorted { $0.distance < $1.distance }
+            .prefix(limit)
+            .map { $0.feature }
+    }
+}
 
 func confidenceLevel(_ c: SurfaceConfidence) -> StatusLevel {
     switch c {
