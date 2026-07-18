@@ -14,6 +14,7 @@ struct DiagnosticsView: View {
                     mockCard
                     liveATCCard
                     phaseCard
+                    AirportSurfaceDiagnosticsCard(surface: model.airportSurface)
                     atisCard
                     weatherStatusCard
                     weatherDiagnosticsCard
@@ -232,5 +233,75 @@ struct DiagnosticsView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+    }
+}
+
+/// Airport Surface Diagnostics: the OpenStreetMap-derived surface, graph, route,
+/// crossing state, and license/attribution — with a text export. Observes the
+/// coordinator directly so it refreshes as the taxi progresses.
+struct AirportSurfaceDiagnosticsCard: View {
+    @ObservedObject var surface: AirportSurfaceCoordinator
+
+    private var d: AirportSurfaceDiagnostics { surface.diagnosticsSnapshot() }
+
+    var body: some View {
+        let snapshot = d
+        Card(title: "Airport Surface (OpenStreetMap)", systemImage: "map") {
+            VStack(alignment: .leading, spacing: 6) {
+                DataRow(label: "Airport", value: snapshot.airportID)
+                DataRow(label: "Source", value: snapshot.sourceProvider)
+                DataRow(label: "License", value: snapshot.license)
+                Link(destination: OSMSurface.copyrightURL) {
+                    Label(snapshot.attribution, systemImage: "link").font(.caption)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                DataRow(label: "Query endpoint", value: shortEndpoint(snapshot.endpoint))
+                DataRow(label: "Fetch date", value: dateText(snapshot.fetchDate))
+                DataRow(label: "Cache age", value: snapshot.cacheAgeDays.map { "\($0) d\(snapshot.stale ? " (stale)" : "")" } ?? "—")
+                DataRow(label: "Source features", value: "\(snapshot.rawFeatureCount)")
+                DataRow(label: "Runways", value: "\(snapshot.runwayCount)")
+                DataRow(label: "Taxiways", value: "\(snapshot.taxiwayCount)")
+                DataRow(label: "Taxilanes", value: "\(snapshot.taxilaneCount)")
+                DataRow(label: "Holding positions", value: "\(snapshot.holdingPositionCount)")
+                DataRow(label: "Gates / parking", value: "\(snapshot.parkingCount)")
+                DataRow(label: "Graph nodes / edges", value: "\(snapshot.graphNodeCount) / \(snapshot.graphEdgeCount)")
+                DataRow(label: "Disconnected components", value: "\(snapshot.disconnectedComponents)")
+                DataRow(label: "Inferred connectors", value: "\(snapshot.inferredConnectors)")
+                DataRow(label: "Snapped segment", value: snapshot.snappedSegment)
+                DataRow(label: "Route distance", value: snapshot.routeDistanceMeters.map { "\(Int($0)) m" } ?? "—")
+                DataRow(label: "Runway crossings", value: "\(snapshot.runwayCrossings)")
+                DataRow(label: "Dataset confidence", value: snapshot.datasetConfidence.title)
+                DataRow(label: "Route confidence", value: snapshot.routeConfidence.title)
+                DataRow(label: "Next crossing", value: snapshot.nextCrossing)
+                DataRow(label: "Crossing state", value: snapshot.crossingState)
+                DataRow(label: "Authorization", value: snapshot.authorizationState)
+                DataRow(label: "Status", value: snapshot.statusText)
+                Text(snapshot.routeSummary)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if let err = snapshot.lastError {
+                    Text("Last error: \(err)").font(.caption).foregroundStyle(.orange)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                ShareLink(item: snapshot.exportText()) {
+                    Label("Export surface diagnostics", systemImage: "square.and.arrow.up").font(.caption)
+                }
+                Text("Surface data © OpenStreetMap contributors — ODbL 1.0. Simulation only.")
+                    .font(.caption2).foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private func dateText(_ date: Date?) -> String {
+        guard let date else { return "—" }
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd HH:mm"
+        return f.string(from: date)
+    }
+
+    private func shortEndpoint(_ s: String) -> String {
+        guard let url = URL(string: s), let host = url.host else { return s }
+        return host
     }
 }
