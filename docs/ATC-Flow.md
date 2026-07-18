@@ -138,10 +138,14 @@ arrival map never briefly shows the departure field while the destination surfac
 On arrival the simulated **Ramp** taxi-in is staged so the calls never all fire at
 once: *"proceed to gate B44 via the ramp"* when you contact Ramp, then *"monitor
 ramp to the gate"* as the aircraft slows to a stop, then the *"Flight complete"*
-block-in once it is actually parked with the parking brake set **near the gate** (a
-parking brake set out on a taxiway does not end the flight). The **arrival gate**
-is taken from the manual-override **Gate** field (Infinite Flight does not expose
-it); when no gate is entered the calls say "the gate".
+block-in once it is actually parked. The flight ends **only when the aircraft is
+stopped with the parking brake set AND tuned to the Ramp frequency** — the
+Ramp-frequency requirement is the map-independent gate, so a parking brake set out on
+a taxiway (before contacting Ramp) never ends the flight, with or without accurate
+taxi-map data. When the taxi map also resolved the gate position, the aircraft must
+additionally be within ~80 m of it. The **arrival gate** is taken from the
+manual-override **Gate** field (Infinite Flight does not expose it); when no gate is
+entered the calls say "the gate".
 
 The **cleared-approach call (step 18)** is issued once the aircraft is *established*
 — the autopilot approach mode (**APPR**) is engaged, or it is lined up on final with

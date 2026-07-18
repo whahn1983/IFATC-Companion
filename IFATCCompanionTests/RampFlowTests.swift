@@ -79,41 +79,47 @@ final class RampFlowTests: XCTestCase {
         XCTAssertTrue(has(model, "Flight complete"), "parked at the gate should complete the flight")
     }
 
-    /// The block-in only fires when the parking brake is set **near the gate** — a brake
-    /// set out on an active taxiway (far from the gate the taxi map routed to) must not end
-    /// the flight. When the gate position is unknown, the plain full-stop-with-brake check
-    /// stands.
-    func testParkingBrakeCompletesOnlyNearTheGate() {
+    /// The flight only ends when the pilot is stopped with the parking brake set **and**
+    /// tuned to the Ramp frequency — the map-independent gate. When the taxi map also
+    /// resolved the gate position, the aircraft must additionally be near it; with no known
+    /// gate, Ramp + parking brake stands on its own.
+    func testParkingBrakeCompletesOnlyWhenTunedToRampAndAtGate() {
         let model = makeModel(mock: false)
         let gate = CLLocationCoordinate2D(latitude: 44.8820, longitude: -93.2220)
 
-        // Stopped with the parking brake set, but ~300 m from the gate (still on a taxiway).
-        var onTaxiway = AircraftState()
-        onTaxiway.onGround = true
-        onTaxiway.groundSpeed = 0
-        onTaxiway.parkingBrakeSet = true
+        // Parked at the gate with the brake set.
+        var atGate = AircraftState()
+        atGate.onGround = true
+        atGate.groundSpeed = 0
+        atGate.parkingBrakeSet = true
+        atGate.latitude = gate.latitude
+        atGate.longitude = gate.longitude
+
+        // Tuned to Ramp + at the gate → completes.
+        XCTAssertTrue(model.isParkedAtGateForTesting(atGate, gate: gate, tunedToRamp: true),
+                      "stopped + brake + tuned to Ramp at the gate completes the flight")
+
+        // Same stop, but NOT tuned to Ramp → does not complete (works with or without map).
+        XCTAssertFalse(model.isParkedAtGateForTesting(atGate, gate: gate, tunedToRamp: false),
+                       "must be tuned to Ramp to end the flight, regardless of position")
+
+        // Tuned to Ramp + brake, but ~300 m from the gate (still on a taxiway) → holds.
+        var onTaxiway = atGate
         let far = Geo.destination(from: gate, bearingDegrees: 90, distanceNM: 300 / 1852.0)
         onTaxiway.latitude = far.latitude
         onTaxiway.longitude = far.longitude
-        XCTAssertFalse(model.isParkedAtGateForTesting(onTaxiway, gate: gate),
-                       "parking brake set far from the gate must not complete the flight")
+        XCTAssertFalse(model.isParkedAtGateForTesting(onTaxiway, gate: gate, tunedToRamp: true),
+                       "a brake set far from the resolved gate must not complete the flight")
 
-        // Parked at the gate → completes.
-        var atGate = onTaxiway
-        atGate.latitude = gate.latitude
-        atGate.longitude = gate.longitude
-        XCTAssertTrue(model.isParkedAtGateForTesting(atGate, gate: gate),
-                      "parking brake set at the gate completes the flight")
+        // Gate position unknown (no arrival taxi / gate not in the surface) → Ramp + brake
+        // completes on its own, wherever the aircraft stopped — works without map data.
+        XCTAssertTrue(model.isParkedAtGateForTesting(onTaxiway, gate: nil, tunedToRamp: true),
+                      "with no known gate, tuned-to-Ramp + parking brake completes")
 
-        // Gate position unknown (no arrival taxi / gate not in the surface) → plain
-        // full-stop-with-brake completion, wherever the aircraft stopped.
-        XCTAssertTrue(model.isParkedAtGateForTesting(onTaxiway, gate: nil),
-                      "with no known gate the full-stop-with-brake check stands")
-
-        // Brake released is never parked, even at the gate.
+        // Brake released is never parked, even at the gate on Ramp.
         var rolling = atGate
         rolling.parkingBrakeSet = false
-        XCTAssertFalse(model.isParkedAtGateForTesting(rolling, gate: gate),
+        XCTAssertFalse(model.isParkedAtGateForTesting(rolling, gate: gate, tunedToRamp: true),
                        "a stop without the parking brake set is not parked")
     }
 

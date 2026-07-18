@@ -1035,10 +1035,13 @@ final class AppModel: ObservableObject {
     var pendingTaxiMapRestoreForTesting: TaxiKind { pendingTaxiMapRestore }
 
     /// Test hook: evaluate the gate-arrival completion gate with an injected gate position
-    /// (the taxi map's real gate coordinate is unavailable offline). Passing `gate: nil`
-    /// exercises the "gate unknown → plain full-stop" fallback.
-    func isParkedAtGateForTesting(_ state: AircraftState, gate: CLLocationCoordinate2D?) -> Bool {
+    /// and Ramp-tuned state (the taxi map's real gate coordinate is unavailable offline).
+    /// Passing `gate: nil` exercises the "gate unknown → Ramp + parking-brake" fallback;
+    /// `tunedToRamp: false` exercises the "not on Ramp → never completes" gate.
+    func isParkedAtGateForTesting(_ state: AircraftState, gate: CLLocationCoordinate2D?,
+                                  tunedToRamp: Bool = true) -> Bool {
         arrivalGatePosition = gate
+        currentFacility = tunedToRamp ? .ramp : .ground
         return isParkedAtGate(state)
     }
 
@@ -1147,7 +1150,10 @@ final class AppModel: ObservableObject {
                 completeGateArrival()
             }
             atcState = stateMachine.current
-            currentFacility = controller(for: stateMachine.current)
+            // Keep the radio on Ramp while taxiing in to the gate (the pilot contacted Ramp
+            // for the gate) — this is the "tuned to Ramp" the completion gate checks. Once
+            // parked, the arrival is over and control returns to the ground/parked facility.
+            currentFacility = awaitingGateArrival ? .ramp : controller(for: stateMachine.current)
             return
         }
 
@@ -1274,6 +1280,17 @@ final class AppModel: ObservableObject {
                                 speak: Bool = true, announceHandoff: Bool = true,
                                 automatic: Bool = false,
                                 overrideTransmission: ATCTransmission? = nil) {
+        // The arrival only completes once parked at the gate — stopped with the parking
+        // brake set AND tuned to the Ramp frequency (see isParkedAtGate). Never advance to
+        // .parked otherwise, so a stop out on a taxiway (or before the pilot contacts Ramp)
+        // can't end the flight, with or without accurate taxi-map data. This is the single
+        // choke point for every telemetry- and check-in-driven path to .parked; the staged
+        // Ramp block-in (awaitingGateArrival) reaches it only once isParkedAtGate is true.
+        if target == .parked, !isParkedAtGate(aircraftState) {
+            atcState = stateMachine.current
+            currentFacility = tunedFacility ?? controller(for: stateMachine.current)
+            return
+        }
         let previous = stateMachine.current
         // The conversation is advancing, so any pending manual tune has now been
         // acted on — the controller working the new state speaks for itself. Capture
@@ -1683,18 +1700,28 @@ final class AppModel: ObservableObject {
         if settings.mockMode { mock.setPhase(.parked) }
     }
 
-    /// Whether the aircraft is genuinely parked at the gate: stopped on the ground with
-    /// the parking brake set (falling back to a full ground stop when the sim does not
-    /// expose the parking brake) **and** actually at the gate. When the taxi map resolved
-    /// the gate position, the aircraft must be within `gateArrivalRadiusMeters` of it, so a
-    /// parking brake set mid-taxi out on a taxiway does not end the flight. If the gate
-    /// position is unknown (no arrival taxi / gate not in the surface data), the plain
-    /// full-stop-with-brake check stands.
+    /// Whether the pilot has the Ramp frequency selected — their deliberate "I'm at the
+    /// gate" signal. Combined with a full stop and the parking brake, this is what ends the
+    /// flight, and it works with or without accurate taxi-map data.
+    private var isTunedToRamp: Bool {
+        currentFacility == .ramp || tunedFacility == .ramp
+    }
+
+    /// Whether the aircraft is genuinely parked at the gate, ready to complete the flight:
+    /// stopped on the ground with the parking brake set (falling back to a full ground stop
+    /// when the sim does not expose the brake) **and** tuned to the Ramp frequency. The
+    /// Ramp requirement is the map-independent gate: a stop out on a taxiway — before the
+    /// pilot has contacted Ramp for the gate — never ends the flight, whether or not the
+    /// taxi map has usable data. When the taxi map additionally resolved the gate position
+    /// (live), the aircraft must also be within `gateArrivalRadiusMeters` of it; otherwise
+    /// the Ramp-frequency + parking-brake check stands. Mock Mode is a scripted demo, so it
+    /// isn't gated on the pilot tuning Ramp.
     private func isParkedAtGate(_ s: AircraftState) -> Bool {
         let stopped = (s.onGround ?? true) && (s.groundSpeed ?? 0) < 1
         let parked = s.parkingBrakeSet.map { stopped && $0 } ?? stopped
         guard parked else { return false }
-        if let gate = arrivalGatePosition, let pos = s.coordinate, pos.isValid {
+        guard settings.mockMode || isTunedToRamp else { return false }
+        if let gate = arrivalGatePosition, let pos = s.coordinate {
             return SurfaceGeometry.distanceMeters(pos, gate) <= Self.gateArrivalRadiusMeters
         }
         return true
@@ -2697,7 +2724,10 @@ final class AppModel: ObservableObject {
         if target == .groundArrival, let taxiCall = lastATCTransmission {
             engageReadbackGate(taxiCall)
         }
-        if target == .parked, !arrivalAnnounced {
+        // Announce the block-in only if the advance to .parked actually happened — the
+        // completion gate in `advanceAndPost` holds it back until the aircraft is parked at
+        // the gate and tuned to Ramp, so check the state machine, not the requested target.
+        if stateMachine.current == .parked, !arrivalAnnounced {
             announceArrival()
             arrivalAnnounced = true
         }
