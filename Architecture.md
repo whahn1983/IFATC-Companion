@@ -116,7 +116,8 @@ The **ATIS** layer surfaces the real airport ATIS at the origin and destination,
 
 ## Mock
 
-- **MockSimulatorFeed** — a sample/mock state feed that drives `AircraftState` and `FlightPlan` through a simulated flight with no Infinite Flight present. This makes the app fully demoable in the iOS Simulator and exercises every downstream layer (phase detection → state machine → phraseology → transcript → speech).
+- **MockSimulatorFeed** — a sample/mock state feed that drives `AircraftState` and `FlightPlan` through a simulated flight with no Infinite Flight present. This makes the app fully demoable in the iOS Simulator and exercises every downstream layer (phase detection → state machine → phraseology → transcript → speech). The demo route (KIAH → KMSP, United 598) carries a realistic default **United gate** at each hub (Houston Terminal C, Minneapolis Concourse C), applied to the flight plan when the pilot enters none.
+- **Mock taxi over the real surface** — at flight load Mock Mode pre-caches the **whole** origin and destination airport surfaces (`AirportSurfaceCoordinator.prepareSimulatedSurfaces`) so the simulated taxi routes over the **actual** OSM field, not a synthetic one — a realistic gate-to-runway departure and runway-exit-to-gate arrival, with the taxi map shown and the aircraft driven by the mock ticker on **both** ends. The synthetic `MockAirportSurface` remains the offline fallback when a real extract can't be fetched or routed. The coordinator keeps "simulated drive" (the mock ticker vs live telemetry) and "synthetic surface" (fallback vs real OSM) as independent flags, so the demo can drive a simulated aircraft across real airport geometry.
 
 ## Data flow
 

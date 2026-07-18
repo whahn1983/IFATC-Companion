@@ -15,6 +15,11 @@ final class MockSimulatorFeed: ObservableObject {
         let destCoord: CLLocationCoordinate2D
         let cruiseAltitude: Int
         let waypoints: [Waypoint]
+        /// Realistic default gate at the origin/destination (a United stand at the mock
+        /// route's hubs), so the demo taxis from/to a plausible gate. Overridden by any
+        /// gate the pilot enters.
+        var departureGate: String = ""
+        var arrivalGate: String = ""
     }
 
     @Published private(set) var phase: FlightPhase = .preflight
@@ -219,7 +224,10 @@ final class MockSimulatorFeed: ObservableObject {
         return Route(departure: "KIAH", destination: "KMSP",
                      depCoord: dep, destCoord: dest, cruiseAltitude: 37000,
                      waypoints: synthWaypoints(dep: dep, dest: dest,
-                                               names: ["TBONE", "KMCI", "KOMA", "KDSM", "FARGO"]))
+                                               names: ["TBONE", "KMCI", "KOMA", "KDSM", "FARGO"]),
+                     // United hubs from a United stand: Terminal C at Houston, Concourse C
+                     // (Terminal 1) at Minneapolis.
+                     departureGate: "C24", arrivalGate: "C6")
     }
 
     nonisolated static func denverRoute() -> Route {
@@ -229,7 +237,9 @@ final class MockSimulatorFeed: ObservableObject {
         return Route(departure: "KDEN", destination: "KMSP",
                      depCoord: dep, destCoord: dest, cruiseAltitude: 35000,
                      waypoints: synthWaypoints(dep: dep, dest: dest,
-                                               names: ["AKO", "ONL", "FSD", "REDWG"]))
+                                               names: ["AKO", "ONL", "FSD", "REDWG"]),
+                     // United hub concourse B at Denver, Concourse C at Minneapolis.
+                     departureGate: "B32", arrivalGate: "C6")
     }
 
     nonisolated private static func synthWaypoints(dep: CLLocationCoordinate2D,
