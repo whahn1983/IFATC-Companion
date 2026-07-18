@@ -392,17 +392,11 @@ final class AppModel: ObservableObject {
     /// Throttle for the opportunistic arrival-ATIS fetch driven from the telemetry loop.
     private var lastArrivalATISAttempt: Date?
 
-    /// Whether ATIS is the frequency the pilot currently has tuned. Set the moment the
-    /// pilot taps the ATIS tune button; cleared the instant they tune any controller /
-    /// ramp frequency. Drives the "active" highlight on the ATIS button (and de-highlights
-    /// the controller buttons while the radio sits on ATIS) so exactly one frequency reads
-    /// as tuned at a time.
-    @Published private(set) var atisTuned = false
-    /// Whether the pilot has already tuned **away** from the ATIS frequency during the
-    /// departure / arrival phase. Once they leave ATIS for a controller (e.g. Ramp), the
-    /// ATIS button hides for that phase — you don't keep re-listening after you've copied
-    /// the information. Tracked per phase so the arrival ATIS button still reappears within
-    /// 100 NM of the destination even though the departure ATIS button was dismissed.
+    /// Whether the pilot has already copied (and moved on from) the ATIS during the
+    /// departure / arrival phase — set once they tune a controller / ramp frequency. The
+    /// ATIS button then hides for that phase: you don't keep re-listening after you've
+    /// copied the information. Tracked per phase so the arrival ATIS button still reappears
+    /// within 100 NM of the destination even though the departure ATIS button was dismissed.
     private var departureATISDismissed = false
     private var arrivalATISDismissed = false
 
@@ -446,6 +440,12 @@ final class AppModel: ObservableObject {
     /// telemetry loop watches for the gate stop and only then announces the block-in
     /// / "flight complete" — so the arrival never claims "parked" mid-taxi.
     private var awaitingGateArrival = false
+
+    /// The gate coordinate captured from the taxi map when the arrival Ramp call was made.
+    /// The block-in only fires once the aircraft is parked within `gateArrivalRadiusMeters`
+    /// of it, so a parking brake set out on a taxiway does not end the flight. Nil when the
+    /// taxi map couldn't resolve a gate, in which case a plain full stop completes.
+    private var arrivalGatePosition: CLLocationCoordinate2D?
 
     /// True once the pilot starts changing controllers with the frequency-tune
     /// buttons. While set, the airborne conversation advances only when the pilot
@@ -569,22 +569,24 @@ final class AppModel: ObservableObject {
                 }
             }
             .store(in: &cancellables)
-        // Prepare the arrival taxi map when Ground issues taxi-to-gate; hide once parked.
+        // Pre-load the arrival surface as the aircraft rolls out; hide the map once parked.
+        // The taxi-in clearance itself (and the map reveal) is driven by
+        // `issueArrivalTaxiClearance` when Ground gives the taxi-to-gate.
         $atcState
             .removeDuplicates()
             .sink { [weak self] state in
                 guard let self else { return }
                 switch state {
-                case .groundArrival:
-                    // Only drive the OSM taxi map + routing when the pilot has entered an
-                    // arrival gate to taxi to. With none, there is no destination to route
-                    // to, so Ground's generic "taxi to parking" call stands on its own — no
-                    // map, no routing. (Mock mode always supplies a demo gate.)
-                    let hasArrivalGate = !self.flightPlan.arrivalGate
-                        .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    if self.settings.mockMode || hasArrivalGate {
+                case .runwayExit:
+                    // Warm the destination surface while the aircraft is still rolling out,
+                    // so the taxi-in clearance can route to the gate rather than fall back to
+                    // a generic "taxi to parking" (the surface is otherwise loaded only at the
+                    // taxi-in itself — too late to route the very first clearance). Live +
+                    // entered gate only: mock builds the surface synchronously, and with no
+                    // gate there is nothing to route to. The map is not revealed here; only
+                    // the surface is loaded.
+                    if !self.settings.mockMode, self.hasArrivalGate {
                         self.prepareArrivalTaxi()
-                        self.airportSurface.taxiClearanceIssued()
                     }
                 case .parked:
                     self.airportSurface.hideTaxiMap()
@@ -641,6 +643,80 @@ final class AppModel: ObservableObject {
                                     gate: flightPlan.arrivalGate,
                                     startCoordinate: aircraftState.coordinate ?? ref,
                                     mock: settings.mockMode)
+    }
+
+    /// Whether the pilot filed an arrival gate to taxi to. Drives the arrival taxi map and
+    /// the gate-routed taxi-in clearance; with none there is nothing to route to, so Ground
+    /// gives a plain "taxi to parking" and no map is shown.
+    private var hasArrivalGate: Bool {
+        !flightPlan.arrivalGate.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// When the aircraft first reached the arrival taxi-in and Ground's clearance is being
+    /// held for the destination surface to load, so the wait can be bounded.
+    private var arrivalRouteWaitStartedAt: Date?
+    /// How long Ground waits for the destination surface to load (and route to the gate)
+    /// before falling back to a generic taxi-in clearance. Both airports are pre-cached at
+    /// flight load and the surface is loaded at the runway exit, so this is normally ready
+    /// at once; the wait only covers a slow load, and it's fine for ATC to take a few
+    /// seconds. Only the genuine "airport data can't be fetched at all" case hits the
+    /// timeout — where waiting longer wouldn't produce a route anyway.
+    private let arrivalRouteWaitTimeout: TimeInterval = 8
+
+    /// Whether to keep holding the automatic arrival taxi-in clearance while the destination
+    /// surface finishes loading, so Ground routes to the gate instead of giving a generic
+    /// "taxi to parking". Returns false (proceed and issue the clearance) when there is no
+    /// gate to route to, in Mock Mode, once a routed clearance is available, or after the
+    /// wait times out. Only the automatic (telemetry-driven) path waits — a pilot-driven
+    /// check-in gets an immediate answer (routed if ready, else generic + supersede).
+    private func shouldWaitForArrivalRoute() -> Bool {
+        guard hasArrivalGate, !settings.mockMode else { arrivalRouteWaitStartedAt = nil; return false }
+        // Make sure the destination surface is loading (normally started at the runway exit).
+        if airportSurface.kind != .arrival { prepareArrivalTaxi() }
+        // A routed clearance is ready — stop waiting and issue it.
+        if airportSurface.taxiClearance(callsign: buildContext(for: .groundArrival).callsign) != nil {
+            arrivalRouteWaitStartedAt = nil
+            return false
+        }
+        // Otherwise hold a few seconds for the surface, then fall back to a generic call.
+        let now = Date()
+        let startedAt = arrivalRouteWaitStartedAt ?? now
+        arrivalRouteWaitStartedAt = startedAt
+        if now.timeIntervalSince(startedAt) >= arrivalRouteWaitTimeout {
+            arrivalRouteWaitStartedAt = nil
+            return false
+        }
+        return true
+    }
+
+    /// Issue Ground's arrival taxi-in clearance, routing to the entered gate once the
+    /// destination surface has loaded. The surface is pre-loaded when the aircraft exits the
+    /// runway (`prepareArrivalTaxi` off `.runwayExit`), and on the automatic path Ground
+    /// waits for the route (`shouldWaitForArrivalRoute`) rather than giving a generic call —
+    /// so the clearance names the taxiways to the gate. On the pilot-driven check-in path a
+    /// generic clearance goes out at once if the route isn't ready yet and is superseded by
+    /// the detailed route the moment the surface resolves. With no entered gate there is
+    /// nothing to route to, so a plain "taxi to parking" stands alone (no map).
+    private func issueArrivalTaxiClearance(announceHandoff: Bool, automatic: Bool) {
+        let c = buildContext(for: .groundArrival)
+        guard settings.mockMode || hasArrivalGate else {
+            // No gate to route to: keep the plain generic clearance, no taxi map.
+            advanceAndPost(to: .groundArrival, context: c,
+                           announceHandoff: announceHandoff, automatic: automatic)
+            return
+        }
+        // (Re)load the arrival route from the aircraft's current position. The surface is
+        // normally already loaded from the runway-exit pre-load, so this resolves the route
+        // synchronously; an uncached field is still loading and resolves shortly after.
+        prepareArrivalTaxi()
+        // Route to the gate when the surface is ready; otherwise a generic clearance goes out
+        // now and the detailed route supersedes it once the surface finishes loading.
+        let osm = hasArrivalGate ? airportSurface.taxiClearance(callsign: c.callsign) : nil
+        advanceAndPost(to: .groundArrival, context: c, announceHandoff: announceHandoff,
+                       automatic: automatic, overrideTransmission: osm)
+        // Reveal the map on the pilot's read-back; supersede the generic clearance with the
+        // detailed route once an uncached surface loads.
+        airportSurface.taxiClearanceIssued(supersedeWhenRouteReady: hasArrivalGate && osm == nil)
     }
 
     // MARK: - Lifecycle
@@ -995,6 +1071,17 @@ final class AppModel: ObservableObject {
     /// Test hook: the pending taxi-map restore kind (`.none` when nothing is queued).
     var pendingTaxiMapRestoreForTesting: TaxiKind { pendingTaxiMapRestore }
 
+    /// Test hook: evaluate the gate-arrival completion gate with an injected gate position
+    /// and Ramp-tuned state (the taxi map's real gate coordinate is unavailable offline).
+    /// Passing `gate: nil` exercises the "gate unknown → Ramp + parking-brake" fallback;
+    /// `tunedToRamp: false` exercises the "not on Ramp → never completes" gate.
+    func isParkedAtGateForTesting(_ state: AircraftState, gate: CLLocationCoordinate2D?,
+                                  tunedToRamp: Bool = true) -> Bool {
+        arrivalGatePosition = gate
+        currentFacility = tunedToRamp ? .ramp : .ground
+        return isParkedAtGate(state)
+    }
+
     /// Test hook: force the confirm-clear window to have elapsed, so the next recompute
     /// drops a held (no-longer-detected) conflict instead of waiting out the real
     /// hysteresis window. Only affects a conflict no longer present in the locked set.
@@ -1100,7 +1187,10 @@ final class AppModel: ObservableObject {
                 completeGateArrival()
             }
             atcState = stateMachine.current
-            currentFacility = controller(for: stateMachine.current)
+            // Keep the radio on Ramp while taxiing in to the gate (the pilot contacted Ramp
+            // for the gate) — this is the "tuned to Ramp" the completion gate checks. Once
+            // parked, the arrival is over and control returns to the ground/parked facility.
+            currentFacility = awaitingGateArrival ? .ramp : controller(for: stateMachine.current)
             return
         }
 
@@ -1163,14 +1253,28 @@ final class AppModel: ObservableObject {
         let previousState = stateMachine.current
         let target = adjustedAirborneTarget(mapped: mapped, state: state)
         if isForward(target) {
-            advanceAndPost(to: target, context: buildContext(for: target), automatic: true)
-            // Once the approach is cleared and the aircraft is established, Approach
-            // hands the pilot to Tower (instruction first, then the hand-off — the
-            // reverse of the usual "contact … then instruction" order, so it is
-            // posted explicitly here rather than via the generic facility-change
-            // hand-off, which the .final → .landing step then suppresses).
-            if previousState != .final, stateMachine.current == .final {
-                announceApproachToTowerHandoff()
+            if target == .groundArrival, previousState != .groundArrival {
+                // Arrival taxi-in: wait for the destination surface so Ground routes the
+                // clearance to the gate rather than giving a generic "taxi to parking". Both
+                // airports are pre-cached at flight load and the surface is loaded at the
+                // runway exit, so this is normally ready at once; otherwise hold a few
+                // seconds (re-checking each telemetry tick) before falling back.
+                if shouldWaitForArrivalRoute() {
+                    atcState = stateMachine.current
+                    currentFacility = controller(for: stateMachine.current)
+                    return
+                }
+                issueArrivalTaxiClearance(announceHandoff: true, automatic: true)
+            } else {
+                advanceAndPost(to: target, context: buildContext(for: target), automatic: true)
+                // Once the approach is cleared and the aircraft is established, Approach
+                // hands the pilot to Tower (instruction first, then the hand-off — the
+                // reverse of the usual "contact … then instruction" order, so it is
+                // posted explicitly here rather than via the generic facility-change
+                // hand-off, which the .final → .landing step then suppresses).
+                if previousState != .final, stateMachine.current == .final {
+                    announceApproachToTowerHandoff()
+                }
             }
         }
 
@@ -1221,6 +1325,17 @@ final class AppModel: ObservableObject {
                                 speak: Bool = true, announceHandoff: Bool = true,
                                 automatic: Bool = false,
                                 overrideTransmission: ATCTransmission? = nil) {
+        // The arrival only completes once parked at the gate — stopped with the parking
+        // brake set AND tuned to the Ramp frequency (see isParkedAtGate). Never advance to
+        // .parked otherwise, so a stop out on a taxiway (or before the pilot contacts Ramp)
+        // can't end the flight, with or without accurate taxi-map data. This is the single
+        // choke point for every telemetry- and check-in-driven path to .parked; the staged
+        // Ramp block-in (awaitingGateArrival) reaches it only once isParkedAtGate is true.
+        if target == .parked, !isParkedAtGate(aircraftState) {
+            atcState = stateMachine.current
+            currentFacility = tunedFacility ?? controller(for: stateMachine.current)
+            return
+        }
         let previous = stateMachine.current
         // The conversation is advancing, so any pending manual tune has now been
         // acted on — the controller working the new state speaks for itself. Capture
@@ -1619,6 +1734,10 @@ final class AppModel: ObservableObject {
         gateMonitored = false
         awaitingGateArrival = true
         atcState = .groundArrival
+        // Remember where the gate is (from the taxi map) before the map is hidden and its
+        // geometry cleared, so the block-in only fires once the aircraft is actually parked
+        // at the gate — a parking brake set out on a taxiway must not end the flight.
+        arrivalGatePosition = airportSurface.arrivalGateCoordinate
         // The ramp/gate phase has taken over from Ground — hide the taxi map.
         airportSurface.hideTaxiMap()
         // In mock mode advance the scripted aircraft to the gate so the monitored
@@ -1626,19 +1745,44 @@ final class AppModel: ObservableObject {
         if settings.mockMode { mock.setPhase(.parked) }
     }
 
-    /// Whether the aircraft is genuinely parked at the gate: stopped on the ground
-    /// with the parking brake set. Falls back to a full ground stop when the sim
-    /// does not expose the parking brake.
+    /// Whether the pilot has the Ramp frequency selected — their deliberate "I'm at the
+    /// gate" signal. Combined with a full stop and the parking brake, this is what ends the
+    /// flight, and it works with or without accurate taxi-map data.
+    private var isTunedToRamp: Bool {
+        currentFacility == .ramp || tunedFacility == .ramp
+    }
+
+    /// Whether the aircraft is genuinely parked at the gate, ready to complete the flight:
+    /// stopped on the ground with the parking brake set (falling back to a full ground stop
+    /// when the sim does not expose the brake) **and** tuned to the Ramp frequency. The
+    /// Ramp requirement is the map-independent gate: a stop out on a taxiway — before the
+    /// pilot has contacted Ramp for the gate — never ends the flight, whether or not the
+    /// taxi map has usable data. When the taxi map additionally resolved the gate position
+    /// (live), the aircraft must also be within `gateArrivalRadiusMeters` of it; otherwise
+    /// the Ramp-frequency + parking-brake check stands. Mock Mode is a scripted demo, so it
+    /// isn't gated on the pilot tuning Ramp.
     private func isParkedAtGate(_ s: AircraftState) -> Bool {
         let stopped = (s.onGround ?? true) && (s.groundSpeed ?? 0) < 1
-        if let brake = s.parkingBrakeSet { return stopped && brake }
-        return stopped
+        let parked = s.parkingBrakeSet.map { stopped && $0 } ?? stopped
+        guard parked else { return false }
+        guard settings.mockMode || isTunedToRamp else { return false }
+        if let gate = arrivalGatePosition, let pos = s.coordinate {
+            return SurfaceGeometry.distanceMeters(pos, gate) <= Self.gateArrivalRadiusMeters
+        }
+        return true
     }
+
+    /// How close (meters) to the gate the aircraft must be — with the parking brake set —
+    /// before the arrival is declared complete. Generous enough to absorb the offset
+    /// between the OSM stand and the Infinite Flight scenery, tight enough to exclude a
+    /// parking-brake stop out on an active taxiway.
+    private static let gateArrivalRadiusMeters = 80.0
 
     /// Finish the monitored arrival once stopped at the gate: block-in on Ramp and
     /// the "flight complete" advisory, then settle into the parked state.
     private func completeGateArrival() {
         awaitingGateArrival = false
+        arrivalGatePosition = nil
         let c = buildContext(for: .parked, arrivalOverride: true)
         advanceAndPost(to: .parked, context: c, announceHandoff: false)
         if !arrivalAnnounced { announceArrival(); arrivalAnnounced = true }
@@ -2071,8 +2215,6 @@ final class AppModel: ObservableObject {
             // Only the gate-bound arrival taxi drives a map; a generic "taxi to parking"
             // with no entered gate has nothing to route to (mirrors the arrival-taxi gate
             // check on the normal path).
-            let hasArrivalGate = !flightPlan.arrivalGate
-                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             pendingTaxiMapRestore = hasArrivalGate ? .arrival : .none
         } else {
             pendingTaxiMapRestore = .none
@@ -2609,7 +2751,13 @@ final class AppModel: ObservableObject {
                                              targetAltitude: assignedAltitude,
                                              onGround: aircraftState.onGround ?? false),
                                     word: atisWord))
-        advanceAndPost(to: target, context: c, announceHandoff: false)
+        if target == .groundArrival {
+            // Arrival taxi-in: route the clearance to the gate once the destination surface
+            // has loaded (pre-loaded at the runway exit), rather than a generic clearance.
+            issueArrivalTaxiClearance(announceHandoff: false, automatic: false)
+        } else {
+            advanceAndPost(to: target, context: c, announceHandoff: false)
+        }
         // Arrival taxi-in: hold the conversation on Ground until the pilot reads the
         // taxi-to-gate back. A check-in-driven call does not normally close the
         // read-back gate (the pilot is driving), but on arrival nothing else holds
@@ -2621,7 +2769,10 @@ final class AppModel: ObservableObject {
         if target == .groundArrival, let taxiCall = lastATCTransmission {
             engageReadbackGate(taxiCall)
         }
-        if target == .parked, !arrivalAnnounced {
+        // Announce the block-in only if the advance to .parked actually happened — the
+        // completion gate in `advanceAndPost` holds it back until the aircraft is parked at
+        // the gate and tuned to Ramp, so check the state machine, not the requested target.
+        if stateMachine.current == .parked, !arrivalAnnounced {
             announceArrival()
             arrivalAnnounced = true
         }
@@ -4823,6 +4974,8 @@ final class AppModel: ObservableObject {
         hasDeparted = false
         arrivalAnnounced = false
         awaitingGateArrival = false
+        arrivalGatePosition = nil
+        arrivalRouteWaitStartedAt = nil
         gateMonitored = false
         lastSpokenText = ""
         lastSpokenIntent = nil
@@ -4891,9 +5044,10 @@ extension AppModel {
         return currentATISIsArrival ? !arrivalATISDismissed : !departureATISDismissed
     }
 
-    /// Whether the ATIS tune button should read as the active (tuned) frequency —
-    /// true only while ATIS is what the radio is parked on and the button is shown.
-    var atisButtonActive: Bool { atisTuned && atisButtonVisible }
+    /// The ATIS button never reads as the active (tuned) frequency: tapping it plays the
+    /// latest broadcast and captures the information code, but the radio stays on the
+    /// controller the pilot is already on. The active highlight belongs to that controller.
+    var atisButtonActive: Bool { false }
 
     /// The ICAO whose ATIS is relevant right now (destination on arrival, else origin).
     var atisAirport: String {
@@ -4998,21 +5152,19 @@ extension AppModel {
 
     // MARK: Tuning
 
-    /// Tune the ATIS frequency for the current phase (origin pre-departure, or the
+    /// Play the ATIS broadcast for the current phase (origin pre-departure, or the
     /// destination within 100 NM). Immediately pulls the **latest** ATIS, plays it on
     /// the ATIS voice, and stores the information code so it is appended to the taxi
-    /// request (departure) / approach check-in (arrival). No controller replies — ATIS
-    /// is a one-way broadcast — so this never advances the state machine or the
-    /// read-back gate.
+    /// request (departure) / approach check-in (arrival). Like listening in on a second
+    /// radio, this **leaves the pilot tuned to their current frequency** — it does not
+    /// make ATIS the active frequency. No controller replies — ATIS is a one-way
+    /// broadcast — so this never advances the state machine or the read-back gate.
     func tuneATIS() {
         guard atisButtonVisible else { return }
         let arrival = currentATISIsArrival
         let icao = arrival ? flightPlan.destination : flightPlan.departure
         guard !icao.isEmpty else { return }
-        // The radio is now parked on ATIS: highlight the ATIS button and drop the
-        // active highlight from the controller buttons until the pilot tunes onward.
-        atisTuned = true
-        diagnostics.log(.atis, "Tuning \(icao) ATIS — pulling latest.")
+        diagnostics.log(.atis, "Playing \(icao) ATIS — pulling latest.")
         // Mock mode is a fully offline demo (and the unit-test path): replay the already
         // injected/cached report rather than hitting the live feed.
         if settings.mockMode {
@@ -5097,13 +5249,12 @@ extension AppModel {
         return out
     }
 
-    /// Leave the ATIS frequency because the pilot tuned a controller / ramp. Clears the
-    /// ATIS "active" highlight and, if an ATIS was actually available to leave, dismisses
-    /// the button for the current phase so it drops out of the frequency grid. Guarding on
+    /// The pilot tuned a controller / ramp, so they've moved on from the ATIS for this
+    /// phase: if an ATIS was actually available, dismiss its button so it drops out of the
+    /// frequency grid (you don't keep re-listening after you've copied it). Guarding on
     /// availability means an early tune before the feed arrives never permanently hides a
     /// later-arriving ATIS. Called from `tuneTo`.
     func leaveATISFrequency() {
-        atisTuned = false
         guard currentATIS != nil else { return }
         if currentATISIsArrival { arrivalATISDismissed = true } else { departureATISDismissed = true }
     }
@@ -5126,10 +5277,9 @@ extension AppModel {
     /// The refresh now updates them in place, and an endpoint change still drops the
     /// stale report via `updateFlightPlan`.
     func resetATISState(clearReported: Bool) {
-        // Tune / dismissal state is per-flight visibility: always reset it so a fresh
+        // Dismissal state is per-flight visibility: always reset it so a fresh
         // (or re-derived) flight shows the ATIS button again. A resume restores the
         // dismissal flags afterwards from the snapshot.
-        atisTuned = false
         departureATISDismissed = false
         arrivalATISDismissed = false
         if clearReported {

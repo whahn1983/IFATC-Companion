@@ -122,15 +122,36 @@ as periodic Center check-ins (additional sector frequencies are not simulated).
 | 19 | Short final | **Approach → Tower** | "Contact Tower on *freq*." | `handoff(from:to:)` | IF hand-off |
 | 20 | Final | **Tower** | "Wind *…*, runway *XX*, cleared to land." | `clearedToLand` | IF landing clearance |
 | 21 | Rollout | **Tower** | "Exit the runway when able, contact Ground on *freq* once on the taxiway." | `exitRunwayContactGround` | IF rollout |
-| 22 | Taxi in | **Ground** | "Taxi to parking via *taxiways*." | `taxiToParking` | IF taxi |
+| 22 | Taxi in | **Ground** | "Taxi to gate *X* via *taxiways*." (or "taxi to parking" with no gate) | `arrivalTaxi` / `taxiToParking` | IF taxi |
 | 23 | At gate | **Ground** | "Welcome to *city*, good day." (shutdown) | `welcomeArrival` | courtesy |
+
+When an arrival gate is entered, the **taxi-in clearance routes to the gate** over the
+OpenStreetMap airport surface, the same way the departure taxi routes to the runway.
+**Both airports' surfaces are pre-cached at flight load** (as soon as the flight plan is
+known), and the destination surface is loaded when the aircraft exits the runway, so on
+landing all that remains is to calculate the best route to the gate from the current
+position. On the automatic path **Ground waits for that route** (re-checking each
+telemetry tick, up to a few seconds) rather than giving a generic "taxi to parking" — it
+is fine for ATC to take a moment to respond. Only if the airport data genuinely can't be
+fetched at all does it time out to a generic clearance (where waiting longer wouldn't
+produce a route anyway). On a pilot-driven check-in the clearance is immediate — routed
+if ready, otherwise generic and **superseded** by the detailed gate route the moment the
+surface loads. With no gate entered there is nothing to route to, so a plain "taxi to
+parking" stands alone (no map). The taxi map's geometry is **cleared each time the map is
+removed**, so the arrival map never briefly shows the departure field while the
+destination surface loads.
 
 On arrival the simulated **Ramp** taxi-in is staged so the calls never all fire at
 once: *"proceed to gate B44 via the ramp"* when you contact Ramp, then *"monitor
 ramp to the gate"* as the aircraft slows to a stop, then the *"Flight complete"*
-block-in once it is actually parked with the parking brake set. The **arrival gate**
-is taken from the manual-override **Gate** field (Infinite Flight does not expose
-it); when no gate is entered the calls say "the gate".
+block-in once it is actually parked. The flight ends **only when the aircraft is
+stopped with the parking brake set AND tuned to the Ramp frequency** — the
+Ramp-frequency requirement is the map-independent gate, so a parking brake set out on
+a taxiway (before contacting Ramp) never ends the flight, with or without accurate
+taxi-map data. When the taxi map also resolved the gate position, the aircraft must
+additionally be within ~80 m of it. The **arrival gate** is taken from the
+manual-override **Gate** field (Infinite Flight does not expose it); when no gate is
+entered the calls say "the gate".
 
 The **cleared-approach call (step 18)** is issued once the aircraft is *established*
 — the autopilot approach mode (**APPR**) is engaged, or it is lined up on final with

@@ -1,4 +1,5 @@
 import XCTest
+import CoreLocation
 @testable import IFATCCompanion
 
 /// The "Ramp" button is context-aware: pushback before departure, taxi-to-gate on
@@ -76,6 +77,50 @@ final class RampFlowTests: XCTestCase {
         // Parked at the gate with the brake set → block-in / flight complete.
         model.ingestStateForTesting(model.mock.state(for: .parked))
         XCTAssertTrue(has(model, "Flight complete"), "parked at the gate should complete the flight")
+    }
+
+    /// The flight only ends when the pilot is stopped with the parking brake set **and**
+    /// tuned to the Ramp frequency — the map-independent gate. When the taxi map also
+    /// resolved the gate position, the aircraft must additionally be near it; with no known
+    /// gate, Ramp + parking brake stands on its own.
+    func testParkingBrakeCompletesOnlyWhenTunedToRampAndAtGate() {
+        let model = makeModel(mock: false)
+        let gate = CLLocationCoordinate2D(latitude: 44.8820, longitude: -93.2220)
+
+        // Parked at the gate with the brake set.
+        var atGate = AircraftState()
+        atGate.onGround = true
+        atGate.groundSpeed = 0
+        atGate.parkingBrakeSet = true
+        atGate.latitude = gate.latitude
+        atGate.longitude = gate.longitude
+
+        // Tuned to Ramp + at the gate → completes.
+        XCTAssertTrue(model.isParkedAtGateForTesting(atGate, gate: gate, tunedToRamp: true),
+                      "stopped + brake + tuned to Ramp at the gate completes the flight")
+
+        // Same stop, but NOT tuned to Ramp → does not complete (works with or without map).
+        XCTAssertFalse(model.isParkedAtGateForTesting(atGate, gate: gate, tunedToRamp: false),
+                       "must be tuned to Ramp to end the flight, regardless of position")
+
+        // Tuned to Ramp + brake, but ~300 m from the gate (still on a taxiway) → holds.
+        var onTaxiway = atGate
+        let far = Geo.destination(from: gate, bearingDegrees: 90, distanceNM: 300 / 1852.0)
+        onTaxiway.latitude = far.latitude
+        onTaxiway.longitude = far.longitude
+        XCTAssertFalse(model.isParkedAtGateForTesting(onTaxiway, gate: gate, tunedToRamp: true),
+                       "a brake set far from the resolved gate must not complete the flight")
+
+        // Gate position unknown (no arrival taxi / gate not in the surface) → Ramp + brake
+        // completes on its own, wherever the aircraft stopped — works without map data.
+        XCTAssertTrue(model.isParkedAtGateForTesting(onTaxiway, gate: nil, tunedToRamp: true),
+                      "with no known gate, tuned-to-Ramp + parking brake completes")
+
+        // Brake released is never parked, even at the gate on Ramp.
+        var rolling = atGate
+        rolling.parkingBrakeSet = false
+        XCTAssertFalse(model.isParkedAtGateForTesting(rolling, gate: gate, tunedToRamp: true),
+                       "a stop without the parking brake set is not parked")
     }
 
     /// Reading back on the arrival Ramp must echo the ramp routing ("proceed to gate

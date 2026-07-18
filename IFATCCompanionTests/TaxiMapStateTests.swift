@@ -108,6 +108,49 @@ final class TaxiMapStateTests: XCTestCase {
         XCTAssertTrue(coord.taxiMapVisible, "taxi map appears after the superseding clearance is read back")
     }
 
+    func testLiveArrivalTaxiClearanceSupersedesGenericOnceSurfaceLoads() {
+        // Live arrival at an uncached field: the taxi-to-gate goes out generic before the
+        // destination surface loads, then the detailed OSM gate route supersedes it once the
+        // fetch resolves — and its read-back reveals the taxi map at the destination.
+        let coord = AirportSurfaceCoordinator()
+        var emitted: [ATCTransmission] = []
+        let engine = PhraseologyEngine(digitStyle: .individual, mode: .faa)
+        coord.configure(diagnostics: nil, engine: engine, emit: { emitted.append($0) },
+                        callsign: { engine.callsign(airline: "United", flightNumber: "598", fallback: "") })
+
+        let model = MockAirportSurface.model(icao: "KTEST", reference: ref,
+                                             primaryRunwayIdent: "36", gate: "A1")
+        coord.simulateDeferredArrivalForTesting(model: model, gate: "A1")
+
+        // A detailed gate route ("taxi to gate A1 via …") was issued once the surface loaded.
+        let last = emitted.last?.displayText.lowercased() ?? ""
+        XCTAssertTrue(last.contains("taxi to gate a1 via"), "detailed OSM arrival route issued: \(last)")
+        XCTAssertNotNil(coord.routeForTesting)
+
+        // Reading it back reveals the taxi map.
+        XCTAssertFalse(coord.taxiMapVisible, "map hidden until the pilot reads back the clearance")
+        coord.taxiReadBackComplete()
+        XCTAssertTrue(coord.taxiMapVisible, "taxi map appears after the arrival clearance is read back")
+    }
+
+    func testHidingTaxiMapClearsGeometrySoNextTaxiStartsFresh() {
+        // Removing the map clears its geometry, so the next taxi never briefly shows the
+        // previous airport's surface while the new one loads (the arrival map popping up
+        // still showing the departure field).
+        let coord = AirportSurfaceCoordinator()
+        let engine = PhraseologyEngine(digitStyle: .individual, mode: .faa)
+        coord.configure(diagnostics: nil, engine: engine, emit: { _ in },
+                        callsign: { engine.callsign(airline: "United", flightNumber: "598", fallback: "") })
+
+        coord.beginMockTaxiForTesting(kind: .departure, reference: ref, runway: "36", gate: "A1")
+        XCTAssertNotNil(coord.routeForTesting)
+        XCTAssertNotNil(coord.surfaceForTesting)
+
+        coord.hideTaxiMap()
+        XCTAssertNil(coord.routeForTesting, "route is cleared when the map is removed")
+        XCTAssertNil(coord.surfaceForTesting, "surface is cleared when the map is removed")
+    }
+
     func testResumeAfterRelaunchRevealsMapWithoutFreshReadback() {
         // The app was swiped away mid-taxi. On relaunch the taxi is re-begun but there is
         // no fresh read-back — `resumeTaxiAfterRelaunch` must reveal the map once the route

@@ -377,7 +377,7 @@ struct ATCView: View {
                         FrequencyButton(title: facility.title,
                                         systemImage: facility.symbol,
                                         frequency: model.frequencyText(for: facility),
-                                        active: model.currentFacility == facility && !model.atisTuned,
+                                        active: model.currentFacility == facility,
                                         enabled: model.canTune(facility)) {
                             model.tuneTo(facility)
                         }
@@ -386,7 +386,7 @@ struct ATCView: View {
                         FrequencyButton(title: "Ramp",
                                         systemImage: "parkingsign",
                                         frequency: model.frequencyText(for: .ramp),
-                                        active: model.currentFacility == .ramp && !model.atisTuned,
+                                        active: model.currentFacility == .ramp,
                                         enabled: true) {
                             // Tuning only moves the radio — like every other frequency
                             // button. The actual call (pushback / taxi-to-gate) is made
@@ -396,7 +396,7 @@ struct ATCView: View {
                     }
                 }
                 if model.atisButtonVisible {
-                    Text("Tune ATIS for \(model.atisAirport)'s latest broadcast — the information code is added to your \(model.currentATISIsArrival ? "arrival check-in" : "taxi request"). Tuning any controller leaves the ATIS frequency.")
+                    Text("Play \(model.atisAirport)'s latest ATIS — the information code is added to your \(model.currentATISIsArrival ? "arrival check-in" : "taxi request"). You stay tuned to your current frequency.")
                         .font(.caption2).foregroundStyle(.tertiary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }

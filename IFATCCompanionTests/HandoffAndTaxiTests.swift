@@ -110,10 +110,12 @@ final class HandoffAndTaxiTests: XCTestCase {
     }
 
     func testArrivalWithGateArmsTaxiMap() {
-        // Positive control: a manually-entered arrival gate arms the OSM taxi clearance so
-        // the map reveals on read-back.
+        // Positive control: a manually-entered arrival gate begins the OSM arrival taxi.
+        // Ground waits for the destination surface to load so it can route to the gate
+        // (rather than giving a generic clearance); offline, with no surface, the flow holds
+        // with the arrival taxi armed, and the routed clearance follows once it loads.
         let model = arrivalModel(arrivalGate: "B44")
-        XCTAssertTrue(model.airportSurface.awaitingTaxiReadback,
-                      "an arrival gate arms the OSM taxi clearance")
+        XCTAssertEqual(model.airportSurface.kind, .arrival,
+                       "an arrival gate begins the OSM arrival taxi and waits for the route")
     }
 }
