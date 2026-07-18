@@ -105,7 +105,7 @@
   <header class="page">
     <h1>IFATC Companion — Privacy Policy</h1>
     <p class="meta"><strong>Effective date:</strong> June 29, 2026</p>
-    <p class="meta"><strong>Last updated:</strong> July 7, 2026</p>
+    <p class="meta"><strong>Last updated:</strong> July 18, 2026</p>
     <p class="meta"><strong>Applies to:</strong> the IFATC Companion iOS application ("the App", "we", "us", "our").</p>
   </header>
 
@@ -144,7 +144,9 @@
   <p class="muted">
     IFATC Companion is an independent companion app. It is not affiliated with, endorsed by, or
     sponsored by Infinite Flight Corporation, the Infinite Flight Air Traffic Control (IFATC) program, the
-    U.S. National Oceanic and Atmospheric Administration (NOAA), or Apple Inc.
+    U.S. National Oceanic and Atmospheric Administration (NOAA), the U.S. Federal Aviation Administration
+    (FAA), the OpenStreetMap Foundation, EUMETNET, NASA, the vATIS project / <code>datis.clowd.io</code>,
+    or Apple Inc.
   </p>
 
   <h2>2. Summary of data practices</h2>
@@ -152,10 +154,13 @@
     <p style="margin:0;">
       <strong>The App does not collect, store, or transmit personally identifiable information to us or
       to any analytics, advertising, or tracking service.</strong> There is no developer-operated
-      backend, and we never receive your data. The App functions entirely on your device, except for
-      two narrowly scoped network activities described below: (a) a connection to Infinite Flight on
-      your <em>local</em> Wi-Fi network, and (b) requests to a public aviation-weather service for
-      METAR/TAF/PIREP/SIGMET reports.
+      backend, and we never receive your data. The App functions entirely on your device, except for a
+      small set of narrowly scoped network activities described below: (a) a connection to Infinite Flight
+      on your <em>local</em> Wi-Fi network; and requests to free, public, keyless services for
+      (b) aviation weather (METAR/TAF/PIREP/SIGMET reports), (c) radar and satellite precipitation
+      imagery for the map area you are viewing, (d) real-world airport ATIS (D-ATIS) broadcasts, and
+      (e) OpenStreetMap airport-surface geometry for the taxi map and routing. None of these requests
+      include an account, name, email, or contact information, and none of your data is sent to us.
     </p>
   </div>
 
@@ -244,7 +249,46 @@
     <li>These services require no API key and no account.</li>
   </ul>
 
-  <h3>3.4 Maps</h3>
+  <h3>3.4 Real-world ATIS (D-ATIS) requests (internet)</h3>
+  <p>
+    The ATC features can play the current real-world <strong>ATIS</strong> (Automatic Terminal
+    Information Service) for your departure and arrival airports. When you tune ATIS, the App fetches the
+    airport's FAA <strong>Digital ATIS (D-ATIS)</strong> text from the free, public, keyless community
+    endpoint at <code>datis.clowd.io</code> (built and maintained by the vATIS project and sourced from
+    the FAA's SWIM system). This request requires no API key and no account.
+  </p>
+  <ul>
+    <li>The request contains <strong>only the airport identifier</strong> (for example <code>KLAX</code>)
+      — no name, email, account, device identifier, or personal contact information.</li>
+    <li>Like any internet request, the ATIS service may receive your device's IP address and standard
+      request metadata as part of normal network operation. Your use of that service is subject to its
+      own policies.</li>
+    <li>Coverage is limited to U.S. airports that publish D-ATIS. Where a field has no D-ATIS, the feature
+      simply does not appear and nothing is fabricated. Results are cached briefly on your device to
+      reduce requests.</li>
+  </ul>
+
+  <h3>3.5 Airport surface data (OpenStreetMap / Overpass) (internet)</h3>
+  <p>
+    The taxi map, taxi routing, and runway-crossing features use airport movement-surface geometry
+    (runways, taxiways, holding positions, gates, and aprons) derived from <strong>OpenStreetMap
+    (OSM)</strong>. The App fetches a small, airport-sized extract for the active airport from a public
+    <strong>Overpass API</strong> endpoint (<code>overpass-api.de</code>, with
+    <code>overpass.kumi.systems</code> as a failover). These requests require no API key and no account.
+  </p>
+  <ul>
+    <li>Each request contains <strong>only a small geographic bounding box</strong> (roughly a few
+      kilometers) around the airport you are flying to or from — no name, email, account, device
+      identifier, or personal contact information.</li>
+    <li>Like any internet request, the Overpass operator may receive your device's IP address and
+      standard request metadata as part of normal network operation. Your use of that service is subject
+      to its own policies.</li>
+    <li>Extracts are cached locally on your device and refreshed infrequently (about every 75 days), so
+      the App is not on the network during taxi. OSM data is © OpenStreetMap contributors and is licensed
+      under the Open Database License (ODbL) 1.0.</li>
+  </ul>
+
+  <h3>3.6 Maps</h3>
   <p>
     The Weather tab can display a route/weather map overlay using Apple's <strong>MapKit</strong>.
     Rendering maps may involve communication with Apple's mapping services to retrieve map tiles and
@@ -253,13 +297,13 @@
     The developer does not receive any data through this feature.
   </p>
 
-  <h3>3.5 Text-to-speech</h3>
+  <h3>3.7 Text-to-speech</h3>
   <p>
     Spoken ATC and pilot calls are generated on-device using Apple's <code>AVSpeechSynthesizer</code>.
     This text-to-speech runs fully offline and sends nothing to the developer or any server.
   </p>
 
-  <h3>3.6 Settings and on-device storage</h3>
+  <h3>3.8 Settings and on-device storage</h3>
   <p>
     Your preferences and in-progress session data are stored <strong>locally on your device</strong>
     (using iOS <code>UserDefaults</code>) and are not transmitted to us. This includes, for example:
@@ -274,6 +318,10 @@
       export and send a file.</li>
     <li>A session snapshot and ATC conversation transcript used to resume an in-progress flight after a
       reconnect, stored locally.</li>
+    <li>Locally cached responses from the public services above — recent aviation weather, radar/satellite
+      imagery, ATIS reports, and OpenStreetMap airport-surface extracts — kept only to show recent data
+      and reduce repeat requests. These caches are bounded and can be cleared in the App
+      (Settings → Data Sources).</li>
   </ul>
   <p>
     This data remains on your device and is removed when you delete the App, and can be cleared from
@@ -310,6 +358,19 @@
           <code>s3.waw3-1.cloudferro.com</code>), or NASA Global Imagery Browse Services (GIBS) over the
           internet</td>
         <td>Only the map area (bounding box) being displayed; IP/request metadata</td>
+        <td>No</td>
+      </tr>
+      <tr>
+        <td>Real-world ATIS (D-ATIS)</td>
+        <td>Public D-ATIS service (<code>datis.clowd.io</code>) over the internet</td>
+        <td>Airport identifier only; IP/request metadata</td>
+        <td>No</td>
+      </tr>
+      <tr>
+        <td>Airport surface data (taxi map/routing)</td>
+        <td>Public OpenStreetMap Overpass API (<code>overpass-api.de</code>,
+          <code>overpass.kumi.systems</code>) over the internet</td>
+        <td>Only a small airport bounding box; IP/request metadata</td>
         <td>No</td>
       </tr>
       <tr>
@@ -352,6 +413,15 @@
     <li><strong>NASA Global Imagery Browse Services (GIBS)</strong> — global satellite precipitation
       estimate imagery (part of NASA's Earth Science Data and Information System, using GPM IMERG where
       applicable).</li>
+    <li><strong>D-ATIS service</strong> (<code>datis.clowd.io</code>, the vATIS project) — free, public,
+      keyless real-world FAA Digital ATIS (D-ATIS) text for U.S. airports, sourced from the FAA SWIM
+      system.</li>
+    <li><strong>OpenStreetMap / Overpass API</strong> (<code>overpass-api.de</code>,
+      <code>overpass.kumi.systems</code>) — free, public, keyless airport-surface geometry used for the
+      taxi map, taxi routing, and runway crossings. OpenStreetMap data is © OpenStreetMap contributors,
+      licensed under the Open Database License (ODbL) 1.0. See
+      <a href="https://www.openstreetmap.org/copyright" rel="noopener" target="_blank">OpenStreetMap's
+      copyright and license page</a>.</li>
     <li><strong>Apple frameworks</strong> — Speech (speech recognition), MapKit (maps), and
       AVSpeechSynthesizer (text-to-speech), provided by Apple Inc. See
       <a href="https://www.apple.com/legal/privacy/" rel="noopener" target="_blank">Apple's Privacy Policy</a>.</li>
@@ -367,6 +437,8 @@
   <ul>
     <li>generate simulated, procedural ATC and pilot phraseology for your flight;</li>
     <li>display your flight state, flight plan, and route weather;</li>
+    <li>render the airport taxi map, taxi routing, and runway-crossing guidance from OpenStreetMap data,
+      and play real-world ATIS for your departure and arrival airports;</li>
     <li>recognize your spoken push-to-talk input to drive the conversation; and</li>
     <li>remember your preferences and resume an in-progress session.</li>
   </ul>
@@ -415,8 +487,9 @@
 
   <h2>11. International users</h2>
   <p>
-    The App can be used worldwide. Weather requests are served by NOAA, a U.S. government service, and
-    Apple services are operated by Apple. Using these services may involve processing in the United
+    The App can be used worldwide. The public services it contacts are operated by their respective
+    providers — for example NOAA and NASA (U.S. government services), the vATIS project's D-ATIS service,
+    OpenStreetMap Overpass operators, and Apple. Using these services may involve processing in the United
     States or other countries under those providers' own policies. The developer does not transfer your
     personal data internationally because the developer does not receive it.
   </p>
