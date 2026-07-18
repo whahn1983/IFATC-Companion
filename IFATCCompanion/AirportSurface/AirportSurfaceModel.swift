@@ -228,4 +228,16 @@ struct AirportSurfaceModel: Codable, Equatable {
         guard !key.isEmpty else { return nil }
         return parkingPositions.first { $0.name.uppercased() == key }
     }
+
+    /// The parking stand nearest `coordinate`, within `maxMeters` (nil when none is close).
+    /// Used to identify the gate a departure taxi is leaving from its route start.
+    func nearestParking(to coordinate: CLLocationCoordinate2D, within maxMeters: Double) -> SurfaceParking? {
+        var best: (parking: SurfaceParking, distance: Double)?
+        for p in parkingPositions {
+            let d = SurfaceGeometry.distanceMeters(coordinate, p.coordinate.clLocation)
+            guard d <= maxMeters else { continue }
+            if best == nil || d < best!.distance { best = (p, d) }
+        }
+        return best?.parking
+    }
 }

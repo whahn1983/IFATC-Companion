@@ -248,18 +248,19 @@ struct TaxiMapCanvas: View {
                                                       dash: route.confidence <= .low ? [8, 5] : []))
             }
 
-            // Gates / parking (context). Bounded to the stands nearest the route: a large
-            // field (e.g. KJFK) has hundreds of OSM stands, and MapKit for SwiftUI builds a
-            // hosting view per Annotation — rendering them all at the fit-to-route zoom
-            // overwhelmed the map content builder and crashed the app. See `visibleParking`.
-            ForEach(visibleParking) { p in
-                Annotation(expanded ? p.name : "", coordinate: p.coordinate.clLocation) {
-                    Image(systemName: "parkingsign.circle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.mint)
-                }
+            // Departure gate — the only stand that matters on taxi out (the one you're
+            // leaving). On arrival the gate you're heading to is the route destination,
+            // drawn as the marker below, so no other stands are shown. Drawing a large
+            // field's full set of OSM stands as individual annotations overwhelmed MapKit
+            // for SwiftUI and crashed the app.
+            if let gate = departureGate {
+                Marker(gate.name.isEmpty ? "Gate" : gate.name,
+                       systemImage: "parkingsign",
+                       coordinate: gate.coordinate.clLocation)
+                    .tint(.mint)
             }
-            // Holding positions (bounded the same way).
+            // Holding positions (bounded to those nearest the route so a dense field never
+            // floods MapKit with annotation host views).
             ForEach(visibleHolds) { hold in
                 Annotation("", coordinate: hold.coordinate.clLocation) {
                     Image(systemName: "minus")
@@ -319,20 +320,20 @@ struct TaxiMapCanvas: View {
         return Color(red: 0.55, green: 0.75, blue: 0.9)
     }
 
-    // MARK: Context-annotation bounding
+    // MARK: On-map content bounding
     //
-    // Only a bounded number of parking stands / holding positions are drawn — the ones
-    // nearest the assigned route — so a dense field never floods MapKit with annotation
-    // host views. The inline card gets a tighter cap than the expanded full-screen map.
+    // Only the gate that matters is drawn — the departure gate on taxi out; the arrival
+    // gate is the route destination marker — and holding positions are capped to those
+    // nearest the route, so a dense field never floods MapKit with annotation host views.
 
-    private var parkingLimit: Int { expanded ? 45 : 14 }
     private var holdLimit: Int { expanded ? 30 : 16 }
     private var routePath: [CLLocationCoordinate2D] { surface.route?.clGeometry ?? [] }
 
-    /// Parking stands to draw for context: the nearest to the route, capped.
-    private var visibleParking: [SurfaceParking] {
-        guard let all = surface.surface?.parkingPositions else { return [] }
-        return TaxiMapContent.nearestToRoute(all, route: routePath, limit: parkingLimit) { $0.coordinate.clLocation }
+    /// The gate to highlight on a departure taxi: the stand nearest the route start (the
+    /// one you're leaving). Nil on arrival — that gate is already the destination marker.
+    private var departureGate: SurfaceParking? {
+        guard let route = surface.route, route.isDeparture, let model = surface.surface else { return nil }
+        return model.nearestParking(to: route.startCoordinate.clLocation, within: 150)
     }
 
     /// Holding positions to draw for context: the nearest to the route, capped.
