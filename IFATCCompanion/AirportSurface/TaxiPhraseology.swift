@@ -26,15 +26,24 @@ struct TaxiPhraseology {
     /// Ground taxi clearance to the assigned departure runway from a calculated route.
     /// Names the runway, the taxiway sequence, and an explicit hold-short. Crossings are
     /// NOT authorized here.
-    func taxiClearance(cs: PhraseologyEngine.Callsign, route: SurfaceTaxiRoute, runway: String) -> ATCTransmission {
+    ///
+    /// When the route crosses a runway, the clearance holds the pilot short of the **first**
+    /// runway crossing (`holdShortCrossing`) — the runway ahead they must await a separate
+    /// crossing clearance for — exactly as a real Ground controller phrases it ("taxi to
+    /// runway 36 via A, C, hold short runway 09"). With no crossing it holds short of the
+    /// assigned runway itself.
+    func taxiClearance(cs: PhraseologyEngine.Callsign, route: SurfaceTaxiRoute, runway: String,
+                       holdShortCrossing: String? = nil) -> ATCTransmission {
         let seq = sequenceText(route)
         let rwySpoken = Phonetic.runway(runway, icao: icao)
-        let display = "\(cs.display), taxi to runway \(runway) via \(seq.display), hold short runway \(runway)."
-        let spoken = "\(cs.spoken), taxi to runway \(rwySpoken) via \(seq.spoken), hold short runway \(rwySpoken)."
+        let holdRwy = holdShortCrossing.flatMap { $0.isEmpty ? nil : $0 } ?? runway
+        let holdSpoken = Phonetic.runway(holdRwy, icao: icao)
+        let display = "\(cs.display), taxi to runway \(runway) via \(seq.display), hold short runway \(holdRwy)."
+        let spoken = "\(cs.spoken), taxi to runway \(rwySpoken) via \(seq.spoken), hold short runway \(holdSpoken)."
         var tx = ATCTransmission(sender: .atc, facility: .ground, displayText: display, spokenText: spoken)
         tx.readback = ATCTransmission.Readback(
-            displayText: "Taxi to runway \(runway) via \(seq.display), hold short runway \(runway), \(cs.display).",
-            spokenText: "Taxi to runway \(rwySpoken) via \(seq.spoken), hold short runway \(rwySpoken), \(cs.spoken).",
+            displayText: "Taxi to runway \(runway) via \(seq.display), hold short runway \(holdRwy), \(cs.display).",
+            spokenText: "Taxi to runway \(rwySpoken) via \(seq.spoken), hold short runway \(holdSpoken), \(cs.spoken).",
             facility: .ground)
         return tx
     }
@@ -56,17 +65,24 @@ struct TaxiPhraseology {
 
     // MARK: - Arrival taxi-to-gate
 
-    func arrivalTaxi(cs: PhraseologyEngine.Callsign, route: SurfaceTaxiRoute, gate: String) -> ATCTransmission {
+    /// Ground taxi-to-gate clearance from a calculated arrival route. When the route
+    /// crosses a runway it holds the pilot short of the first crossing (`holdShortCrossing`)
+    /// — the crossing is then authorized separately, just as on departure.
+    func arrivalTaxi(cs: PhraseologyEngine.Callsign, route: SurfaceTaxiRoute, gate: String,
+                     holdShortCrossing: String? = nil) -> ATCTransmission {
         let seq = sequenceText(route)
         let g = gate.trimmingCharacters(in: .whitespaces)
         let destDisplay = g.isEmpty ? "parking" : "gate \(g)"
         let destSpoken = g.isEmpty ? "parking" : "gate \(Phonetic.spellToken(g, icao: icao))"
-        let display = "\(cs.display), taxi to \(destDisplay) via \(seq.display)."
-        let spoken = "\(cs.spoken), taxi to \(destSpoken) via \(seq.spoken)."
+        let holdRwy = holdShortCrossing.flatMap { $0.isEmpty ? nil : $0 }
+        let holdDisplay = holdRwy.map { ", hold short runway \($0)" } ?? ""
+        let holdSpoken = holdRwy.map { ", hold short runway \(Phonetic.runway($0, icao: icao))" } ?? ""
+        let display = "\(cs.display), taxi to \(destDisplay) via \(seq.display)\(holdDisplay)."
+        let spoken = "\(cs.spoken), taxi to \(destSpoken) via \(seq.spoken)\(holdSpoken)."
         var tx = ATCTransmission(sender: .atc, facility: .ground, displayText: display, spokenText: spoken)
         tx.readback = ATCTransmission.Readback(
-            displayText: "Taxi to \(destDisplay) via \(seq.display), \(cs.display).",
-            spokenText: "Taxi to \(destSpoken) via \(seq.spoken), \(cs.spoken).",
+            displayText: "Taxi to \(destDisplay) via \(seq.display)\(holdDisplay), \(cs.display).",
+            spokenText: "Taxi to \(destSpoken) via \(seq.spoken)\(holdSpoken), \(cs.spoken).",
             facility: .ground)
         return tx
     }

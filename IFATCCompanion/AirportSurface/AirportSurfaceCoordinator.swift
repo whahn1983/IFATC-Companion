@@ -140,6 +140,9 @@ final class AirportSurfaceCoordinator: ObservableObject {
     private var issuedClearanceFor = Set<Int>()
     private var completedCrossings = Set<Int>()
     private var userRequestedCrossingFor = Set<Int>()
+    /// Crossings the pilot explicitly asked to hold position at — suppresses the automatic
+    /// crossing clearance until they tap Request Crossing.
+    private var pilotHeldFor = Set<Int>()
     private var emittedResumeFor = Set<Int>()
 
     private var loadGeneration = 0
@@ -397,6 +400,7 @@ final class AirportSurfaceCoordinator: ObservableObject {
         issuedClearanceFor.removeAll()
         completedCrossings.removeAll()
         userRequestedCrossingFor.removeAll()
+        pilotHeldFor.removeAll()
         emittedResumeFor.removeAll()
         offRoute = false
         reachedDestination = false
@@ -534,11 +538,13 @@ final class AirportSurfaceCoordinator: ObservableObject {
         pendingDetailedClearance = false
         if kind == .departure {
             let runway = route.holdShortRunway ?? assignedRunway
-            emit(phraseology.taxiClearance(cs: cs(), route: route, runway: runway))
+            emit(phraseology.taxiClearance(cs: cs(), route: route, runway: runway,
+                                           holdShortCrossing: firstCrossingRunway(route)))
             diagnostics?.log(.atc, "OSM taxi route ready — superseding generic clearance with detailed route to runway \(runway)")
         } else {
             let g = route.arrivalGate ?? gate
-            emit(phraseology.arrivalTaxi(cs: cs(), route: route, gate: g))
+            emit(phraseology.arrivalTaxi(cs: cs(), route: route, gate: g,
+                                         holdShortCrossing: firstCrossingRunway(route)))
             diagnostics?.log(.atc, "OSM taxi route ready — superseding generic clearance with detailed route to \(g.isEmpty ? "parking" : "gate \(g)")")
         }
         awaitingTaxiReadback = true
@@ -553,9 +559,11 @@ final class AirportSurfaceCoordinator: ObservableObject {
         guard kind != .none else { return nil }
         if let route, routeConfidence.allowsDetailedRouting {
             if kind == .departure {
-                return phraseology.taxiClearance(cs: callsign, route: route, runway: route.holdShortRunway ?? assignedRunway)
+                return phraseology.taxiClearance(cs: callsign, route: route, runway: route.holdShortRunway ?? assignedRunway,
+                                                 holdShortCrossing: firstCrossingRunway(route))
             } else {
-                return phraseology.arrivalTaxi(cs: callsign, route: route, gate: route.arrivalGate ?? gate)
+                return phraseology.arrivalTaxi(cs: callsign, route: route, gate: route.arrivalGate ?? gate,
+                                               holdShortCrossing: firstCrossingRunway(route))
             }
         }
         // Route unavailable/low: conservative departure fallback (arrival keeps generic).
@@ -797,8 +805,12 @@ final class AirportSurfaceCoordinator: ObservableObject {
             return
         }
 
-        // Not authorized — unauthorized-entry safety net (live; mock never trips it).
-        if dCross <= corridorEnterMeters && ac.groundSpeedKnots > 1 && headingTowardCrossing(ac: ac, crossing: c) {
+        // Not authorized — unauthorized-entry safety net (live; mock never trips it). Once a
+        // crossing clearance has been issued (awaiting the pilot's read-back), the aircraft
+        // moving up to and across the runway is expected, so the warning is suppressed — it
+        // fires only when no crossing clearance is outstanding for this crossing.
+        if dCross <= corridorEnterMeters && ac.groundSpeedKnots > 1 && headingTowardCrossing(ac: ac, crossing: c)
+            && !issuedClearanceFor.contains(c.index) {
             unauthorizedTicks += 1
             if unauthorizedTicks >= 2 {
                 logUnauthorized(c: c, along: along, ac: ac, dHold: dHold)
@@ -821,26 +833,40 @@ final class AirportSurfaceCoordinator: ObservableObject {
         if dHold <= approachMeters, crossingState.rawValue == RunwayCrossingState.crossingDetectedAhead.rawValue {
             setCrossing(.approachingHoldingPosition)
         }
-        if dHold <= holdIssueMeters, !issuedHoldShortFor.contains(c.index) {
-            issuedHoldShortFor.insert(c.index)
-            emit(phraseology.holdShort(cs: cs(), runwayIdent: c.runwayIdent))
-            setCrossing(.holdShortInstructionIssued)
-        }
-        let lowConfidence = c.confidence == .low || routeConfidence == .low || routeConfidence == .unavailable
-        if dHold <= atHoldMeters, ac.groundSpeedKnots < 4 {
-            if crossingState != .holdingShort && crossingState != .crossingClearanceIssued && crossingState != .awaitingPilotReadback {
-                setCrossing(lowConfidence ? .lowConfidenceCrossingData : .holdingShort)
-            }
-            holdSettleTicks += 1
-        }
 
+        let lowConfidence = c.confidence == .low || routeConfidence == .low || routeConfidence == .unavailable
         let autoAllowed = autoCrossingCalls && routeConfidence == .high && c.confidence != .low
-        let mayIssue = (crossingState == .holdingShort || crossingState == .lowConfidenceCrossingData)
-            && holdSettleTicks >= settleTicks
-            && !issuedClearanceFor.contains(c.index)
-            && (autoAllowed || userRequestedCrossingFor.contains(c.index))
-        if mayIssue {
-            issueCrossingClearance(c)
+
+        if autoAllowed && !pilotHeldFor.contains(c.index) {
+            // High-confidence crossing: Ground proactively issues the crossing clearance a
+            // short distance before the runway threshold — no redundant hold-short call. The
+            // taxi clearance already held the pilot short of this first crossing; the pilot
+            // still reads the crossing clearance back before it is authorized, and the
+            // aircraft holds at the mapped hold point until it is.
+            if dHold <= holdIssueMeters, !issuedClearanceFor.contains(c.index) {
+                issueCrossingClearance(c)
+            }
+        } else {
+            // Medium/low confidence, automatic calls off, or the pilot asked to hold: issue an
+            // explicit hold-short and wait for the pilot to Request Crossing before clearing.
+            if dHold <= holdIssueMeters, !issuedHoldShortFor.contains(c.index) {
+                issuedHoldShortFor.insert(c.index)
+                emit(phraseology.holdShort(cs: cs(), runwayIdent: c.runwayIdent))
+                setCrossing(.holdShortInstructionIssued)
+            }
+            if dHold <= atHoldMeters, ac.groundSpeedKnots < 4 {
+                if crossingState != .holdingShort && crossingState != .crossingClearanceIssued && crossingState != .awaitingPilotReadback {
+                    setCrossing(lowConfidence ? .lowConfidenceCrossingData : .holdingShort)
+                }
+                holdSettleTicks += 1
+            }
+            let mayIssue = (crossingState == .holdingShort || crossingState == .lowConfidenceCrossingData)
+                && holdSettleTicks >= settleTicks
+                && !issuedClearanceFor.contains(c.index)
+                && userRequestedCrossingFor.contains(c.index)
+            if mayIssue {
+                issueCrossingClearance(c)
+            }
         }
     }
 
@@ -859,6 +885,13 @@ final class AirportSurfaceCoordinator: ObservableObject {
         graph?.edges.first { $0.id == c.edgeID }?.taxiwayName
     }
 
+    /// The runway ident of the first runway crossing along a route (the earliest by
+    /// along-distance), or nil when the route crosses no runway. Used to hold the pilot
+    /// short of the first crossing in the initial Ground taxi clearance.
+    private func firstCrossingRunway(_ route: SurfaceTaxiRoute) -> String? {
+        route.crossings.min(by: { $0.alongMeters < $1.alongMeters })?.runwayIdent
+    }
+
     // MARK: - Pilot / user actions
 
     /// Called by AppModel after the pilot reads back a crossing clearance.
@@ -873,14 +906,27 @@ final class AirportSurfaceCoordinator: ObservableObject {
     /// User taps Request Crossing (Medium/Low confidence, or when auto calls are off).
     func requestCrossing() {
         guard let wc = workedCrossingIndex, let route, route.crossings.indices.contains(wc) else { return }
-        userRequestedCrossingFor.insert(route.crossings[wc].index)
-        // If already holding short, this permits the clearance on the next tick; nudge now.
-        if let ac = displayAircraft { runCrossingWorkflow(route: route, aircraft: ac, progress: progress ?? tracker.progress(aircraft: ac.coordinate.clLocation, route: route, minAlong: lastAlong)) }
+        let c = route.crossings[wc]
+        userRequestedCrossingFor.insert(c.index)
+        pilotHeldFor.remove(c.index)
+        // The pilot has explicitly reported holding short and requested the crossing, so issue
+        // the crossing clearance now rather than waiting on the exact hold-distance / settle
+        // heuristics. The OSM hold point rarely lines up with the simulator scenery, so those
+        // heuristics could leave the button doing nothing once the aircraft had already
+        // stopped at the threshold — the reported "button doesn't work" case.
+        guard !issuedClearanceFor.contains(c.index), authorizedCrossingIndex != c.index else { return }
+        issueCrossingClearance(c)
     }
 
     func holdPosition() {
         guard let wc = workedCrossingIndex, let route, route.crossings.indices.contains(wc) else { return }
-        emit(phraseology.holdShort(cs: cs(), runwayIdent: route.crossings[wc].runwayIdent))
+        let c = route.crossings[wc]
+        // Remember the pilot chose to hold so the automatic clearance doesn't immediately
+        // re-clear them; they resume by tapping Request Crossing. Recording the hold-short
+        // also stops the manual path from emitting a second hold-short next tick.
+        pilotHeldFor.insert(c.index)
+        issuedHoldShortFor.insert(c.index)
+        emit(phraseology.holdShort(cs: cs(), runwayIdent: c.runwayIdent))
         setCrossing(.holdingShort)
     }
 

@@ -146,15 +146,27 @@ enum ATISPhraseology {
             return Phonetic.spellDigits(g[1], icao: icao) + " " + side
         }
 
-        // Approach-variant and taxiway single letters → phonetic words: "RNAV Z" ->
-        // "RNAV Zulu", "ILS Z RWY 4L" -> "ILS Zulu runway…", "TWY B" -> "taxiway Bravo".
-        // Scoped to these keywords so a stray compass "N"/"S" is never turned into a
-        // phonetic word. The keyword is kept for the abbreviation pass below to expand.
+        // Approach-variant single letters → phonetic words: "RNAV Z" -> "RNAV Zulu",
+        // "ILS Z RWY 4L" -> "ILS Zulu runway…". Scoped to these keywords so a stray
+        // compass "N"/"S" is never turned into a phonetic word. The keyword is kept for the
+        // abbreviation pass below to expand.
         s = replacingMatches(in: s, pattern: "\\b(ILS|RNAV|RNP|LOC|VOR|LDA|SDF)\\s+([A-Z])\\b") { g in
             g[1] + " " + phoneticLetter(g[2])
         }
-        s = replacingMatches(in: s, pattern: "\\b(TWYS|TWY|TAXIWAY|TAXIWAYS|TY)\\s+([A-Z])\\b") { g in
-            g[1] + " " + phoneticLetter(g[2])
+        // Taxiway identifiers → phonetic words. A taxiway ident is one or two letters with
+        // an optional trailing number ("B", "SB", "B4"), so a multi-letter ident is spelled
+        // phonetically ("TWY SB" -> "taxiway Sierra Bravo", "TWY B4" -> "taxiway Bravo four")
+        // rather than left as bare letters the synthesizer reads as "S B". The one/two-letter
+        // bound keeps a following abbreviation word (e.g. "CLSD") from being swallowed. A
+        // two-letter, digit-less token that is a common word / abbreviation (e.g. "TWYS IN
+        // USE", "TWY SW OF …") is left alone for the word/abbreviation passes below. The
+        // keyword is kept for the abbreviation pass to expand.
+        s = replacingMatches(in: s, pattern: "\\b(TWYS|TWY|TAXIWAY|TAXIWAYS|TY)\\s+([A-Z]{1,2}\\d{0,2})\\b") { g in
+            let ident = g[2]
+            if ident.count == 2, ident.allSatisfy(\.isLetter), nonTaxiwayTokens.contains(ident) {
+                return g[1] + " " + ident
+            }
+            return g[1] + " " + Phonetic.spellToken(ident, icao: icao)
         }
 
         // Expand the common ATIS abbreviations (word-boundary, so "APPROACHES" and
@@ -364,6 +376,15 @@ enum ATISPhraseology {
               let minute = Int(s.dropFirst(4).prefix(2)), (0...59).contains(minute) else { return nil }
         return String(s.suffix(4))
     }
+
+    /// Two-letter uppercase tokens that can immediately follow "TWY"/"TWYS" in coded ATIS
+    /// text but are **not** taxiway identifiers — common English words ("IN USE", "TO", "AT")
+    /// and abbreviations/compass points that have their own expansion ("SW", "HS", "WS").
+    /// These are left for the word/abbreviation passes instead of being spelled phonetically.
+    private static let nonTaxiwayTokens: Set<String> = [
+        "IN", "TO", "AT", "IS", "OR", "ON", "OF", "BY", "UP", "NO", "AS", "IT", "AN", "BE",
+        "NE", "NW", "SE", "SW", "HS", "WS", "MU", "GS", "BA", "FT", "WX", "OM", "MM", "IM"
+    ]
 
     // MARK: - Abbreviation table
 
