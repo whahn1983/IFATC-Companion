@@ -360,9 +360,20 @@ final class AirportSurfaceCoordinator: ObservableObject {
             self.reference = reference
             recomputeRoute()
         } else {
+            // Mark the load in progress synchronously so a taxi-clearance decision made on the
+            // same run loop (before the async fetch actually starts) already sees it and
+            // withholds the clearance until the surface resolves. `loadSurface` sets it again
+            // when the Task runs.
+            status = .loading
             Task { await loadSurface(icao: icao, reference: reference, mock: false, forceRefresh: false) }
         }
     }
+
+    /// Whether the airport surface is still being fetched/normalized (no `.ready`,
+    /// `.unavailable`, or `.error` result yet). Ground uses this to withhold the arrival
+    /// taxi clearance until the data has fully loaded, rather than issuing a generic call
+    /// it would then have to supersede.
+    var surfaceLoadInProgress: Bool { status == .loading }
 
     private var pendingStart: CLLocationCoordinate2D?
 

@@ -117,5 +117,12 @@ final class HandoffAndTaxiTests: XCTestCase {
         let model = arrivalModel(arrivalGate: "B44")
         XCTAssertEqual(model.airportSurface.kind, .arrival,
                        "an arrival gate begins the OSM arrival taxi and waits for the route")
+        // The surface is still loading offline, so Ground fully withholds the taxi clearance
+        // — no generic "taxi to parking"/"taxi to gate" is issued while the data loads.
+        XCTAssertTrue(model.airportSurface.surfaceLoadInProgress,
+                      "the destination surface is still loading in the offline test")
+        XCTAssertFalse(model.transcript.contains { $0.sender == .atc &&
+            ($0.displayText.contains("taxi to gate B44") || $0.displayText.contains("taxi to parking")) },
+            "Ground withholds the arrival taxi clearance until the surface finishes loading")
     }
 }
