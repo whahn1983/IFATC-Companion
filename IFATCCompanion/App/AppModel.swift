@@ -392,6 +392,20 @@ final class AppModel: ObservableObject {
     /// Throttle for the opportunistic arrival-ATIS fetch driven from the telemetry loop.
     private var lastArrivalATISAttempt: Date?
 
+    /// Whether ATIS is the frequency the pilot currently has tuned. Set the moment the
+    /// pilot taps the ATIS tune button; cleared the instant they tune any controller /
+    /// ramp frequency. Drives the "active" highlight on the ATIS button (and de-highlights
+    /// the controller buttons while the radio sits on ATIS) so exactly one frequency reads
+    /// as tuned at a time.
+    @Published private(set) var atisTuned = false
+    /// Whether the pilot has already tuned **away** from the ATIS frequency during the
+    /// departure / arrival phase. Once they leave ATIS for a controller (e.g. Ramp), the
+    /// ATIS button hides for that phase — you don't keep re-listening after you've copied
+    /// the information. Tracked per phase so the arrival ATIS button still reappears within
+    /// 100 NM of the destination even though the departure ATIS button was dismissed.
+    private var departureATISDismissed = false
+    private var arrivalATISDismissed = false
+
     private var lastATCTransmission: ATCTransmission?
     private var cancellables = Set<AnyCancellable>()
     private var started = false
@@ -1517,6 +1531,9 @@ final class AppModel: ObservableObject {
         // Tuning is always allowed — even while standing by for a human controller.
         // Moving the radio is how the pilot leaves a staffed frequency to lift the
         // guard (and how they tune onto one to re-engage it); it never transmits.
+        // Moving to a controller/ramp frequency also leaves the ATIS frequency, so the
+        // ATIS tune button drops out of the grid for this phase.
+        leaveATISFrequency()
         manualTuning = true
         tunedFacility = facility
         currentFacility = facility
@@ -1924,6 +1941,8 @@ final class AppModel: ObservableObject {
             reportedArrivalInfo: reportedArrivalInfo,
             departureInfoAppended: departureInfoAppended,
             arrivalInfoAppended: arrivalInfoAppended,
+            departureATISDismissed: departureATISDismissed,
+            arrivalATISDismissed: arrivalATISDismissed,
             transcript: transcript,
             departure: flightPlan.departure,
             destination: flightPlan.destination,
@@ -1986,6 +2005,8 @@ final class AppModel: ObservableObject {
         reportedArrivalInfo = snap.reportedArrivalInfo
         departureInfoAppended = snap.departureInfoAppended ?? false
         arrivalInfoAppended = snap.arrivalInfoAppended ?? false
+        departureATISDismissed = snap.departureATISDismissed ?? false
+        arrivalATISDismissed = snap.arrivalATISDismissed ?? false
         if !snap.transcript.isEmpty {
             transcript = snap.transcript
             let lastATC = snap.transcript.last { $0.sender == .atc }
@@ -4773,8 +4794,19 @@ extension AppModel {
     /// Whether the currently-relevant ATIS is the arrival (destination) ATIS.
     var currentATISIsArrival: Bool { arrivalATISAvailable }
 
-    /// Whether the ATIS tune button/card should be shown at all.
-    var atisButtonVisible: Bool { currentATIS != nil }
+    /// Whether the ATIS tune button should be shown in the frequency grid right now:
+    /// ATIS data is available for the current phase **and** the pilot hasn't yet tuned
+    /// away from it. Tuning any controller/ramp frequency dismisses it for the phase
+    /// (departure ATIS at the gate, arrival ATIS within 100 NM), so it behaves like a
+    /// real radio — you copy the broadcast, then move on to your next frequency.
+    var atisButtonVisible: Bool {
+        guard currentATIS != nil else { return false }
+        return currentATISIsArrival ? !arrivalATISDismissed : !departureATISDismissed
+    }
+
+    /// Whether the ATIS tune button should read as the active (tuned) frequency —
+    /// true only while ATIS is what the radio is parked on and the button is shown.
+    var atisButtonActive: Bool { atisTuned && atisButtonVisible }
 
     /// The ICAO whose ATIS is relevant right now (destination on arrival, else origin).
     var atisAirport: String {
@@ -4879,7 +4911,16 @@ extension AppModel {
         let arrival = currentATISIsArrival
         let icao = arrival ? flightPlan.destination : flightPlan.departure
         guard !icao.isEmpty else { return }
+        // The radio is now parked on ATIS: highlight the ATIS button and drop the
+        // active highlight from the controller buttons until the pilot tunes onward.
+        atisTuned = true
         diagnostics.log(.atis, "Tuning \(icao) ATIS — pulling latest.")
+        // Mock mode is a fully offline demo (and the unit-test path): replay the already
+        // injected/cached report rather than hitting the live feed.
+        if settings.mockMode {
+            applyTunedATIS(arrival ? arrivalATIS : departureATIS, arrival: arrival, icao: icao)
+            return
+        }
         Task { @MainActor in
             do {
                 let atis = try await atisService.atis(for: icao, forceRefresh: true)
@@ -4958,6 +4999,17 @@ extension AppModel {
         return out
     }
 
+    /// Leave the ATIS frequency because the pilot tuned a controller / ramp. Clears the
+    /// ATIS "active" highlight and, if an ATIS was actually available to leave, dismisses
+    /// the button for the current phase so it drops out of the frequency grid. Guarding on
+    /// availability means an early tune before the feed arrives never permanently hides a
+    /// later-arriving ATIS. Called from `tuneTo`.
+    func leaveATISFrequency() {
+        atisTuned = false
+        guard currentATIS != nil else { return }
+        if currentATISIsArrival { arrivalATISDismissed = true } else { departureATISDismissed = true }
+    }
+
     // MARK: State + diagnostics
 
     /// Whether the phraseology engine is on the ICAO pack (drives ATIS digit words).
@@ -4969,6 +5021,12 @@ extension AppModel {
         departureATIS = nil
         arrivalATIS = nil
         lastArrivalATISAttempt = nil
+        // Tune / dismissal state is per-flight visibility: always reset it so a fresh
+        // (or re-derived) flight shows the ATIS button again. A resume restores the
+        // dismissal flags afterwards from the snapshot.
+        atisTuned = false
+        departureATISDismissed = false
+        arrivalATISDismissed = false
         if clearReported {
             reportedDepartureInfo = nil
             reportedArrivalInfo = nil

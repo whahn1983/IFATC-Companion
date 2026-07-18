@@ -26,7 +26,6 @@ struct ATCView: View {
                     currentTransmissionCard
                     TaxiMapSlot(surface: model.airportSurface)
                     frequencyCard
-                    if model.atisButtonVisible { atisCard }
                     if model.weatherDeviationCardVisible { weatherDeviationCard }
                     responseButtons
                     transcriptCard
@@ -361,11 +360,24 @@ struct ATCView: View {
         Card(title: "Tune Frequency", systemImage: "dial.medium") {
             VStack(alignment: .leading, spacing: 10) {
                 LazyVGrid(columns: gridColumns, spacing: 10) {
+                    // ATIS sits with the rest of the frequencies — the pilot tunes it
+                    // first, copies the broadcast, then moves to a controller. Tuning
+                    // any other frequency drops it from the grid until the arrival ATIS
+                    // comes into range (`atisButtonVisible`).
+                    if model.atisButtonVisible {
+                        FrequencyButton(title: "ATIS",
+                                        systemImage: "antenna.radiowaves.left.and.right",
+                                        frequency: model.atisButtonSubtitle,
+                                        active: model.atisButtonActive,
+                                        enabled: true) {
+                            model.tuneATIS()
+                        }
+                    }
                     ForEach(tunableFacilities) { facility in
                         FrequencyButton(title: facility.title,
                                         systemImage: facility.symbol,
                                         frequency: model.frequencyText(for: facility),
-                                        active: model.currentFacility == facility,
+                                        active: model.currentFacility == facility && !model.atisTuned,
                                         enabled: model.canTune(facility)) {
                             model.tuneTo(facility)
                         }
@@ -374,7 +386,7 @@ struct ATCView: View {
                         FrequencyButton(title: "Ramp",
                                         systemImage: "parkingsign",
                                         frequency: model.frequencyText(for: .ramp),
-                                        active: model.currentFacility == .ramp,
+                                        active: model.currentFacility == .ramp && !model.atisTuned,
                                         enabled: true) {
                             // Tuning only moves the radio — like every other frequency
                             // button. The actual call (pushback / taxi-to-gate) is made
@@ -382,6 +394,17 @@ struct ATCView: View {
                             model.tuneTo(.ramp)
                         }
                     }
+                }
+                if model.atisButtonVisible {
+                    Text("Tune ATIS for \(model.atisAirport)'s latest broadcast — the information code is added to your \(model.currentATISIsArrival ? "arrival check-in" : "taxi request"). Tuning any controller leaves the ATIS frequency.")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                if let summary = model.atisReceiptSummary, model.atisButtonVisible {
+                    Label(summary, systemImage: "checkmark.seal.fill")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 Text("Only the controllers you need now are shown. Tap one to change frequency, then tap Check In to call them or make a request.")
                     .font(.caption2).foregroundStyle(.tertiary)
@@ -393,35 +416,6 @@ struct ATCView: View {
     /// the next one ahead — so the page isn't cluttered with every facility.
     private var tunableFacilities: [ATCFacility] {
         AppModel.tunableFacilities.filter { model.relevantFacilities.contains($0) }
-    }
-
-    // MARK: - ATIS
-
-    /// The ATIS tune card. Appears only when real-world D-ATIS is available for the
-    /// current field — at the gate for the origin, and within 100 NM for the
-    /// destination. Tuning pulls the latest broadcast, plays it on repeat on the ATIS
-    /// voice, and captures the information code for the taxi request / arrival check-in.
-    private var atisCard: some View {
-        Card(title: "ATIS", systemImage: "antenna.radiowaves.left.and.right") {
-            VStack(alignment: .leading, spacing: 10) {
-                FrequencyButton(title: "ATIS",
-                                systemImage: "antenna.radiowaves.left.and.right",
-                                frequency: model.atisButtonSubtitle,
-                                active: false,
-                                enabled: true) {
-                    model.tuneATIS()
-                }
-                if let summary = model.atisReceiptSummary {
-                    Label(summary, systemImage: "checkmark.seal.fill")
-                        .font(.caption)
-                        .foregroundStyle(.green)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                Text("Real-world ATIS for \(model.atisAirport). Tune to hear the latest broadcast — no controller replies; tune again anytime to pull the current information. The code is added to your taxi request and arrival check-in.")
-                    .font(.caption2).foregroundStyle(.tertiary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
     }
 
     // MARK: - Response buttons

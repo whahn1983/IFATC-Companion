@@ -84,6 +84,56 @@ final class ATISAppModelTests: XCTestCase {
         XCTAssertFalse(model.arrivalATISAvailable)
     }
 
+    // MARK: - Tune button: activation & per-phase dismissal
+
+    func testTuningATISMarksItActiveAndCapturesCode() {
+        let model = makeModel()   // mock mode → tuneATIS replays the injected report
+        model.setATISReportsForTesting(departure: report("KIAH", "C"), arrival: nil)
+        XCTAssertTrue(model.atisButtonVisible)
+        XCTAssertFalse(model.atisButtonActive)
+
+        model.tuneATIS()
+        XCTAssertTrue(model.atisTuned)
+        XCTAssertTrue(model.atisButtonActive, "ATIS reads as the active frequency once tuned")
+        XCTAssertEqual(model.currentATISCode, "C")
+        XCTAssertEqual(model.atisReceiptSummary, "KIAH departure information Charlie — added to your taxi request.")
+    }
+
+    func testDepartureATISButtonHidesAfterTuningAway() {
+        let model = makeModel()
+        model.setATISReportsForTesting(departure: report("KIAH", "C"), arrival: nil)
+        model.tuneATIS()
+        XCTAssertTrue(model.atisButtonActive)
+
+        // Tuning any controller / ramp frequency leaves ATIS: it drops out of the grid.
+        model.tuneTo(.ramp)
+        XCTAssertFalse(model.atisTuned)
+        XCTAssertFalse(model.atisButtonVisible, "ATIS button hides once the pilot tunes away")
+    }
+
+    func testTuningAwayAtGateStillLetsArrivalATISReappear() {
+        let model = makeModel()
+        model.setATISReportsForTesting(departure: report("KIAH", "C"), arrival: report("KMSP", "D"))
+        // Leave the departure ATIS at the gate.
+        model.tuneTo(.ground)
+        XCTAssertFalse(model.atisButtonVisible)
+
+        // Airborne within 100 NM of KMSP → the arrival ATIS window opens and the button
+        // returns even though the departure ATIS was dismissed (dismissal is per phase).
+        var near = AircraftState()
+        near.latitude = 45.6; near.longitude = -93.22
+        near.altitudeMSL = 12000; near.onGround = false
+        near.groundSpeed = 350; near.verticalSpeed = -1200; near.heading = 360
+        model.ingestStateForTesting(near)
+
+        XCTAssertTrue(model.currentATISIsArrival)
+        XCTAssertTrue(model.atisButtonVisible, "arrival ATIS button reappears within 100 NM")
+
+        // And leaving the arrival ATIS hides it again.
+        model.tuneTo(.approach)
+        XCTAssertFalse(model.atisButtonVisible)
+    }
+
     // MARK: - Appending the information code
 
     func testAppendingATISInfoHelper() {

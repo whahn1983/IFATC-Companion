@@ -31,6 +31,11 @@ struct SessionSnapshot: Codable {
     /// Optional so older snapshots decode cleanly (missing key → nil → treated as false).
     var departureInfoAppended: Bool? = nil
     var arrivalInfoAppended: Bool? = nil
+    /// Whether the pilot has tuned away from the ATIS frequency for each phase, so a
+    /// reconnect keeps the ATIS tune button hidden instead of resurfacing it after the
+    /// pilot already copied the broadcast. Optional so older snapshots decode cleanly.
+    var departureATISDismissed: Bool? = nil
+    var arrivalATISDismissed: Bool? = nil
     var transcript: [ATCTransmission]
     /// Flight-plan endpoints, recorded so a stale snapshot from a different flight
     /// can be recognized if needed.
