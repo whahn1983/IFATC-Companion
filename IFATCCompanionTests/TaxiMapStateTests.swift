@@ -79,6 +79,35 @@ final class TaxiMapStateTests: XCTestCase {
         XCTAssertEqual(coord.routeForTesting?.arrivalGate, "A1")
     }
 
+    func testLiveTaxiClearanceSupersedesGenericOnceSurfaceLoads() {
+        // Live, uncached airports load the surface asynchronously, so the pilot's taxi
+        // request goes out before a route exists and a generic clearance is issued. Once
+        // the Overpass fetch resolves, the detailed OSM route clearance must supersede it
+        // and its read-back must reveal the taxi map.
+        let coord = AirportSurfaceCoordinator()
+        var emitted: [ATCTransmission] = []
+        let engine = PhraseologyEngine(digitStyle: .individual, mode: .faa)
+        coord.configure(diagnostics: nil, engine: engine, emit: { emitted.append($0) },
+                        callsign: { engine.callsign(airline: "United", flightNumber: "598", fallback: "") })
+
+        let model = MockAirportSurface.model(icao: "KTEST", reference: ref,
+                                             primaryRunwayIdent: "36", gate: "A1")
+        coord.simulateDeferredDepartureForTesting(model: model, runway: "36", gate: "A1")
+
+        // A detailed route clearance (runway + taxiway sequence + hold-short) was issued,
+        // not the generic "detailed taxi routing is unavailable" fallback.
+        let last = emitted.last?.displayText.lowercased() ?? ""
+        XCTAssertTrue(last.contains("taxi to runway 36 via"), "detailed OSM route clearance issued: \(last)")
+        XCTAssertTrue(last.contains("hold short runway 36"))
+        XCTAssertFalse(last.contains("unavailable"), "must not fall back to the generic clearance")
+        XCTAssertNotNil(coord.routeForTesting)
+
+        // Reading it back reveals the taxi map.
+        XCTAssertFalse(coord.taxiMapVisible, "map hidden until the pilot reads back the clearance")
+        coord.taxiReadBackComplete()
+        XCTAssertTrue(coord.taxiMapVisible, "taxi map appears after the superseding clearance is read back")
+    }
+
     func testMockModeCompletesFullFlow() {
         let coord = AirportSurfaceCoordinator()
         var emitted: [ATCTransmission] = []

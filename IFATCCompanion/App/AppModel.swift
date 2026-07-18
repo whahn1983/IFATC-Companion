@@ -2548,7 +2548,10 @@ final class AppModel: ObservableObject {
         advanceAndPost(to: .groundTaxi, context: ctx, overrideTransmission: osmClearance)
         // Reveal the taxi map on the pilot's read-back (whether the OSM route or the
         // generic clearance was issued; the map appears once a route is available).
-        airportSurface.taxiClearanceIssued()
+        // When `osmClearance` is nil the live surface was still loading, so a generic
+        // clearance went out — have the coordinator supersede it with the detailed OSM
+        // route clearance as soon as the asynchronous Overpass fetch resolves.
+        airportSurface.taxiClearanceIssued(supersedeWhenRouteReady: osmClearance == nil)
     }
 
     /// True when the pilot is still on the departure Ramp frequency (after pushback /

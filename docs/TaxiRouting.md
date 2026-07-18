@@ -73,6 +73,17 @@ Ground taxi phraseology (`TaxiPhraseology`) is generated from the calculated rou
 routing is unavailable; taxi toward runway 27, hold short of all runways, and continue using
 the simulator airport diagram."*
 
+### Asynchronous surface loading
+
+A live airport's surface is fetched from Overpass on first use and cached on disk. When the
+pilot requests taxi at an **uncached** airport the fetch is still in flight, so the route does
+not yet exist and Ground issues the **generic** clearance up front. As soon as the fetch
+resolves and a credible route is calculated, the coordinator **supersedes** it with the detailed
+OSM route clearance (assigned runway + taxiway sequence + hold‑short) and re‑arms the read‑back,
+so the pilot's acknowledgement reveals the taxi map. A **cached** airport routes synchronously
+and issues the detailed clearance immediately. If the pilot has already been handed to Tower by
+the time the fetch resolves, the superseding clearance is suppressed.
+
 ## Route tracking & off‑route
 
 `RouteTracker` tracks progress along the route: current segment, completed segments, next turn,

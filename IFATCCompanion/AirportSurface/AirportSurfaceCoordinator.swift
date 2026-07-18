@@ -112,6 +112,10 @@ final class AirportSurfaceCoordinator: ObservableObject {
     private var startGate = ""
 
     private var taxiReadBack = false
+    /// A generic Ground taxi clearance was issued before the surface finished loading
+    /// (uncached live airports load asynchronously). Supersede it with the detailed OSM
+    /// route clearance once `recomputeRoute()` produces a credible route.
+    private var pendingDetailedClearance = false
     private var lastAlong = 0.0
     private var offRouteTicks = 0
     private var unauthorizedTicks = 0
@@ -274,6 +278,7 @@ final class AirportSurfaceCoordinator: ObservableObject {
 
     private func resetTaxiProgress() {
         taxiReadBack = false
+        pendingDetailedClearance = false
         lastAlong = 0
         offRouteTicks = 0
         unauthorizedTicks = 0
@@ -327,8 +332,27 @@ final class AirportSurfaceCoordinator: ObservableObject {
             diagnostics?.log(.app, "Taxi route could not be calculated (\(kind == .departure ? "DEP" : "ARR"))")
         }
         updateInstruction()
+        // A generic clearance issued while the surface was still loading is now
+        // superseded by the detailed OSM route clearance.
+        issueDeferredTaxiClearanceIfNeeded()
         // If the pilot already read back the taxi clearance, reveal the map now.
         if taxiReadBack { revealIfReady() }
+    }
+
+    /// Issue the detailed OSM departure taxi clearance that couldn't be sent when the
+    /// pilot first requested taxi because the live surface was still loading. Emits the
+    /// route clearance (superseding the generic one) and re-arms its read-back so the
+    /// pilot's acknowledgement reveals the taxi map. Implements `requestTaxi()`'s
+    /// documented "its Ground clearance replaces the generic one" for asynchronously
+    /// loaded surfaces.
+    private func issueDeferredTaxiClearanceIfNeeded() {
+        guard pendingDetailedClearance, kind == .departure,
+              let route, routeConfidence.allowsDetailedRouting else { return }
+        pendingDetailedClearance = false
+        let runway = route.holdShortRunway ?? assignedRunway
+        emit(phraseology.taxiClearance(cs: cs(), route: route, runway: runway))
+        awaitingTaxiReadback = true
+        diagnostics?.log(.atc, "OSM taxi route ready — superseding generic clearance with detailed route to runway \(runway)")
     }
 
     // MARK: - Taxi clearance text (for AppModel to post)
@@ -356,8 +380,14 @@ final class AirportSurfaceCoordinator: ObservableObject {
     }
 
     /// Mark that an OSM-based taxi clearance was issued (so a subsequent Read Back
-    /// reveals the taxi map).
-    func taxiClearanceIssued() { awaitingTaxiReadback = true }
+    /// reveals the taxi map). Pass `supersedeWhenRouteReady: true` when the clearance
+    /// that went out was the generic fallback because the live surface was still
+    /// loading — the detailed route clearance is then issued automatically once the
+    /// asynchronous load resolves.
+    func taxiClearanceIssued(supersedeWhenRouteReady: Bool = false) {
+        awaitingTaxiReadback = true
+        pendingDetailedClearance = supersedeWhenRouteReady
+    }
 
     /// Called by AppModel after the pilot reads back the taxi clearance.
     func taxiReadBackComplete() {
@@ -380,6 +410,9 @@ final class AirportSurfaceCoordinator: ObservableObject {
     func hideTaxiMap() {
         taxiMapVisible = false
         mapExpanded = false
+        // The ground-taxi phase is over — don't let a late-resolving surface load
+        // supersede the clearance with a stray Ground call after the hand-off.
+        pendingDetailedClearance = false
         stopMockDrive()
     }
 
@@ -773,6 +806,31 @@ final class AirportSurfaceCoordinator: ObservableObject {
         applyLoaded(model, generation: gen)
         taxiReadBack = true
         taxiMapVisible = true
+    }
+
+    /// Reproduce the uncached live-departure race: a generic Ground taxi clearance is
+    /// issued while the surface is still loading (`taxiClearanceIssued(supersedeWhenRouteReady:)`),
+    /// then the asynchronous load resolves with `model`. Mirrors `beginDeparture` +
+    /// `taxiClearanceIssued` + the async `applyLoaded` without performing a network fetch,
+    /// so the deferred-clearance path can be driven deterministically.
+    func simulateDeferredDepartureForTesting(model: AirportSurfaceModel, runway: String, gate: String) {
+        kind = .departure
+        aircraftClass = .medium
+        assignedRunway = runway
+        self.gate = gate
+        self.startGate = gate
+        self.mockMode = false
+        resetTaxiProgress()
+        pendingStart = MockAirportSurface.gateCoordinate(reference: model.reference.clLocation)
+        loadGeneration += 1
+        let gen = loadGeneration
+        self.icao = model.icao
+        self.reference = model.reference.clLocation
+        status = .loading
+        // Generic clearance issued because the route wasn't ready yet.
+        taxiClearanceIssued(supersedeWhenRouteReady: true)
+        // Surface finishes loading → route computed → deferred detailed clearance emitted.
+        applyLoaded(model, generation: gen)
     }
 
     /// Advance the mock aircraft one step (mirrors one async tick).
