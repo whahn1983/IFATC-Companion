@@ -127,13 +127,19 @@ as periodic Center check-ins (additional sector frequencies are not simulated).
 
 When an arrival gate is entered, the **taxi-in clearance routes to the gate** over the
 OpenStreetMap airport surface, the same way the departure taxi routes to the runway.
-The destination surface is **pre-loaded when the aircraft exits the runway** so the
-route is ready by the time Ground gives the clearance (rather than falling back to a
-generic "taxi to parking"); at an uncached field a generic clearance goes out and is
-**superseded** by the detailed gate route the moment the surface finishes loading. With
-no gate entered there is nothing to route to, so a plain "taxi to parking" stands alone
-(no map). The taxi map's geometry is **cleared each time the map is removed**, so the
-arrival map never briefly shows the departure field while the destination surface loads.
+**Both airports' surfaces are pre-cached at flight load** (as soon as the flight plan is
+known), and the destination surface is loaded when the aircraft exits the runway, so on
+landing all that remains is to calculate the best route to the gate from the current
+position. On the automatic path **Ground waits for that route** (re-checking each
+telemetry tick, up to a few seconds) rather than giving a generic "taxi to parking" — it
+is fine for ATC to take a moment to respond. Only if the airport data genuinely can't be
+fetched at all does it time out to a generic clearance (where waiting longer wouldn't
+produce a route anyway). On a pilot-driven check-in the clearance is immediate — routed
+if ready, otherwise generic and **superseded** by the detailed gate route the moment the
+surface loads. With no gate entered there is nothing to route to, so a plain "taxi to
+parking" stands alone (no map). The taxi map's geometry is **cleared each time the map is
+removed**, so the arrival map never briefly shows the departure field while the
+destination surface loads.
 
 On arrival the simulated **Ramp** taxi-in is staged so the calls never all fire at
 once: *"proceed to gate B44 via the ramp"* when you contact Ramp, then *"monitor

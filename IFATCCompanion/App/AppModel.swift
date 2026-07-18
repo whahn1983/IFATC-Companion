@@ -652,14 +652,51 @@ final class AppModel: ObservableObject {
         !flightPlan.arrivalGate.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    /// When the aircraft first reached the arrival taxi-in and Ground's clearance is being
+    /// held for the destination surface to load, so the wait can be bounded.
+    private var arrivalRouteWaitStartedAt: Date?
+    /// How long Ground waits for the destination surface to load (and route to the gate)
+    /// before falling back to a generic taxi-in clearance. Both airports are pre-cached at
+    /// flight load and the surface is loaded at the runway exit, so this is normally ready
+    /// at once; the wait only covers a slow load, and it's fine for ATC to take a few
+    /// seconds. Only the genuine "airport data can't be fetched at all" case hits the
+    /// timeout — where waiting longer wouldn't produce a route anyway.
+    private let arrivalRouteWaitTimeout: TimeInterval = 8
+
+    /// Whether to keep holding the automatic arrival taxi-in clearance while the destination
+    /// surface finishes loading, so Ground routes to the gate instead of giving a generic
+    /// "taxi to parking". Returns false (proceed and issue the clearance) when there is no
+    /// gate to route to, in Mock Mode, once a routed clearance is available, or after the
+    /// wait times out. Only the automatic (telemetry-driven) path waits — a pilot-driven
+    /// check-in gets an immediate answer (routed if ready, else generic + supersede).
+    private func shouldWaitForArrivalRoute() -> Bool {
+        guard hasArrivalGate, !settings.mockMode else { arrivalRouteWaitStartedAt = nil; return false }
+        // Make sure the destination surface is loading (normally started at the runway exit).
+        if airportSurface.kind != .arrival { prepareArrivalTaxi() }
+        // A routed clearance is ready — stop waiting and issue it.
+        if airportSurface.taxiClearance(callsign: buildContext(for: .groundArrival).callsign) != nil {
+            arrivalRouteWaitStartedAt = nil
+            return false
+        }
+        // Otherwise hold a few seconds for the surface, then fall back to a generic call.
+        let now = Date()
+        let startedAt = arrivalRouteWaitStartedAt ?? now
+        arrivalRouteWaitStartedAt = startedAt
+        if now.timeIntervalSince(startedAt) >= arrivalRouteWaitTimeout {
+            arrivalRouteWaitStartedAt = nil
+            return false
+        }
+        return true
+    }
+
     /// Issue Ground's arrival taxi-in clearance, routing to the entered gate once the
     /// destination surface has loaded. The surface is pre-loaded when the aircraft exits the
-    /// runway (`prepareArrivalTaxi` off `.runwayExit`), so by the taxi-in the OSM route is
-    /// normally ready and the clearance names the taxiways to the gate. If it is still
-    /// loading (an uncached field), a generic clearance goes out now and is superseded by the
-    /// detailed route the moment the surface resolves — the taxi map reveals on the read-back
-    /// either way. With no entered gate there is nothing to route to, so a plain "taxi to
-    /// parking" stands alone (no map).
+    /// runway (`prepareArrivalTaxi` off `.runwayExit`), and on the automatic path Ground
+    /// waits for the route (`shouldWaitForArrivalRoute`) rather than giving a generic call —
+    /// so the clearance names the taxiways to the gate. On the pilot-driven check-in path a
+    /// generic clearance goes out at once if the route isn't ready yet and is superseded by
+    /// the detailed route the moment the surface resolves. With no entered gate there is
+    /// nothing to route to, so a plain "taxi to parking" stands alone (no map).
     private func issueArrivalTaxiClearance(announceHandoff: Bool, automatic: Bool) {
         let c = buildContext(for: .groundArrival)
         guard settings.mockMode || hasArrivalGate else {
@@ -1217,8 +1254,16 @@ final class AppModel: ObservableObject {
         let target = adjustedAirborneTarget(mapped: mapped, state: state)
         if isForward(target) {
             if target == .groundArrival, previousState != .groundArrival {
-                // Arrival taxi-in: route the clearance to the gate once the destination
-                // surface has loaded (pre-loaded at the runway exit).
+                // Arrival taxi-in: wait for the destination surface so Ground routes the
+                // clearance to the gate rather than giving a generic "taxi to parking". Both
+                // airports are pre-cached at flight load and the surface is loaded at the
+                // runway exit, so this is normally ready at once; otherwise hold a few
+                // seconds (re-checking each telemetry tick) before falling back.
+                if shouldWaitForArrivalRoute() {
+                    atcState = stateMachine.current
+                    currentFacility = controller(for: stateMachine.current)
+                    return
+                }
                 issueArrivalTaxiClearance(announceHandoff: true, automatic: true)
             } else {
                 advanceAndPost(to: target, context: buildContext(for: target), automatic: true)
@@ -4930,6 +4975,7 @@ final class AppModel: ObservableObject {
         arrivalAnnounced = false
         awaitingGateArrival = false
         arrivalGatePosition = nil
+        arrivalRouteWaitStartedAt = nil
         gateMonitored = false
         lastSpokenText = ""
         lastSpokenIntent = nil
