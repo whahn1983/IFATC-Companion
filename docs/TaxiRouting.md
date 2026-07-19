@@ -11,7 +11,13 @@ graph (see [AirportSurfaceData.md](AirportSurfaceData.md)).
 `TaxiRouteEngine` uses **A\*** with a great‑circle heuristic. It supports:
 
 - **departure** routing from a gate / parking / ramp position / current aircraft position to the
-  assigned runway hold‑short point;
+  assigned runway hold‑short point. The engine resolves an **ordered list of goal candidates**
+  for the assigned end — the full‑length runway‑entry node(s), then holding positions for that
+  end, then plain taxi nodes near the runway‑end threshold — and routes to the first one the
+  aircraft can actually reach, so a single goal node stranded in a disconnected patch of a large
+  field's graph (e.g. a far‑end runway entry not wired to the terminal taxiways) no longer fails
+  the whole route. Runway‑ident matching is tolerant of leading‑zero padding, so an assigned
+  `9L` matches an OSM‑tagged `09L`;
 - **arrival** routing from the current aircraft position to a selected gate or parking
   position — the destination surface is warmed early (at the runway exit) so the clearance can
   route to the gate, but the route is **re‑anchored at the aircraft's position at the moment
