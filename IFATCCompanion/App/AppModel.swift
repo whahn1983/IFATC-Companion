@@ -734,6 +734,13 @@ final class AppModel: ObservableObject {
         // exit). Guarded so a repeated call — the automatic path re-checks each tick — never
         // restarts an in-flight or already-failed fetch.
         if airportSurface.kind != .arrival { prepareArrivalTaxi() }
+        // Anchor the route at the aircraft's position at the moment taxi is requested. The
+        // surface (and its route) is warmed earlier, at the runway exit, before the aircraft
+        // taxied clear — so re-anchor to where it actually is now, otherwise the drawn route
+        // starts back at the runway exit rather than under the aircraft.
+        if !settings.mockMode, let here = aircraftState.coordinate {
+            airportSurface.updateTaxiStart(coordinate: here)
+        }
         // Pilot check-in path: withhold the clearance while the surface is still loading; it
         // is issued once the load resolves (via the telemetry-pumped deferred issuer). The
         // pilot's check-in has already been posted, so Ground simply replies when ready. The

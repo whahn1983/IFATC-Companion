@@ -170,6 +170,59 @@ final class TaxiMapStateTests: XCTestCase {
         coord.hideTaxiMap()
     }
 
+    func testArrivalRouteReanchorsToAircraftPositionAtTaxiRequest() {
+        // The destination surface is warmed at the runway exit, which fixes the route's start
+        // there. By the time the pilot requests taxi the aircraft has taxied clear of the
+        // runway, so `updateTaxiStart` must re-anchor the route at its current position —
+        // otherwise the drawn route begins back at the runway exit rather than under the
+        // aircraft (the reported "taxi route didn't start at my location" bug).
+        let coord = AirportSurfaceCoordinator()
+        let engine = PhraseologyEngine(digitStyle: .individual, mode: .faa)
+        coord.configure(diagnostics: nil, engine: engine, emit: { _ in },
+                        callsign: { engine.callsign(airline: "United", flightNumber: "598", fallback: "") })
+
+        let model = MockAirportSurface.model(icao: "KTEST", reference: ref,
+                                             primaryRunwayIdent: "36", gate: "A1")
+        // Warmed at the runway exit, as `prepareArrivalTaxi` does off `.runwayExit`.
+        let runwayExit = MockAirportSurface.runwayExitCoordinate(reference: ref)
+        coord.simulateDeferredArrivalForTesting(model: model, gate: "A1", start: runwayExit)
+        guard let atExit = coord.routeForTesting?.startCoordinate.clLocation else {
+            return XCTFail("a route computes from the runway-exit warm point")
+        }
+        XCTAssertLessThan(SurfaceGeometry.distanceMeters(atExit, runwayExit), 60,
+                          "route initially starts at the runway-exit warm point")
+
+        // The aircraft has taxied well clear of the runway (up taxiway A) by the time it
+        // requests taxi to the gate.
+        let atRequest = CLLocationCoordinate2D(latitude: ref.latitude,
+                                               longitude: ref.longitude + 0.0030)
+        coord.updateTaxiStart(coordinate: atRequest)
+        guard let reanchored = coord.routeForTesting?.startCoordinate.clLocation else {
+            return XCTFail("a route still computes from the request-time position")
+        }
+        XCTAssertLessThan(SurfaceGeometry.distanceMeters(reanchored, atRequest), 60,
+                          "route now starts at the aircraft's position at taxi-request time")
+        XCTAssertGreaterThan(SurfaceGeometry.distanceMeters(atExit, reanchored), 150,
+                             "the route start moved off the runway exit to the current position")
+        XCTAssertEqual(coord.routeForTesting?.arrivalGate, "A1", "still routes to the entered gate")
+    }
+
+    func testUpdateTaxiStartIsIgnoredInMockMode() {
+        // Mock Mode drives a scripted start (the synthetic runway exit / teleport), so a live
+        // position update must not disturb it.
+        let coord = AirportSurfaceCoordinator()
+        let engine = PhraseologyEngine(digitStyle: .individual, mode: .faa)
+        coord.configure(diagnostics: nil, engine: engine, emit: { _ in },
+                        callsign: { engine.callsign(airline: "United", flightNumber: "598", fallback: "") })
+        coord.beginMockTaxiForTesting(kind: .arrival, reference: ref, runway: "36", gate: "A1")
+        let before = coord.routeForTesting?.startCoordinate
+        coord.updateTaxiStart(coordinate: CLLocationCoordinate2D(latitude: ref.latitude,
+                                                                 longitude: ref.longitude + 0.0030))
+        XCTAssertEqual(coord.routeForTesting?.startCoordinate, before,
+                       "the scripted mock route start is untouched by a live position update")
+        coord.hideTaxiMap()
+    }
+
     func testHidingTaxiMapClearsGeometrySoNextTaxiStartsFresh() {
         // Removing the map clears its geometry, so the next taxi never briefly shows the
         // previous airport's surface while the new one loads (the arrival map popping up
