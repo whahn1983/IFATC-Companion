@@ -1200,6 +1200,14 @@ final class AirportSurfaceCoordinator: ObservableObject {
         applyLoaded(model, generation: gen)
     }
 
+    /// Simulate the in-progress live surface fetch resolving with `model` (test hook), so
+    /// the withheld arrival-taxi flow can be driven without a network fetch. Applies the
+    /// surface at the current load generation, exactly as the async load would on success —
+    /// leaving `surfaceLoadInProgress` false so the next telemetry tick issues the clearance.
+    func completeSurfaceLoadForTesting(_ model: AirportSurfaceModel) {
+        applyLoaded(model, generation: loadGeneration)
+    }
+
     /// Advance the mock aircraft one step (mirrors one async tick).
     func mockTickForTesting() { mockTick() }
 
