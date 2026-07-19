@@ -33,6 +33,16 @@ struct TaxiRouteEngine {
     /// "off route" the moment the map appears.
     private let gateAnchorMeters = 30.0
 
+    /// How far from the assigned runway-end threshold a plain taxi node may sit and still
+    /// serve as a last-resort goal when no runway-entry / holding-position node carries the
+    /// runway's ident (e.g. the hold wasn't tagged in OSM).
+    private let goalThresholdFallbackMeters = 300.0
+
+    /// Upper bound on how many goal candidates the router probes with A* before giving up.
+    /// Each probe is cheap, but a runway whose whole area is disconnected from the taxi
+    /// network would otherwise probe every candidate; this keeps a hopeless case prompt.
+    private let maxGoalAttempts = 16
+
     struct Request {
         var startCoordinate: CLLocationCoordinate2D
         var startGateName: String?
@@ -47,14 +57,26 @@ struct TaxiRouteEngine {
 
     func route(_ request: Request) -> SurfaceTaxiRoute? {
         guard graph.nodes.count > 1, !graph.edges.isEmpty else { return nil }
-        guard let start = resolveStart(request), let goal = resolveGoal(request) else { return nil }
-        if start.node == goal.node { return nil }
+        guard let start = resolveStart(request) else { return nil }
 
-        guard let (nodePath, edgePath) = astar(start: start.node, goal: goal.node,
-                                               aircraft: request.aircraft) else { return nil }
-        return assemble(nodePath: nodePath, edgePath: edgePath, request: request,
-                        startNode: start.node, goalNode: goal.node,
-                        snapMeters: start.distanceMeters, goalMeters: goal.distanceMeters)
+        // Try each goal candidate in priority order (full-length runway entry, then holds for
+        // an intersection departure, then taxi nodes near the threshold) and take the first
+        // the aircraft can actually reach. A single first-choice goal can be stranded in a
+        // disconnected patch of the OSM graph — at a big field like KATL the far-end runway
+        // entry may not be wired to the terminal taxiways — which used to fail the whole route
+        // even though another node for the same runway was reachable. Bounded so a runway
+        // whose entire area is disconnected still returns promptly.
+        var attempts = 0
+        for goal in resolveGoalCandidates(request) where goal.node != start.node {
+            if attempts >= maxGoalAttempts { break }
+            attempts += 1
+            guard let (nodePath, edgePath) = astar(start: start.node, goal: goal.node,
+                                                   aircraft: request.aircraft) else { continue }
+            return assemble(nodePath: nodePath, edgePath: edgePath, request: request,
+                            startNode: start.node, goalNode: goal.node,
+                            snapMeters: start.distanceMeters, goalMeters: goal.distanceMeters)
+        }
+        return nil
     }
 
     // MARK: - Endpoint resolution
@@ -73,40 +95,84 @@ struct TaxiRouteEngine {
         return (nearest.node.id, nearest.distanceMeters)
     }
 
-    private func resolveGoal(_ req: Request) -> (node: Int, distanceMeters: Double)? {
+    /// Goal candidates for the route, best first, so `route` can fall through to the next one
+    /// when the top choice is unreachable (stranded in a disconnected graph patch). Departure:
+    /// full-length runway-entry node(s) for the assigned end — nearest the threshold first —
+    /// then holding positions for that end (an intersection departure), then plain taxi nodes
+    /// near the runway-end threshold as a last resort. Runway-ident matching is tolerant of
+    /// leading-zero padding, so an assigned "9L" matches OSM-tagged "09L". Arrival: the named
+    /// gate, else the nearest parking/gate to the airport reference (a single choice, as before).
+    private func resolveGoalCandidates(_ req: Request) -> [(node: Int, distanceMeters: Double)] {
         if req.isDeparture {
-            guard let ident = req.assignedRunwayIdent, !ident.isEmpty else { return nil }
-            // Prefer the runway-entry node for the assigned end (full-length departure).
-            if let entry = graph.nodes.first(where: { $0.kind == .runwayEntry
-                && ($0.runwayRef?.uppercased() == ident.uppercased()) }) {
-                return (entry.id, 0)
+            guard let ident = req.assignedRunwayIdent, !ident.isEmpty else { return [] }
+            let key = runwayKey(ident)
+            let threshold = model.runwayEnds.first { runwayKey($0.ident) == key }?.threshold.clLocation
+
+            func distanceToThreshold(_ node: SurfaceNode) -> Double {
+                guard let threshold else { return 0 }
+                return SurfaceGeometry.distanceMeters(threshold, node.clLocation)
             }
-            // Then a holding position for that runway.
-            if let hold = graph.nodes.first(where: { $0.kind == .holdingPosition
-                && ($0.runwayRef?.uppercased() == ident.uppercased()) }) {
-                return (hold.id, 0)
+            func matchesRunway(_ node: SurfaceNode) -> Bool {
+                guard let ref = node.runwayRef else { return false }
+                return runwayKey(ref) == key
             }
-            // Fall back to the nearest node to the runway-end threshold.
-            if let end = model.runwayEnd(ident: ident),
-               let nearest = graph.nearestNode(to: end.threshold.clLocation, maxMeters: 300) {
-                return (nearest.node.id, nearest.distanceMeters)
+
+            var out: [(node: Int, distanceMeters: Double)] = []
+            var seen = Set<Int>()
+            func add(_ id: Int, _ distance: Double) {
+                if seen.insert(id).inserted { out.append((node: id, distanceMeters: distance)) }
             }
-            return nil
+
+            // 1) Full-length runway-entry nodes for the assigned end.
+            for node in graph.nodes.filter({ $0.kind == .runwayEntry && matchesRunway($0) })
+                .sorted(by: { distanceToThreshold($0) < distanceToThreshold($1) }) {
+                add(node.id, 0)
+            }
+            // 2) Holding positions for the assigned end (intersection departure).
+            for node in graph.nodes.filter({ $0.kind == .holdingPosition && matchesRunway($0) })
+                .sorted(by: { distanceToThreshold($0) < distanceToThreshold($1) }) {
+                add(node.id, 0)
+            }
+            // 3) Last resort: taxi nodes near the runway-end threshold (the ident may be
+            //    untagged on any node), nearest first.
+            if let threshold {
+                let taxiKinds: Set<SurfaceNodeKind> = [.taxiwayEndpoint, .intersection, .runwayEntry, .holdingPosition]
+                var near: [(id: Int, distance: Double)] = []
+                for node in graph.nodes where taxiKinds.contains(node.kind) {
+                    let distance = SurfaceGeometry.distanceMeters(threshold, node.clLocation)
+                    if distance <= goalThresholdFallbackMeters { near.append((id: node.id, distance: distance)) }
+                }
+                for candidate in near.sorted(by: { $0.distance < $1.distance }) {
+                    add(candidate.id, candidate.distance)
+                }
+            }
+            return out
         } else {
             let gate = (req.arrivalGateName ?? "").trimmingCharacters(in: .whitespaces)
             if !gate.isEmpty, let node = graph.nodes.first(where: {
                 ($0.kind == .gate || $0.kind == .parking) && ($0.name?.uppercased() == gate.uppercased()) }) {
-                return (node.id, 0)
+                return [(node: node.id, distanceMeters: 0)]
             }
             // No named gate found: nearest parking/gate to the airport reference.
             let ref = model.reference.clLocation
             if let node = graph.nodes
                 .filter({ $0.kind == .gate || $0.kind == .parking })
                 .min(by: { SurfaceGeometry.distanceMeters(ref, $0.clLocation) < SurfaceGeometry.distanceMeters(ref, $1.clLocation) }) {
-                return (node.id, 0)
+                return [(node: node.id, distanceMeters: 0)]
             }
-            return nil
+            return []
         }
+    }
+
+    /// Canonical comparison key for a runway ident, tolerant of leading-zero padding and case,
+    /// so an assigned "9L" matches OSM-tagged "09L" (and "8" matches "08"). The leading number
+    /// collapses to its integer value; any L/C/R designator is preserved. An ident with no
+    /// leading number falls back to its trimmed, uppercased form.
+    private func runwayKey(_ raw: String) -> String {
+        let s = raw.trimmingCharacters(in: .whitespaces).uppercased()
+        let digits = s.prefix { $0.isNumber }
+        guard let n = Int(digits) else { return s }
+        return "\(n)\(s.dropFirst(digits.count))"
     }
 
     // MARK: - A*

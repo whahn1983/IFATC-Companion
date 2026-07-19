@@ -152,4 +152,63 @@ final class TaxiRoutingTests: XCTestCase {
         XCTAssertEqual(route?.arrivalGate, "A1")
         XCTAssertEqual(route?.destinationLabel, "gate A1")
     }
+
+    func testDepartureMatchesZeroPaddedRunwayIdent() {
+        // The app assigns a non-padded ident ("9") while OSM tags the runway end zero-padded
+        // ("09") — they are the same physical end. The departure must still route; otherwise
+        // KATL's east-flow runways (8L/9L, tagged 08L/09L in OSM) never resolve a goal and the
+        // map is stuck on "route pending".
+        let m = MockAirportSurface.model(icao: "KPAD", reference: ref, primaryRunwayIdent: "09", gate: "A1")
+        let g = SurfaceGraphBuilder.build(from: m)
+        let engine = TaxiRouteEngine(graph: g, model: m)
+        let route = engine.route(.init(startCoordinate: MockAirportSurface.gateCoordinate(reference: ref),
+                                       startGateName: "A1", isDeparture: true,
+                                       assignedRunwayIdent: "9", arrivalGateName: nil, aircraft: .medium))
+        XCTAssertNotNil(route, "an assigned \"9\" must match the OSM-tagged \"09\" runway end")
+        XCTAssertEqual(route?.holdShortRunway, "9", "the clearance still names the assigned runway")
+    }
+
+    func testDepartureFallsThroughToReachableGoalWhenEntryStranded() {
+        // Reproduces the KATL 26L failure: the surface loads and the aircraft snaps onto the
+        // graph, but the runway-entry node for the assigned end is stranded in a disconnected
+        // patch of the OSM graph, so A* to it finds no path. A holding position for the same
+        // runway sits on the connected taxi network, so the route must fall through to it
+        // instead of returning nil (which showed as "route pending" + a generic clearance).
+        func p(_ dLat: Double, _ dLon: Double) -> GeoCoordinate {
+            GeoCoordinate(latitude: ref.latitude + dLat, longitude: ref.longitude + dLon)
+        }
+        // Connected network: gate → taxiway A → taxiway B (which ends at the mapped hold).
+        let twyA = SurfaceTaxiway(osmID: "way/a", tags: ["aeroway": "taxiway", "ref": "A"], isTaxilane: false,
+                                  name: "A", geometry: [p(0.0002, 0), p(0.0030, 0)], oneway: false, access: nil, widthMeters: nil)
+        let twyB = SurfaceTaxiway(osmID: "way/b", tags: ["aeroway": "taxiway", "ref": "B"], isTaxilane: false,
+                                  name: "B", geometry: [p(0.0030, 0), p(0.0030, 0.0010)], oneway: false, access: nil, widthMeters: nil)
+        // A tiny isolated stub next to the 36 threshold — nearest the threshold, so it becomes
+        // the runway-entry node, but it is wired to nothing (44 m from taxiway B, far past the
+        // ~1 m node-merge grid).
+        let stub = SurfaceTaxiway(osmID: "way/stub", tags: ["aeroway": "taxiway", "ref": "S"], isTaxilane: false,
+                                  name: "S", geometry: [p(0.00345, 0.0010), p(0.00355, 0.0010)], oneway: false, access: nil, widthMeters: nil)
+        let runway = SurfaceRunway(osmID: "way/r", tags: ["aeroway": "runway", "ref": "18/36"], idents: ["18", "36"],
+                                   centerline: [p(0.0034, 0.0010), p(0.0090, 0.0010)], widthMeters: 45, widthInferred: false)
+        let end36 = SurfaceRunwayEnd(ident: "36", threshold: p(0.0034, 0.0010), oppositeThreshold: p(0.0090, 0.0010),
+                                     headingDegrees: 360, runwayOSMID: "way/r", widthMeters: 45)
+        let end18 = SurfaceRunwayEnd(ident: "18", threshold: p(0.0090, 0.0010), oppositeThreshold: p(0.0034, 0.0010),
+                                     headingDegrees: 180, runwayOSMID: "way/r", widthMeters: 45)
+        // Mapped hold for 36, coincident with taxiway B's end → reachable from the gate.
+        let hold = SurfaceHoldingPosition(osmID: "node/h", tags: ["aeroway": "holding_position", "ref": "36"],
+                                          coordinate: p(0.0030, 0.0010), runwayRef: "36", inferred: false)
+        let gate = SurfaceParking(osmID: "node/g", tags: ["aeroway": "gate", "ref": "A1"], kind: .gate,
+                                  name: "A1", coordinate: p(0, 0))
+        let bbox = OSMBoundingBox(center: ref, halfSpanDegrees: 0.04)
+        let m = AirportSurfaceModel(icao: "KSTR", reference: GeoCoordinate(ref), runways: [runway],
+                                    runwayEnds: [end36, end18], taxiways: [twyA, twyB, stub], holdingPositions: [hold],
+                                    parkingPositions: [gate], aprons: [],
+                                    source: SurfaceProvenance(endpoint: "t", fetchDate: Date(), boundingBox: bbox, rawElementCount: 6),
+                                    confidence: .medium)
+        let g = SurfaceGraphBuilder.build(from: m)
+        let engine = TaxiRouteEngine(graph: g, model: m)
+        let route = engine.route(.init(startCoordinate: p(0, 0).clLocation, startGateName: "A1", isDeparture: true,
+                                       assignedRunwayIdent: "36", arrivalGateName: nil, aircraft: .medium))
+        XCTAssertNotNil(route, "a stranded runway-entry must fall through to the reachable hold, not fail the route")
+        XCTAssertEqual(route?.holdShortRunway, "36")
+    }
 }
