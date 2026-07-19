@@ -12,8 +12,11 @@ graph (see [AirportSurfaceData.md](AirportSurfaceData.md)).
 
 - **departure** routing from a gate / parking / ramp position / current aircraft position to the
   assigned runway hold‑short point;
-- **arrival** routing from the runway exit / current position to a selected gate or parking
-  position;
+- **arrival** routing from the current aircraft position to a selected gate or parking
+  position — the destination surface is warmed early (at the runway exit) so the clearance can
+  route to the gate, but the route is **re‑anchored at the aircraft's position at the moment
+  taxi is requested**, so it starts under the aircraft rather than back at the runway exit it
+  has since taxied clear of;
 - recalculation after a deviation;
 - alternate runway‑entry selection;
 - **full‑length runway departure by default** (intersection departure only when selected or

@@ -344,6 +344,24 @@ final class AirportSurfaceCoordinator: ObservableObject {
         loadForTaxi(icao: icao, reference: reference, mock: mock)
     }
 
+    /// Re-anchor the active taxi route at the aircraft's current position and recompute, so
+    /// the route starts where the aircraft actually is at the moment taxi is requested — not
+    /// where it was when the surface was first warmed. For an arrival that earlier warm point
+    /// is the runway exit (`prepareArrivalTaxi` off `.runwayExit`), so without this the route
+    /// would begin behind the aircraft, which has since taxied clear of the runway.
+    ///
+    /// Live only: the mock demo drives a scripted start. No-op unless a taxi is being
+    /// serviced and the coordinate is valid, and harmless while the surface is still loading
+    /// — `recomputeRoute` no-ops and the stored start is used once the load resolves.
+    func updateTaxiStart(coordinate: CLLocationCoordinate2D) {
+        guard !mockMode, kind != .none, coordinate.isValid else { return }
+        pendingStart = coordinate
+        // Keep the live re-route throttle in step so the next telemetry sample doesn't
+        // immediately re-run the A* from this same point (see `retryRouteFromLivePosition`).
+        lastRouteRetryCoordinate = coordinate
+        recomputeRoute()
+    }
+
     /// Ensure the surface is available for a taxi. Mock builds synchronously (so the
     /// OSM taxi clearance is ready immediately); a cached live surface routes at once;
     /// an uncached live surface loads asynchronously and reveals the map when ready.
