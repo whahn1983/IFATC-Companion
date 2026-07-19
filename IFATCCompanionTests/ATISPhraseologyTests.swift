@@ -194,6 +194,16 @@ final class ATISPhraseologyTests: XCTestCase {
         XCTAssertEqual(ATISPhraseology.spokenText("TWY B4 CLSD").lowercased(), "taxiway bravo four closed")
     }
 
+    func testTaxiwayWithCommaAfterKeywordSpellsPhonetically() {
+        // Some feeds put a comma right after the keyword ("TWY, S"). The ident must still
+        // spell phonetically ("Sierra") instead of being left as the bare letter "S".
+        XCTAssertEqual(ATISPhraseology.spokenText("TWY, S CLSD").lowercased(), "taxiway sierra closed")
+        XCTAssertEqual(ATISPhraseology.spokenText("TWYS, SB CLSD").lowercased(), "taxiways sierra bravo closed")
+        XCTAssertEqual(ATISPhraseology.spokenText("TWY, B4 CLSD").lowercased(), "taxiway bravo four closed")
+        // A comma with no following space is handled too.
+        XCTAssertEqual(ATISPhraseology.spokenText("TWY,S CLSD").lowercased(), "taxiway sierra closed")
+    }
+
     // MARK: - Hold short / hazard abbreviations
 
     func testHoldShortAbbreviation() {

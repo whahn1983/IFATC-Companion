@@ -134,6 +134,42 @@ final class TaxiMapStateTests: XCTestCase {
         XCTAssertTrue(coord.taxiMapVisible, "taxi map appears after the arrival clearance is read back")
     }
 
+    func testLiveArrivalMapShowsAircraftAndRecoversRouteWhenSurfaceReadyButRouteMissing() {
+        // The reported MSY bug: landing at an uncached field, the surface loads (.ready) but
+        // the route can't yet be computed from the runway rollout point, so a generic taxi
+        // clearance goes out. Reading it back revealed the map — but the old code gated the
+        // aircraft marker on a route existing, so the plane never appeared and nothing
+        // re-routed during the taxi: the map stayed blank until the app was relaunched.
+        let coord = AirportSurfaceCoordinator()
+        let engine = PhraseologyEngine(digitStyle: .individual, mode: .faa)
+        coord.configure(diagnostics: nil, engine: engine, emit: { _ in },
+                        callsign: { engine.callsign(airline: "United", flightNumber: "598", fallback: "") })
+
+        // Load a ready surface but start the arrival *at the gate itself*, so start == goal
+        // and no route can be built — the "surface ready, route nil" state at reveal time.
+        let model = MockAirportSurface.model(icao: "KMSY", reference: ref,
+                                             primaryRunwayIdent: "36", gate: "A1")
+        coord.simulateDeferredArrivalForTesting(model: model, gate: "A1",
+                                                start: MockAirportSurface.gateCoordinate(reference: ref))
+        XCTAssertNil(coord.routeForTesting, "no route computes from the on-top-of-the-gate start")
+
+        // Reading back reveals the map even though the route is still missing.
+        coord.taxiReadBackComplete()
+        XCTAssertTrue(coord.taxiMapVisible, "the map is revealed on read-back")
+        XCTAssertNil(coord.displayAircraft, "no telemetry has arrived yet")
+
+        // A live telemetry sample from a routable point (the runway exit) must place the
+        // aircraft immediately and recover the route — the empty map fills in without a
+        // relaunch.
+        coord.updateLive(coordinate: MockAirportSurface.runwayExitCoordinate(reference: ref),
+                         heading: 0, onGround: true, groundSpeed: 6)
+        XCTAssertNotNil(coord.displayAircraft, "the aircraft renders even while the route is still missing")
+        XCTAssertNotNil(coord.routeForTesting, "the route recovers from the live position")
+        XCTAssertEqual(coord.routeForTesting?.arrivalGate, "A1")
+
+        coord.hideTaxiMap()
+    }
+
     func testHidingTaxiMapClearsGeometrySoNextTaxiStartsFresh() {
         // Removing the map clears its geometry, so the next taxi never briefly shows the
         // previous airport's surface while the new one loads (the arrival map popping up

@@ -128,6 +128,9 @@ final class AirportSurfaceCoordinator: ObservableObject {
     /// (uncached live airports load asynchronously). Supersede it with the detailed OSM
     /// route clearance once `recomputeRoute()` produces a credible route.
     private var pendingDetailedClearance = false
+    /// The live position of the last route retry, so the "surface ready but no route yet"
+    /// recovery only re-runs the A* once the aircraft has actually moved (see `updateLive`).
+    private var lastRouteRetryCoordinate: CLLocationCoordinate2D?
     private var lastAlong = 0.0
     private var offRouteTicks = 0
     private var unauthorizedTicks = 0
@@ -357,9 +360,20 @@ final class AirportSurfaceCoordinator: ObservableObject {
             self.reference = reference
             recomputeRoute()
         } else {
+            // Mark the load in progress synchronously so a taxi-clearance decision made on the
+            // same run loop (before the async fetch actually starts) already sees it and
+            // withholds the clearance until the surface resolves. `loadSurface` sets it again
+            // when the Task runs.
+            status = .loading
             Task { await loadSurface(icao: icao, reference: reference, mock: false, forceRefresh: false) }
         }
     }
+
+    /// Whether the airport surface is still being fetched/normalized (no `.ready`,
+    /// `.unavailable`, or `.error` result yet). Ground uses this to withhold the arrival
+    /// taxi clearance until the data has fully loaded, rather than issuing a generic call
+    /// it would then have to supersede.
+    var surfaceLoadInProgress: Bool { status == .loading }
 
     private var pendingStart: CLLocationCoordinate2D?
 
@@ -389,6 +403,7 @@ final class AirportSurfaceCoordinator: ObservableObject {
         syntheticSurface = false
         taxiReadBack = false
         pendingDetailedClearance = false
+        lastRouteRetryCoordinate = nil
         lastAlong = 0
         offRouteTicks = 0
         unauthorizedTicks = 0
@@ -663,16 +678,45 @@ final class AirportSurfaceCoordinator: ObservableObject {
 
     // MARK: - Live telemetry
 
-    /// Forward live aircraft telemetry (live mode only). No-op in mock mode or when no
-    /// taxi is active.
+    /// Forward live aircraft telemetry (live mode only). No-op in mock mode or when the
+    /// taxi map isn't showing.
+    ///
+    /// The aircraft marker is placed as soon as the map is visible — it is deliberately
+    /// **not** gated on a route existing yet. Right after landing at an uncached field the
+    /// surface can be `.ready` while the route is momentarily uncomputable from the runway
+    /// rollout point; the old `route != nil` guard dropped every sample in that window, so
+    /// the plane never appeared and — since nothing re-ran the routing during a steady taxi
+    /// — the map stayed blank until the app was relaunched. Now the plane always shows, and
+    /// while the route is still missing we re-route from the live position so it fills in
+    /// (and its detailed Ground clearance supersedes the generic one) the moment the
+    /// aircraft reaches a routable point.
     func updateLive(coordinate: CLLocationCoordinate2D?, heading: Double?, onGround: Bool?, groundSpeed: Double?) {
-        guard !mockMode, kind != .none, taxiMapVisible, route != nil else { return }
+        guard !mockMode, kind != .none, taxiMapVisible else { return }
         guard let coordinate, coordinate.isValid else { return }
         displayAircraft = TaxiAircraft(coordinate: GeoCoordinate(coordinate),
                                        headingDegrees: heading ?? displayAircraft?.headingDegrees ?? 0,
                                        onGround: onGround ?? true,
                                        groundSpeedKnots: groundSpeed ?? 0)
-        advanceTracking()
+        if route != nil {
+            advanceTracking()
+        } else {
+            retryRouteFromLivePosition(coordinate)
+        }
+    }
+
+    /// Recover a taxi whose surface loaded but couldn't be routed at the earlier start
+    /// point (e.g. straight off the runway). Re-runs the route from the live position —
+    /// throttled so the A* only re-runs once the aircraft has moved — so the route appears
+    /// as soon as the aircraft is somewhere routable instead of the map staying empty. No-op
+    /// until the surface is ready (a still-loading / unavailable surface has nothing to
+    /// route on and `recomputeRoute` would no-op anyway).
+    private func retryRouteFromLivePosition(_ coordinate: CLLocationCoordinate2D) {
+        guard status.isReady else { return }
+        if let last = lastRouteRetryCoordinate,
+           SurfaceGeometry.distanceMeters(last, coordinate) < 10 { return }
+        lastRouteRetryCoordinate = coordinate
+        pendingStart = coordinate
+        recomputeRoute()
     }
 
     // MARK: - Mock drive
@@ -1135,7 +1179,8 @@ final class AirportSurfaceCoordinator: ObservableObject {
     /// resolves with `model` and the detailed gate route supersedes it. Mirrors
     /// `beginArrival` + `taxiClearanceIssued(supersedeWhenRouteReady:)` + the async
     /// `applyLoaded` without a network fetch.
-    func simulateDeferredArrivalForTesting(model: AirportSurfaceModel, gate: String) {
+    func simulateDeferredArrivalForTesting(model: AirportSurfaceModel, gate: String,
+                                           start: CLLocationCoordinate2D? = nil) {
         kind = .arrival
         aircraftClass = .medium
         assignedRunway = ""
@@ -1143,7 +1188,7 @@ final class AirportSurfaceCoordinator: ObservableObject {
         self.startGate = ""
         self.mockMode = false
         resetTaxiProgress()
-        pendingStart = MockAirportSurface.runwayExitCoordinate(reference: model.reference.clLocation)
+        pendingStart = start ?? MockAirportSurface.runwayExitCoordinate(reference: model.reference.clLocation)
         loadGeneration += 1
         let gen = loadGeneration
         self.icao = model.icao
@@ -1153,6 +1198,14 @@ final class AirportSurfaceCoordinator: ObservableObject {
         taxiClearanceIssued(supersedeWhenRouteReady: true)
         // Surface finishes loading → route computed → deferred detailed clearance emitted.
         applyLoaded(model, generation: gen)
+    }
+
+    /// Simulate the in-progress live surface fetch resolving with `model` (test hook), so
+    /// the withheld arrival-taxi flow can be driven without a network fetch. Applies the
+    /// surface at the current load generation, exactly as the async load would on success —
+    /// leaving `surfaceLoadInProgress` false so the next telemetry tick issues the clearance.
+    func completeSurfaceLoadForTesting(_ model: AirportSurfaceModel) {
+        applyLoaded(model, generation: loadGeneration)
     }
 
     /// Advance the mock aircraft one step (mirrors one async tick).

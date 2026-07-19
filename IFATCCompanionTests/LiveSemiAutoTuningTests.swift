@@ -1,4 +1,5 @@
 import XCTest
+import CoreLocation
 @testable import IFATCCompanion
 
 /// In **live** mode the controller's position-based calls and facility hand-offs
@@ -137,10 +138,24 @@ final class LiveSemiAutoTuningTests: XCTestCase {
         feed(model, .landing, times: 2)
         XCTAssertTrue(contains(model, "exit the runway when able, contact Ground", sender: .atc))
 
-        // Clear of the runway: the pilot tunes Ground and checks in for the taxi-in.
+        // Clear of the runway: the pilot tunes Ground and checks in for the taxi-in. The
+        // destination surface is still loading offline, so Ground withholds the clearance —
+        // a controller who simply hasn't gotten back to you yet — rather than blurting a
+        // generic call it would then supersede.
         model.tuneTo(.ground); model.requestHandoff()
+        XCTAssertTrue(model.airportSurface.surfaceLoadInProgress)
+        XCTAssertFalse(contains(model, "taxi to gate C10", sender: .atc),
+                       "Ground withholds the taxi-in until the destination surface has loaded")
+
+        // The destination surface finishes loading; the next telemetry tick lets Ground
+        // reply with the taxi-to-gate.
+        model.airportSurface.completeSurfaceLoadForTesting(
+            MockAirportSurface.model(icao: "KMSP",
+                                     reference: CLLocationCoordinate2D(latitude: 44.8848, longitude: -93.2223),
+                                     primaryRunwayIdent: "30L", gate: "C10"))
+        model.ingestStateForTesting(model.mock.state(for: .taxiIn))
         XCTAssertTrue(contains(model, "taxi to gate C10", sender: .atc),
-                      "Ground should issue the taxi-to-gate on check-in")
+                      "Ground issues the taxi-to-gate once the surface has fully loaded")
 
         // A parked telemetry reading now arrives — before the pilot has read back.
         model.ingestStateForTesting(model.mock.state(for: .parked))

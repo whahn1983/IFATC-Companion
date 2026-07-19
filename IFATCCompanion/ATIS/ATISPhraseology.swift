@@ -159,9 +159,11 @@ enum ATISPhraseology {
         // rather than left as bare letters the synthesizer reads as "S B". The one/two-letter
         // bound keeps a following abbreviation word (e.g. "CLSD") from being swallowed. A
         // two-letter, digit-less token that is a common word / abbreviation (e.g. "TWYS IN
-        // USE", "TWY SW OF …") is left alone for the word/abbreviation passes below. The
-        // keyword is kept for the abbreviation pass to expand.
-        s = replacingMatches(in: s, pattern: "\\b(TWYS|TWY|TAXIWAY|TAXIWAYS|TY)\\s+([A-Z]{1,2}\\d{0,2})\\b") { g in
+        // USE", "TWY SW OF …") is left alone for the word/abbreviation passes below. Some
+        // feeds put a comma right after the keyword ("TWY, S") — the optional comma is
+        // matched (and dropped) so the ident still spells phonetically instead of being
+        // left as a bare "S". The keyword is kept for the abbreviation pass to expand.
+        s = replacingMatches(in: s, pattern: "\\b(TWYS|TWY|TAXIWAY|TAXIWAYS|TY)[,\\s]+([A-Z]{1,2}\\d{0,2})\\b") { g in
             let ident = g[2]
             if ident.count == 2, ident.allSatisfy(\.isLetter), nonTaxiwayTokens.contains(ident) {
                 return g[1] + " " + ident
