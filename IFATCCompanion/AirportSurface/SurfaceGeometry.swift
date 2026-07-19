@@ -105,6 +105,60 @@ enum SurfaceGeometry {
         String(format: "%.5f,%.5f", c.latitude, c.longitude)
     }
 
+    // MARK: - Polygons
+
+    /// Axis-aligned bounding box of a polygon (min/max latitude & longitude), or nil when
+    /// empty. Used as a cheap first-pass reject before the full segment/point tests.
+    static func boundingBox(of polygon: [CLLocationCoordinate2D])
+        -> (minLat: Double, minLon: Double, maxLat: Double, maxLon: Double)? {
+        guard let first = polygon.first else { return nil }
+        var minLat = first.latitude, maxLat = first.latitude
+        var minLon = first.longitude, maxLon = first.longitude
+        for p in polygon.dropFirst() {
+            minLat = min(minLat, p.latitude); maxLat = max(maxLat, p.latitude)
+            minLon = min(minLon, p.longitude); maxLon = max(maxLon, p.longitude)
+        }
+        return (minLat, minLon, maxLat, maxLon)
+    }
+
+    /// Ray-casting point-in-polygon test (planar, longitude as x / latitude as y). The
+    /// polygon is treated as implicitly closed; winding direction does not matter.
+    static func polygonContains(_ p: CLLocationCoordinate2D, _ polygon: [CLLocationCoordinate2D]) -> Bool {
+        guard polygon.count >= 3 else { return false }
+        let x = p.longitude, y = p.latitude
+        var inside = false
+        var j = polygon.count - 1
+        for i in 0..<polygon.count {
+            let xi = polygon[i].longitude, yi = polygon[i].latitude
+            let xj = polygon[j].longitude, yj = polygon[j].latitude
+            if (yi > y) != (yj > y),
+               x < (xj - xi) * (y - yi) / (yj - yi) + xi {
+                inside.toggle()
+            }
+            j = i
+        }
+        return inside
+    }
+
+    /// Whether segment a–b intersects the closed polygon — either crossing one of its
+    /// edges or lying entirely inside it (tested via the segment midpoint). Endpoints that
+    /// merely touch the boundary count as an intersection (consistent with
+    /// `segmentIntersection`).
+    static func segmentIntersectsPolygon(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D,
+                                         _ polygon: [CLLocationCoordinate2D]) -> Bool {
+        guard polygon.count >= 3 else { return false }
+        let n = polygon.count
+        for i in 0..<n {
+            let p = polygon[i], q = polygon[(i + 1) % n]
+            if segmentIntersection(a, b, p, q) != nil { return true }
+        }
+        // No boundary crossing: the segment is either wholly inside or wholly outside;
+        // its midpoint decides which.
+        let mid = CLLocationCoordinate2D(latitude: (a.latitude + b.latitude) / 2,
+                                         longitude: (a.longitude + b.longitude) / 2)
+        return polygonContains(mid, polygon)
+    }
+
     /// Sub-sample a polyline into segments no longer than `maxMeters`, so a long
     /// straight taxiway/runway segment is still tested finely for crossings.
     static func densify(_ path: [CLLocationCoordinate2D], maxMeters: Double = 40) -> [CLLocationCoordinate2D] {

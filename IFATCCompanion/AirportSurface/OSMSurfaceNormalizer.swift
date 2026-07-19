@@ -32,13 +32,20 @@ enum OSMSurfaceNormalizer {
         var holds: [SurfaceHoldingPosition] = []
         var parking: [SurfaceParking] = []
         var aprons: [SurfaceApron] = []
+        var buildings: [SurfaceBuilding] = []
 
         // Refine the reference point from an aerodrome feature if OSM has one.
         var refined = reference
 
         for e in elements {
-            guard let aeroway = e.aeroway else { continue }
             let tags = e.tags ?? [:]
+            // Building / terminal footprints (used to keep gate lead-ins from crossing a
+            // concourse). Checked before the aeroway switch: a `building=*` element has no
+            // aeroway tag, and an `aeroway=terminal` element is not a movement surface.
+            if isBuilding(e, tags: tags), let building = makeBuilding(e, tags: tags) {
+                buildings.append(building)
+            }
+            guard let aeroway = e.aeroway else { continue }
             switch aeroway {
             case "runway":
                 if let runway = makeRunway(e, tags: tags) {
@@ -89,6 +96,7 @@ enum OSMSurfaceNormalizer {
                                         holdingPositions: holds,
                                         parkingPositions: parking,
                                         aprons: aprons,
+                                        buildings: buildings,
                                         source: provenance,
                                         confidence: .low)
         model.confidence = preliminaryConfidence(model)
@@ -192,6 +200,27 @@ enum OSMSurfaceNormalizer {
         let poly = e.polyline
         guard poly.count >= 3 else { return nil }
         return SurfaceApron(osmID: e.stableID, tags: tags, polygon: poly.map(GeoCoordinate.init))
+    }
+
+    /// Movement-surface aeroway values — a feature carrying one of these is a routable
+    /// surface, never treated as a building even if it also has a stray `building` tag.
+    private static let routableAeroways: Set<String> =
+        ["runway", "taxiway", "taxilane", "holding_position", "gate", "parking_position", "apron"]
+
+    /// Whether an element should be captured as a building / terminal footprint: an
+    /// `aeroway=terminal`, or any `building=*` (other than `building=no`) that is not
+    /// itself a movement surface.
+    private static func isBuilding(_ e: OSMElement, tags: [String: String]) -> Bool {
+        if e.aeroway == "terminal" { return true }
+        if let aeroway = e.aeroway, routableAeroways.contains(aeroway) { return false }
+        guard let building = tags["building"]?.lowercased() else { return false }
+        return !building.isEmpty && building != "no"
+    }
+
+    private static func makeBuilding(_ e: OSMElement, tags: [String: String]) -> SurfaceBuilding? {
+        let poly = e.polyline
+        guard poly.count >= 3 else { return nil }
+        return SurfaceBuilding(osmID: e.stableID, tags: tags, polygon: poly.map(GeoCoordinate.init))
     }
 
     // MARK: - Helpers

@@ -19,6 +19,9 @@ struct AirportSurfaceDiagnostics {
     var holdingPositionCount: Int
     var parkingCount: Int
     var apronCount: Int
+    var buildingCount: Int
+    var schemaVersion: Int
+    var schemaOutdated: Bool
     var graphNodeCount: Int
     var graphEdgeCount: Int
     var disconnectedComponents: Int
@@ -57,6 +60,9 @@ struct AirportSurfaceDiagnostics {
         holdingPositionCount = surface?.holdingPositions.count ?? 0
         parkingCount = surface?.parkingPositions.count ?? 0
         apronCount = surface?.aprons.count ?? 0
+        buildingCount = surface?.buildings.count ?? 0
+        schemaVersion = surface?.source.schemaVersion ?? OSMSurface.surfaceSchemaVersion
+        schemaOutdated = surface?.source.isOutdatedSchema ?? false
         graphNodeCount = graph?.nodes.count ?? 0
         graphEdgeCount = graph?.edges.count ?? 0
         disconnectedComponents = max(0, (graph?.componentCount ?? 1) - 1)
@@ -124,6 +130,8 @@ struct AirportSurfaceDiagnostics {
         lines.append("Holding positions: \(holdingPositionCount)")
         lines.append("Gates/parking: \(parkingCount)")
         lines.append("Aprons: \(apronCount)")
+        lines.append("Buildings/terminals: \(buildingCount)")
+        lines.append("Schema version: \(schemaVersion)\(schemaOutdated ? " (outdated — will refresh)" : "")")
         lines.append("Graph nodes: \(graphNodeCount)")
         lines.append("Graph edges: \(graphEdgeCount)")
         lines.append("Disconnected components: \(disconnectedComponents)")

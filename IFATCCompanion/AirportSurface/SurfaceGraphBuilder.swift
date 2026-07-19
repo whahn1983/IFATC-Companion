@@ -20,6 +20,22 @@ enum SurfaceGraphBuilder {
     static let runwayEntryAttachMeters = 160.0
     static let gateAttachMeters = 240.0
 
+    /// Added to a candidate gate connector's score when its straight lead-in would pass
+    /// through a building/terminal. Large enough that any clear node inside the attach
+    /// radius always beats a concourse-crossing one; when every candidate crosses (a stand
+    /// fully enclosed by a footprint) the nearest still wins on distance.
+    static let buildingConnectorPenaltyMeters = 5_000.0
+    /// Added when continuing off the connector onto the taxi network would require a
+    /// near-reversal (the lead-in doubles back across the ramp) — a gentle tiebreak toward
+    /// a node the stand can leave naturally, deliberately small so it only decides between
+    /// otherwise-comparable candidates and never overrides a clearly nearer one.
+    static let connectorReversalPenaltyMeters = 150.0
+    /// A reversal is a turn sharper than this (degrees) from the connector onto the best
+    /// onward taxiway at the node.
+    static let connectorReversalDegrees = 120.0
+    /// How many nearest taxi nodes to score as gate-connector candidates.
+    static let maxGateConnectorCandidates = 8
+
     static func build(from model: AirportSurfaceModel) -> SurfaceGraph {
         var nodes: [SurfaceNode] = []
         var edges: [SurfaceEdge] = []
@@ -169,23 +185,100 @@ enum SurfaceGraphBuilder {
             }
         }
 
-        // Attach gates / parking via inferred connectors.
+        // Building / terminal footprints, with a cheap bounding box each so most stands
+        // skip the full polygon test. Gate lead-ins are steered clear of these so a route
+        // to a thin-concourse stand doesn't cut straight through the building to reach it.
+        let buildingPolys: [(poly: [CLLocationCoordinate2D],
+                             box: (minLat: Double, minLon: Double, maxLat: Double, maxLon: Double))] =
+            model.buildings.compactMap { b in
+                let poly = b.polygon.clLocations
+                guard poly.count >= 3, let box = SurfaceGeometry.boundingBox(of: poly) else { return nil }
+                return (poly, box)
+            }
+
+        // node id → indices of the (real) taxiway edges built so far, for reversal scoring.
+        var nodeToEdges: [Int: [Int]] = [:]
+        for (idx, e) in edges.enumerated() {
+            nodeToEdges[e.from, default: []].append(idx)
+            nodeToEdges[e.to, default: []].append(idx)
+        }
+
+        /// Whether the straight connector a→b passes through any building footprint.
+        func connectorCrossesBuilding(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D) -> Bool {
+            guard !buildingPolys.isEmpty else { return false }
+            let loLat = min(a.latitude, b.latitude), hiLat = max(a.latitude, b.latitude)
+            let loLon = min(a.longitude, b.longitude), hiLon = max(a.longitude, b.longitude)
+            for bp in buildingPolys {
+                // AABB reject: skip a building whose box can't overlap the connector's.
+                if bp.box.maxLat < loLat || bp.box.minLat > hiLat
+                    || bp.box.maxLon < loLon || bp.box.minLon > hiLon { continue }
+                if SurfaceGeometry.segmentIntersectsPolygon(a, b, bp.poly) { return true }
+            }
+            return false
+        }
+
+        /// Penalty when leaving the stand onto the taxi network at `node` would require a
+        /// near-reversal from the connector's arrival bearing — i.e. the lead-in doubles
+        /// back across the ramp instead of feeding the taxiway naturally.
+        func reversalPenalty(from gate: CLLocationCoordinate2D, to node: Int) -> Double {
+            let incident = nodeToEdges[node] ?? []
+            guard !incident.isEmpty else { return 0 }
+            let arrival = Geo.bearing(from: gate, to: nodes[node].clLocation)
+            var bestTurn = 180.0
+            for idx in incident {
+                let e = edges[idx]
+                let other = (e.from == node) ? e.to : e.from
+                guard nodes.indices.contains(other), other != node else { continue }
+                let onward = Geo.bearing(from: nodes[node].clLocation, to: nodes[other].clLocation)
+                bestTurn = min(bestTurn, Geo.headingDifference(arrival, onward))
+            }
+            return bestTurn > connectorReversalDegrees ? connectorReversalPenaltyMeters : 0
+        }
+
+        // Candidate taxi nodes for a stand, nearest first, capped.
+        func connectorCandidates(to coord: CLLocationCoordinate2D) -> [(id: Int, distance: Double)] {
+            nodes.filter { taxiKinds.contains($0.kind) }
+                .map { (id: $0.id, distance: SurfaceGeometry.distanceMeters(coord, $0.clLocation)) }
+                .filter { $0.distance <= gateAttachMeters }
+                .sorted { $0.distance < $1.distance }
+                .prefix(maxGateConnectorCandidates)
+                .map { $0 }
+        }
+
+        // Attach gates / parking via inferred connectors, preferring a nearby node the
+        // lead-in can reach without crossing a concourse or doubling back.
         var inferredConnectors = 0
         for parking in model.parkingPositions {
-            guard let taxiIdx = nearestNodeIndex(to: parking.coordinate.clLocation,
-                                                 kinds: taxiKinds, maxMeters: gateAttachMeters) else { continue }
+            let gateCoord = parking.coordinate.clLocation
+            let candidates = connectorCandidates(to: gateCoord)
+            guard !candidates.isEmpty else { continue }
+
+            func score(_ c: (id: Int, distance: Double)) -> Double {
+                var s = c.distance
+                if connectorCrossesBuilding(gateCoord, nodes[c.id].clLocation) {
+                    s += buildingConnectorPenaltyMeters
+                }
+                s += reversalPenalty(from: gateCoord, to: c.id)
+                return s
+            }
+            guard let taxiIdx = candidates.min(by: { score($0) < score($1) })?.id else { continue }
+
             let gateNodeID = makeNode(at: parking.coordinate,
                                       kind: parking.kind == .gate ? .gate : .parking,
                                       osmID: parking.osmID, inferred: true)
             nodes[gateNodeID].name = parking.name
             let a = nodes[gateNodeID].coordinate, b = nodes[taxiIdx].coordinate
             let dist = SurfaceGeometry.distanceMeters(a.clLocation, b.clLocation)
+            // Even the best available lead-in may still clip a footprint (a stand ringed by
+            // building). Flag it so routing penalizes it and confidence reflects it.
+            let crosses = connectorCrossesBuilding(a.clLocation, b.clLocation)
             edges.append(SurfaceEdge(id: edges.count, from: gateNodeID, to: taxiIdx,
                                      geometry: [a, b], distanceMeters: dist,
                                      taxiwayName: "", hasName: false, isTaxilane: false,
                                      runwayCrossing: nil, runwayCrossingName: nil, crossingPoint: nil,
                                      runwayOccupancy: false, oneway: false, closed: false,
-                                     inferred: true, confidence: 0.4, osmIDs: [], widthMeters: nil))
+                                     inferred: true, crossesBuilding: crosses,
+                                     confidence: crosses ? 0.2 : 0.4, osmIDs: [], widthMeters: nil))
             inferredConnectors += 1
         }
 
