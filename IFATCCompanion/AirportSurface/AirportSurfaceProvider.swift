@@ -103,8 +103,12 @@ actor AirportSurfaceProvider {
         guard key.count >= 3 else { throw SurfaceError.badURL }
         guard reference.isValid else { throw SurfaceError.badURL }
 
-        // Fresh cache (memory or disk) → no network.
-        if !forceRefresh, let cached = cachedSurface(icao: key), !cached.source.isStale {
+        // Fresh cache (memory or disk) → no network. A cache written by an older model
+        // schema (e.g. before building footprints existed) is treated as not-fresh so it
+        // is re-fetched now, even though its fetch date may be well within the refresh
+        // interval — otherwise a stand behind a concourse keeps routing through it.
+        if !forceRefresh, let cached = cachedSurface(icao: key),
+           !cached.source.isStale, !cached.source.isOutdatedSchema {
             return cached
         }
         // Backing off → serve stale if we have it, else fail.

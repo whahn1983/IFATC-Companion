@@ -22,6 +22,9 @@ struct TaxiRouteEngine {
     private let widthPenalty = 3_000.0
     private let sharpTurnPenalty = 1_200.0
     private let moderateTurnPenalty = 300.0
+    /// A connector whose straight lead-in cuts through a building/terminal — heavily
+    /// disfavored so a clear alternative to the same stand always wins.
+    private let buildingCrossingPenalty = 6_000.0
 
     let graph: SurfaceGraph
     let model: AirportSurfaceModel
@@ -240,6 +243,7 @@ struct TaxiRouteEngine {
 
         var cost = max(e.distanceMeters, 1)
         if e.runwayCrossing != nil { cost += crossingPenalty }
+        if e.crossesBuilding { cost += buildingCrossingPenalty }
         let touchesEndpoint = e.from == start || e.to == start || e.from == goal || e.to == goal
         if e.inferred && !touchesEndpoint { cost += inferredPenalty }
         if !e.hasName && !e.inferred { cost += unnamedPenalty }
@@ -276,6 +280,7 @@ struct TaxiRouteEngine {
         var taxiSeq: [String] = []
         var unnamed = 0
         var midInferred = false
+        var crossesBuilding = false
         for (i, edgeIdx) in edgePath.enumerated() {
             let e = graph.edges[edgeIdx]
             let fromNode = nodePath[i]
@@ -287,6 +292,7 @@ struct TaxiRouteEngine {
             if e.inferred, !(e.from == startNode || e.to == startNode || e.from == goalNode || e.to == goalNode) {
                 midInferred = true
             }
+            if e.crossesBuilding { crossesBuilding = true }
         }
 
         let fullLine = geometry.clLocations
@@ -321,6 +327,7 @@ struct TaxiRouteEngine {
                                                           snapMeters: snapMeters,
                                                           goalMeters: goalMeters,
                                                           midInferred: midInferred,
+                                                          crossesBuilding: crossesBuilding,
                                                           crossings: crossings,
                                                           goalCorrectEnd: goalCorrectEnd)
 
@@ -361,7 +368,7 @@ struct TaxiRouteEngine {
     }
 
     private func gradeConfidence(namedFraction: Double, snapMeters: Double, goalMeters: Double,
-                                 midInferred: Bool, crossings: [RouteCrossing],
+                                 midInferred: Bool, crossesBuilding: Bool, crossings: [RouteCrossing],
                                  goalCorrectEnd: Bool) -> (SurfaceConfidence, Double, [String]) {
         var score = 1.0
         var notes: [String] = []
@@ -371,6 +378,7 @@ struct TaxiRouteEngine {
         score -= (1 - namedFraction) * 0.45
         if namedFraction < 0.999 { notes.append("route includes unnamed taxiway segments") }
         if midInferred { score -= 0.3; notes.append("route relies on an inferred connector") }
+        if crossesBuilding { score -= 0.3; notes.append("gate lead-in passes through a building footprint") }
         if !goalCorrectEnd { score -= 0.25; notes.append("could not confirm the assigned runway end") }
         if crossings.contains(where: { $0.confidence == .low }) {
             score -= 0.15; notes.append("a runway crossing has uncertain geometry")
@@ -378,7 +386,7 @@ struct TaxiRouteEngine {
 
         // High confidence requires the strong conditions.
         let strong = namedFraction >= 0.7 && !model.holdingPositions.isEmpty
-            && snapMeters <= 60 && goalCorrectEnd && !midInferred
+            && snapMeters <= 60 && goalCorrectEnd && !midInferred && !crossesBuilding
             && !crossings.contains(where: { $0.confidence == .low })
 
         var confidence: SurfaceConfidence

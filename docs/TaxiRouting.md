@@ -34,12 +34,30 @@ Routing is **never** chosen on distance alone. It strongly penalizes or prohibit
 
 - unnecessary runway crossings; active‑runway back‑taxi; unnecessary runway occupancy;
 - disconnected jumps; inferred apron shortcuts; routes through parking stands;
+- **gate lead‑ins that cut through a building / terminal** (see below);
 - closed / non‑operational taxiways; taxiways incompatible with the aircraft (from OSM `width`);
 - sharp turns unsuitable for the aircraft; low‑confidence / unnamed segments;
 - entry at the wrong runway end.
 
 It prefers named taxiways, connected geometry, full‑length runway entry, fewer runway crossings,
 realistic turn geometry, high‑confidence features, and aircraft‑compatible paths.
+
+### Building geometry (gate lead‑ins)
+
+A stand connects to the taxi network through a short synthesized **lead‑in connector** (OSM maps
+the stand but not the lane that reaches it). Choosing the geometrically nearest taxi node can draw
+that connector **straight through a concourse** — on a thin concourse with gates on both sides, the
+nearest node is often across the building. To prevent this, the app fetches **building / terminal
+footprints** (`building=*` and `aeroway=terminal`) alongside the movement surface and, when
+attaching a stand, prefers the nearest taxi node whose lead‑in:
+
+- does **not** cross a building footprint, and
+- does not force a near‑reversal back across the ramp (a lead‑in that doubles back is disfavored).
+
+If every reachable node is across a building (a stand fully ringed by a footprint), the connector is
+still made — routing never fails for this reason — but it is flagged as crossing a building, which
+penalizes it in the router and lowers route confidence (with the note *"gate lead‑in passes through
+a building footprint"*). Footprints are **not routable**; they only shape stand attachment.
 
 ### Aircraft classification
 
@@ -93,6 +111,13 @@ Ground issues the detailed clearance immediately; the arrival surface is fetched
 provider cache (disk + memory) so its later load is instant and works offline. Pre‑caching never
 disturbs a taxi already in progress. On a cold start the departure surface is typically ready by
 the time the pilot requests taxi.
+
+The cached model carries a **schema version**. When a new feature class is added that older
+extracts cannot contain (e.g. building footprints), the version is bumped and any cache written by
+an earlier version is treated as not‑fresh and **re‑fetched on next load**, even when it is still
+within the time‑based refresh interval — so an already‑cached field that predates building geometry
+is refreshed rather than kept routing stands through concourses. An outdated‑schema cache is still
+served as a fallback while offline.
 
 ### Mock Mode (simulated demo)
 

@@ -89,6 +89,17 @@ enum OSMSurface {
     /// Directory name (under Caches) for the on-disk airport-surface cache.
     static let cacheDirectoryName = "osm-airport-surface"
 
+    /// Schema version of the normalized surface model written to the cache. Bumped when
+    /// a new feature class is added that older cached extracts cannot contain, so a cache
+    /// written by an earlier version is treated as stale and re-fetched even before its
+    /// time-based refresh interval elapses.
+    ///
+    /// History:
+    ///  - 1: original schema (runways, taxiways, holds, gates, parking, aprons).
+    ///  - 2: added building / terminal footprints (so gate lead-ins don't cut through a
+    ///       concourse). A v1 cache has no buildings and is re-fetched on next load.
+    static let surfaceSchemaVersion = 2
+
     // MARK: - Disclaimers
 
     /// The simulation-only disclaimer shown wherever surface maps / routes / crossing

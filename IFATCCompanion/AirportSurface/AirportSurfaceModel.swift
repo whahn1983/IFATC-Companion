@@ -78,6 +78,11 @@ struct SurfaceProvenance: Codable, Equatable {
     var boundingBox: OSMBoundingBox
     /// Number of raw OSM elements in the source extract (traceability / diagnostics).
     var rawElementCount: Int
+    /// Schema version of the model that produced this extract. New extracts stamp the
+    /// current `OSMSurface.surfaceSchemaVersion`; a cache written by an older version
+    /// decodes to `1` (no key) and is re-fetched on next load. Defaults to the current
+    /// version so freshly-built provenances are always current.
+    var schemaVersion: Int = OSMSurface.surfaceSchemaVersion
 
     /// Age of the cached extract at read time.
     var cacheAge: TimeInterval { Date().timeIntervalSince(fetchDate) }
@@ -85,7 +90,33 @@ struct SurfaceProvenance: Codable, Equatable {
     /// Whether the extract is older than the configured refresh interval.
     var isStale: Bool { cacheAge > OSMSurface.cacheRefreshInterval }
 
+    /// Whether the extract predates the current model schema (e.g. a cache with no
+    /// building footprints). Such a cache is re-fetched even when not time-stale.
+    var isOutdatedSchema: Bool { schemaVersion < OSMSurface.surfaceSchemaVersion }
+
     var cacheAgeDays: Int { Int(cacheAge / 86_400) }
+}
+
+// Custom decoding keeps caches written before a field existed readable: a missing
+// `schemaVersion` decodes to 1 (legacy), which flags the cache as outdated schema so the
+// provider re-fetches it. Encoding stays synthesized.
+extension SurfaceProvenance {
+    enum CodingKeys: String, CodingKey {
+        case provider, license, attribution, endpoint, fetchDate, boundingBox
+        case rawElementCount, schemaVersion
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        provider = try c.decodeIfPresent(String.self, forKey: .provider) ?? OSMSurface.providerName
+        license = try c.decodeIfPresent(String.self, forKey: .license) ?? OSMSurface.licenseName
+        attribution = try c.decodeIfPresent(String.self, forKey: .attribution) ?? OSMSurface.attributionText
+        endpoint = try c.decode(String.self, forKey: .endpoint)
+        fetchDate = try c.decode(Date.self, forKey: .fetchDate)
+        boundingBox = try c.decode(OSMBoundingBox.self, forKey: .boundingBox)
+        rawElementCount = try c.decode(Int.self, forKey: .rawElementCount)
+        schemaVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+    }
 }
 
 // MARK: - Feature types
@@ -181,6 +212,18 @@ struct SurfaceApron: Codable, Equatable, Identifiable {
     var id: String { osmID }
 }
 
+/// A building / terminal / concourse footprint polygon. Not a movement surface and never
+/// routable — it is used only to stop synthesized gate lead-ins (and other inferred
+/// connectors) from being drawn straight through a concourse to a stand on the far side.
+/// Sourced from OSM `building=*` ways and `aeroway=terminal`.
+struct SurfaceBuilding: Codable, Equatable, Identifiable {
+    var osmID: String
+    var tags: [String: String]
+    var polygon: [GeoCoordinate]
+
+    var id: String { osmID }
+}
+
 // MARK: - The normalized airport surface
 
 /// The normalized internal airport-surface model, built from an OSM extract. Retains
@@ -200,6 +243,10 @@ struct AirportSurfaceModel: Codable, Equatable {
     var holdingPositions: [SurfaceHoldingPosition]
     var parkingPositions: [SurfaceParking]
     var aprons: [SurfaceApron]
+    /// Building / terminal footprints (added in schema v2). Defaulted so pre-v2 callers
+    /// and cache files that omit the key still construct/decode; a decoded model with an
+    /// empty `buildings` from an old cache is re-fetched via `source.isOutdatedSchema`.
+    var buildings: [SurfaceBuilding] = []
     var source: SurfaceProvenance
     var confidence: SurfaceConfidence
 
@@ -227,5 +274,30 @@ struct AirportSurfaceModel: Codable, Equatable {
         let key = name.uppercased().trimmingCharacters(in: .whitespaces)
         guard !key.isEmpty else { return nil }
         return parkingPositions.first { $0.name.uppercased() == key }
+    }
+}
+
+// Custom decoding so a cache written before `buildings` existed still decodes (the key is
+// simply absent → empty). Declared in an extension to preserve the synthesized memberwise
+// initializer; encoding stays synthesized.
+extension AirportSurfaceModel {
+    enum CodingKeys: String, CodingKey {
+        case icao, reference, runways, runwayEnds, taxiways, holdingPositions
+        case parkingPositions, aprons, buildings, source, confidence
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        icao = try c.decode(String.self, forKey: .icao)
+        reference = try c.decode(GeoCoordinate.self, forKey: .reference)
+        runways = try c.decode([SurfaceRunway].self, forKey: .runways)
+        runwayEnds = try c.decode([SurfaceRunwayEnd].self, forKey: .runwayEnds)
+        taxiways = try c.decode([SurfaceTaxiway].self, forKey: .taxiways)
+        holdingPositions = try c.decode([SurfaceHoldingPosition].self, forKey: .holdingPositions)
+        parkingPositions = try c.decode([SurfaceParking].self, forKey: .parkingPositions)
+        aprons = try c.decode([SurfaceApron].self, forKey: .aprons)
+        buildings = try c.decodeIfPresent([SurfaceBuilding].self, forKey: .buildings) ?? []
+        source = try c.decode(SurfaceProvenance.self, forKey: .source)
+        confidence = try c.decode(SurfaceConfidence.self, forKey: .confidence)
     }
 }

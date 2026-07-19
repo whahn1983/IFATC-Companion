@@ -111,4 +111,44 @@ final class OSMSurfaceParsingTests: XCTestCase {
         XCTAssertNil(m.taxiwaysOnly.first { $0.name == "A" }?.widthMeters)
         XCTAssertFalse(m.runways[0].widthInferred)
     }
+
+    // MARK: - Buildings / terminals
+
+    /// `building=*` ways and `aeroway=terminal` become building footprints; a movement
+    /// surface with a stray `building` tag is not misclassified; `building=no` is ignored.
+    private let buildingJSON = """
+    {
+      "version": 0.6,
+      "elements": [
+        {"type":"way","id":10,"tags":{"aeroway":"taxiway","ref":"A"},
+         "geometry":[{"lat":40.0010,"lon":-75.0000},{"lat":39.9990,"lon":-75.0000}]},
+        {"type":"way","id":11,"tags":{"building":"yes"},
+         "geometry":[{"lat":40.0002,"lon":-75.0004},{"lat":40.0002,"lon":-74.9996},{"lat":39.9998,"lon":-74.9996},{"lat":39.9998,"lon":-75.0004}]},
+        {"type":"way","id":12,"tags":{"aeroway":"terminal","name":"Concourse C"},
+         "geometry":[{"lat":40.0006,"lon":-75.0004},{"lat":40.0006,"lon":-74.9996},{"lat":40.0004,"lon":-74.9996},{"lat":40.0004,"lon":-75.0004}]},
+        {"type":"way","id":13,"tags":{"aeroway":"apron","building":"no"},
+         "geometry":[{"lat":40.0009,"lon":-75.0004},{"lat":40.0009,"lon":-74.9996},{"lat":40.0007,"lon":-75.0000}]}
+      ]
+    }
+    """
+
+    func testBuildingAndTerminalParsing() {
+        let data = buildingJSON.data(using: .utf8)!
+        let response = try! JSONDecoder().decode(OverpassResponse.self, from: data)
+        let ref = CLLocationCoordinate2D(latitude: 40, longitude: -75)
+        let bbox = OSMBoundingBox(center: ref, halfSpanDegrees: 0.04)
+        let m = OSMSurfaceNormalizer.normalize(response, icao: "KTST", reference: ref,
+                                               endpoint: "test", boundingBox: bbox, fetchDate: Date())
+        // building=yes way + aeroway=terminal → two footprints.
+        XCTAssertEqual(m.buildings.count, 2)
+        XCTAssertTrue(m.buildings.contains { $0.osmID == "way/11" })
+        XCTAssertTrue(m.buildings.contains { $0.osmID == "way/12" })   // terminal
+        // The taxiway is not a building; the apron (building=no) is not a building.
+        XCTAssertFalse(m.buildings.contains { $0.osmID == "way/10" })
+        XCTAssertFalse(m.buildings.contains { $0.osmID == "way/13" })
+        XCTAssertEqual(m.aprons.count, 1)
+        // Fresh normalization stamps the current schema version.
+        XCTAssertEqual(m.source.schemaVersion, OSMSurface.surfaceSchemaVersion)
+        XCTAssertFalse(m.source.isOutdatedSchema)
+    }
 }

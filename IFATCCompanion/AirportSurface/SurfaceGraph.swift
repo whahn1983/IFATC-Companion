@@ -55,6 +55,11 @@ struct SurfaceEdge: Identifiable, Equatable {
     var closed: Bool
     /// Inferred connector (gate lead-in, apron connector) rather than mapped geometry.
     var inferred: Bool
+    /// Whether this edge's straight geometry passes through a building/terminal footprint.
+    /// Only computed for inferred gate/parking lead-ins (mapped taxiways don't run through
+    /// terminals); such a connector is avoided when a clear alternative exists and lowers
+    /// route confidence otherwise.
+    var crossesBuilding: Bool = false
     /// Per-edge confidence 0…1 (names/closed/inferred lower it).
     var confidence: Double
     /// Original OSM feature ids that contributed to this edge.

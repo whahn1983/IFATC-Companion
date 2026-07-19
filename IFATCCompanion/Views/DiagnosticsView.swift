@@ -264,6 +264,7 @@ struct AirportSurfaceDiagnosticsCard: View {
                 DataRow(label: "Taxilanes", value: "\(snapshot.taxilaneCount)")
                 DataRow(label: "Holding positions", value: "\(snapshot.holdingPositionCount)")
                 DataRow(label: "Gates / parking", value: "\(snapshot.parkingCount)")
+                DataRow(label: "Buildings / terminals", value: "\(snapshot.buildingCount)")
                 DataRow(label: "Graph nodes / edges", value: "\(snapshot.graphNodeCount) / \(snapshot.graphEdgeCount)")
                 DataRow(label: "Disconnected components", value: "\(snapshot.disconnectedComponents)")
                 DataRow(label: "Inferred connectors", value: "\(snapshot.inferredConnectors)")

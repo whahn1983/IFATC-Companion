@@ -34,11 +34,14 @@ struct OSMBoundingBox: Codable, Equatable {
 
 /// Builds the Overpass QL request for a single airport's movement surface.
 ///
-/// Only the airport area is requested (never a region or the whole planet), and only
-/// `aeroway`-tagged features — runways, taxiways, taxilanes, holding positions,
-/// parking positions, gates, aprons. `out geom tags;` returns inline way geometry and
-/// all tags in one round-trip, so the app never has to resolve node references or make
-/// a second call during taxi.
+/// Only the airport area is requested (never a region or the whole planet). Two feature
+/// families are pulled: `aeroway`-tagged movement surfaces — runways, taxiways,
+/// taxilanes, holding positions, parking positions, gates, aprons, terminals — and
+/// `building` footprints. The buildings/terminals are not routable; they are used to keep
+/// synthesized gate lead-ins from being drawn straight through a concourse to a stand on
+/// the far side. `out geom tags;` returns inline way geometry and all tags in one
+/// round-trip, so the app never has to resolve node references or make a second call
+/// during taxi.
 struct OverpassQuery {
     let icao: String
     let center: CLLocationCoordinate2D
@@ -64,6 +67,8 @@ struct OverpassQuery {
           way["aeroway"](\(box));
           node["aeroway"](\(box));
           relation["aeroway"](\(box));
+          way["building"](\(box));
+          relation["building"](\(box));
         );
         out geom tags qt;
         """

@@ -19,9 +19,9 @@ names, holding positions, gates, or crossing geometry, so an external source is 
 ## Retrieval
 
 Small, airport‑sized extracts are fetched from a public **Overpass API** endpoint using a
-bounding box (~±0.04°) around the active field, requesting only `aeroway` features. See
-[OpenStreetMapLicensing.md §3](OpenStreetMapLicensing.md) for the polite‑client behavior
-(User‑Agent, caching, backoff, dedup, manual refresh).
+bounding box (~±0.04°) around the active field, requesting `aeroway` features plus `building`
+footprints. See [OpenStreetMapLicensing.md §3](OpenStreetMapLicensing.md) for the polite‑client
+behavior (User‑Agent, caching, backoff, dedup, manual refresh).
 
 Relevant OSM tags consumed:
 
@@ -34,6 +34,7 @@ Relevant OSM tags consumed:
 | Gate | `aeroway=gate`, `ref`/`name` | taxi start/end |
 | Parking position | `aeroway=parking_position`, `ref`/`name` | taxi start/end |
 | Apron | `aeroway=apron` | context rendering |
+| Building / terminal | `building=*`, `aeroway=terminal` | keep gate lead‑ins from crossing a concourse (not routable) |
 | Aerodrome | `aeroway=aerodrome` | airport reference point |
 
 ## Normalized model
@@ -47,6 +48,7 @@ Relevant OSM tags consumed:
 - holding positions (mapped, and — where none is mapped — inferred, flagged lower confidence);
 - gates and parking positions;
 - apron areas;
+- building / terminal footprints (non‑routable; used only to steer gate lead‑ins);
 - **source confidence** (High/Medium/Low/Unavailable);
 - **original OSM identifiers and tags** (never discarded);
 - **provenance**: Overpass endpoint, fetch date, cache age, bounding box, raw element count,
@@ -69,8 +71,12 @@ Relevant OSM tags consumed:
   elsewhere as a *crossing*.
 - **Holding positions** are preferred; where none is mapped, an **inferred** hold may be created
   for simulation and is marked inferred / lower confidence.
-- **Gates/parking** connect to the nearest taxiway node via an **inferred connector** (lower
-  confidence), so routing can start/end at a stand without routing *through* stands.
+- **Gates/parking** connect to the taxi network via an **inferred connector** (lower confidence),
+  so routing can start/end at a stand without routing *through* stands. The connector attaches to
+  the nearest taxi node whose straight lead‑in does **not** cross a building/terminal footprint and
+  does not double back across the ramp — so a stand on a thin concourse connects to the taxiway on
+  its own side rather than one drawn through the building. A connector that unavoidably clips a
+  footprint is flagged and penalized (see [TaxiRouting.md](TaxiRouting.md)).
 
 ## Caching
 
@@ -78,16 +84,19 @@ Normalized surfaces are cached on disk (`AirportSurfaceCache`), one JSON file pe
 the app's Caches directory:
 
 - only airports actually used are cached;
-- each file stores source identifier, fetch date, cache age, ODbL metadata, attribution, and
-  the retained OSM identifiers/tags;
+- each file stores source identifier, fetch date, cache age, ODbL metadata, attribution, a
+  **schema version**, and the retained OSM identifiers/tags;
 - refresh interval ~75 days; manual refresh and per‑airport / full cache deletion are available
   in Settings → Data Sources;
+- a cache written by an **older schema version** (e.g. one predating building footprints) is
+  treated as not‑fresh and re‑fetched on next load, independent of the time‑based interval;
 - stale data is flagged; no global OSM database is bundled in the App Store binary.
 
 ## Diagnostics
 
 **Airport Surface Diagnostics** (Diagnostics tab) surfaces the airport id, OSM as the active
-source, ODbL 1.0, attribution, the Overpass endpoint, fetch date/cache age, feature counts,
+source, ODbL 1.0, attribution, the Overpass endpoint, fetch date/cache age, feature counts
+(including building/terminal footprints), the cache schema version (flagged when outdated),
 graph node/edge counts, disconnected components, inferred connectors, the aircraft's snapped
 segment, the calculated route, route distance, runway crossings, confidence, next crossing,
 current crossing state, readback/authorization state, and the last error. It exports as text
