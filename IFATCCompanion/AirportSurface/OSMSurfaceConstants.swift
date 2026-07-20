@@ -79,19 +79,20 @@ enum OSMSurface {
     /// keeping the Overpass extract small (airport-sized, never regional/global).
     static let bboxHalfSpanDegrees = 0.04
 
-    /// Half-width (degrees) of the **building** portion of the extract — a tighter box than
-    /// the movement-surface box. ~0.017° ≈ 1.9 km around the reference, enough to cover the
-    /// terminal/concourse core of even a large hub while excluding the surrounding city.
+    /// How close (meters) a `building` footprint must be to the airport's movement surfaces
+    /// (runways/taxiways/taxilanes/aprons) to be pulled into the extract. Buildings are only
+    /// used to keep synthesized gate lead-ins from cutting through a concourse, so only those
+    /// near the stands matter — but `building=*` is one of the densest tags in OSM, and at a
+    /// hub embedded in a dense metro (e.g. KMSP, ringed by Minneapolis/Richfield/Bloomington)
+    /// pulling every building in the full 4.4 km box makes the extract so large it times out,
+    /// so the airport never caches and the mock demo is stuck on the synthetic field.
     ///
-    /// Buildings are only used to keep synthesized gate lead-ins from cutting through a
-    /// concourse, so only those near the stands matter — but `building=*` is one of the
-    /// densest tags in OSM, and at a hub embedded in a dense metro (e.g. KMSP, ringed by
-    /// Minneapolis/Richfield/Bloomington) pulling every building in the full 4.4 km box makes
-    /// the Overpass extract so large it times out, so the airport never caches and the mock
-    /// demo is stuck on the synthetic field. Scoping buildings to the terminal core keeps the
-    /// extract small enough to fetch while still covering the concourses that matter. The
-    /// movement surfaces (runways/taxiways/gates) always use the full `bboxHalfSpanDegrees`.
-    static let buildingBboxHalfSpanDegrees = 0.017
+    /// Rather than guess a fixed box radius, the query buffers the actual movement geometry:
+    /// buildings within this distance of a runway/taxiway/apron are kept (an Overpass
+    /// `around` filter), which self-tunes to any airport's real footprint — a tiny box for a
+    /// regional strip, exactly the terminal envelope for a sprawling hub — while excluding the
+    /// surrounding city. 250 m comfortably spans a concourse from the taxilane alongside it.
+    static let buildingProximityMeters = 250.0
 
     // MARK: - Cache / refresh policy
 

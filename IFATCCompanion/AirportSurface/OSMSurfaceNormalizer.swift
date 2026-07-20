@@ -24,7 +24,12 @@ enum OSMSurfaceNormalizer {
                           endpoint: String,
                           boundingBox: OSMBoundingBox,
                           fetchDate: Date) -> AirportSurfaceModel {
-        let elements = response.elements
+        // The query emits two `out` blocks (aeroway features, then buildings near the
+        // movement surfaces), so an element tagged both ways — a terminal that is
+        // `aeroway=terminal` and `building=*` — appears in both. Keep the first occurrence of
+        // each stable OSM id so it isn't footprinted (or counted) twice.
+        var seenIDs = Set<String>()
+        let elements = response.elements.filter { seenIDs.insert($0.stableID).inserted }
 
         var runways: [SurfaceRunway] = []
         var runwayEnds: [SurfaceRunwayEnd] = []
