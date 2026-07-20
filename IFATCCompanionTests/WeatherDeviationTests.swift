@@ -602,6 +602,63 @@ final class WeatherDeviationTests: XCTestCase {
         XCTAssertNotNil(conflict(at: 20, .extreme), "a red core 14 NM off the path is within its wide corridor")
     }
 
+    // MARK: - Minimum lateral offset (parallel legs stay ≥ 20 NM off the flight path)
+
+    /// A single cell straddling the course must be paralleled with the whole parallel leg at
+    /// least the configured minimum (20 NM) off the flight path — never shaved a few NM past
+    /// the weather. This is the fix for "the deviation is only a few NM off the flight path":
+    /// the tight hug that used to sit at the cell edge plus a small buffer is opened up to the
+    /// minimum lateral separation whenever the wider leg still clears.
+    func testParallelHugKeepsAtLeastTheMinimumLateralOffset() throws {
+        // A compact moderate cell on course — its natural (edge + 3 NM) hug would be ~11 NM
+        // off, well inside the 20 NM minimum, so it must be widened out to 20 NM.
+        let cellPoly = cell(alongNM: 50, crossNM: 0, halfCross: 8, from: usPosition)
+        let conflict = try XCTUnwrap(detector.detectConflict(
+            position: usPosition, course: course, groundspeedKnots: 450, phase: .cruise,
+            hazards: [radarHazard(cellPoly, intensity: .moderate)], waypoints: []))
+        let path = conflict.deviationPath
+        XCTAssertGreaterThanOrEqual(path.count, 4, "an on-course cell forces a parallel hug")
+        // The parallel leg is the widest-offset run of the drawn line.
+        let maxOffset = path.map { abs(offsetFromCourse($0)) }.max() ?? 0
+        XCTAssertGreaterThanOrEqual(maxOffset, 20 - 0.5,
+                                    "the parallel leg must sit at least the 20 NM minimum off the flight path")
+        assertPathClear(path, of: [cellPoly])
+    }
+
+    /// The minimum offset scales with the config knob: raising it widens the drawn parallel
+    /// leg accordingly (proving it is the knob, not an incidental berth, that governs the leg).
+    func testMinimumLateralOffsetTracksTheConfiguredValue() throws {
+        var wide = RouteWeatherConflictDetector()
+        wide.config.minParallelOffsetNM = 35
+        let cellPoly = cell(alongNM: 50, crossNM: 0, halfCross: 8, from: usPosition)
+        let conflict = try XCTUnwrap(wide.detectConflict(
+            position: usPosition, course: course, groundspeedKnots: 450, phase: .cruise,
+            hazards: [radarHazard(cellPoly, intensity: .moderate)], waypoints: []))
+        let maxOffset = conflict.deviationPath.map { abs(offsetFromCourse($0)) }.max() ?? 0
+        XCTAssertGreaterThanOrEqual(maxOffset, 35 - 0.5,
+                                    "a larger configured minimum widens the parallel leg to match")
+    }
+
+    /// Exemption: threading a genuine gap *between* two cells is not forced out to the 20 NM
+    /// minimum — you cannot hold 20 NM off centerline while flying through a ~20 NM gap. The
+    /// reroute keeps the tight threading offset rather than looping around the whole line.
+    func testGapThreadIsExemptFromTheMinimumLateralOffset() throws {
+        // Two cells ~40 NM ahead with a clear gap on the right (left cell crosses the course,
+        // right cell out to its right) — the same geometry as the gap-threading test.
+        let leftCell = radarHazard(cell(alongNM: 40, crossNM: -24, halfCross: 26, from: usPosition))
+        let rightCell = radarHazard(cell(alongNM: 40, crossNM: 36, halfCross: 14, from: usPosition))
+        let conflict = try XCTUnwrap(detector.detectConflict(
+            position: usPosition, course: course, groundspeedKnots: 450, phase: .cruise,
+            hazards: [leftCell, rightCell], waypoints: []))
+        // The drawn line threads the gap at a tight offset — it must NOT be pushed out to the
+        // minimum (which would put the leg inside the right cell) or looped around the line.
+        let maxOffset = conflict.deviationPath.map { abs(offsetFromCourse($0)) }.max() ?? 0
+        XCTAssertLessThan(maxOffset, 20,
+                          "a gap-thread stays tight — the 20 NM minimum can't be held inside the gap")
+        assertPathClear(conflict.deviationPath, of: [leftCell.geometry.polygonPoints ?? [],
+                                                     rightCell.geometry.polygonPoints ?? []])
+    }
+
     // MARK: - Prefer the parallel hug over a single-apex triangle
 
     /// A cell biased to one side of course can be dodged either by a single-apex
@@ -914,7 +971,10 @@ final class WeatherDeviationTests: XCTestCase {
     func testGivesRedCellsAWiderBerthThanLighterCells() throws {
         // The same cell straddling the course, once heavy and once red/extreme. The
         // red core must be rounded with a noticeably wider berth than the heavy cell.
-        let poly = cell(alongNM: 40, crossNM: 10, halfCross: 12, from: usPosition)
+        // The cell is wide enough that even the heavy hug's natural berth exceeds the
+        // 20 NM minimum lateral offset, so the red core's extra berth stays visible in the
+        // offset rather than both being floored to the same minimum separation.
+        let poly = cell(alongNM: 40, crossNM: 10, halfCross: 20, from: usPosition)
         func bypassOffset(_ intensity: WeatherIntensity) throws -> Double {
             let conflict = try XCTUnwrap(detector.detectConflict(
                 position: usPosition, course: course, groundspeedKnots: 450, phase: .cruise,

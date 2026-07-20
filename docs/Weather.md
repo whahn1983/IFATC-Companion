@@ -353,6 +353,21 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
        close to the flight plan. Because it stays close, the shortest-clear selector
        picks it **early** — so the line hugs the weather from the start instead of the
        aircraft diving wide and only tucking back in once the cluster thins downrange.
+     - **Never closer than the minimum lateral separation (`minParallelOffsetNM`, 20 NM).**
+       The tightest clearing offset above can be only a few NM off course — for a
+       moderate/heavy cell that keeps just the base margin (~3 NM), or a cell that sits
+       entirely to one side so the opposite-side hug clears at the base buffer. A real
+       weather deviation instead turns well off course and parallels the weather with a
+       wide berth, so the settled offset is **widened out to at least 20 NM from the
+       flight path whenever the wider leg still clears every cell** (`atLeastMinOffset`).
+       Where widening would re-enter weather it is *not* forced: threading a genuine gap
+       *between* two cells (you cannot hold 20 NM off centerline and still fit inside a
+       ~20 NM gap) or a boxed-in system keeps the tightest clearing offset. The
+       single-apex gap-threading dogleg — which flies *between* cells rather than
+       alongside one — is exempt; this governs the parallel legs drawn alongside a
+       system. It applies to every parallel-hug generator (the fixed side-edge and
+       tightest-clearing hugs, the variable-offset edge-following hugs, and the
+       whole-system multi-leg hug), so no parallel leg is drawn closer than 20 NM.
      - The **initial turn-out is a realistic ~30°**, not a 90° sideways step: the hug
        reaches its offset over enough along-course distance (`initialDeviationTurnDegrees`)
        to make the first leg a genuine deviation. When the weather sits right at the
