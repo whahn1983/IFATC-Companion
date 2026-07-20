@@ -20,8 +20,13 @@ names, holding positions, gates, or crossing geometry, so an external source is 
 
 Small, airport‑sized extracts are fetched from a public **Overpass API** endpoint using a
 bounding box (~±0.04°) around the active field, requesting `aeroway` features plus `building`
-footprints. See [OpenStreetMapLicensing.md §3](OpenStreetMapLicensing.md) for the polite‑client
-behavior (User‑Agent, caching, backoff, dedup, manual refresh).
+footprints. The `building` footprints use a **tighter box** (~±0.017°, the terminal core) than
+the movement surfaces: `building=*` is one of the densest tags in OSM, so pulling every building
+in the full box at a hub embedded in a dense metro (e.g. KMSP) would make the extract time out and
+the airport would never cache — the tighter box keeps enough concourse coverage to steer gate
+lead‑ins while keeping the extract fetchable. See
+[OpenStreetMapLicensing.md §3](OpenStreetMapLicensing.md) for the polite‑client behavior
+(User‑Agent, caching, backoff, dedup, manual refresh).
 
 Relevant OSM tags consumed:
 

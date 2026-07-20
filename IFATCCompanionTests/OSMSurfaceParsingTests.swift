@@ -151,4 +151,41 @@ final class OSMSurfaceParsingTests: XCTestCase {
         XCTAssertEqual(m.source.schemaVersion, OSMSurface.surfaceSchemaVersion)
         XCTAssertFalse(m.source.isOutdatedSchema)
     }
+
+    // MARK: - Overpass query scoping
+
+    /// The `building` features are scoped to a strictly tighter box than the movement
+    /// surfaces, so a hub embedded in a dense metro (e.g. KMSP) doesn't pull the whole city's
+    /// buildings and time the extract out — while the runways/taxiways/gates still use the
+    /// full airport box.
+    func testBuildingExtractIsScopedTighterThanMovementSurfaces() {
+        let ref = CLLocationCoordinate2D(latitude: 44.8848, longitude: -93.2223)  // KMSP
+        let query = OverpassQuery(icao: "KMSP", center: ref)
+
+        // The building box is a strict subset of the full movement-surface box.
+        let full = query.boundingBox
+        let bld = query.buildingBoundingBox
+        XCTAssertGreaterThan(bld.south, full.south)
+        XCTAssertLessThan(bld.north, full.north)
+        XCTAssertGreaterThan(bld.west, full.west)
+        XCTAssertLessThan(bld.east, full.east)
+
+        // The query text pulls aeroway features on the full box and buildings on the tighter
+        // box (never the other way round).
+        let text = query.queryText
+        XCTAssertTrue(text.contains("way[\"aeroway\"](\(full.overpassClause))"))
+        XCTAssertTrue(text.contains("way[\"building\"](\(bld.overpassClause))"))
+        XCTAssertFalse(text.contains("way[\"building\"](\(full.overpassClause))"),
+                       "buildings must not be pulled on the full box")
+    }
+
+    /// Guardrail: even if a caller passes a building span larger than the movement span, the
+    /// building box is clamped so it can never exceed the movement-surface box.
+    func testBuildingBoxNeverExceedsMovementBox() {
+        let ref = CLLocationCoordinate2D(latitude: 44.8848, longitude: -93.2223)
+        let query = OverpassQuery(icao: "KMSP", center: ref,
+                                  halfSpanDegrees: 0.02, buildingHalfSpanDegrees: 0.09)
+        XCTAssertEqual(query.boundingBox, query.buildingBoundingBox,
+                       "an oversized building span is clamped to the movement-surface box")
+    }
 }

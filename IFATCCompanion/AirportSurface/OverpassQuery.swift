@@ -42,33 +42,50 @@ struct OSMBoundingBox: Codable, Equatable {
 /// the far side. `out geom tags;` returns inline way geometry and all tags in one
 /// round-trip, so the app never has to resolve node references or make a second call
 /// during taxi.
+///
+/// The two families use **different** bounding boxes: the movement surfaces need the full
+/// airport box (a big airport's runways span it), but `building=*` is one of the densest
+/// tags in OSM, so pulling every building in the full box at a hub embedded in a dense metro
+/// makes the extract time out (the airport then never caches). Buildings are therefore
+/// scoped to a tighter box around the terminal core — enough to cover the concourses that
+/// matter for gate lead-ins while excluding the surrounding city.
 struct OverpassQuery {
     let icao: String
     let center: CLLocationCoordinate2D
     let halfSpanDegrees: Double
+    let buildingHalfSpanDegrees: Double
 
     init(icao: String, center: CLLocationCoordinate2D,
-         halfSpanDegrees: Double = OSMSurface.bboxHalfSpanDegrees) {
+         halfSpanDegrees: Double = OSMSurface.bboxHalfSpanDegrees,
+         buildingHalfSpanDegrees: Double = OSMSurface.buildingBboxHalfSpanDegrees) {
         self.icao = icao.uppercased()
         self.center = center
         self.halfSpanDegrees = halfSpanDegrees
+        // Never let the building box exceed the movement-surface box.
+        self.buildingHalfSpanDegrees = min(buildingHalfSpanDegrees, halfSpanDegrees)
     }
 
     var boundingBox: OSMBoundingBox {
         OSMBoundingBox(center: center, halfSpanDegrees: halfSpanDegrees)
     }
 
+    /// The tighter box the `building` features are scoped to (a subset of `boundingBox`).
+    var buildingBoundingBox: OSMBoundingBox {
+        OSMBoundingBox(center: center, halfSpanDegrees: buildingHalfSpanDegrees)
+    }
+
     /// The Overpass QL query text. Small, airport-scoped, JSON output.
     var queryText: String {
         let box = boundingBox.overpassClause
+        let buildingBox = buildingBoundingBox.overpassClause
         return """
         [out:json][timeout:30];
         (
           way["aeroway"](\(box));
           node["aeroway"](\(box));
           relation["aeroway"](\(box));
-          way["building"](\(box));
-          relation["building"](\(box));
+          way["building"](\(buildingBox));
+          relation["building"](\(buildingBox));
         );
         out geom tags qt;
         """

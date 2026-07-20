@@ -79,6 +79,20 @@ enum OSMSurface {
     /// keeping the Overpass extract small (airport-sized, never regional/global).
     static let bboxHalfSpanDegrees = 0.04
 
+    /// Half-width (degrees) of the **building** portion of the extract — a tighter box than
+    /// the movement-surface box. ~0.017° ≈ 1.9 km around the reference, enough to cover the
+    /// terminal/concourse core of even a large hub while excluding the surrounding city.
+    ///
+    /// Buildings are only used to keep synthesized gate lead-ins from cutting through a
+    /// concourse, so only those near the stands matter — but `building=*` is one of the
+    /// densest tags in OSM, and at a hub embedded in a dense metro (e.g. KMSP, ringed by
+    /// Minneapolis/Richfield/Bloomington) pulling every building in the full 4.4 km box makes
+    /// the Overpass extract so large it times out, so the airport never caches and the mock
+    /// demo is stuck on the synthetic field. Scoping buildings to the terminal core keeps the
+    /// extract small enough to fetch while still covering the concourses that matter. The
+    /// movement surfaces (runways/taxiways/gates) always use the full `bboxHalfSpanDegrees`.
+    static let buildingBboxHalfSpanDegrees = 0.017
+
     // MARK: - Cache / refresh policy
 
     /// How long a cached airport extract is considered fresh before a refresh is
