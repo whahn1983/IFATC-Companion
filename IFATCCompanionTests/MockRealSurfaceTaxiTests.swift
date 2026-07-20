@@ -92,6 +92,48 @@ final class MockRealSurfaceTaxiTests: XCTestCase {
         coord.hideTaxiMap()
     }
 
+    func testMockTaxiUpgradesToRealSurfaceWhenPreCacheArrivesLate() {
+        let coord = makeCoordinator()
+        // The field's real surface isn't pre-cached yet (e.g. a large destination like KMSP
+        // whose extract is still fetching), so the taxi begins on the synthetic fallback.
+        coord.beginDeparture(icao: "KMSP", reference: ref, aircraftName: "Boeing 737-800",
+                             runway: "12R", gate: "C6",
+                             startCoordinate: MockAirportSurface.gateCoordinate(reference: ref), mock: true)
+        XCTAssertTrue(coord.usingSyntheticSurfaceForTesting,
+                      "the taxi begins on the synthetic fallback while the real extract is loading")
+
+        // The pre-cache fetch resolves before the pilot reads back / the drive starts: the
+        // taxi upgrades onto the real field so the demo taxis the actual airport.
+        coord.deliverSimulatedSurfaceForTesting(realSurface(icao: "KMSP", runway: "12R", gate: "C6"),
+                                                icao: "KMSP")
+        XCTAssertFalse(coord.usingSyntheticSurfaceForTesting,
+                       "the real surface is adopted once it arrives, before the drive starts")
+
+        coord.taxiReadBackComplete()
+        XCTAssertTrue(coord.taxiMapVisible, "the taxi map appears for the simulated taxi")
+        XCTAssertEqual(coord.routeForTesting?.holdShortRunway, "12R")
+        coord.hideTaxiMap()
+    }
+
+    func testMockTaxiKeepsSyntheticWhenRealSurfaceArrivesMidDrive() {
+        let coord = makeCoordinator()
+        coord.beginArrival(icao: "KMSP", reference: ref, aircraftName: "Boeing 737-800",
+                           gate: "C6",
+                           startCoordinate: MockAirportSurface.runwayExitCoordinate(reference: ref),
+                           mock: true, arrivalRunway: "36")
+        coord.taxiReadBackComplete()   // reveals the map and starts the simulated drive
+        coord.mockTickForTesting()     // the aircraft is now moving along the synthetic route
+        XCTAssertTrue(coord.usingSyntheticSurfaceForTesting)
+
+        // A late-arriving real surface must not teleport the aircraft mid-drive — it is cached
+        // for next time but the current drive stays on the synthetic field.
+        coord.deliverSimulatedSurfaceForTesting(realSurface(icao: "KMSP", runway: "36", gate: "C6"),
+                                                icao: "KMSP")
+        XCTAssertTrue(coord.usingSyntheticSurfaceForTesting,
+                      "a real surface arriving mid-drive does not swap the surface out from under the aircraft")
+        coord.hideTaxiMap()
+    }
+
     func testMockArrivalTaxiMapDrivesInToGate() {
         let coord = makeCoordinator()
         coord.beginArrival(icao: "KTEST", reference: ref, aircraftName: "Boeing 737-800",
