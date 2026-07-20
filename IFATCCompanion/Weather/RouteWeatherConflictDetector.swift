@@ -135,6 +135,20 @@ struct RouteWeatherConflictDetector {
         /// the ~20 NM real-world guidance for avoiding severe/extreme radar echoes
         /// (FAA AC 00-24C); moderate/heavy returns keep the tighter `pathClearanceNM`.
         var severeBerthNM: Double = 20
+        /// The minimum lateral separation (NM) a **parallel side-hug** keeps between the
+        /// flight path and its parallel leg. A real weather deviation turns well off course
+        /// and parallels the weather with a wide berth — it never shaves a few miles past a
+        /// cell — so the offset a hug settles on is widened out to at least this distance
+        /// from the route whenever the wider leg still clears every cell. Where widening
+        /// would re-enter weather it is *not* forced: threading a genuine gap *between* two
+        /// cells (you cannot hold 20 NM off centerline and still fit inside a 20 NM gap) or a
+        /// boxed-in system keeps the tightest clearing offset instead. Applies to the
+        /// parallel legs the pilot sees drawn alongside a system; the single-apex
+        /// gap-threading dogleg — which flies *between* cells — is exempt. This is the fix
+        /// for "the deviation is only a few NM off the flight path": moderate/heavy hugs used
+        /// to sit at just `lateralBufferNM` + the cell's berth off course. Set to the ~20 NM
+        /// real-world lateral avoidance for severe echoes (FAA AC 00-24C).
+        var minParallelOffsetNM: Double = 20
         /// The most a deviation leg may turn away from the course (degrees). ATC never
         /// turns an aircraft the long way around a storm, so the drawn mint line — and
         /// therefore the assigned vector / rejoin turn derived from it — is bounded to
@@ -584,7 +598,7 @@ struct RouteWeatherConflictDetector {
             guard pts.count >= 2 else { return nil }
             let hull = upperHull(pts)
             guard let first = hull.first else { return nil }
-            func offsetFor(_ y: Double) -> Double { max(margin, y + berth) }
+            func offsetFor(_ y: Double) -> Double { max(config.minParallelOffsetNM, y + berth) }
             func point(along: Double, offset: Double) -> CLLocationCoordinate2D {
                 let onC = Geo.destination(from: position, bearingDegrees: course, distanceNM: max(0, along))
                 return Geo.destination(from: onC, bearingDegrees: course + side * 90, distanceNM: offset)
@@ -634,7 +648,7 @@ struct RouteWeatherConflictDetector {
             guard pts.count >= 2 else { return nil }
             let hull = upperHull(pts)
             guard let first = hull.first, let last = hull.last else { return nil }
-            func offsetFor(_ y: Double) -> Double { max(margin, y + berth) }
+            func offsetFor(_ y: Double) -> Double { max(config.minParallelOffsetNM, y + berth) }
             func point(along: Double, offset: Double) -> CLLocationCoordinate2D {
                 let onC = Geo.destination(from: position, bearingDegrees: course, distanceNM: max(0, along))
                 return Geo.destination(from: onC, bearingDegrees: course + side * 90, distanceNM: offset)
@@ -663,6 +677,24 @@ struct RouteWeatherConflictDetector {
                             course: course)
         }
 
+        // Widen a cleared parallel-hug offset out to at least `minParallelOffsetNM` from the
+        // flight path when the wider leg still clears `cells`; otherwise keep the tight
+        // offset. A real weather deviation turns well off course and parallels the weather
+        // with a wide berth, so a hug that clears only a few miles off the route is opened up
+        // to the minimum separation the user asked for — unless doing so would re-enter
+        // weather (threading a genuine gap between cells, or boxed in), where the minimum
+        // simply cannot be held and the tightest clearing offset is kept.
+        func atLeastMinOffset(tightTarget: Double, gentle: Bool,
+                              cells: [(polygon: [CLLocationCoordinate2D], clearance: Double)])
+            -> (path: [CLLocationCoordinate2D], target: Double) {
+            let tightPath = finalize(hugPath(offset: tightTarget, minLead: gentle ? gentleLead(tightTarget) : 0))
+            guard abs(tightTarget) < config.minParallelOffsetNM else { return (tightPath, tightTarget) }
+            let widened = (tightTarget < 0 ? -1.0 : 1.0) * config.minParallelOffsetNM
+            let widePath = finalize(hugPath(offset: widened, minLead: gentle ? gentleLead(widened) : 0))
+            return pathIsClear(widePath, cells: cells, origin: position) ? (widePath, widened)
+                                                                         : (tightPath, tightTarget)
+        }
+
         // The tightest parallel-offset hug on one side (+1 right / −1 left) that stays
         // clear of `cells`: the smallest offset (out to `maxOffset`) whose whole drawn
         // path clears them. Mirrors the real weather-deviation maneuver — turn out just
@@ -679,7 +711,12 @@ struct RouteWeatherConflictDetector {
                 let target = side * offset
                 let path = finalize(hugPath(offset: target, minLead: gentle ? gentleLead(target) : 0))
                 if pathIsClear(path, cells: cells, origin: position) {
-                    return (path, target)
+                    // Found the tightest clearing offset — widen it out to at least the
+                    // minimum lateral separation from the flight path when the wider leg
+                    // still clears (a real deviation parallels the weather with a wide
+                    // berth). A gap-thread / boxed-in case, where widening re-enters
+                    // weather, keeps the tight offset.
+                    return atLeastMinOffset(tightTarget: target, gentle: gentle, cells: cells)
                 }
                 offset += 2
             }
@@ -700,7 +737,8 @@ struct RouteWeatherConflictDetector {
             solution.targets.filter { abs($0) <= config.searchHalfWidthNM }
                 .map { (path: finalize(apexPath(for: $0)), target: $0, parallel: false) }
         for edge in [solution.leftEdge, solution.rightEdge] where abs(edge) <= config.searchHalfWidthNM {
-            candidates.append((path: finalize(hugPath(offset: edge, minLead: 0)), target: edge, parallel: true))
+            let hug = atLeastMinOffset(tightTarget: edge, gentle: false, cells: cellBerths)
+            candidates.append((path: hug.path, target: hug.target, parallel: true))
         }
         for gentle in [true, false] {
             for side in [1.0, -1.0] {
@@ -1285,13 +1323,16 @@ struct RouteWeatherConflictDetector {
     /// of it. So require that — the apex vertex must come within `maxDistanceNM` of a
     /// moderate-or-greater cell; a line whose apex is out in clear air, nowhere near any
     /// precipitation, is not hugging anything and is suppressed. `maxDistanceNM` is set just
-    /// past the widest berth a hug keeps (a red/extreme core's `severeBerthNM` plus the
-    /// lateral buffer), so real hugs — even wide ones — pass while a clear-air spike does
-    /// not. A line that barely leaves the route (no real apex) is left to
-    /// `pathEngagesWeather`. `route` is the filed route the preview should be hugging
-    /// (`[anchor] + upcoming fixes`).
+    /// past the widest a real hug's apex can sit from the cell it rounds: a parallel leg now
+    /// holds at least `minParallelOffsetNM` (20 NM) off course, and when it hugs the *far*
+    /// side of a cell whose near edge lies at the corridor's outer limit
+    /// (`corridorHalfWidthExtremeNM`), the apex-to-cell distance approaches those summed. So
+    /// real hugs — even the wide, minimum-offset ones — pass, while a clear-air spike (apex
+    /// tens of NM beyond any cell) does not. A line that barely leaves the route (no real
+    /// apex) is left to `pathEngagesWeather`. `route` is the filed route the preview should
+    /// be hugging (`[anchor] + upcoming fixes`).
     func previewApexHugsWeather(_ path: [CLLocationCoordinate2D], route: [CLLocationCoordinate2D],
-                                hazards: [WeatherHazard], maxDistanceNM: Double = 30) -> Bool {
+                                hazards: [WeatherHazard], maxDistanceNM: Double = 40) -> Bool {
         guard path.count >= 2 else { return false }
         let polys = hazards.compactMap { h -> [CLLocationCoordinate2D]? in
             guard h.intensity >= .moderate, let p = h.geometry.polygonPoints, p.count >= 3 else { return nil }
@@ -1607,7 +1648,7 @@ struct RouteWeatherConflictDetector {
         let side = sPar.cross >= 0 ? 1.0 : -1.0
         let sideBearing = course + (side >= 0 ? 90 : -90)
         let nearAlong = max(0, sOut.along)                            // reach the offset by the near edge
-        var offset = max(config.lateralBufferNM, max(abs(sOut.cross), abs(sPar.cross)))
+        var offset = max(config.minParallelOffsetNM, max(abs(sOut.cross), abs(sPar.cross)))
         while offset <= config.maxDetourOffsetNM {
             // A ~30° turn-out onto (and off) the offset, re-established for each width so a
             // wider hug starts its turn earlier instead of jutting sideways.
