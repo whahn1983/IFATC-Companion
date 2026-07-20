@@ -133,6 +133,15 @@ data) or can't be routed, the demo falls back to the built‑in **synthetic** fi
 drive still work. The entered gate is resolved to a real stand (exact → same concourse → any
 stand), keeping the taxi on an actual United‑area gate even when the exact gate isn't mapped.
 
+When a taxi begins **before** its real extract has finished pre‑caching — common for a large
+destination like **KMSP**, whose extract takes longer to fetch than a short demo takes to reach
+taxi‑in — the synthetic field is shown immediately (so the map and drive are never blocked or
+blank), and the real surface is loaded asynchronously and **swapped in** the moment it arrives, as
+long as the simulated drive hasn't started yet (swapping mid‑drive would teleport the aircraft, so
+the real field is then simply used the next time the demo taxis there). The fetch is coalesced with
+the in‑flight pre‑cache, so it never duplicates the request, and once loaded the field is cached for
+the rest of the session.
+
 ### Asynchronous surface loading
 
 When a live airport is **not yet cached** at the moment the pilot requests taxi (pre‑cache still
