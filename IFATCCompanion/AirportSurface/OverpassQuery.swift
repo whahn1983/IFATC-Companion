@@ -43,60 +43,49 @@ struct OSMBoundingBox: Codable, Equatable {
 /// round-trip, so the app never has to resolve node references or make a second call
 /// during taxi.
 ///
-/// The two families are scoped **differently**: the movement surfaces need the full airport
-/// box (a big airport's runways span it), but `building=*` is one of the densest tags in OSM,
-/// so pulling every building in the full box at a hub embedded in a dense metro makes the
-/// extract time out (the airport then never caches). Instead, the query buffers the movement
-/// geometry it just fetched — `building` features within `buildingProximityMeters` of a
-/// runway/taxiway/apron (an Overpass `around` filter over the aeroway-way set). This
-/// self-tunes to each airport's real footprint (a tiny buffer for a regional strip, exactly
-/// the terminal envelope for a sprawling hub) and excludes the surrounding city, so even a
-/// large metro hub stays small enough to fetch while still covering the concourses that
-/// matter for gate lead-ins.
+/// The two families use **different** bounding boxes: the movement surfaces need the full
+/// airport box (a big airport's runways span it), but `building=*` is one of the densest
+/// tags in OSM, so pulling every building in the full box at a hub embedded in a dense metro
+/// makes the extract time out (the airport then never caches). Buildings are therefore
+/// scoped to a tighter box around the terminal core — enough to cover the concourses that
+/// matter for gate lead-ins while excluding the surrounding city.
 struct OverpassQuery {
     let icao: String
     let center: CLLocationCoordinate2D
     let halfSpanDegrees: Double
-    let buildingProximityMeters: Double
+    let buildingHalfSpanDegrees: Double
 
     init(icao: String, center: CLLocationCoordinate2D,
          halfSpanDegrees: Double = OSMSurface.bboxHalfSpanDegrees,
-         buildingProximityMeters: Double = OSMSurface.buildingProximityMeters) {
+         buildingHalfSpanDegrees: Double = OSMSurface.buildingBboxHalfSpanDegrees) {
         self.icao = icao.uppercased()
         self.center = center
         self.halfSpanDegrees = halfSpanDegrees
-        self.buildingProximityMeters = max(0, buildingProximityMeters)
+        // Never let the building box exceed the movement-surface box.
+        self.buildingHalfSpanDegrees = min(buildingHalfSpanDegrees, halfSpanDegrees)
     }
 
     var boundingBox: OSMBoundingBox {
         OSMBoundingBox(center: center, halfSpanDegrees: halfSpanDegrees)
     }
 
+    /// The tighter box the `building` features are scoped to (a subset of `boundingBox`).
+    var buildingBoundingBox: OSMBoundingBox {
+        OSMBoundingBox(center: center, halfSpanDegrees: buildingHalfSpanDegrees)
+    }
+
     /// The Overpass QL query text. Small, airport-scoped, JSON output.
-    ///
-    /// The movement-surface ways are captured into a set (`.mv`) — every `aeroway` way except
-    /// the `aeroway=aerodrome` boundary polygon, so the buffer hugs the runways/taxiways/aprons
-    /// rather than ringing the whole airport perimeter (which would drag in a strip of the
-    /// surrounding city). That set is re-emitted with the aerodrome polygon and the aeroway
-    /// nodes/relations for the model; the `building` features are then pulled with
-    /// `(around.mv:<radius>)`, i.e. only those near the movement surfaces. Two `out` statements
-    /// append to the one `elements` array the normalizer consumes.
     var queryText: String {
         let box = boundingBox.overpassClause
-        let radius = String(format: "%.0f", buildingProximityMeters)
+        let buildingBox = buildingBoundingBox.overpassClause
         return """
         [out:json][timeout:30];
-        way["aeroway"]["aeroway"!="aerodrome"](\(box))->.mv;
         (
-          .mv;
-          way["aeroway"="aerodrome"](\(box));
+          way["aeroway"](\(box));
           node["aeroway"](\(box));
           relation["aeroway"](\(box));
-        );
-        out geom tags qt;
-        (
-          way["building"](around.mv:\(radius));
-          relation["building"](around.mv:\(radius));
+          way["building"](\(buildingBox));
+          relation["building"](\(buildingBox));
         );
         out geom tags qt;
         """
