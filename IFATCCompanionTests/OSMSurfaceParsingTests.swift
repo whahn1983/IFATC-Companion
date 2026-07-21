@@ -112,6 +112,51 @@ final class OSMSurfaceParsingTests: XCTestCase {
         XCTAssertFalse(m.runways[0].widthInferred)
     }
 
+    // MARK: - Split runways (multi-way OSM runways)
+
+    /// KLAX (and other large fields) tag one physical runway as several OSM ways — a main
+    /// centerline plus short stubs at the thresholds. Deriving ends per way fabricated a
+    /// duplicate far-ident end at the wrong extreme: the west stub of `06R/24L`, tagged with
+    /// both idents, produced a `24L` end whose threshold sat at the *west* (06R) end, which
+    /// sent 24L departures to the wrong side of the runway. Ends must be merged so there is
+    /// exactly one end per ident, at the runway's true extremes. Coordinates are the real
+    /// KLAX 06R/24L ways.
+    func testSplitRunwayMergesToOneEndPerIdentAtTrueExtremes() {
+        let json = """
+        {
+          "version": 0.6,
+          "elements": [
+            {"type":"way","id":100,"tags":{"aeroway":"runway","ref":"06R/24L"},
+             "geometry":[{"lat":33.94700,"lon":-118.43292},{"lat":33.95047,"lon":-118.39906}]},
+            {"type":"way","id":101,"tags":{"aeroway":"runway","ref":"06R/24L"},
+             "geometry":[{"lat":33.94682,"lon":-118.43469},{"lat":33.94700,"lon":-118.43292}]}
+          ]
+        }
+        """
+        let response = try! JSONDecoder().decode(OverpassResponse.self, from: json.data(using: .utf8)!)
+        let ref = CLLocationCoordinate2D(latitude: 33.9425, longitude: -118.4081)   // KLAX
+        let bbox = OSMBoundingBox(center: ref, halfSpanDegrees: 0.04)
+        let m = OSMSurfaceNormalizer.normalize(response, icao: "KLAX", reference: ref,
+                                               endpoint: "test", boundingBox: bbox, fetchDate: Date())
+
+        // Two ways describe one physical runway → exactly one end per ident, not four.
+        XCTAssertEqual(m.runwayEnds.count, 2, "a two-way runway must yield two ends, not a phantom pair")
+        XCTAssertEqual(m.runwayEnds.filter { $0.ident == "24L" }.count, 1)
+        XCTAssertEqual(m.runwayEnds.filter { $0.ident == "06R" }.count, 1)
+
+        // 24L threshold is at the east extreme; its opposite (06R) is at the west extreme.
+        let east = CLLocationCoordinate2D(latitude: 33.95047, longitude: -118.39906)
+        let west = CLLocationCoordinate2D(latitude: 33.94682, longitude: -118.43469)
+        let end24L = try! XCTUnwrap(m.runwayEnd(ident: "24L"))
+        XCTAssertLessThan(SurfaceGeometry.distanceMeters(end24L.threshold.clLocation, east), 20,
+                          "24L threshold must be the east end, not the west (06R) end")
+        XCTAssertLessThan(SurfaceGeometry.distanceMeters(end24L.oppositeThreshold.clLocation, west), 20)
+        // And 06R is the mirror image.
+        let end06R = try! XCTUnwrap(m.runwayEnd(ident: "06R"))
+        XCTAssertLessThan(SurfaceGeometry.distanceMeters(end06R.threshold.clLocation, west), 20)
+        XCTAssertLessThan(SurfaceGeometry.distanceMeters(end06R.oppositeThreshold.clLocation, east), 20)
+    }
+
     // MARK: - Buildings / terminals
 
     /// `building=*` ways and `aeroway=terminal` become building footprints; a movement

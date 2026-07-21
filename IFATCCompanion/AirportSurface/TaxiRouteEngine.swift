@@ -109,7 +109,9 @@ struct TaxiRouteEngine {
         if req.isDeparture {
             guard let ident = req.assignedRunwayIdent, !ident.isEmpty else { return [] }
             let key = runwayKey(ident)
-            let threshold = model.runwayEnds.first { runwayKey($0.ident) == key }?.threshold.clLocation
+            let assignedEnd = model.runwayEnds.first { runwayKey($0.ident) == key }
+            let threshold = assignedEnd?.threshold.clLocation
+            let opposite = assignedEnd?.oppositeThreshold.clLocation
 
             func distanceToThreshold(_ node: SurfaceNode) -> Double {
                 guard let threshold else { return 0 }
@@ -119,6 +121,16 @@ struct TaxiRouteEngine {
                 guard let ref = node.runwayRef else { return false }
                 return runwayKey(ref) == key
             }
+            // Reject a candidate that sits on the *opposite* half of the runway — a guard
+            // against a wrong-end goal reaching the router from ambiguous OSM tagging (e.g. a
+            // runway split across ways, or a mistagged hold). A node closer to the opposite
+            // threshold than to the assigned one is on the wrong side, so a "24L" departure
+            // can never be sent to the "06R" end.
+            func onAssignedHalf(_ node: SurfaceNode) -> Bool {
+                guard let threshold, let opposite else { return true }
+                return SurfaceGeometry.distanceMeters(threshold, node.clLocation)
+                    <= SurfaceGeometry.distanceMeters(opposite, node.clLocation)
+            }
 
             var out: [(node: Int, distanceMeters: Double)] = []
             var seen = Set<Int>()
@@ -127,12 +139,12 @@ struct TaxiRouteEngine {
             }
 
             // 1) Full-length runway-entry nodes for the assigned end.
-            for node in graph.nodes.filter({ $0.kind == .runwayEntry && matchesRunway($0) })
+            for node in graph.nodes.filter({ $0.kind == .runwayEntry && matchesRunway($0) && onAssignedHalf($0) })
                 .sorted(by: { distanceToThreshold($0) < distanceToThreshold($1) }) {
                 add(node.id, 0)
             }
             // 2) Holding positions for the assigned end (intersection departure).
-            for node in graph.nodes.filter({ $0.kind == .holdingPosition && matchesRunway($0) })
+            for node in graph.nodes.filter({ $0.kind == .holdingPosition && matchesRunway($0) && onAssignedHalf($0) })
                 .sorted(by: { distanceToThreshold($0) < distanceToThreshold($1) }) {
                 add(node.id, 0)
             }

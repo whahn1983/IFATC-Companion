@@ -109,8 +109,19 @@ enum SurfaceGraphBuilder {
             }
         }
 
-        // Runway ends grouped by runway for threshold checks.
-        let endsByRunway = Dictionary(grouping: model.runwayEnds, by: { $0.runwayOSMID })
+        // Each runway way's directional ends, matched by ident rather than by OSM id: a
+        // physical runway split across several OSM ways has its ends attributed to one
+        // representative way, so keying by OSM id would leave the stub ways without ends and
+        // misclassify a threshold intersection on them as a crossing. Matching by ident gives
+        // every way of the same runway the same (merged) ends.
+        let endByIdent = Dictionary(
+            model.runwayEnds.map { (OSMSurfaceNormalizer.canonicalRunwayIdent($0.ident), $0) },
+            uniquingKeysWith: { first, _ in first })
+        let endsByRunway: [String: [SurfaceRunwayEnd]] = Dictionary(
+            model.runways.map { r in
+                (r.osmID, r.idents.compactMap { endByIdent[OSMSurfaceNormalizer.canonicalRunwayIdent($0)] })
+            },
+            uniquingKeysWith: { first, _ in first })
 
         // Detect runway crossings / entries on each edge.
         var crossingSites: [(point: GeoCoordinate, ident: String, name: String)] = []
