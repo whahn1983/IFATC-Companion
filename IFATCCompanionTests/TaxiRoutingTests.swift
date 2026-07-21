@@ -168,6 +168,63 @@ final class TaxiRoutingTests: XCTestCase {
         XCTAssertEqual(route?.holdShortRunway, "9", "the clearance still names the assigned runway")
     }
 
+    func testDepartureRoutesToCorrectEndWhenRunwayIsSplitAcrossWays() throws {
+        // Reproduces the KLAX 06R/24L bug: the runway is two OSM ways — a main centerline and
+        // a short stub at the west (06R) end — both tagged "06R/24L". Deriving ends per way
+        // fabricated a "24L" end at the *west* extreme, planting a "24L" entry node at the
+        // 06R end, so a 24L departure taxied to the wrong side. The route must reach the east
+        // (24L) threshold, never the west one.
+        func c(_ lat: Double, _ lon: Double) -> GeoCoordinate { GeoCoordinate(latitude: lat, longitude: lon) }
+
+        // Runway 06R/24L as two ways (east–west): main + a ~90 m west-end stub, like KLAX.
+        let rwyMain = SurfaceRunway(osmID: "way/rwy-main", tags: ["aeroway": "runway", "ref": "06R/24L"],
+                                    idents: ["06R", "24L"],
+                                    centerline: [c(40.0000, -75.0150), c(40.0000, -74.9850)],
+                                    widthMeters: 45, widthInferred: false)
+        let rwyStub = SurfaceRunway(osmID: "way/rwy-stub", tags: ["aeroway": "runway", "ref": "06R/24L"],
+                                    idents: ["06R", "24L"],
+                                    centerline: [c(40.0000, -75.0160), c(40.0000, -75.0150)],
+                                    widthMeters: 45, widthInferred: false)
+        let runways = [rwyMain, rwyStub]
+        let ends = OSMSurfaceNormalizer.makeRunwayEnds(for: runways)
+
+        // A parallel taxiway just south of the runway, with a hold-short connector at each end.
+        let twyA = SurfaceTaxiway(osmID: "way/A", tags: ["aeroway": "taxiway", "ref": "A"], isTaxilane: false,
+                                  name: "A", geometry: [c(39.9990, -75.0150), c(39.9990, -74.9850)],
+                                  oneway: false, access: nil, widthMeters: nil)
+        let twyW = SurfaceTaxiway(osmID: "way/W", tags: ["aeroway": "taxiway", "ref": "W"], isTaxilane: false,
+                                  name: "W", geometry: [c(39.9990, -75.0150), c(39.9995, -75.0150)],
+                                  oneway: false, access: nil, widthMeters: nil)
+        let twyE = SurfaceTaxiway(osmID: "way/E", tags: ["aeroway": "taxiway", "ref": "E"], isTaxilane: false,
+                                  name: "E", geometry: [c(39.9990, -74.9850), c(39.9995, -74.9850)],
+                                  oneway: false, access: nil, widthMeters: nil)
+        // Gate at the west end — the naive short route heads to the wrong (06R) end.
+        let gate = SurfaceParking(osmID: "node/g", tags: ["aeroway": "gate", "ref": "G1"], kind: .gate,
+                                  name: "G1", coordinate: c(39.9970, -75.0150))
+        let bbox = OSMBoundingBox(center: ref, halfSpanDegrees: 0.05)
+        let m = AirportSurfaceModel(icao: "KSPL", reference: c(40.0, -75.0), runways: runways,
+                                    runwayEnds: ends, taxiways: [twyA, twyW, twyE], holdingPositions: [],
+                                    parkingPositions: [gate], aprons: [],
+                                    source: SurfaceProvenance(endpoint: "t", fetchDate: Date(), boundingBox: bbox, rawElementCount: 6),
+                                    confidence: .medium)
+        let g = SurfaceGraphBuilder.build(from: m)
+        let engine = TaxiRouteEngine(graph: g, model: m)
+        let route = try XCTUnwrap(engine.route(.init(startCoordinate: c(39.9970, -75.0150).clLocation,
+                                                     startGateName: "G1", isDeparture: true,
+                                                     assignedRunwayIdent: "24L", arrivalGateName: nil,
+                                                     aircraft: .medium)),
+                                  "a 24L departure over a split runway must still route")
+        XCTAssertEqual(route.holdShortRunway, "24L")
+
+        let east = CLLocationCoordinate2D(latitude: 40.0000, longitude: -74.9850)   // 24L threshold
+        let west = CLLocationCoordinate2D(latitude: 40.0000, longitude: -75.0160)   // 06R threshold
+        let end = route.endCoordinate.clLocation
+        XCTAssertLessThan(SurfaceGeometry.distanceMeters(end, east), 200,
+                          "the route must reach the east (24L) threshold")
+        XCTAssertGreaterThan(SurfaceGeometry.distanceMeters(end, west), 2000,
+                             "the route must not end at the west (06R) end")
+    }
+
     func testDepartureFallsThroughToReachableGoalWhenEntryStranded() {
         // Reproduces the KATL 26L failure: the surface loads and the aircraft snaps onto the
         // graph, but the runway-entry node for the assigned end is stranded in a disconnected

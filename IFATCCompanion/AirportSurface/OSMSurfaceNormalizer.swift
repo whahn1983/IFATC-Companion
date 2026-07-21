@@ -50,7 +50,6 @@ enum OSMSurfaceNormalizer {
             case "runway":
                 if let runway = makeRunway(e, tags: tags) {
                     runways.append(runway)
-                    runwayEnds.append(contentsOf: makeRunwayEnds(runway))
                 }
             case "taxiway", "taxilane":
                 if let taxiway = makeTaxiway(e, tags: tags, isTaxilane: aeroway == "taxilane") {
@@ -82,6 +81,13 @@ enum OSMSurfaceNormalizer {
                 continue
             }
         }
+
+        // Runway ends are derived after every runway way is collected, so a runway split
+        // across several OSM ways (a main centerline plus short stubs at the thresholds —
+        // common at large fields, e.g. KLAX tags 06R/24L as two ways and 07L/25R as three)
+        // yields one threshold per ident at the runway's true extremes, not a phantom
+        // far-ident end wherever a stub happens to terminate.
+        runwayEnds = makeRunwayEnds(for: runways)
 
         let provenance = SurfaceProvenance(endpoint: endpoint,
                                            fetchDate: fetchDate,
@@ -127,33 +133,94 @@ enum OSMSurfaceNormalizer {
         return parts
     }
 
-    /// Build the two directional ends of a runway from its centerline + idents.
-    private static func makeRunwayEnds(_ r: SurfaceRunway) -> [SurfaceRunwayEnd] {
-        guard let first = r.centerline.first?.clLocation,
-              let last = r.centerline.last?.clLocation else { return [] }
-        guard !r.idents.isEmpty else { return [] }
+    /// Build the directional ends (threshold + heading) for every physical runway.
+    ///
+    /// OSM frequently splits one runway into several ways — a main centerline plus short
+    /// stubs at the thresholds (KLAX tags `06R/24L` as two ways and `07L/25R` as three).
+    /// Deriving ends per way is wrong: a stub tagged `06R/24L` sitting at the west end
+    /// fabricates a `24L` end whose threshold lands at the *west* extreme of the runway
+    /// (right where `06R` actually is), which then sends a 24L departure to the wrong side.
+    /// So ways describing the same physical runway (identical ident set) are grouped, and the
+    /// two thresholds are taken from the pair of way-endpoints that are farthest apart — the
+    /// runway's true extremes — giving exactly one end per ident regardless of how OSM sliced
+    /// the pavement. Threshold-for-ident is still the end whose bearing toward the opposite end
+    /// matches the ident heading.
+    static func makeRunwayEnds(for runways: [SurfaceRunway]) -> [SurfaceRunwayEnd] {
+        var groups: [String: [SurfaceRunway]] = [:]
+        var order: [String] = []
+        for r in runways where !r.idents.isEmpty {
+            let key = r.idents.map(canonicalRunwayIdent).sorted().joined(separator: "/")
+            if groups[key] == nil { order.append(key) }
+            groups[key, default: []].append(r)
+        }
+
         var ends: [SurfaceRunwayEnd] = []
-        for ident in r.idents {
-            let heading = runwayHeading(ident) ?? Geo.bearing(from: first, to: last)
-            // Threshold for this ident is the end you start the takeoff roll from —
-            // the end whose bearing toward the opposite end matches the ident heading.
-            let bFirstToLast = Geo.bearing(from: first, to: last)
-            let bLastToFirst = Geo.bearing(from: last, to: first)
-            let threshold: CLLocationCoordinate2D
-            let opposite: CLLocationCoordinate2D
-            if Geo.headingDifference(bFirstToLast, heading) <= Geo.headingDifference(bLastToFirst, heading) {
-                threshold = first; opposite = last
-            } else {
-                threshold = last; opposite = first
+        for key in order {
+            guard let group = groups[key] else { continue }
+            // The physical runway runs between the two way-endpoints that are farthest apart.
+            var endpoints: [CLLocationCoordinate2D] = []
+            for r in group {
+                if let f = r.centerline.first?.clLocation { endpoints.append(f) }
+                if let l = r.centerline.last?.clLocation { endpoints.append(l) }
             }
-            ends.append(SurfaceRunwayEnd(ident: ident,
-                                         threshold: GeoCoordinate(threshold),
-                                         oppositeThreshold: GeoCoordinate(opposite),
-                                         headingDegrees: heading,
-                                         runwayOSMID: r.osmID,
-                                         widthMeters: r.widthMeters))
+            guard let (a, b) = farthestPair(endpoints) else { continue }
+            let bAToB = Geo.bearing(from: a, to: b)
+            let bBToA = Geo.bearing(from: b, to: a)
+            // The longest way in the group supplies the OSM id + width for its ends.
+            let rep = group.max { runwayLengthMeters($0) < runwayLengthMeters($1) } ?? group[0]
+
+            var seen = Set<String>()
+            for ident in group.flatMap({ $0.idents })
+                where seen.insert(canonicalRunwayIdent(ident)).inserted {
+                let heading = runwayHeading(ident) ?? bAToB
+                let threshold: CLLocationCoordinate2D
+                let opposite: CLLocationCoordinate2D
+                if Geo.headingDifference(bAToB, heading) <= Geo.headingDifference(bBToA, heading) {
+                    threshold = a; opposite = b
+                } else {
+                    threshold = b; opposite = a
+                }
+                ends.append(SurfaceRunwayEnd(ident: ident,
+                                             threshold: GeoCoordinate(threshold),
+                                             oppositeThreshold: GeoCoordinate(opposite),
+                                             headingDegrees: heading,
+                                             runwayOSMID: rep.osmID,
+                                             widthMeters: rep.widthMeters))
+            }
         }
         return ends
+    }
+
+    /// Canonical comparison key for a runway ident, tolerant of leading-zero padding and
+    /// case: "09L"/"9L" → "9L", "06R" → "6R". An ident with no leading number falls back to
+    /// its trimmed, uppercased form. Matches `TaxiRouteEngine`'s runway-key semantics so an
+    /// assigned end and an OSM-tagged end compare equal across the two layers.
+    static func canonicalRunwayIdent(_ raw: String) -> String {
+        let s = raw.trimmingCharacters(in: .whitespaces).uppercased()
+        let digits = s.prefix { $0.isNumber }
+        guard let n = Int(digits) else { return s }
+        return "\(n)\(s.dropFirst(digits.count))"
+    }
+
+    /// The pair of points farthest apart (great-circle), or nil for fewer than two points.
+    private static func farthestPair(_ points: [CLLocationCoordinate2D])
+        -> (CLLocationCoordinate2D, CLLocationCoordinate2D)? {
+        guard points.count >= 2 else { return nil }
+        var best: (CLLocationCoordinate2D, CLLocationCoordinate2D)?
+        var bestMeters = -1.0
+        for i in 0..<(points.count - 1) {
+            for j in (i + 1)..<points.count {
+                let d = SurfaceGeometry.distanceMeters(points[i], points[j])
+                if d > bestMeters { bestMeters = d; best = (points[i], points[j]) }
+            }
+        }
+        return best
+    }
+
+    /// Straight-line length (m) of a runway way between its centerline extremes.
+    private static func runwayLengthMeters(_ r: SurfaceRunway) -> Double {
+        guard let a = r.centerline.first?.clLocation, let b = r.centerline.last?.clLocation else { return 0 }
+        return SurfaceGeometry.distanceMeters(a, b)
     }
 
     private static func makeTaxiway(_ e: OSMElement, tags: [String: String], isTaxilane: Bool) -> SurfaceTaxiway? {
