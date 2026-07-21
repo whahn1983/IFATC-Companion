@@ -2,10 +2,13 @@ import XCTest
 import CoreLocation
 @testable import IFATCCompanion
 
-/// Mock Mode taxi over a pre-cached *real* airport surface: the demo prefers the real
-/// field (so it taxis the actual airport) and falls back to the synthetic field when the
-/// real one can't be routed — while the taxi map still appears with simulated movement on
-/// both departure and arrival. Also verifies the mock route's realistic default gates.
+/// Mock Mode taxi over the *real* airport surface: the demo always taxis the actual
+/// downloaded/cached OSM field for both its origin and destination — using the pre-cached
+/// extract when ready, otherwise *waiting* for the real field to download rather than
+/// dropping onto the bundled synthetic surface. It falls back to the synthetic field only
+/// when the real one genuinely can't be produced (offline / no OSM data) or can't be routed,
+/// while the taxi map still appears with simulated movement on both departure and arrival.
+/// Also verifies the mock route's realistic default gates.
 @MainActor
 final class MockRealSurfaceTaxiTests: XCTestCase {
 
@@ -13,6 +16,21 @@ final class MockRealSurfaceTaxiTests: XCTestCase {
 
     private func makeCoordinator() -> AirportSurfaceCoordinator {
         let coord = AirportSurfaceCoordinator()
+        let engine = PhraseologyEngine(digitStyle: .individual, mode: .faa)
+        coord.configure(diagnostics: nil, engine: engine, emit: { _ in },
+                        callsign: { engine.callsign(airline: "United", flightNumber: "598", fallback: "") })
+        return coord
+    }
+
+    /// A coordinator whose provider can never reach the network (no endpoints, an isolated
+    /// empty cache), so the "wait for the real field" path can be driven deterministically: the
+    /// background download always fails fast, and the test itself supplies the real surface via
+    /// `deliverSimulatedSurfaceForTesting` (or asserts the offline synthetic fallback).
+    private func makeOfflineCoordinator() -> AirportSurfaceCoordinator {
+        let provider = AirportSurfaceProvider(
+            cache: AirportSurfaceCache(directoryName: "test-mock-real-surface-offline"),
+            endpoints: [])
+        let coord = AirportSurfaceCoordinator(provider: provider)
         let engine = PhraseologyEngine(digitStyle: .individual, mode: .faa)
         coord.configure(diagnostics: nil, engine: engine, emit: { _ in },
                         callsign: { engine.callsign(airline: "United", flightNumber: "598", fallback: "") })
@@ -92,31 +110,90 @@ final class MockRealSurfaceTaxiTests: XCTestCase {
         coord.hideTaxiMap()
     }
 
-    func testMockTaxiUpgradesToRealSurfaceWhenPreCacheArrivesLate() {
-        let coord = makeCoordinator()
-        // The field's real surface isn't pre-cached yet (e.g. a large destination like KMSP
-        // whose extract is still fetching), so the taxi begins on the synthetic fallback.
-        coord.beginDeparture(icao: "KMSP", reference: ref, aircraftName: "Boeing 737-800",
-                             runway: "12R", gate: "C6",
-                             startCoordinate: MockAirportSurface.gateCoordinate(reference: ref), mock: true)
-        XCTAssertTrue(coord.usingSyntheticSurfaceForTesting,
-                      "the taxi begins on the synthetic fallback while the real extract is loading")
+    func testMockDestinationWaitsForRealSurfaceThenTaxisIt() {
+        let coord = makeOfflineCoordinator()
+        // The demo destination's reference is recorded (as prepareSimulatedSurfaces would), but
+        // its real extract isn't cached yet — e.g. a large destination like KMSP whose download
+        // is still in flight when the arrival taxi begins.
+        coord.setSimulatedReferenceForTesting(ref, icao: "KMSP")
+        coord.beginArrival(icao: "KMSP", reference: ref, aircraftName: "Boeing 737-800",
+                           gate: "C6",
+                           startCoordinate: MockAirportSurface.runwayExitCoordinate(reference: ref),
+                           mock: true, arrivalRunway: "36")
 
-        // The pre-cache fetch resolves before the pilot reads back / the drive starts: the
-        // taxi upgrades onto the real field so the demo taxis the actual airport.
-        coord.deliverSimulatedSurfaceForTesting(realSurface(icao: "KMSP", runway: "12R", gate: "C6"),
+        // It must WAIT for the real field, not drop onto the bundled synthetic surface.
+        XCTAssertFalse(coord.usingSyntheticSurfaceForTesting,
+                       "a demo destination waits for the real field rather than using the synthetic surface")
+        XCTAssertTrue(coord.surfaceLoadInProgress,
+                      "the surface stays loading while the real destination field downloads")
+
+        // The pilot reads back, but the taxi map stays withheld until the real field is ready.
+        coord.taxiReadBackComplete()
+        XCTAssertFalse(coord.taxiMapVisible,
+                       "the taxi map is withheld until the real destination surface downloads")
+
+        // The download resolves before the drive starts: the demo taxis the actual airport.
+        coord.deliverSimulatedSurfaceForTesting(realSurface(icao: "KMSP", runway: "36", gate: "C6"),
                                                 icao: "KMSP")
         XCTAssertFalse(coord.usingSyntheticSurfaceForTesting,
-                       "the real surface is adopted once it arrives, before the drive starts")
+                       "the real destination surface is adopted once downloaded, not the bundled model")
+        XCTAssertTrue(coord.taxiMapVisible, "the map reveals on the real destination surface")
+        XCTAssertEqual(coord.routeForTesting?.arrivalGate, "C6")
+        coord.hideTaxiMap()
+    }
+
+    func testMockOriginWaitsForRealSurfaceThenTaxisIt() {
+        let coord = makeOfflineCoordinator()
+        // The demo origin's reference is recorded but its real extract isn't cached yet.
+        coord.setSimulatedReferenceForTesting(ref, icao: "KIAH")
+        coord.beginDeparture(icao: "KIAH", reference: ref, aircraftName: "Boeing 737-800",
+                             runway: "15L", gate: "C24",
+                             startCoordinate: MockAirportSurface.gateCoordinate(reference: ref), mock: true)
+
+        XCTAssertFalse(coord.usingSyntheticSurfaceForTesting,
+                       "a demo origin waits for the real field rather than using the synthetic surface")
+        XCTAssertTrue(coord.surfaceLoadInProgress,
+                      "the surface stays loading while the real origin field downloads")
+
+        // The download resolves before the pilot reads back / the drive starts.
+        coord.deliverSimulatedSurfaceForTesting(realSurface(icao: "KIAH", runway: "15L", gate: "C24"),
+                                                icao: "KIAH")
+        XCTAssertFalse(coord.usingSyntheticSurfaceForTesting,
+                       "the real origin surface is adopted once downloaded, not the bundled model")
 
         coord.taxiReadBackComplete()
-        XCTAssertTrue(coord.taxiMapVisible, "the taxi map appears for the simulated taxi")
-        XCTAssertEqual(coord.routeForTesting?.holdShortRunway, "12R")
+        XCTAssertTrue(coord.taxiMapVisible, "the taxi map appears on the real origin surface")
+        XCTAssertEqual(coord.routeForTesting?.holdShortRunway, "15L")
+        coord.hideTaxiMap()
+    }
+
+    func testMockDemoFallsBackToSyntheticWhenRealDownloadFails() async {
+        let coord = makeOfflineCoordinator()
+        coord.setSimulatedReferenceForTesting(ref, icao: "KMSP")
+        coord.beginArrival(icao: "KMSP", reference: ref, aircraftName: "Boeing 737-800",
+                           gate: "C6",
+                           startCoordinate: MockAirportSurface.runwayExitCoordinate(reference: ref),
+                           mock: true, arrivalRunway: "36")
+        XCTAssertFalse(coord.usingSyntheticSurfaceForTesting, "it waits for the real field first")
+
+        // The real download can never resolve (offline / no endpoints); once it fails, the demo
+        // falls back to the synthetic field so it still taxis rather than hanging on loading.
+        var waited = 0
+        while coord.surfaceLoadInProgress && waited < 200 {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+            waited += 1
+        }
+        XCTAssertTrue(coord.usingSyntheticSurfaceForTesting,
+                      "a real download that can't be produced falls back to the synthetic field")
+        coord.taxiReadBackComplete()
+        XCTAssertTrue(coord.taxiMapVisible, "the map still appears via the synthetic fallback")
         coord.hideTaxiMap()
     }
 
     func testMockTaxiKeepsSyntheticWhenRealSurfaceArrivesMidDrive() {
         let coord = makeCoordinator()
+        // No recorded reference for this field, so the taxi uses the synthetic fallback and the
+        // drive starts on it (the offline / no-OSM-data path).
         coord.beginArrival(icao: "KMSP", reference: ref, aircraftName: "Boeing 737-800",
                            gate: "C6",
                            startCoordinate: MockAirportSurface.runwayExitCoordinate(reference: ref),

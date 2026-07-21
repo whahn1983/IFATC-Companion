@@ -403,68 +403,99 @@ final class AirportSurfaceCoordinator: ObservableObject {
 
     private var pendingStart: CLLocationCoordinate2D?
 
-    /// Load the surface for a simulated (mock) taxi: the real, pre-cached OSM field when it
-    /// is available (so the demo taxis the actual airport), otherwise the synthetic offline
-    /// field. `icao`/`reference` are already set by the caller.
+    /// Load the surface for a simulated (mock) taxi. For the demo's own origin **and**
+    /// destination (recorded by `prepareSimulatedSurfaces`) the real, full OSM field is always
+    /// used — the pre-cached extract when it's ready, otherwise the taxi *waits* for the real
+    /// field to finish downloading rather than dropping onto the bundled synthetic surface.
+    /// `icao`/`reference` are already set by the caller.
     ///
-    /// When the real field isn't pre-cached yet — the pre-cache fetch is still in flight,
-    /// which is common for a large destination like KMSP whose extract takes longer to load
-    /// than a short demo takes to reach taxi-in — the synthetic field is installed at once so
-    /// the taxi map and simulated drive work immediately (and offline), and the real surface
-    /// is fetched asynchronously and swapped in if it arrives before the drive starts. This
-    /// stops the destination taxi-in from being stuck on the tiny synthetic field just
-    /// because its real extract hadn't finished caching in time.
+    /// While the real field downloads the surface stays `.loading`, so the taxi map / mock
+    /// drive only begins once it's ready (`revealIfReady` gates on `status.isReady`): the map
+    /// then animates in on the actual airport, and Ground's generic clearance is superseded by
+    /// the detailed OSM route. This is what stops a large destination like KMSP — whose extract
+    /// takes longer to cache than a short demo takes to reach taxi-in — from being stuck on the
+    /// tiny synthetic field. Only a field with no OSM reference at all (a synthetic-only / test
+    /// airport), or a real extract that genuinely can't be produced (offline / no OSM data),
+    /// falls back to the synthetic field.
     private func loadSimulatedSurface(generation: Int) {
         if let real = simulatedSurfaces[icao], real.hasUsableGeometry {
             syntheticSurface = false
             applyLoaded(real, generation: generation)
             return
         }
-        installSyntheticSurface(generation: generation)
-        upgradeToRealSimulatedSurface(generation: generation)
+        // A demo origin/destination: download and cache the full real field, waiting for it
+        // instead of using the bundled synthetic surface. Synthetic only when there is no OSM
+        // reference to fetch (e.g. a unit-test airport).
+        guard simulatedReferences[icao] != nil else {
+            installSyntheticSurface(generation: generation)
+            return
+        }
+        fetchRealSimulatedSurface(generation: generation)
     }
 
-    /// Asynchronously load the real OSM surface for the mock demo airport currently being
-    /// taxied and adopt it once ready, upgrading the taxi off the synthetic fallback. Only
-    /// runs for the demo's own origin/destination (recorded by `prepareSimulatedSurfaces`),
-    /// so a synthetic-only or test field never triggers a network fetch. The provider
-    /// coalesces this with any in-flight pre-cache fetch for the same field, so it never
-    /// duplicates the request.
-    private func upgradeToRealSimulatedSurface(generation: Int) {
-        guard let ref = simulatedReferences[icao] else { return }
+    /// Download the real OSM surface for the mock demo airport currently being taxied and adopt
+    /// it once ready, holding the surface in `.loading` until it arrives so the taxi uses the
+    /// actual airport (not the bundled synthetic field). Only runs for the demo's own
+    /// origin/destination (recorded by `prepareSimulatedSurfaces`). The provider coalesces this
+    /// with any in-flight pre-cache fetch for the same field, so it never duplicates the
+    /// request. Only a genuine failure (offline, no OSM data, or unusable geometry) falls back
+    /// to the synthetic field so the demo still taxis.
+    private func fetchRealSimulatedSurface(generation: Int) {
+        guard let ref = simulatedReferences[icao] else {
+            installSyntheticSurface(generation: generation)
+            return
+        }
         let key = icao
+        syntheticSurface = false
+        status = .loading
         Task { [weak self] in
             guard let self else { return }
             do {
                 let model = try await self.provider.surface(for: key, reference: ref, forceRefresh: false)
-                self.adoptSimulatedSurfaceIfPending(model, key: key, generation: generation)
+                if model.hasUsableGeometry {
+                    self.adoptRealSimulatedSurface(model, key: key, generation: generation)
+                } else {
+                    self.fallBackToSyntheticSimulatedSurface(key: key, generation: generation,
+                                                             reason: "no usable geometry")
+                }
             } catch {
-                // The real extract couldn't be loaded (offline, or no OSM data) — keep the
-                // synthetic fallback so the demo still taxis. No user-facing error.
+                let message = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+                self.fallBackToSyntheticSimulatedSurface(key: key, generation: generation, reason: message)
             }
         }
     }
 
-    /// Adopt a just-loaded real surface for the mock demo. The surface is always cached for
-    /// the next taxi at this field; the live taxi is swapped onto it only when we are still
-    /// on the synthetic fallback for this same taxi and the simulated drive hasn't started —
-    /// swapping mid-drive would teleport the aircraft, so in that case the real field is
-    /// simply used the next time the demo taxis here. The `status.isReady` guard also skips a
-    /// fetch that resolves after the map has been hidden (hand-off / cleared), so it never
-    /// re-reveals a taxi map that is already gone.
-    private func adoptSimulatedSurfaceIfPending(_ model: AirportSurfaceModel, key: String, generation: Int) {
+    /// Adopt a just-downloaded real surface for the mock demo. Always cached for the next taxi
+    /// at this field; applied to the active taxi only while it is still waiting for the real
+    /// field (held in `.loading`) or on the ready synthetic fallback — and only before the
+    /// simulated drive starts, since swapping mid-drive would teleport the aircraft (the real
+    /// field is then used the next time the demo taxis here). Requiring `.loading` or a ready
+    /// synthetic surface also skips a fetch that resolves after the map has been hidden
+    /// (hand-off / cleared → `.idle`), so it never re-reveals a taxi map that is already gone.
+    private func adoptRealSimulatedSurface(_ model: AirportSurfaceModel, key: String, generation: Int) {
         guard model.hasUsableGeometry else { return }
         simulatedSurfaces[key] = model
         guard generation == loadGeneration, mockMode, kind != .none, icao == key,
-              syntheticSurface, status.isReady, mockTask == nil, !reachedDestination else { return }
+              mockTask == nil, !reachedDestination,
+              status == .loading || (syntheticSurface && status.isReady) else { return }
         syntheticSurface = false
-        diagnostics?.log(.app, "Mock demo: real surface ready for \(key) — upgrading from synthetic fallback")
+        diagnostics?.log(.app, "Mock demo: real surface ready for \(key) — \(model.runways.count) rwy, \(model.taxiways.count) twy")
         applyLoaded(model, generation: generation)
     }
 
+    /// Fall back to the synthetic offline field for the demo taxi when the real extract can't
+    /// be produced (offline / no OSM data), so the demo still taxis. No-op once the drive has
+    /// started, the taxi is over, or a surface is already in place.
+    private func fallBackToSyntheticSimulatedSurface(key: String, generation: Int, reason: String) {
+        guard generation == loadGeneration, mockMode, kind != .none, icao == key,
+              mockTask == nil, !reachedDestination, !syntheticSurface, status == .loading else { return }
+        diagnostics?.log(.app, "Mock demo surface unavailable for \(key): \(reason) (synthetic fallback)")
+        installSyntheticSurface(generation: generation)
+    }
+
     /// Build and load the synthetic offline field for the current `icao`/`reference`.
-    /// Used both when no real surface is pre-cached and as a fallback when a real surface
-    /// can't be routed in the demo.
+    /// Used for a field with no OSM reference (e.g. a unit-test airport), and as a fallback
+    /// when a real surface can't be downloaded or can't be routed in the demo.
     private func installSyntheticSurface(generation: Int) {
         syntheticSurface = true
         let model = MockAirportSurface.model(icao: icao, reference: reference,
@@ -1305,11 +1336,17 @@ final class AirportSurfaceCoordinator: ObservableObject {
         simulatedSurfaces[icao.uppercased()] = model
     }
 
-    /// Deliver a real surface to the active mock taxi as the async pre-cache fetch would once
-    /// it resolves (test hook), so the "upgrade off the synthetic fallback" path can be driven
-    /// without a network fetch.
+    /// Record a demo airport's reference (as `prepareSimulatedSurfaces` would) without fetching,
+    /// so the "wait for the real field to download" path can be driven in tests.
+    func setSimulatedReferenceForTesting(_ reference: CLLocationCoordinate2D, icao: String) {
+        simulatedReferences[icao.uppercased()] = reference
+    }
+
+    /// Deliver a real surface to the active mock taxi as the async download would once it
+    /// resolves (test hook), so the "adopt the real field before the drive starts" path can be
+    /// driven without a network fetch.
     func deliverSimulatedSurfaceForTesting(_ model: AirportSurfaceModel, icao: String) {
-        adoptSimulatedSurfaceIfPending(model, key: icao.uppercased(), generation: loadGeneration)
+        adoptRealSimulatedSurface(model, key: icao.uppercased(), generation: loadGeneration)
     }
 
     // MARK: - Diagnostics snapshot
