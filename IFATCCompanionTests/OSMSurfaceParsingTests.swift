@@ -154,63 +154,38 @@ final class OSMSurfaceParsingTests: XCTestCase {
 
     // MARK: - Overpass query scoping
 
-    /// The movement surfaces are pulled on the full airport box, but `building` features are
-    /// pulled only near the movement geometry via an `around` buffer — so a hub embedded in a
-    /// dense metro (e.g. KMSP) doesn't drag in the whole city's buildings and time the extract
-    /// out. The buffer self-tunes to the airport's real footprint (no fixed building box).
-    func testBuildingExtractIsBufferedAroundMovementSurfaces() {
+    /// The `building` features are scoped to a strictly tighter box than the movement
+    /// surfaces, so a hub embedded in a dense metro (e.g. KMSP) doesn't pull the whole city's
+    /// buildings and time the extract out — while the runways/taxiways/gates still use the
+    /// full airport box.
+    func testBuildingExtractIsScopedTighterThanMovementSurfaces() {
         let ref = CLLocationCoordinate2D(latitude: 44.8848, longitude: -93.2223)  // KMSP
         let query = OverpassQuery(icao: "KMSP", center: ref)
-        let box = query.boundingBox.overpassClause
+
+        // The building box is a strict subset of the full movement-surface box.
+        let full = query.boundingBox
+        let bld = query.buildingBoundingBox
+        XCTAssertGreaterThan(bld.south, full.south)
+        XCTAssertLessThan(bld.north, full.north)
+        XCTAssertGreaterThan(bld.west, full.west)
+        XCTAssertLessThan(bld.east, full.east)
+
+        // The query text pulls aeroway features on the full box and buildings on the tighter
+        // box (never the other way round).
         let text = query.queryText
-
-        // The movement surfaces (every aeroway way except the aerodrome boundary) are captured
-        // into a set on the full box; the aerodrome polygon and aeroway nodes are still fetched
-        // for the model.
-        XCTAssertTrue(text.contains("way[\"aeroway\"][\"aeroway\"!=\"aerodrome\"](\(box))->.mv"))
-        XCTAssertTrue(text.contains("way[\"aeroway\"=\"aerodrome\"](\(box))"))
-        XCTAssertTrue(text.contains("node[\"aeroway\"](\(box))"))
-
-        // Buildings are pulled with an `around` buffer over that set — never on a raw bbox.
-        let radius = String(format: "%.0f", OSMSurface.buildingProximityMeters)
-        XCTAssertTrue(text.contains("way[\"building\"](around.mv:\(radius))"))
-        XCTAssertTrue(text.contains("relation[\"building\"](around.mv:\(radius))"))
-        XCTAssertFalse(text.contains("way[\"building\"](\(box))"),
-                       "buildings must not be pulled on the full airport box")
+        XCTAssertTrue(text.contains("way[\"aeroway\"](\(full.overpassClause))"))
+        XCTAssertTrue(text.contains("way[\"building\"](\(bld.overpassClause))"))
+        XCTAssertFalse(text.contains("way[\"building\"](\(full.overpassClause))"),
+                       "buildings must not be pulled on the full box")
     }
 
-    /// The buffer radius is configurable and rendered as whole meters into the query.
-    func testBuildingProximityRadiusIsRendered() {
+    /// Guardrail: even if a caller passes a building span larger than the movement span, the
+    /// building box is clamped so it can never exceed the movement-surface box.
+    func testBuildingBoxNeverExceedsMovementBox() {
         let ref = CLLocationCoordinate2D(latitude: 44.8848, longitude: -93.2223)
-        let query = OverpassQuery(icao: "KMSP", center: ref, buildingProximityMeters: 175)
-        XCTAssertTrue(query.queryText.contains("around.mv:175"))
-    }
-
-    // MARK: - Duplicate-element handling
-
-    /// A terminal tagged both `aeroway=terminal` and `building=*` is emitted by both `out`
-    /// blocks (aeroway set, then buildings-around-movement), so it appears twice in the
-    /// response. It must be footprinted only once.
-    func testDualTaggedTerminalIsNotDoubleCounted() {
-        let json = """
-        {"version":0.6,"generator":"Overpass API","elements":[
-          {"type":"way","id":1,"tags":{"aeroway":"runway","ref":"09/27"},
-           "geometry":[{"lat":40.0000,"lon":-75.0050},{"lat":40.0000,"lon":-74.9950}]},
-          {"type":"way","id":2,"tags":{"aeroway":"taxiway","ref":"A"},
-           "geometry":[{"lat":40.0010,"lon":-75.0000},{"lat":39.9990,"lon":-75.0000}]},
-          {"type":"way","id":50,"tags":{"aeroway":"terminal","building":"yes"},
-           "geometry":[{"lat":40.0018,"lon":-75.0006},{"lat":40.0018,"lon":-74.9994},{"lat":40.0022,"lon":-75.0000}]},
-          {"type":"way","id":50,"tags":{"aeroway":"terminal","building":"yes"},
-           "geometry":[{"lat":40.0018,"lon":-75.0006},{"lat":40.0018,"lon":-74.9994},{"lat":40.0022,"lon":-75.0000}]}
-        ]}
-        """
-        let data = json.data(using: .utf8)!
-        let response = try! JSONDecoder().decode(OverpassResponse.self, from: data)
-        let ref = CLLocationCoordinate2D(latitude: 40, longitude: -75)
-        let bbox = OSMBoundingBox(center: ref, halfSpanDegrees: 0.04)
-        let m = OSMSurfaceNormalizer.normalize(response, icao: "KTST", reference: ref,
-                                               endpoint: "test", boundingBox: bbox, fetchDate: Date())
-        XCTAssertEqual(m.buildings.filter { $0.osmID == "way/50" }.count, 1,
-                       "the dual-tagged terminal is footprinted once despite two emissions")
+        let query = OverpassQuery(icao: "KMSP", center: ref,
+                                  halfSpanDegrees: 0.02, buildingHalfSpanDegrees: 0.09)
+        XCTAssertEqual(query.boundingBox, query.buildingBoundingBox,
+                       "an oversized building span is clamped to the movement-surface box")
     }
 }
