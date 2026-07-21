@@ -211,6 +211,62 @@ final class MockRealSurfaceTaxiTests: XCTestCase {
         coord.hideTaxiMap()
     }
 
+    /// A large real field (KMSP-like) where the *entered* stand is stranded in a disconnected
+    /// OSM patch: the mock arrival must keep the REAL surface and route to a reachable stand,
+    /// never reverting to the bundled synthetic field. This is the reported KMSP regression —
+    /// the real surface loaded but its single-candidate arrival route failed, so `recomputeRoute`
+    /// swapped to synthetic.
+    private func strandedGateArrivalSurface() -> AirportSurfaceModel {
+        func p(_ dLat: Double, _ dLon: Double) -> GeoCoordinate {
+            GeoCoordinate(latitude: ref.latitude + dLat, longitude: ref.longitude + dLon)
+        }
+        // Runway 18/36; the "36" rollout ends at its north (far) end p(0.0060, 0), by taxiway B.
+        let runway = SurfaceRunway(osmID: "way/r", tags: ["aeroway": "runway", "ref": "18/36"],
+                                   idents: ["18", "36"], centerline: [p(0.0000, 0), p(0.0060, 0)],
+                                   widthMeters: 45, widthInferred: false)
+        let end36 = SurfaceRunwayEnd(ident: "36", threshold: p(0.0000, 0), oppositeThreshold: p(0.0060, 0),
+                                     headingDegrees: 360, runwayOSMID: "way/r", widthMeters: 45)
+        let end18 = SurfaceRunwayEnd(ident: "18", threshold: p(0.0060, 0), oppositeThreshold: p(0.0000, 0),
+                                     headingDegrees: 180, runwayOSMID: "way/r", widthMeters: 45)
+        // Connected network just off the rollout end (offset so no taxiway touches the runway
+        // centerline); B2 attaches to it. A far isolated stub holds B1.
+        let twyB = SurfaceTaxiway(osmID: "way/b", tags: ["aeroway": "taxiway", "ref": "B"], isTaxilane: false,
+                                  name: "B", geometry: [p(0.0060, 0.0003), p(0.0060, 0.0033)], oneway: false, access: nil, widthMeters: nil)
+        let stub = SurfaceTaxiway(osmID: "way/stub", tags: ["aeroway": "taxiway", "ref": "S"], isTaxilane: false,
+                                  name: "S", geometry: [p(0.0060, 0.0100), p(0.0060, 0.0102)], oneway: false, access: nil, widthMeters: nil)
+        let b1 = SurfaceParking(osmID: "node/b1", tags: ["aeroway": "gate", "ref": "B1"], kind: .gate,
+                                name: "B1", coordinate: p(0.0062, 0.0100))   // stranded (by the stub)
+        let b2 = SurfaceParking(osmID: "node/b2", tags: ["aeroway": "gate", "ref": "B2"], kind: .gate,
+                                name: "B2", coordinate: p(0.0062, 0.0033))   // reachable (by taxiway B)
+        let bbox = OSMBoundingBox(center: ref, halfSpanDegrees: 0.04)
+        return AirportSurfaceModel(icao: "KMSP", reference: GeoCoordinate(ref), runways: [runway],
+                                   runwayEnds: [end36, end18], taxiways: [twyB, stub], holdingPositions: [],
+                                   parkingPositions: [b1, b2], aprons: [],
+                                   source: SurfaceProvenance(endpoint: "https://overpass.example/api",
+                                                             fetchDate: Date(), boundingBox: bbox, rawElementCount: 5),
+                                   confidence: .medium)
+    }
+
+    func testMockArrivalKeepsRealSurfaceWhenEnteredGateStranded() {
+        let coord = makeCoordinator()
+        // The whole real field is pre-cached (as prepareSimulatedSurfaces would after fetching).
+        coord.injectSimulatedSurfaceForTesting(strandedGateArrivalSurface(), icao: "KMSP")
+        // The pilot entered stand "B1", which is stranded in a disconnected OSM patch.
+        coord.beginArrival(icao: "KMSP", reference: ref, aircraftName: "Boeing 737-800",
+                           gate: "B1",
+                           startCoordinate: MockAirportSurface.runwayExitCoordinate(reference: ref),
+                           mock: true, arrivalRunway: "36")
+        coord.taxiReadBackComplete()
+
+        XCTAssertTrue(coord.taxiMapVisible, "the arrival taxi map appears")
+        XCTAssertFalse(coord.usingSyntheticSurfaceForTesting,
+                       "the mock arrival keeps the real field, not the bundled synthetic model")
+        XCTAssertNotNil(coord.routeForTesting, "the arrival routes on the real surface")
+        XCTAssertEqual(coord.routeForTesting?.arrivalGate, "B2",
+                       "it falls through the stranded entered stand to the reachable one")
+        coord.hideTaxiMap()
+    }
+
     func testMockArrivalTaxiMapDrivesInToGate() {
         let coord = makeCoordinator()
         coord.beginArrival(icao: "KTEST", reference: ref, aircraftName: "Boeing 737-800",
