@@ -268,4 +268,43 @@ final class TaxiRoutingTests: XCTestCase {
         XCTAssertNotNil(route, "a stranded runway-entry must fall through to the reachable hold, not fail the route")
         XCTAssertEqual(route?.holdShortRunway, "36")
     }
+
+    func testArrivalFallsThroughToReachableStandWhenEnteredGateStranded() {
+        // Reproduces the mock KMSP arrival failure: the real surface loads and the rollout
+        // start snaps onto the connected taxi network, but the *entered* stand ("A1") attaches
+        // to a disconnected patch of the OSM graph, so A* to it finds no path. Another stand on
+        // the same concourse ("A2") sits on the connected network, so the arrival must fall
+        // through to it instead of returning nil — which (in the mock demo) reverts the map to
+        // the bundled synthetic field. Arrival previously probed only one goal candidate.
+        func p(_ dLat: Double, _ dLon: Double) -> GeoCoordinate {
+            GeoCoordinate(latitude: ref.latitude + dLat, longitude: ref.longitude + dLon)
+        }
+        // Connected network: taxiway A runs west→east; the rollout start snaps to its west end,
+        // and stand A2 attaches to its east end.
+        let twyA = SurfaceTaxiway(osmID: "way/a", tags: ["aeroway": "taxiway", "ref": "A"], isTaxilane: false,
+                                  name: "A", geometry: [p(0, 0), p(0, 0.0030)], oneway: false, access: nil, widthMeters: nil)
+        // A tiny isolated stub far to the east, wired to nothing — stand A1 attaches only to it.
+        let stub = SurfaceTaxiway(osmID: "way/stub", tags: ["aeroway": "taxiway", "ref": "S"], isTaxilane: false,
+                                  name: "S", geometry: [p(0, 0.0100), p(0, 0.0102)], oneway: false, access: nil, widthMeters: nil)
+        // A runway (unconnected to the taxi net here) so the surface has usable geometry.
+        let runway = SurfaceRunway(osmID: "way/r", tags: ["aeroway": "runway", "ref": "18/36"], idents: ["18", "36"],
+                                   centerline: [p(0.0050, 0), p(0.0110, 0)], widthMeters: 45, widthInferred: false)
+        // A1 sits by the isolated stub (disconnected); A2 sits by taxiway A's east end (reachable).
+        let a1 = SurfaceParking(osmID: "node/a1", tags: ["aeroway": "gate", "ref": "A1"], kind: .gate,
+                                name: "A1", coordinate: p(0.0002, 0.0100))
+        let a2 = SurfaceParking(osmID: "node/a2", tags: ["aeroway": "gate", "ref": "A2"], kind: .gate,
+                                name: "A2", coordinate: p(0.0002, 0.0030))
+        let bbox = OSMBoundingBox(center: ref, halfSpanDegrees: 0.04)
+        let m = AirportSurfaceModel(icao: "KHUB", reference: GeoCoordinate(ref), runways: [runway],
+                                    runwayEnds: [], taxiways: [twyA, stub], holdingPositions: [],
+                                    parkingPositions: [a1, a2], aprons: [],
+                                    source: SurfaceProvenance(endpoint: "t", fetchDate: Date(), boundingBox: bbox, rawElementCount: 5),
+                                    confidence: .medium)
+        let g = SurfaceGraphBuilder.build(from: m)
+        let engine = TaxiRouteEngine(graph: g, model: m)
+        let route = engine.route(.init(startCoordinate: p(0, 0).clLocation, startGateName: nil, isDeparture: false,
+                                       assignedRunwayIdent: nil, arrivalGateName: "A1", aircraft: .medium))
+        XCTAssertNotNil(route, "a stranded entered stand must fall through to a reachable one, not fail the route")
+        XCTAssertEqual(route?.arrivalGate, "A2", "the arrival lands at the reachable same-concourse stand")
+    }
 }

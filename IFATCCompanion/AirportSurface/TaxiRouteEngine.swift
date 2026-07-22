@@ -94,8 +94,29 @@ struct TaxiRouteEngine {
             // its real position instead of drawing a leg it has already taxied past.
             if d <= gateAnchorMeters { return (node.id, d) }
         }
+        // Snap onto a node that actually participates in the routable network (has an incident
+        // edge). `graph.nearestNode` scans every node, including display-only runway-crossing
+        // markers and isolated stubs kept out of the adjacency; snapping the start onto one of
+        // those strands the whole route (A* reaches nothing). This bites the arrival most —
+        // its start is the runway far-end, which at a big field can sit nearest such a node —
+        // and used to fail the arrival route entirely (reverting the mock demo to the synthetic
+        // field). Prefer the nearest connected node; fall back to the nearest node only when the
+        // graph has no connected nodes at all.
+        if let connected = nearestConnectedNode(to: req.startCoordinate) {
+            return (connected.node.id, connected.distanceMeters)
+        }
         guard let nearest = graph.nearestNode(to: req.startCoordinate) else { return nil }
         return (nearest.node.id, nearest.distanceMeters)
+    }
+
+    /// Nearest node with at least one incident edge — i.e. one the router can actually leave.
+    private func nearestConnectedNode(to coord: CLLocationCoordinate2D) -> (node: SurfaceNode, distanceMeters: Double)? {
+        var best: (SurfaceNode, Double)?
+        for n in graph.nodes where !(graph.adjacency[n.id]?.isEmpty ?? true) {
+            let d = SurfaceGeometry.distanceMeters(coord, n.clLocation)
+            if best == nil || d < best!.1 { best = (n, d) }
+        }
+        return best.map { (node: $0.0, distanceMeters: $0.1) }
     }
 
     /// Goal candidates for the route, best first, so `route` can fall through to the next one
@@ -163,19 +184,46 @@ struct TaxiRouteEngine {
             }
             return out
         } else {
+            // Arrival goals, best first, so `route` can fall through to the next when the top
+            // choice is stranded in a disconnected patch of the OSM graph — at a big field like
+            // KMSP the named stand may attach to a taxiway component the runway-exit start can't
+            // reach, which used to fail the whole arrival route (there was only ever one
+            // candidate) and, in the mock demo, revert the map to the synthetic field. Mirrors
+            // the multi-candidate resilience the departure goals already have: the entered gate
+            // first, then other stands on the same concourse (same leading letter), then every
+            // remaining stand — each tier nearest the aircraft's rollout start first — so the
+            // arrival always lands at a reachable *real* stand rather than giving up.
+            let stands = graph.nodes.filter { $0.kind == .gate || $0.kind == .parking }
+            guard !stands.isEmpty else { return [] }
             let gate = (req.arrivalGateName ?? "").trimmingCharacters(in: .whitespaces)
-            if !gate.isEmpty, let node = graph.nodes.first(where: {
-                ($0.kind == .gate || $0.kind == .parking) && ($0.name?.uppercased() == gate.uppercased()) }) {
-                return [(node: node.id, distanceMeters: 0)]
+            let letter = gate.prefix { $0.isLetter }.uppercased()
+
+            func distanceToStart(_ node: SurfaceNode) -> Double {
+                SurfaceGeometry.distanceMeters(req.startCoordinate, node.clLocation)
             }
-            // No named gate found: nearest parking/gate to the airport reference.
-            let ref = model.reference.clLocation
-            if let node = graph.nodes
-                .filter({ $0.kind == .gate || $0.kind == .parking })
-                .min(by: { SurfaceGeometry.distanceMeters(ref, $0.clLocation) < SurfaceGeometry.distanceMeters(ref, $1.clLocation) }) {
-                return [(node: node.id, distanceMeters: 0)]
+            var out: [(node: Int, distanceMeters: Double)] = []
+            var seen = Set<Int>()
+            func add(_ id: Int, _ distance: Double) {
+                if seen.insert(id).inserted { out.append((node: id, distanceMeters: distance)) }
             }
-            return []
+
+            // 1) The exact named stand.
+            if !gate.isEmpty {
+                for node in stands where node.name?.uppercased() == gate.uppercased() { add(node.id, 0) }
+                // 2) Other stands on the same concourse (same leading letter), nearest first.
+                if !letter.isEmpty {
+                    for node in stands
+                        .filter({ ($0.name?.uppercased().hasPrefix(letter) ?? false) })
+                        .sorted(by: { distanceToStart($0) < distanceToStart($1) }) {
+                        add(node.id, 0)
+                    }
+                }
+            }
+            // 3) Every remaining stand, nearest the rollout start first.
+            for node in stands.sorted(by: { distanceToStart($0) < distanceToStart($1) }) {
+                add(node.id, 0)
+            }
+            return out
         }
     }
 
