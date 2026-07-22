@@ -95,6 +95,26 @@ final class TaxiPhraseologyTests: XCTestCase {
         XCTAssertEqual(tx.facility, .ground)
     }
 
+    func testResumeTaxiReadbackEchoesDestinationWithoutInventingTaxiways() {
+        let e = engine()
+        let phr = TaxiPhraseology(engine: e)
+
+        // Departure continuation: read-back echoes the destination runway, no taxiway.
+        let dep = phr.resumeTaxi(cs: cs(e), runway: "36", isDeparture: true, gate: "A1")
+        XCTAssertTrue(dep.displayText.lowercased().contains("continue taxi to runway 36"), dep.displayText)
+        XCTAssertNotNil(dep.readback, "resume-taxi must carry its own read-back")
+        let depRB = dep.readback?.displayText.lowercased() ?? ""
+        XCTAssertTrue(depRB.contains("continue taxi to runway 36"), depRB)
+        XCTAssertFalse(depRB.contains(" via "), "read-back must not invent a taxiway: \(depRB)")
+
+        // Arrival continuation: read-back echoes the gate, no taxiway.
+        let arr = phr.resumeTaxi(cs: cs(e), runway: "36", isDeparture: false, gate: "A1")
+        XCTAssertTrue(arr.displayText.lowercased().contains("continue taxi to gate a1"), arr.displayText)
+        let arrRB = arr.readback?.displayText.lowercased() ?? ""
+        XCTAssertTrue(arrRB.contains("continue taxi to gate a1"), arrRB)
+        XCTAssertFalse(arrRB.contains(" via "), "read-back must not invent a taxiway: \(arrRB)")
+    }
+
     func testLowConfidenceTaxiIsConservative() {
         let e = engine()
         let phr = TaxiPhraseology(engine: e)

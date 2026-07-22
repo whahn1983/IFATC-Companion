@@ -133,20 +133,31 @@ struct TaxiPhraseology {
     }
 
     /// Continuation after a crossing is vacated — resume the remaining taxi route.
+    ///
+    /// The controller call names only the destination (no taxiways — the route/map is
+    /// already established), so the read-back echoes it verbatim ("Continue taxi to
+    /// runway 36, callsign"). Carrying an explicit read-back keeps the Read Back button
+    /// from falling back to the generic "taxi to runway X via <taxiway>" form, which would
+    /// invent a taxiway letter unrelated to the remaining route.
     func resumeTaxi(cs: PhraseologyEngine.Callsign, runway: String, isDeparture: Bool, gate: String) -> ATCTransmission {
+        let destDisplay: String
+        let destSpoken: String
         if isDeparture {
-            let rwySpoken = Phonetic.runway(runway, icao: icao)
-            return ATCTransmission(sender: .atc, facility: .ground,
-                                   displayText: "\(cs.display), continue taxi to runway \(runway).",
-                                   spokenText: "\(cs.spoken), continue taxi to runway \(rwySpoken).")
+            destDisplay = "runway \(runway)"
+            destSpoken = "runway \(Phonetic.runway(runway, icao: icao))"
         } else {
             let g = gate.trimmingCharacters(in: .whitespaces)
-            let destDisplay = g.isEmpty ? "parking" : "gate \(g)"
-            let destSpoken = g.isEmpty ? "parking" : "gate \(Phonetic.spellToken(g, icao: icao))"
-            return ATCTransmission(sender: .atc, facility: .ground,
-                                   displayText: "\(cs.display), continue taxi to \(destDisplay).",
-                                   spokenText: "\(cs.spoken), continue taxi to \(destSpoken).")
+            destDisplay = g.isEmpty ? "parking" : "gate \(g)"
+            destSpoken = g.isEmpty ? "parking" : "gate \(Phonetic.spellToken(g, icao: icao))"
         }
+        var tx = ATCTransmission(sender: .atc, facility: .ground,
+                                 displayText: "\(cs.display), continue taxi to \(destDisplay).",
+                                 spokenText: "\(cs.spoken), continue taxi to \(destSpoken).")
+        tx.readback = ATCTransmission.Readback(
+            displayText: "Continue taxi to \(destDisplay), \(cs.display).",
+            spokenText: "Continue taxi to \(destSpoken), \(cs.spoken).",
+            facility: .ground)
+        return tx
     }
 
     // MARK: - Unauthorized-entry warnings
