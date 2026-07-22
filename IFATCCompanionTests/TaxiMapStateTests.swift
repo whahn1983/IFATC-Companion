@@ -99,7 +99,7 @@ final class TaxiMapStateTests: XCTestCase {
         // runway, so it holds short of that first crossing (09), not the destination runway.
         let last = emitted.last?.displayText.lowercased() ?? ""
         XCTAssertTrue(last.contains("taxi to runway 36 via"), "detailed OSM route clearance issued: \(last)")
-        XCTAssertTrue(last.contains("hold short runway 09"), "holds short of the first crossing: \(last)")
+        XCTAssertTrue(last.contains("hold short runway 9-27"), "holds short of the first crossing (both directions): \(last)")
         XCTAssertFalse(last.contains("unavailable"), "must not fall back to the generic clearance")
         XCTAssertNotNil(coord.routeForTesting)
 

@@ -20,8 +20,10 @@ crossed → runway vacated → taxi resumed`
 with two side states: `unauthorized crossing detected` and `low‑confidence crossing data`.
 
 The initial Ground taxi clearance already holds the pilot short of the **first** runway
-crossing in the route ("taxi to runway 36 via A, C, hold short runway 09"), so a
-high‑confidence crossing is then cleared without repeating the hold‑short.
+crossing in the route ("taxi to runway 36 via A, C, hold short runway 9-27"), so a
+high‑confidence crossing is then cleared without repeating the hold‑short. Hold‑short and
+crossing instructions name **both directions** of the physical runway ("hold short runway
+9-27", spoken "hold short runway niner two seven").
 
 ## Per‑crossing sequence
 
