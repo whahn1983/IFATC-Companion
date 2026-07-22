@@ -116,10 +116,10 @@ Pilot:       See you on the left, United 598.
 
 ```
 Pilot → Ground: Houston Ground, United 598 at spot 5, ready to taxi, information Alpha.
-Ground → Pilot: United 598, runway 17R, taxi via Alpha, Bravo, hold short runway 17L.
-Pilot → Ground: Runway 17R via Alpha, Bravo, hold short runway 17L, United 598.
-Ground → Pilot: United 598, cross runway 17L at Bravo, continue via Bravo.
-Pilot → Ground: Cross runway 17L at Bravo, continue via Bravo, United 598.
+Ground → Pilot: United 598, runway 17R, taxi via Alpha, Bravo, hold short runway 17L-35R.
+Pilot → Ground: Runway 17R via Alpha, Bravo, hold short runway 17L-35R, United 598.
+Ground → Pilot: United 598, cross runway 17L-35R at Bravo, continue via Bravo.
+Pilot → Ground: Cross runway 17L-35R at Bravo, continue via Bravo, United 598.
 Ground → Pilot: United 598, contact Tower 118.3.
 Pilot → Tower:  Houston Tower, United 598 holding short runway 17R, ready for departure.
 Tower → Pilot:  United 598, runway 17R, line up and wait.
@@ -204,7 +204,7 @@ Pilot → Tower:  Exiting the runway, contact Ground, United 598.
 Pilot → Ground: Minneapolis Ground, United 598 clear runway 30L at Kilo, request taxi to gate Bravo 44.
 Ground → Pilot: United 598, taxi to gate Bravo 44 via Kilo, Bravo.
 Pilot → Ground: Gate Bravo 44 via Kilo, Bravo, United 598.
-   (if crossing) Ground: United 598, taxi to gate Bravo 44 via Kilo, cross runway 30R, then Bravo.
+   (if crossing) Ground: United 598, taxi to gate Bravo 44 via Kilo, cross runway 12L-30R, then Bravo.
 Ground → Pilot: United 598, contact Ramp 131.0 at spot 7.
 Pilot → Ramp:   Ramp 131.0 at spot 7, United 598.
 Pilot → Ramp:   Ramp, United 598 inbound Bravo 44.

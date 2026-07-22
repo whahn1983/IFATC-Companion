@@ -26,9 +26,11 @@ final class TaxiPhraseologyTests: XCTestCase {
         let phr = TaxiPhraseology(engine: e)
         let tx = phr.taxiClearance(cs: cs(e), route: departureRoute(runway: "36"), runway: "36")
         let text = tx.displayText.lowercased()
-        XCTAssertTrue(text.contains("runway 36"), tx.displayText)
+        XCTAssertTrue(text.contains("taxi to runway 36"), tx.displayText)
         XCTAssertTrue(text.contains("via a"), "taxiway sequence must be named: \(tx.displayText)")
-        XCTAssertTrue(text.contains("hold short runway 36"), tx.displayText)
+        // Hold-short names both directions of the physical runway (36/18).
+        XCTAssertTrue(text.contains("hold short runway 18-36"), tx.displayText)
+        XCTAssertTrue(tx.spokenText.lowercased().contains("hold short runway one eight three six"), tx.spokenText)
         XCTAssertEqual(tx.facility, .ground)
     }
 
@@ -42,10 +44,11 @@ final class TaxiPhraseologyTests: XCTestCase {
                                    holdShortCrossing: "09")
         let text = tx.displayText.lowercased()
         XCTAssertTrue(text.contains("taxi to runway 36"), tx.displayText)
-        XCTAssertTrue(text.contains("hold short runway 09"), "must hold short of the first crossing: \(tx.displayText)")
-        XCTAssertFalse(text.contains("hold short runway 36"),
+        // Holds short of the first crossing (09/27), named in both directions.
+        XCTAssertTrue(text.contains("hold short runway 9-27"), "must hold short of the first crossing: \(tx.displayText)")
+        XCTAssertFalse(text.contains("hold short runway 18-36"),
                        "the crossing hold-short replaces the destination-runway hold-short: \(tx.displayText)")
-        XCTAssertTrue(tx.readback?.displayText.lowercased().contains("hold short runway 09") ?? false,
+        XCTAssertTrue(tx.readback?.displayText.lowercased().contains("hold short runway 9-27") ?? false,
                       tx.readback?.displayText ?? "")
     }
 
@@ -71,21 +74,45 @@ final class TaxiPhraseologyTests: XCTestCase {
         let e = engine()
         let phr = TaxiPhraseology(engine: e)
         let tx = phr.crossingClearance(cs: cs(e), runwayIdent: "09", atTaxiway: "A")
-        XCTAssertTrue(tx.displayText.lowercased().contains("cross runway 09"))
+        // The crossing names both directions of the physical runway (09/27).
+        XCTAssertTrue(tx.displayText.lowercased().contains("cross runway 9-27"))
+        XCTAssertTrue(tx.spokenText.lowercased().contains("cross runway niner two seven"))
         XCTAssertFalse(tx.displayText.lowercased().contains("cross all runways"))
         XCTAssertEqual(tx.facility, .ground, "a runway-crossing clearance is issued by Ground, never Ramp")
         XCTAssertNotEqual(tx.facility, .ramp)
         // Read-back must contain the runway identifier.
         XCTAssertNotNil(tx.readback)
-        XCTAssertTrue(tx.readback?.displayText.contains("09") ?? false)
+        XCTAssertTrue(tx.readback?.displayText.contains("9-27") ?? false)
     }
 
     func testHoldShortPhrase() {
         let e = engine()
         let phr = TaxiPhraseology(engine: e)
         let tx = phr.holdShort(cs: cs(e), runwayIdent: "09")
-        XCTAssertTrue(tx.displayText.lowercased().contains("hold short of runway 09"))
+        // Names both directions of the physical runway (09/27).
+        XCTAssertTrue(tx.displayText.lowercased().contains("hold short of runway 9-27"))
+        XCTAssertTrue(tx.spokenText.lowercased().contains("hold short of runway niner two seven"))
         XCTAssertEqual(tx.facility, .ground)
+    }
+
+    func testResumeTaxiReadbackEchoesDestinationWithoutInventingTaxiways() {
+        let e = engine()
+        let phr = TaxiPhraseology(engine: e)
+
+        // Departure continuation: read-back echoes the destination runway, no taxiway.
+        let dep = phr.resumeTaxi(cs: cs(e), runway: "36", isDeparture: true, gate: "A1")
+        XCTAssertTrue(dep.displayText.lowercased().contains("continue taxi to runway 36"), dep.displayText)
+        XCTAssertNotNil(dep.readback, "resume-taxi must carry its own read-back")
+        let depRB = dep.readback?.displayText.lowercased() ?? ""
+        XCTAssertTrue(depRB.contains("continue taxi to runway 36"), depRB)
+        XCTAssertFalse(depRB.contains(" via "), "read-back must not invent a taxiway: \(depRB)")
+
+        // Arrival continuation: read-back echoes the gate, no taxiway.
+        let arr = phr.resumeTaxi(cs: cs(e), runway: "36", isDeparture: false, gate: "A1")
+        XCTAssertTrue(arr.displayText.lowercased().contains("continue taxi to gate a1"), arr.displayText)
+        let arrRB = arr.readback?.displayText.lowercased() ?? ""
+        XCTAssertTrue(arrRB.contains("continue taxi to gate a1"), arrRB)
+        XCTAssertFalse(arrRB.contains(" via "), "read-back must not invent a taxiway: \(arrRB)")
     }
 
     func testLowConfidenceTaxiIsConservative() {

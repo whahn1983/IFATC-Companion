@@ -1151,22 +1151,24 @@ final class AirportSurfaceCoordinator: ObservableObject {
     private func updateInstruction() {
         guard route != nil else { nextInstruction = ""; return }
         if offRoute { nextInstruction = "Off assigned taxi route"; return }
+        // Crossing / hold-short guidance names both directions of the physical runway
+        // ("Hold short of runway 6R-24L"), matching the spoken clearances.
         if awaitingCrossingReadback, let c = activeCrossing {
-            nextInstruction = "Read back: cross runway \(c.runwayIdent)"; return
+            nextInstruction = "Read back: cross runway \(Phonetic.runwayPairDisplay(c.runwayIdent))"; return
         }
         switch crossingState {
         case .holdShortInstructionIssued, .holdingShort, .approachingHoldingPosition, .lowConfidenceCrossingData:
-            if let c = activeCrossing { nextInstruction = "Hold short of runway \(c.runwayIdent)"; return }
+            if let c = activeCrossing { nextInstruction = "Hold short of runway \(Phonetic.runwayPairDisplay(c.runwayIdent))"; return }
         case .crossingAuthorized, .crossingInProgress, .runwayCenterlineCrossed:
-            if let c = activeCrossing { nextInstruction = "Crossing runway \(c.runwayIdent)"; return }
+            if let c = activeCrossing { nextInstruction = "Crossing runway \(Phonetic.runwayPairDisplay(c.runwayIdent))"; return }
         case .unauthorizedCrossingDetected:
-            if let c = activeCrossing { nextInstruction = "Hold short of runway \(c.runwayIdent)"; return }
+            if let c = activeCrossing { nextInstruction = "Hold short of runway \(Phonetic.runwayPairDisplay(c.runwayIdent))"; return }
         default:
             break
         }
         if reachedDestination {
             nextInstruction = kind == .departure
-                ? "Hold short runway \(assignedRunway) — contact Tower when ready"
+                ? "Hold short runway \(Phonetic.runwayPairDisplay(assignedRunway)) — contact Tower when ready"
                 : "Arriving at \(route?.destinationLabel ?? "gate")"
             return
         }

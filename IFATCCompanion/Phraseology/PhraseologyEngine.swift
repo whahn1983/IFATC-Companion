@@ -186,8 +186,10 @@ struct PhraseologyEngine {
 
     // Ground — taxi.
     func taxiToRunway(cs: Callsign, runway: String, via: String, crossing: String?) -> ATCTransmission {
-        let crossDisplay = (crossing.map { $0.isEmpty ? "" : ", cross runway \($0)" }) ?? ""
-        let crossSpoken = (crossing.map { $0.isEmpty ? "" : ", cross runway \(Phonetic.runway($0, icao: icao))" }) ?? ""
+        // A runway crossing names both directions of the physical runway
+        // ("cross runway 6R-24L" / "cross runway six right two four left").
+        let crossDisplay = (crossing.map { $0.isEmpty ? "" : ", cross runway \(Phonetic.runwayPairDisplay($0))" }) ?? ""
+        let crossSpoken = (crossing.map { $0.isEmpty ? "" : ", cross runway \(Phonetic.runwayPairSpoken($0, icao: icao))" }) ?? ""
         if let template = profile?.template(for: .taxiToRunway) {
             let ph = placeholders(cs: cs, extra: [
                 "runway": runway, "runwaySpoken": Phonetic.runway(runway, icao: icao),

@@ -38,7 +38,8 @@ struct PilotResponseEngine {
             var display = "Taxi to runway \(c.runway) via \(c.taxiway)"
             var spoken = "Taxi to runway \(Phonetic.runway(c.runway, icao: icao)) via \(Phonetic.spellToken(c.taxiway, icao: icao))"
             if let x = c.crossingRunway, !x.isEmpty {
-                display += ", cross runway \(x)"; spoken += ", cross runway \(Phonetic.runway(x, icao: icao))"
+                display += ", cross runway \(Phonetic.runwayPairDisplay(x))"
+                spoken += ", cross runway \(Phonetic.runwayPairSpoken(x, icao: icao))"
             }
             return pilot(display + ", \(cs.display).", spoken + ", \(cs.spoken).", facility: .ground)
         case .towerDeparture:

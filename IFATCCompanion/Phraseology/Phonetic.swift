@@ -135,6 +135,84 @@ enum Phonetic {
         return result
     }
 
+    // MARK: - Runway direction pairs
+
+    /// Split a runway ident into its number (1...36) and side suffix. "24L" -> (24, "L"),
+    /// "06R" -> (6, "R"), "36" -> (36, ""). The number is nil when the ident carries no
+    /// usable runway number.
+    private static func runwayComponents(_ raw: String) -> (number: Int?, suffix: String) {
+        let upper = raw.uppercased().trimmingCharacters(in: .whitespaces)
+        var digits = ""
+        var suffix = ""
+        for ch in upper {
+            if ch.isNumber { digits.append(ch) }
+            else if ch == "L" || ch == "R" || ch == "C" { suffix = String(ch) }
+        }
+        guard let n = Int(digits), n >= 1, n <= 36 else { return (nil, suffix) }
+        return (n, suffix)
+    }
+
+    /// The reciprocal runway ident — the opposite end of the same physical runway:
+    /// "24L" -> "6R", "06R" -> "24L", "36" -> "18", "09" -> "27", "13C" -> "31C".
+    /// Returns nil when `raw` carries no usable runway number.
+    static func reciprocalRunway(_ raw: String) -> String? {
+        let (number, suffix) = runwayComponents(raw)
+        guard let number else { return nil }
+        let reciprocalNumber = number <= 18 ? number + 18 : number - 18
+        let reciprocalSuffix: String
+        switch suffix {
+        case "L": reciprocalSuffix = "R"
+        case "R": reciprocalSuffix = "L"
+        default:  reciprocalSuffix = suffix   // "C" stays center; a bare number stays bare
+        }
+        return "\(reciprocalNumber)\(reciprocalSuffix)"
+    }
+
+    /// Both physical ends of a runway, ordered lower-number-first: "24L" -> ("6R", "24L"),
+    /// "36" -> ("18", "36"). Nil when no reciprocal can be derived.
+    private static func orderedRunwayEnds(_ raw: String) -> (low: String, high: String)? {
+        let (number, suffix) = runwayComponents(raw)
+        guard let number, let reciprocal = reciprocalRunway(raw) else { return nil }
+        let end = "\(number)\(suffix)"
+        let reciprocalNumber = number <= 18 ? number + 18 : number - 18
+        return number <= reciprocalNumber ? (end, reciprocal) : (reciprocal, end)
+    }
+
+    /// Both physical directions of a runway as a written designation, lower number first:
+    /// "24L" -> "6R-24L", "06R" -> "6R-24L", "36" -> "18-36", "09" -> "9-27". Falls back to
+    /// the trimmed single ident when no reciprocal can be derived.
+    static func runwayPairDisplay(_ raw: String) -> String {
+        guard let ends = orderedRunwayEnds(raw) else {
+            return raw.uppercased().trimmingCharacters(in: .whitespaces)
+        }
+        return "\(ends.low)-\(ends.high)"
+    }
+
+    /// Speak a single runway end without the two-digit padding `runway` applies, so both
+    /// ends of a pair read naturally: "6R" -> "six right", "24L" -> "two four left".
+    private static func spokenRunwayEnd(_ end: String, icao: Bool) -> String {
+        let (number, suffix) = runwayComponents(end)
+        guard let number else { return runway(end, icao: icao) }
+        var result = spellDigits(String(number), icao: icao)
+        switch suffix {
+        case "L": result += " left"
+        case "R": result += " right"
+        case "C": result += " center"
+        default: break
+        }
+        return result
+    }
+
+    /// Both physical directions of a runway spoken end-to-end, lower number first:
+    /// "24L" -> "six right two four left", "36" -> "one eight three six". Falls back to the
+    /// single-runway phonetics when no reciprocal can be derived.
+    static func runwayPairSpoken(_ raw: String, icao: Bool = false) -> String {
+        guard let ends = orderedRunwayEnds(raw) else {
+            return runway(raw, icao: icao)
+        }
+        return "\(spokenRunwayEnd(ends.low, icao: icao)) \(spokenRunwayEnd(ends.high, icao: icao))"
+    }
+
     /// Wind: dir 330 / speed 12 -> "wind three three zero at one two".
     static func wind(direction: Int, speed: Int, gust: Int? = nil, icao: Bool = false) -> String {
         if direction == 0 && speed == 0 { return "wind calm" }
