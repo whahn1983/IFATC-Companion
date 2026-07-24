@@ -269,6 +269,116 @@ final class TaxiRoutingTests: XCTestCase {
         XCTAssertEqual(route?.holdShortRunway, "36")
     }
 
+    // MARK: - Aircraft-location sensitivity (diagonal high-speed exits)
+
+    /// Reproduces the reported bug: after landing, with diagonal high-speed exits off the
+    /// runway, the taxi route began "about one taxiway away" — a plain node snap jumped the
+    /// start to the exit's far end out on the parallel taxiway (the nearest *node* to an
+    /// aircraft partway down the diagonal), and recalculating from a nearby point resolved to
+    /// the same node, so the route never moved. Snapping onto the nearest *edge* must begin the
+    /// route under the aircraft and track it as it rolls.
+    private func diagonalExitSurface() -> AirportSurfaceModel {
+        func p(_ dLat: Double, _ dLon: Double) -> GeoCoordinate {
+            GeoCoordinate(latitude: ref.latitude + dLat, longitude: ref.longitude + dLon)
+        }
+        // Runway 18/36 north–south (aircraft lands on 36, rolling out northbound).
+        let runway = SurfaceRunway(osmID: "way/r", tags: ["aeroway": "runway", "ref": "18/36"],
+                                   idents: ["18", "36"], centerline: [p(-0.0060, 0), p(0.0060, 0)],
+                                   widthMeters: 45, widthInferred: false)
+        let ends = OSMSurfaceNormalizer.makeRunwayEnds(for: [runway])
+        // Parallel taxiway P east of the runway; each diagonal exit's far end is a P vertex
+        // (a shared junction), so the exits wire into the taxi network there.
+        let twyP = SurfaceTaxiway(osmID: "way/p", tags: ["aeroway": "taxiway", "ref": "P"], isTaxilane: false,
+                                  name: "P", geometry: [p(-0.0060, 0.0010), p(-0.0012, 0.0010),
+                                                        p(0.0008, 0.0010), p(0.0028, 0.0010), p(0.0060, 0.0010)],
+                                  oneway: false, access: nil, widthMeters: nil)
+        // Three diagonal high-speed exits, angled forward (northeast) toward P.
+        let e1 = SurfaceTaxiway(osmID: "way/e1", tags: ["aeroway": "taxiway", "ref": "E1"], isTaxilane: false,
+                                name: "E1", geometry: [p(-0.0020, 0), p(-0.0012, 0.0010)], oneway: false, access: nil, widthMeters: nil)
+        let e2 = SurfaceTaxiway(osmID: "way/e2", tags: ["aeroway": "taxiway", "ref": "E2"], isTaxilane: false,
+                                name: "E2", geometry: [p(0.0000, 0), p(0.0008, 0.0010)], oneway: false, access: nil, widthMeters: nil)
+        let e3 = SurfaceTaxiway(osmID: "way/e3", tags: ["aeroway": "taxiway", "ref": "E3"], isTaxilane: false,
+                                name: "E3", geometry: [p(0.0020, 0), p(0.0028, 0.0010)], oneway: false, access: nil, widthMeters: nil)
+        let gate = SurfaceParking(osmID: "node/g", tags: ["aeroway": "gate", "ref": "G1"], kind: .gate,
+                                  name: "G1", coordinate: p(0.0040, 0.0025))
+        let bbox = OSMBoundingBox(center: ref, halfSpanDegrees: 0.05)
+        return AirportSurfaceModel(icao: "KDIA", reference: GeoCoordinate(ref), runways: [runway],
+                                   runwayEnds: ends, taxiways: [twyP, e1, e2, e3], holdingPositions: [],
+                                   parkingPositions: [gate], aprons: [],
+                                   source: SurfaceProvenance(endpoint: "t", fetchDate: Date(), boundingBox: bbox, rawElementCount: 6),
+                                   confidence: .medium)
+    }
+
+    func testArrivalStartsUnderAircraftOnDiagonalExit() {
+        func p(_ dLat: Double, _ dLon: Double) -> CLLocationCoordinate2D {
+            CLLocationCoordinate2D(latitude: ref.latitude + dLat, longitude: ref.longitude + dLon)
+        }
+        let m = diagonalExitSurface()
+        let g = SurfaceGraphBuilder.build(from: m)
+        let engine = TaxiRouteEngine(graph: g, model: m)
+
+        // The aircraft has turned onto exit E2 and is 45% of the way down it — nearer the exit's
+        // far end (out on parallel taxiway P) than to any other node.
+        let onExit = p(0.00036, 0.00045)
+        let exitFarEnd = p(0.0008, 0.0010)
+        let route = engine.route(.init(startCoordinate: onExit, startGateName: nil, isDeparture: false,
+                                       assignedRunwayIdent: nil, arrivalGateName: "G1", aircraft: .medium))
+        XCTAssertNotNil(route)
+        XCTAssertEqual(route?.arrivalGate, "G1", "the arrival still routes to the entered gate")
+        let start = route!.startCoordinate.clLocation
+        XCTAssertLessThan(SurfaceGeometry.distanceMeters(start, onExit), 20,
+                          "the route begins under the aircraft on the exit, not at a distant node")
+        XCTAssertGreaterThan(SurfaceGeometry.distanceMeters(start, exitFarEnd), 40,
+                             "the start is NOT jumped a taxiway over to the exit's far end on P")
+    }
+
+    func testArrivalRouteStartTracksAircraftAcrossRecalculations() {
+        func p(_ dLat: Double, _ dLon: Double) -> CLLocationCoordinate2D {
+            CLLocationCoordinate2D(latitude: ref.latitude + dLat, longitude: ref.longitude + dLon)
+        }
+        let m = diagonalExitSurface()
+        let g = SurfaceGraphBuilder.build(from: m)
+        let engine = TaxiRouteEngine(graph: g, model: m)
+
+        // Two recalculations from successive points down exit E2. The old node snap resolved
+        // both to the same far-end node (identical route); the edge snap must move the start
+        // with the aircraft.
+        let early = p(0.00036, 0.00045)   // 45% down E2
+        let later = p(0.00056, 0.00070)   // 70% down E2
+        func startFor(_ c: CLLocationCoordinate2D) -> CLLocationCoordinate2D? {
+            engine.route(.init(startCoordinate: c, startGateName: nil, isDeparture: false,
+                               assignedRunwayIdent: nil, arrivalGateName: "G1", aircraft: .medium))?
+                .startCoordinate.clLocation
+        }
+        guard let s1 = startFor(early), let s2 = startFor(later) else {
+            return XCTFail("both recalculations produce a route")
+        }
+        XCTAssertLessThan(SurfaceGeometry.distanceMeters(s1, early), 20)
+        XCTAssertLessThan(SurfaceGeometry.distanceMeters(s2, later), 20)
+        XCTAssertGreaterThan(SurfaceGeometry.distanceMeters(s1, s2), 10,
+                             "recalculating from a new position moves the route start (it no longer sticks)")
+    }
+
+    func testMidTaxiDepartureRecalcKeepsRunwayCrossingAhead() {
+        // Recalculate a departure from a point partway along taxiway A, north of the crossing
+        // runway and with no gate name (so it is not anchored at the stand). The start snaps
+        // mid-edge, so the still-to-be-taxied first leg — which crosses the crossing runway —
+        // becomes the lead-in; the route must still surface that crossing (its hold-short),
+        // never silently drop it.
+        let (_, _, engine) = mockEngine(runway: "36", gate: "A1")
+        let northOfCrossing = CLLocationCoordinate2D(latitude: ref.latitude + 0.0010,
+                                                     longitude: ref.longitude + 0.0030)
+        let route = engine.route(.init(startCoordinate: northOfCrossing, startGateName: nil, isDeparture: true,
+                                       assignedRunwayIdent: "36", arrivalGateName: nil, aircraft: .medium))
+        XCTAssertNotNil(route)
+        XCTAssertEqual(route?.holdShortRunway, "36")
+        XCTAssertEqual(route?.crossings.count, 1,
+                       "a mid-edge start keeps the runway crossing that lies ahead on the lead-in")
+        let start = route!.startCoordinate.clLocation
+        XCTAssertLessThan(SurfaceGeometry.distanceMeters(start, northOfCrossing), 20,
+                          "the route starts under the aircraft, not at a node a taxiway away")
+    }
+
     func testArrivalFallsThroughToReachableStandWhenEnteredGateStranded() {
         // Reproduces the mock KMSP arrival failure: the real surface loads and the rollout
         // start snaps onto the connected taxi network, but the *entered* stand ("A1") attaches

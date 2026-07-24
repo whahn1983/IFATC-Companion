@@ -28,6 +28,24 @@ graph (see [AirportSurfaceData.md](AirportSurfaceData.md)).
 - **full‑length runway departure by default** (intersection departure only when selected or
   necessary).
 
+### Snapping the start onto the graph
+
+The route begins **under the aircraft**, not at the nearest graph node. `TaxiRouteEngine`
+projects the start position onto the nearest connected **edge** and seeds A\* from *both* of that
+edge's endpoints (each weighted by its along‑edge distance to the projection), then prepends a
+short **lead‑in** from the projection up to whichever endpoint the route actually leaves from.
+This matters most after landing where a runway has **diagonal high‑speed exits**: the nearest
+*node* to an aircraft partway down an exit is often the exit's far end out on the parallel
+taxiway, so a plain node snap drew the route starting *a taxiway away* — and, because a nearby
+recalculation resolved to the same node, pressing recalculate produced the same displaced route.
+Projecting onto the edge instead keeps the start on the exit/taxiway the aircraft is actually on
+and lets it track continuously as the aircraft rolls. When the projection lands essentially on an
+endpoint (within a few metres) the engine falls back to a plain node snap so a route that really
+does begin at a junction stays clean; if an edge snap reaches no goal (a stub disconnected from
+the network) it also falls back to the nearest connected node. When the still‑to‑be‑taxied
+lead‑in portion crosses a runway, that crossing (and its hold‑short) is preserved — a crossing
+already behind the aircraft is not re‑reported.
+
 ### Not shortest‑distance
 
 Routing is **never** chosen on distance alone. It strongly penalizes or prohibits:
