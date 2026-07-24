@@ -227,6 +227,15 @@ struct PilotResponseEngine {
                      facility: .approach)
     }
 
+    /// Pilot's go-around / missed-approach call to Tower, issued when breaking off the
+    /// approach. Tower answers with the pattern instructions (crosswind vector, climb,
+    /// left/right traffic for the same runway, then back to Approach).
+    func goAround(context c: ATCContext) -> ATCTransmission {
+        pilot("Tower, \(c.callsign.display), going around.",
+              "Tower, \(c.callsign.spoken), going around.",
+              facility: .tower)
+    }
+
     func requestRideReports(context c: ATCContext) -> ATCTransmission {
         pilot("\(c.callsign.display), any ride reports along our route?",
               "\(c.callsign.spoken), any ride reports along our route?",

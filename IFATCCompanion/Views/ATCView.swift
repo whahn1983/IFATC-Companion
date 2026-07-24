@@ -454,7 +454,7 @@ struct ATCView: View {
     /// available for the tuned controller and phase.
     private var orderedActions: [PilotAction] {
         [.clearance, .pushback, .engineStart, .taxi, .ready, .takeoff,
-         .toGate, .checkIn, .requestHigher, .requestLower, .acceptSmootherAltitude,
+         .toGate, .checkIn, .goAround, .requestHigher, .requestLower, .acceptSmootherAltitude,
          .vectors, .approach, .rideReport, .destWx]
     }
 
@@ -494,6 +494,8 @@ struct ATCView: View {
             ActionButton(title: "Check In", systemImage: "person.wave.2") { model.requestHandoff() }
         case .toGate:
             ActionButton(title: "To Gate", systemImage: "parkingsign") { model.contactRamp() }
+        case .goAround:
+            ActionButton(title: "Go Around", systemImage: "arrow.uturn.up", tint: .orange) { model.goAround() }
         }
     }
 

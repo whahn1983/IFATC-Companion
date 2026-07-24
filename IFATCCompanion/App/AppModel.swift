@@ -15,6 +15,9 @@ enum PilotAction: CaseIterable {
     case clearance, pushback, engineStart, taxi, ready, takeoff
     case requestHigher, requestLower, vectors, approach, rideReport, destWx, checkIn
     case toGate
+    /// Break off the approach and fly the missed-approach / go-around pattern (shown
+    /// only while airborne, inbound to land on the Tower frequency).
+    case goAround
     /// Accept the smoother cruise altitude the last ride report suggested (shown only
     /// while such a suggestion is active).
     case acceptSmootherAltitude
@@ -210,9 +213,22 @@ final class AppModel: ObservableObject {
             return [.toGate]
         case .tower, .ground, .clearance:
             // Tower (landing) and Ground (taxi-in) progress with a check-in; no
-            // enroute requests apply.
-            return [.checkIn]
+            // enroute requests apply. Inbound to land on Tower, the pilot can also
+            // break off the approach with Go Around.
+            var actions: Set<PilotAction> = [.checkIn]
+            if canGoAround { actions.insert(.goAround) }
+            return actions
         }
+    }
+
+    /// Whether the "Go Around" button applies right now: airborne, inbound to land on
+    /// the Tower frequency for the ILS/GPS/visual approach — either cleared the
+    /// approach / contacting Tower (`.final`) or cleared to land (`.landing`). Hidden
+    /// on the ground and throughout the departure.
+    var canGoAround: Bool {
+        guard currentFacility == .tower, hasDeparted,
+              !(aircraftState.onGround ?? false) else { return false }
+        return [.final, .landing].contains(stateMachine.current)
     }
 
     /// The frequency-tune buttons worth showing right now: the controller currently
@@ -467,6 +483,13 @@ final class AppModel: ObservableObject {
     /// with, so the automatic flow pauses there instead of talking for a controller
     /// the pilot hasn't switched to. Nil when no hand-off is pending.
     private var pendingCheckInFacility: ATCFacility?
+
+    /// True from the moment the pilot taps Go Around until they re-establish with
+    /// Approach on the missed-approach leg. While set, the automatic flow holds (the
+    /// conversation is deliberately being flown back around the pattern) and the
+    /// Approach check-in issues the "maintain <alt>, continue inbound" call instead of
+    /// a plain radar-contact re-check-in. Cleared in `resumeApproachAfterGoAround`.
+    private var goAroundInProgress = false
 
     /// Live-mode countdown that issues the takeoff clearance a few seconds after the
     /// aircraft is detected lined up and stopped on the departure runway, so Tower
@@ -979,6 +1002,7 @@ final class AppModel: ObservableObject {
         manualTuning = false
         tunedFacility = nil
         pendingCheckInFacility = nil
+        goAroundInProgress = false
         clearReadbackGate()
         cancelTakeoffClearanceTimer()
         stateMachine.reset()
@@ -1009,6 +1033,7 @@ final class AppModel: ObservableObject {
         cancelWeatherRefreshTimer()
         tunedFacility = nil
         pendingCheckInFacility = nil
+        goAroundInProgress = false
         clearReadbackGate()
         cancelTakeoffClearanceTimer()
         applyRadarProvider()
@@ -1345,6 +1370,16 @@ final class AppModel: ObservableObject {
             return
         }
 
+        // A go-around just reset the conversation for another approach: hold the
+        // automatic flow until the pilot re-establishes with Approach (checks in), so
+        // the missed-approach climb isn't immediately re-advanced back through the
+        // cleared-approach call while the aircraft is still flying the pattern.
+        if goAroundInProgress {
+            atcState = stateMachine.current
+            currentFacility = tunedFacility ?? pendingCheckInFacility ?? controller(for: stateMachine.current)
+            return
+        }
+
         // Otherwise controller callouts (hand-offs, climb/descent, approach,
         // landing, taxi-in) are issued automatically as the aircraft reaches each
         // position. The flow only ever moves forward (never bounces back to an
@@ -1572,9 +1607,11 @@ final class AppModel: ObservableObject {
     /// exit-the-runway) play on their own; a change of controller only prompts the
     /// "contact <next> on …" hand-off and then waits.
     private func advanceSemiAutomatic(mapped: ATCState, state: AircraftState) {
-        // Hold while the last instruction is unacknowledged, or while we're waiting
-        // for the pilot to check in on a frequency they were just handed to.
-        guard !readbackGateClosed, pendingCheckInFacility == nil else { return }
+        // Hold while the last instruction is unacknowledged, while we're waiting for
+        // the pilot to check in on a frequency they were just handed to, or while a
+        // go-around is being flown back around the pattern (the pilot drives the
+        // re-establishing Approach check-in, which then replays the approach).
+        guard !readbackGateClosed, pendingCheckInFacility == nil, !goAroundInProgress else { return }
         // Also hold while Ground is withholding an arrival taxi clearance for the destination
         // surface to load — otherwise this path would advance to `.groundArrival` and issue a
         // generic clearance, defeating the wait. `issueDeferredArrivalTaxiClearanceIfLoaded`
@@ -2856,6 +2893,85 @@ final class AppModel: ObservableObject {
         post(tx, speak: true)
     }
 
+    // MARK: - Go around / missed approach
+
+    /// The pilot breaks off the approach. The pilot issues the go-around call to
+    /// Tower; Tower turns the aircraft onto a 90° crosswind leg, climbs it to the
+    /// pattern altitude (3,000 ft above the field, elevation-aware), assigns
+    /// left/right traffic for the *same* runway, and hands it back to Approach. On the
+    /// pilot's next Approach check-in (`resumeApproachAfterGoAround`), Approach holds
+    /// that altitude and clears them to continue inbound — after which the whole
+    /// cleared-approach → Tower → cleared-to-land sequence replays exactly as the
+    /// first time, driven by the same "established on final / APPR engaged" detection.
+    func goAround() {
+        guard !companionStandby else { return }
+        let c = buildContext(for: .approach, arrivalOverride: true)
+        // The go-around supersedes any read-back still pending on the landing clearance.
+        clearReadbackGate()
+        // Pilot's go-around / missed-approach call to Tower.
+        postPilot(pilotEngine.goAround(context: c))
+        // Pattern altitude: 3,000 ft above the field, expressed in MSL and rounded up to
+        // the next thousand (elevation-aware, so it clears the ground at a high field).
+        // This is exactly the terminal approach fallback the context already computes.
+        let patternAlt = c.approachDefaultAltitude
+        // Standard left-hand traffic pattern: a 90° left crosswind vector off the runway.
+        let leftTraffic = true
+        let rwy = c.approachProcedure?.runway ?? c.runway
+        let hdg = goAroundCrosswindHeading(runway: rwy, leftTraffic: leftTraffic)
+        post(engine.goAround(cs: c.callsign, runway: rwy, leftTraffic: leftTraffic,
+                             crosswindHeading: hdg, patternAltitude: patternAlt,
+                             approachFrequency: c.approachFrequency), speak: true)
+        // The aircraft is climbing the pattern to the assigned altitude. Hold the
+        // automatic flow (goAroundInProgress) until the pilot re-establishes with
+        // Approach; the go-around read-back tunes the radio there. The state machine is
+        // left where it was (Tower) and reset to `.approach` on that check-in, so the
+        // radio stays on Tower until the pilot reads back and switches.
+        assignedAltitude = patternAlt
+        goAroundInProgress = true
+        persistSession()
+    }
+
+    /// Pilot checks back in with Approach on the missed-approach leg. Approach holds
+    /// the pattern altitude Tower assigned and clears the aircraft to continue inbound;
+    /// the state machine is reset to `.approach` so the cleared-approach → Tower
+    /// hand-off replays once the aircraft re-establishes on final (or re-engages APPR),
+    /// exactly as on the first approach.
+    private func resumeApproachAfterGoAround() {
+        goAroundInProgress = false
+        pendingCheckInFacility = nil
+        let c = buildContext(for: .approach, arrivalOverride: true)
+        // Pilot checks in with Approach at (or climbing to) the pattern altitude.
+        postPilot(pilotEngine.requestHandoff(context: c, facility: .approach,
+                                             currentAltitude: checkInAltitude(),
+                                             targetAltitude: assignedAltitude,
+                                             onGround: aircraftState.onGround ?? false))
+        // Approach: maintain the pattern altitude, continue inbound for another approach.
+        post(engine.continueInbound(cs: c.callsign, altitude: assignedAltitude,
+                                    procedure: c.approachProcedure,
+                                    approach: c.approachName, runway: c.runway), speak: true)
+        // Rewind the conversation to the approach so the sequence replays from here.
+        stateMachine.restore(to: .approach)
+        atcState = .approach
+        currentFacility = .approach
+        tunedFacility = nil
+        persistSession()
+    }
+
+    /// The crosswind-leg heading for a go-around: 90° off the landing runway heading,
+    /// turning in the traffic-pattern direction (left traffic = runway − 90°, right =
+    /// runway + 90°). Falls back to due north when the runway carries no usable number.
+    private func goAroundCrosswindHeading(runway: String, leftTraffic: Bool) -> Int {
+        let base = Int((RunwayDatabase.heading(forRunway: runway) ?? 360).rounded())
+        return AppModel.crosswindHeading(runwayHeading: base, leftTraffic: leftTraffic)
+    }
+
+    /// A 90° crosswind heading off a runway heading, in the traffic pattern's turn
+    /// direction (left = −90°, right = +90°). Pure/testable; normalized to 0…359.
+    nonisolated static func crosswindHeading(runwayHeading: Int, leftTraffic: Bool) -> Int {
+        let delta = leftTraffic ? -90 : 90
+        return ((runwayHeading + delta) % 360 + 360) % 360
+    }
+
     /// Check in on the currently tuned frequency. Posts the pilot's call-up and the
     /// controller's next instruction for the facility we're tuned to. This is the
     /// deliberate "check in" the pilot makes after switching frequency (tuning no
@@ -2869,6 +2985,14 @@ final class AppModel: ObservableObject {
 
     func requestHandoff() {
         guard !companionStandby else { return }
+        // Re-establishing with Approach after a go-around: Approach holds the pattern
+        // altitude and clears the aircraft to continue inbound, then the normal
+        // cleared-approach → Tower sequence replays. Handled before the generic
+        // check-in so it isn't collapsed into a plain radar-contact re-check-in.
+        if goAroundInProgress, currentFacility == .approach {
+            resumeApproachAfterGoAround()
+            return
+        }
         // Checking in satisfies any pending hand-off the controller prompted: the new
         // controller now speaks for itself, so the semi-automatic flow resumes.
         pendingCheckInFacility = nil
@@ -5101,6 +5225,7 @@ final class AppModel: ObservableObject {
         manualTuning = false
         tunedFacility = nil
         pendingCheckInFacility = nil
+        goAroundInProgress = false
         clearReadbackGate()
         cancelTakeoffClearanceTimer()
         clearSavedSession()

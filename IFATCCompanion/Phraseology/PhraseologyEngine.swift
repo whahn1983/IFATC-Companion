@@ -334,6 +334,62 @@ struct PhraseologyEngine {
            spoken: "\(cs.spoken), descend and maintain \(Phonetic.altitude(altitude, icao: icao)), expect \(approach.isEmpty ? "the I L S" : approach) runway \(Phonetic.runway(runway, icao: icao)) approach.")
     }
 
+    // Tower — go-around / missed approach. The pilot has broken off the approach;
+    // Tower turns them onto a crosswind leg (a 90° vector off the runway heading),
+    // climbs them to the pattern altitude, tells them which way to make traffic for
+    // the *same* runway, and hands them back to Approach for another approach. The
+    // read-back echoes every element and, once read back, tunes the radio to Approach.
+    func goAround(cs: Callsign, runway: String, leftTraffic: Bool, crosswindHeading: Int,
+                  patternAltitude: Int, approachFrequency: Double) -> ATCTransmission {
+        let turn = leftTraffic ? "left" : "right"
+        let hdgD = String(format: "%03d", crosswindHeading)
+        let hdgS = Phonetic.heading(crosswindHeading, icao: icao)
+        let altD = formatAltDisplay(patternAltitude)
+        let altS = Phonetic.altitude(patternAltitude, icao: icao)
+        let rwyS = Phonetic.runway(runway, icao: icao)
+        let freqD = String(format: "%.3f", approachFrequency)
+        let freqS = Phonetic.frequency(approachFrequency, icao: icao)
+        let display = "\(cs.display), go around, turn \(turn) heading \(hdgD), climb and maintain \(altD), make \(turn) traffic runway \(runway), contact Approach on \(freqD)."
+        let spoken = "\(cs.spoken), go around, turn \(turn) heading \(hdgS), climb and maintain \(altS), make \(turn) traffic runway \(rwyS), contact Approach on \(freqS)."
+        var t = tx(.tower, display: display, spoken: spoken)
+        // The read-back carries every element — heading, climb altitude, traffic
+        // direction, runway — plus the hand-off, and tunes to Approach once read back.
+        t.readback = ATCTransmission.Readback(
+            displayText: "Going around, turn \(turn) heading \(hdgD), climb and maintain \(altD), make \(turn) traffic runway \(runway), contacting Approach on \(freqD), \(cs.display).",
+            spokenText: "Going around, turn \(turn) heading \(hdgS), climb and maintain \(altS), make \(turn) traffic runway \(rwyS), contacting Approach on \(freqS), \(cs.spoken).",
+            facility: .approach,
+            tuneTo: .approach)
+        return t
+    }
+
+    // Approach — re-establishing after a go-around: the pilot checks back in on the
+    // missed-approach leg, and Approach holds the pattern altitude Tower assigned and
+    // sends the aircraft back around for another approach. The cleared-approach →
+    // Tower sequence then replays exactly as on the first approach.
+    func continueInbound(cs: Callsign, altitude: Int, procedure: Procedure?,
+                         approach: String, runway: String) -> ATCTransmission {
+        let expectD: String
+        let expectS: String
+        if let procedure {
+            let rwy = procedure.runway ?? runway
+            expectD = "the \(procedure.approachType?.display ?? "approach") runway \(rwy)"
+            expectS = "the \(procedure.approachType?.spoken ?? "approach") runway \(Phonetic.runway(rwy, icao: icao))"
+        } else {
+            let appD = approach.isEmpty ? "the ILS" : approach
+            let appS = approach.isEmpty ? "the I L S" : approach
+            expectD = "\(appD) runway \(runway)"
+            expectS = "\(appS) runway \(Phonetic.runway(runway, icao: icao))"
+        }
+        var t = tx(.approach,
+           display: "\(cs.display), maintain \(formatAltDisplay(altitude)), continue inbound, expect \(expectD) approach.",
+           spoken: "\(cs.spoken), maintain \(Phonetic.altitude(altitude, icao: icao)), continue inbound, expect \(expectS) approach.")
+        t.readback = ATCTransmission.Readback(
+            displayText: "Maintain \(formatAltDisplay(altitude)), continue inbound, \(cs.display).",
+            spokenText: "Maintain \(Phonetic.altitude(altitude, icao: icao)), continue inbound, \(cs.spoken).",
+            facility: .approach)
+        return t
+    }
+
     // Approach/Tower — cleared approach.
     func clearedApproach(cs: Callsign, approach: String, runway: String) -> ATCTransmission {
         let appText = approach.isEmpty ? "ILS" : approach
