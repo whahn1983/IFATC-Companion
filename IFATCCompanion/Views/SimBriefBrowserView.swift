@@ -18,24 +18,24 @@ struct SimBriefBrowserView: View {
     var body: some View {
         NavigationStack {
             SimBriefWebView(url: url, model: web)
-                .ignoresSafeArea(edges: .bottom)
                 .navigationTitle("SimBrief")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
                         Button("Done") { onDone() }
                     }
-                    ToolbarItemGroup(placement: .bottomBar) {
+                    // Navigation controls live in the top bar so nothing overlaps the
+                    // bottom of the page — SimBrief's "Add to Home Screen" banner and
+                    // its "Don't show this again" link stay reachable and tappable.
+                    ToolbarItemGroup(placement: .topBarTrailing) {
                         Button { web.goBack() } label: {
                             Image(systemName: "chevron.left")
                         }
                         .disabled(!web.canGoBack)
-                        Spacer()
                         Button { web.goForward() } label: {
                             Image(systemName: "chevron.right")
                         }
                         .disabled(!web.canGoForward)
-                        Spacer()
                         Button { web.reload() } label: {
                             Image(systemName: "arrow.clockwise")
                         }
