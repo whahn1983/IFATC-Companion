@@ -70,7 +70,9 @@ struct PilotResponseEngine {
                          "Descend and maintain \(Phonetic.altitude(alt, icao: icao)), \(cs.spoken).",
                          facility: .center)
         case .approach:
-            let alt = max(3000, c.assignedAltitude)
+            // Echo the altitude Approach actually assigned (plan intercept, else the
+            // elevation-aware default) so the read-back matches the instruction.
+            let alt = c.approachInterceptAltitude > 0 ? c.approachInterceptAltitude : c.approachDefaultAltitude
             if let approach = c.approachProcedure {
                 let rwy = approach.runway ?? c.runway
                 let typeD = approach.approachType?.display ?? "approach"

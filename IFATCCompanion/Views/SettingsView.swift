@@ -231,7 +231,7 @@ struct SettingsView: View {
     private var automationSection: some View {
         Section {
             Stepper(value: $settings.initialClimbAltitudeFt, in: 2000...10000, step: 1000) {
-                Text("Initial climb: \(settings.initialClimbAltitudeFt) ft")
+                Text("Initial climb: \(settings.initialClimbAltitudeFt) ft above field")
             }
             Stepper(value: $settings.traconCeilingFL, in: 80...240, step: 10) {
                 Text("Departure → Center at FL\(settings.traconCeilingFL)")
@@ -239,7 +239,7 @@ struct SettingsView: View {
         } header: {
             Text("ATC Automation")
         } footer: {
-            Text("You drive your own calls with the buttons — clearance, pushback, engine start, taxi and ready. The controller's position-based calls play automatically: takeoff clearance once you line up, the hand-off to Departure after you're airborne, and the en-route and arrival sequence. Read backs and check-ins stay manual.")
+            Text("You drive your own calls with the buttons — clearance, pushback, engine start, taxi and ready. The controller's position-based calls play automatically: takeoff clearance once you line up, the hand-off to Departure after you're airborne, and the en-route and arrival sequence. Read backs and check-ins stay manual. Initial climb is set above the field, so at high-elevation airports the callouts are raised to a valid MSL altitude (e.g. Denver's initial climb and the approach descent clear the ground).")
         }
     }
 

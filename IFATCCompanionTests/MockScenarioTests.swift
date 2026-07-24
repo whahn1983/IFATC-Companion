@@ -114,6 +114,28 @@ final class MockScenarioTests: XCTestCase {
         XCTAssertTrue(contains(model, "taxi to parking", sender: .atc))
     }
 
+    // MARK: - Elevation-aware altitudes at a high-elevation field
+
+    /// The initial climb is a height above the field: the departure field elevation
+    /// is captured from on-ground telemetry (MSL − AGL, no onboard database) and the
+    /// configured climb is added, rounded up to the next thousand. At Denver
+    /// (~5,434 ft) a 5,000 ft climb becomes 11,000 ft MSL instead of a sub-surface
+    /// 5,000 ft.
+    func testDepartureInitialClimbIsRaisedAboveHighField() {
+        let model = makeModel()   // initialClimbAltitudeFt = 5,000
+        var ground = AircraftState()
+        ground.onGround = true
+        ground.altitudeMSL = 5434
+        ground.altitudeAGL = 0
+        ground.latitude = 39.86; ground.longitude = -104.67
+        ground.groundSpeed = 0; ground.heading = 340
+        model.ingestStateForTesting(ground)   // captures the departure field elevation
+
+        model.requestClearance()
+        // 5,434 field + 5,000 climb = 10,434 → rounded up to 11,000 ft MSL.
+        XCTAssertEqual(model.assignedAltitude, 11000)
+    }
+
     // MARK: - Descent: STAR + no contradiction
 
     func testDescentSaysDescendViaStarAndIsNotContradictory() {
