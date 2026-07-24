@@ -18,24 +18,24 @@ struct SimBriefBrowserView: View {
     var body: some View {
         NavigationStack {
             SimBriefWebView(url: url, model: web)
-                .ignoresSafeArea(edges: .bottom)
                 .navigationTitle("SimBrief")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
                         Button("Done") { onDone() }
                     }
-                    ToolbarItemGroup(placement: .bottomBar) {
+                    // Navigation controls live in the top bar so nothing overlaps the
+                    // bottom of the page — SimBrief's "Add to Home Screen" banner and
+                    // its "Don't show this again" link stay reachable and tappable.
+                    ToolbarItemGroup(placement: .topBarTrailing) {
                         Button { web.goBack() } label: {
                             Image(systemName: "chevron.left")
                         }
                         .disabled(!web.canGoBack)
-                        Spacer()
                         Button { web.goForward() } label: {
                             Image(systemName: "chevron.right")
                         }
                         .disabled(!web.canGoForward)
-                        Spacer()
                         Button { web.reload() } label: {
                             Image(systemName: "arrow.clockwise")
                         }
@@ -80,19 +80,6 @@ struct SimBriefWebView: UIViewRepresentable {
         // set explicitly to make that guarantee obvious.
         config.websiteDataStore = .default()
 
-        // Auto-dismiss SimBrief's "Add to Home Screen" install banner. Its permanent
-        // "Don't show this again" link is pinned to the bottom of the page, underneath
-        // our navigation toolbar, so it can't be tapped by hand. Since the persistent
-        // data store keeps SimBrief's saved preference, one automatic click stops the
-        // banner from reappearing on future launches.
-        let controller = WKUserContentController()
-        controller.addUserScript(
-            WKUserScript(source: Self.dismissInstallBannerJS,
-                         injectionTime: .atDocumentEnd,
-                         forMainFrameOnly: true)
-        )
-        config.userContentController = controller
-
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
@@ -102,41 +89,6 @@ struct SimBriefWebView: UIViewRepresentable {
         webView.load(URLRequest(url: url))
         return webView
     }
-
-    /// Finds SimBrief's "Don't show this again" control and clicks it. The banner is
-    /// injected after page load, so this retries briefly and also watches for late DOM
-    /// insertions. Text is normalised (lowercased, whitespace and apostrophes stripped)
-    /// so straight vs. curly apostrophes don't matter.
-    private static let dismissInstallBannerJS = """
-    (function() {
-      var done = false;
-      function norm(s) { return (s || '').toLowerCase().replace(/[\\s'’]+/g, ''); }
-      function tryDismiss() {
-        if (done) return;
-        var els = document.querySelectorAll('a, button, span, p, div');
-        for (var i = 0; i < els.length; i++) {
-          var el = els[i];
-          if (el.children.length) continue; // leaf text nodes only
-          if (norm(el.textContent).indexOf('dontshowthisagain') !== -1) {
-            (el.closest('a, button') || el).click();
-            done = true;
-            return;
-          }
-        }
-      }
-      tryDismiss();
-      var n = 0;
-      var timer = setInterval(function() {
-        tryDismiss();
-        if (done || ++n > 60) clearInterval(timer);
-      }, 500);
-      try {
-        new MutationObserver(tryDismiss).observe(
-          document.documentElement, { childList: true, subtree: true }
-        );
-      } catch (e) {}
-    })();
-    """
 
     func updateUIView(_ webView: WKWebView, context: Context) {}
 
