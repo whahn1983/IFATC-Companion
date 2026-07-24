@@ -43,8 +43,14 @@ struct ATCContext {
     var traconCeiling: Int = 18000
     /// Intercept/initial altitude (ft MSL) Approach assigns for the ILS/GPS/Visual
     /// — the first altitude in the approach section of the flight plan when known,
-    /// otherwise 0 (the state machine then falls back to a default 3,000 ft).
+    /// otherwise 0 (the state machine then falls back to `approachDefaultAltitude`).
     var approachInterceptAltitude: Int = 0
+    /// Fallback terminal altitude (ft MSL) Approach assigns when the flight plan
+    /// supplies no intercept altitude: 3,000 ft above the field, expressed in MSL
+    /// and rounded up to the next thousand, so it clears the ground at
+    /// high-elevation airports (e.g. 9,000 ft at Denver). Defaults to 3,000 ft
+    /// (sea-level assumption); `AppModel` recomputes it from live telemetry.
+    var approachDefaultAltitude: Int = 3000
     // Parsed published procedures (optional; populated when the pilot enters them).
     var sidProcedure: Procedure? = nil
     var starProcedure: Procedure? = nil
@@ -184,8 +190,9 @@ struct ATCStateMachine {
             // pilot which approach to expect — independent of the higher altitude
             // Center assigned during the enroute descent. The intercept altitude is
             // the first altitude in the approach section of the flight plan when
-            // known, otherwise a default 3,000 ft.
-            let interceptAlt = c.approachInterceptAltitude > 0 ? c.approachInterceptAltitude : 3000
+            // known, otherwise the elevation-aware default (3,000 ft above the
+            // field, in MSL) so it never descends the aircraft below the surface.
+            let interceptAlt = c.approachInterceptAltitude > 0 ? c.approachInterceptAltitude : c.approachDefaultAltitude
             if let approach = c.approachProcedure {
                 return engine.descendExpectApproach(cs: c.callsign, altitude: interceptAlt,
                                                     procedure: approach, runway: c.runway)

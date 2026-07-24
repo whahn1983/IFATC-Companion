@@ -481,6 +481,12 @@ final class AppModel: ObservableObject {
     /// takeoff clearance — "one right after the other" on the runway.
     private var liftoffAltitudeMSL: Double = 0
 
+    /// Departure field elevation (ft MSL), estimated from on-ground telemetry
+    /// (ground ≈ MSL − AGL) and kept fresh until the aircraft departs. Lets the
+    /// initial-climb altitude be expressed above the field at high-elevation
+    /// airports without an onboard airport database. 0 until first captured.
+    private var departureFieldElevationMSL: Double = 0
+
     /// True once the arrival "monitor ramp to the gate" call has been issued, so the
     /// staged arrival (proceed-to-gate → monitor → flight complete) never collapses
     /// into a single burst when the aircraft is already stopped at the gate.
@@ -1241,6 +1247,14 @@ final class AppModel: ObservableObject {
 
         if !phase.isGround { hasDeparted = true }
 
+        // Capture the departure field elevation from on-ground telemetry (ground ≈
+        // MSL − AGL) before the aircraft departs, so initial-climb altitudes can be
+        // raised above the field at high-elevation airports. Kept fresh while on the
+        // ground so the last value before takeoff is the field elevation.
+        if !hasDeparted, (state.onGround ?? phase.isGround), let msl = state.altitudeMSL {
+            departureFieldElevationMSL = max(0, msl - (state.altitudeAGL ?? 0))
+        }
+
         let mapped = stateMachine.mappedState(for: phase)
 
         // Defer to a human controller on the tuned frequency: track state for
@@ -1916,7 +1930,11 @@ final class AppModel: ObservableObject {
         // the climb to carry past it first. When Infinite Flight does not expose AGL,
         // fall back to the altitude gained since the takeoff clearance was issued.
         if stateMachine.current == .towerDeparture, mapped == .initialClimb || mapped == .climb {
-            let agl = state.altitudeAGL ?? max(0, (state.altitudeMSL ?? 0) - liftoffAltitudeMSL)
+            // Prefer live AGL; otherwise estimate it against the field elevation
+            // captured on the ground (falling back to the liftoff altitude), so the
+            // ~2,000 ft trigger is height above the field, not above sea level.
+            let groundRef = departureFieldElevationMSL > 0 ? departureFieldElevationMSL : liftoffAltitudeMSL
+            let agl = state.altitudeAGL ?? max(0, (state.altitudeMSL ?? 0) - groundRef)
             if agl < 2000 { return .towerDeparture }
         }
 
@@ -2146,6 +2164,21 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Round an altitude up to the next whole thousand feet (e.g. 8,434 → 9,000).
+    /// Exact multiples are left unchanged.
+    nonisolated static func roundedUpToThousand(_ feet: Int) -> Int {
+        guard feet > 0 else { return 0 }
+        return ((feet + 999) / 1000) * 1000
+    }
+
+    /// Best live estimate of the field elevation (ft MSL) beneath the aircraft:
+    /// ground ≈ current MSL − current AGL. Used near the destination to make the
+    /// approach altitude elevation-aware. nil when telemetry lacks either value.
+    private func liveFieldElevationMSL() -> Int? {
+        guard let msl = aircraftState.altitudeMSL, let agl = aircraftState.altitudeAGL else { return nil }
+        return max(0, Int((msl - agl).rounded()))
+    }
+
     private func updateAssignedAltitude(for state: ATCState, context c: ATCContext) {
         switch state {
         case .clearance: assignedAltitude = c.initialClimbAltitude
@@ -2154,7 +2187,7 @@ final class AppModel: ObservableObject {
             assignedAltitude = c.traconCeiling > 0 ? c.traconCeiling : max(c.assignedAltitude, c.initialClimbAltitude)
         case .climb, .cruise: assignedAltitude = c.cruiseAltitude
         case .descent: assignedAltitude = ATCStateMachine.descentTargetAltitude(context: c)
-        case .approach: assignedAltitude = c.approachInterceptAltitude > 0 ? c.approachInterceptAltitude : 3000
+        case .approach: assignedAltitude = c.approachInterceptAltitude > 0 ? c.approachInterceptAltitude : c.approachDefaultAltitude
         default: break
         }
     }
@@ -2410,7 +2443,26 @@ final class AppModel: ObservableObject {
         } else {
             depHeading = 0
         }
-        let initialClimb = settings.initialClimbAltitudeFt > 0 ? settings.initialClimbAltitudeFt : 5000
+        // The configured initial climb is a height above the departure field. Add it
+        // to the field elevation and round up to the next thousand so the callout is a
+        // valid MSL altitude at high-elevation airports. At sea level the field is 0
+        // and the value is unchanged. Prefer the value captured on the ground before
+        // departure; fall back to the current on-ground estimate if it hasn't run yet.
+        let climbAboveField = settings.initialClimbAltitudeFt > 0 ? settings.initialClimbAltitudeFt : 5000
+        let departureFieldElev: Int
+        if departureFieldElevationMSL > 0 {
+            departureFieldElev = Int(departureFieldElevationMSL.rounded())
+        } else if (aircraftState.onGround ?? false), let msl = aircraftState.altitudeMSL {
+            departureFieldElev = max(0, Int((msl - (aircraftState.altitudeAGL ?? 0)).rounded()))
+        } else {
+            departureFieldElev = 0
+        }
+        let initialClimb = Self.roundedUpToThousand(departureFieldElev + climbAboveField)
+        // Terminal approach fallback (used when the flight plan supplies no intercept
+        // altitude): 3,000 ft above the destination field — estimated live from the
+        // aircraft's MSL − AGL near the field — rounded up to the next thousand.
+        // Falls back to 3,000 ft when AGL is unavailable.
+        let approachDefault = Self.roundedUpToThousand((liveFieldElevationMSL() ?? 0) + 3000)
 
         // Ramp (simulated local/company procedure). Falls back to the generic
         // airline ramp profile when no airport-specific profile is known.
@@ -2449,6 +2501,7 @@ final class AppModel: ObservableObject {
             firstFixName: directFix?.name ?? "",
             traconCeiling: currentTraconCeiling,
             approachInterceptAltitude: flightPlan.approachInterceptAltitude,
+            approachDefaultAltitude: approachDefault,
             sidProcedure: sidProc,
             starProcedure: starProc,
             approachProcedure: approachProc)

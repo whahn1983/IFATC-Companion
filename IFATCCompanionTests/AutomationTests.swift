@@ -390,6 +390,56 @@ final class AutomationTests: XCTestCase {
         XCTAssertFalse(tx?.displayText.contains("pilot's discretion") ?? true)
     }
 
+    // MARK: - Elevation-aware terminal altitudes
+
+    /// The rounding used to express an AGL height as a valid MSL callout: always up
+    /// to the next whole thousand, exact multiples unchanged.
+    func testRoundedUpToThousand() {
+        XCTAssertEqual(AppModel.roundedUpToThousand(8434), 9000)   // Denver field + 3,000
+        XCTAssertEqual(AppModel.roundedUpToThousand(10434), 11000) // Denver field + 5,000
+        XCTAssertEqual(AppModel.roundedUpToThousand(5000), 5000)   // exact multiple unchanged
+        XCTAssertEqual(AppModel.roundedUpToThousand(3000), 3000)   // sea-level default
+        XCTAssertEqual(AppModel.roundedUpToThousand(1), 1000)
+        XCTAssertEqual(AppModel.roundedUpToThousand(0), 0)
+    }
+
+    /// With no published intercept altitude in the flight plan, Approach descends to
+    /// the elevation-aware default (3,000 ft above the field, in MSL) — never below
+    /// the surface at a high field like Denver.
+    func testApproachUsesElevationAwareDefaultWhenNoInterceptAltitude() {
+        var m = ATCStateMachine(engine: engine())
+        m.setConnected()
+        var ctx = TestSupport.context(runway: "34R")
+        ctx.approachInterceptAltitude = 0      // flight plan supplied none
+        ctx.approachDefaultAltitude = 9000     // 5,434 field + 3,000, rounded up
+        let tx = m.advance(to: .approach, context: ctx)
+        XCTAssertTrue(tx?.displayText.contains("descend and maintain 9,000") ?? false, tx?.displayText ?? "nil")
+        XCTAssertFalse(tx?.displayText.contains("3,000") ?? true, tx?.displayText ?? "nil")
+    }
+
+    /// A published intercept altitude from the flight plan (already MSL) still wins
+    /// over the computed default.
+    func testApproachPrefersFlightPlanInterceptAltitude() {
+        var m = ATCStateMachine(engine: engine())
+        m.setConnected()
+        var ctx = TestSupport.context(runway: "34R")
+        ctx.approachInterceptAltitude = 4000
+        ctx.approachDefaultAltitude = 9000
+        let tx = m.advance(to: .approach, context: ctx)
+        XCTAssertTrue(tx?.displayText.contains("descend and maintain 4,000") ?? false, tx?.displayText ?? "nil")
+    }
+
+    /// The pilot read-back echoes the same terminal altitude Approach assigned, so
+    /// the read-back never contradicts the instruction at a high-elevation field.
+    func testApproachReadbackMatchesElevationAwareAltitude() {
+        let pilot = PilotResponseEngine(engine: engine())
+        var ctx = TestSupport.context(runway: "34R")
+        ctx.approachInterceptAltitude = 0
+        ctx.approachDefaultAltitude = 9000
+        let rb = pilot.readback(for: .approach, context: ctx)
+        XCTAssertTrue(rb.displayText.contains("Down to 9,000"), rb.displayText)
+    }
+
     // MARK: - Cleared approach + runway exit
 
     func testRunwayExitTellsPilotToExitAndContactGround() {

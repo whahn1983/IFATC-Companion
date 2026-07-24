@@ -131,7 +131,10 @@ final class AppSettings: ObservableObject {
     @Published var digitStyle: CallsignDigitStyle { didSet { save(digitStyle.rawValue, .digitStyle) } }
 
     // ATC automation
-    /// Initial climb altitude (ft) assigned in the clearance/takeoff before Departure.
+    /// Initial climb height (ft above field) assigned in the clearance/takeoff
+    /// before Departure. Added to the departure field elevation and rounded up to
+    /// the next thousand for the MSL callout, so it stays valid at high-elevation
+    /// airports.
     @Published var initialClimbAltitudeFt: Int { didSet { save(initialClimbAltitudeFt, .initialClimbAltitudeFt) } }
     /// Flight level at which Departure hands off to Center (TRACON ceiling), e.g. 180.
     @Published var traconCeilingFL: Int { didSet { save(traconCeilingFL, .traconCeilingFL) } }
