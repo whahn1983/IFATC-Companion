@@ -4,6 +4,7 @@ struct FlightView: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var settings: AppSettings
     @FocusState private var keyboardFocused: Bool
+    @State private var showSimBrief = false
 
     var body: some View {
         NavigationStack {
@@ -85,7 +86,23 @@ struct FlightView: View {
                         .frame(maxWidth: .infinity, minHeight: 40)
                 }
                 .buttonStyle(.bordered)
+
+                Button {
+                    showSimBrief = true
+                } label: {
+                    Label("Create Flight Plan (SimBrief)", systemImage: "doc.badge.plus")
+                        .frame(maxWidth: .infinity, minHeight: 40)
+                }
+                .buttonStyle(.bordered)
+
+                Text("Create and load your SimBrief flight plan in Infinite Flight, then return here to refresh.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
+        }
+        .fullScreenCover(isPresented: $showSimBrief) {
+            SimBriefBrowserView { showSimBrief = false }
         }
     }
 
