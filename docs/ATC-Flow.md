@@ -161,6 +161,34 @@ heading/altitude/descent-rate proxy). This guarantees the approach clearance is 
 level clearly below cruise (so the descent clearance is never contradictory), and
 Approach then steps the aircraft down to ~3,000 ft on the intercept.
 
+### Go around / missed approach
+
+While inbound to land on **Tower** (cleared the approach / contacting Tower, or
+cleared to land, and still airborne) a **Go Around** button appears. Tapping it flies
+the missed approach:
+
+1. **Pilot → Tower** — *"Tower, *callsign*, going around."* (`PilotResponseEngine.goAround`)
+2. **Tower** — *"*callsign*, go around, turn left heading *XXX*, climb and maintain
+   *pattern alt*, make left traffic runway *XX*, contact Approach on *freq*."*
+   (`PhraseologyEngine.goAround`). The heading is a **90° crosswind leg** off the
+   landing runway (left traffic = runway − 90°); the pattern is **left traffic for the
+   same runway**. The read-back echoes every element (heading, climb, traffic
+   direction, runway) and **tunes to Approach** once read back.
+3. **Pilot → Approach** — on the next check-in, **Approach** replies *"maintain
+   *pattern alt*, continue inbound, expect *ILS/GPS/Visual* runway *XX* approach."*
+   (`PhraseologyEngine.continueInbound`), and the conversation is **rewound to the
+   Approach state**, so the cleared-approach → Tower → cleared-to-land sequence
+   (steps 18–20) **replays exactly as the first time**, driven by the same
+   established-on-final / APPR detection. A pilot can go around again on the next
+   approach.
+
+The **pattern altitude** is **3,000 ft above the field**, using the same
+elevation-aware math as the approach descent (`approachDefaultAltitude` — live
+MSL − AGL near the field, rounded up to the next thousand), so it clears the ground at
+a high field (9,000 ft at Denver) rather than a sub-surface 3,000 ft. While the
+go-around is being flown back around the pattern the automatic flow holds
+(`goAroundInProgress`); the pilot drives the re-establishing Approach check-in.
+
 ---
 
 ## Facility ↔ frequency mapping
