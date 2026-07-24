@@ -2111,6 +2111,15 @@ final class AppModel: ObservableObject {
         flightPlan.arrivalGate = settings.arrivalGate.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// Swap the departure and arrival gate fields — handy when the pilot is flying
+    /// the return leg and the two gates simply trade places.
+    func swapManualGates() {
+        let dep = settings.departureGate
+        settings.departureGate = settings.arrivalGate
+        settings.arrivalGate = dep
+        applyManualGates()
+    }
+
     /// Merge a flight plan read from Infinite Flight into the active plan. Manual
     /// overrides win; otherwise empty fields are filled from the live plan.
     private func mergeLiveFlightPlan(_ live: FlightPlan) {

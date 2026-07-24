@@ -125,7 +125,7 @@ struct ATCView: View {
                     gateField(title: "Dep Gate", systemImage: "figure.walk.departure",
                               text: $settings.departureGate, placeholder: "C12",
                               focused: $departureGateFocused)
-                    Divider().frame(height: 34)
+                    gateSwapButton
                     gateField(title: "Arr Gate", systemImage: "figure.walk.arrival",
                               text: $settings.arrivalGate, placeholder: "B44",
                               focused: $arrivalGateFocused)
@@ -193,6 +193,26 @@ struct ATCView: View {
                 }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Swaps the departure and arrival gate values — a shortcut for the return leg,
+    /// where the two gates simply trade places. Sits between the two gate fields in
+    /// place of the divider so it doubles as the visual separator.
+    private var gateSwapButton: some View {
+        Button {
+            departureGateFocused = false
+            arrivalGateFocused = false
+            model.swapManualGates()
+        } label: {
+            Image(systemName: "arrow.left.arrow.right")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 34, height: 34)
+                .background(
+                    Circle().fill(Color.accentColor.opacity(0.15)))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Swap departure and arrival gates")
     }
 
     /// Placeholder shows a callsign resolved from the Airline/Flight # overrides (if
