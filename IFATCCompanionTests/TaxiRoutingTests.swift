@@ -417,4 +417,53 @@ final class TaxiRoutingTests: XCTestCase {
         XCTAssertNotNil(route, "a stranded entered stand must fall through to a reachable one, not fail the route")
         XCTAssertEqual(route?.arrivalGate, "A2", "the arrival lands at the reachable same-concourse stand")
     }
+
+    func testStandBesideLongNodelessTaxiwayAttachesAndRoutes() {
+        // Reproduces the reported KDEN gate-B20 failure: a stand sits ~140 m from a taxiway
+        // whose OSM geometry is one long segment with no intermediate node, so its nearest
+        // *node* is ~290 m away — beyond the 240 m gate-attach radius. Attaching stands to nodes
+        // only left it orphaned (no connector → unroutable), and the arrival silently fell
+        // through to a different stand. Projecting onto the taxiway edge (splitting it to insert
+        // the junction) must wire the stand in so the arrival routes all the way to it.
+        func p(_ dLat: Double, _ dLon: Double) -> GeoCoordinate {
+            GeoCoordinate(latitude: ref.latitude + dLat, longitude: ref.longitude + dLon)
+        }
+        // "Green": a single ~510 m E–W segment — two vertices only, so there is no node anywhere
+        // near its middle (mirrors OSM's node-less apron taxilane past Concourse B).
+        let green = SurfaceTaxiway(osmID: "way/green", tags: ["aeroway": "taxiway", "ref": "Green"],
+                                   isTaxilane: false, name: "Green",
+                                   geometry: [p(0, -0.003), p(0, 0.003)],
+                                   oneway: false, access: nil, widthMeters: nil)
+        // The stand sits ~140 m south of Green's middle — but ~290 m from either endpoint, so no
+        // graph node is within the 240 m attach radius.
+        let gate = SurfaceParking(osmID: "node/b20", tags: ["aeroway": "gate", "ref": "B20"], kind: .gate,
+                                  name: "B20", coordinate: p(-0.00125, 0))
+        // A runway placed well clear (so the model has usable geometry and no runway-entry node
+        // lands near the stand).
+        let runway = SurfaceRunway(osmID: "way/r", tags: ["aeroway": "runway", "ref": "18/36"],
+                                   idents: ["18", "36"], centerline: [p(0.0200, 0.0200), p(0.0300, 0.0200)],
+                                   widthMeters: 45, widthInferred: false)
+        let bbox = OSMBoundingBox(center: ref, halfSpanDegrees: 0.04)
+        let m = AirportSurfaceModel(icao: "KLNG", reference: GeoCoordinate(ref), runways: [runway],
+                                    runwayEnds: [], taxiways: [green], holdingPositions: [],
+                                    parkingPositions: [gate], aprons: [],
+                                    source: SurfaceProvenance(endpoint: "t", fetchDate: Date(), boundingBox: bbox, rawElementCount: 3),
+                                    confidence: .low)
+        let g = SurfaceGraphBuilder.build(from: m)
+
+        // The stand attached (an inferred connector was created) despite no node within 240 m,
+        // and it joins Green into one connected component.
+        XCTAssertGreaterThanOrEqual(g.inferredConnectorCount, 1,
+                                    "a stand beside a long node-less taxiway must still attach via edge projection")
+        XCTAssertTrue(g.nodes.contains { $0.kind == .gate && $0.name == "B20" })
+        XCTAssertEqual(g.componentCount, 1, "the edge-attached stand is wired into the taxiway network")
+
+        // And an arrival rolling in from Green's west end routes all the way to the stand.
+        let engine = TaxiRouteEngine(graph: g, model: m)
+        let route = engine.route(.init(startCoordinate: p(0, -0.003).clLocation, startGateName: nil,
+                                       isDeparture: false, assignedRunwayIdent: nil,
+                                       arrivalGateName: "B20", aircraft: .medium))
+        XCTAssertNotNil(route, "the arrival must reach the edge-attached stand, not fall short of it")
+        XCTAssertEqual(route?.arrivalGate, "B20", "the route ends at the entered gate")
+    }
 }
