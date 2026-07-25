@@ -89,31 +89,6 @@ struct SimBriefWebView: UIViewRepresentable {
         // set explicitly to make that guarantee obvious.
         config.websiteDataStore = .default()
 
-        // When the on-screen keyboard opens for a page text field and then closes, WebKit
-        // can leave the page's visual viewport and its `position:fixed` elements (SimBrief's
-        // sticky header sits directly above the Flight Info fields) shifted down by roughly
-        // the keyboard height, and it does not always snap back. Once that happens, the spot
-        // a field is *drawn* no longer matches the spot that receives the tap: tapping
-        // "Flight Number" lands on the offset header instead, so the field shows a tap
-        // highlight but never actually focuses and the previously-entered "Depart" box stays
-        // active. Force WebKit to recompute layout whenever a field loses focus (which is
-        // exactly the moment the keyboard is dismissed or focus moves to another field) with
-        // a zero-delta scroll — a no-op for the user that reliably re-syncs the viewport.
-        let reflowSource = """
-        (function() {
-            var resync = function() {
-                requestAnimationFrame(function() {
-                    window.scrollTo(window.scrollX, window.scrollY);
-                });
-            };
-            document.addEventListener('focusout', resync, true);
-        })();
-        """
-        let reflowScript = WKUserScript(source: reflowSource,
-                                        injectionTime: .atDocumentEnd,
-                                        forMainFrameOnly: true)
-        config.userContentController.addUserScript(reflowScript)
-
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
@@ -121,10 +96,11 @@ struct SimBriefWebView: UIViewRepresentable {
         // Let the pilot dismiss the keyboard by dragging the page, so leaving a focused
         // Depart/Arrive field never depends on finding somewhere else to tap.
         webView.scrollView.keyboardDismissMode = .interactive
-        // The web view is already framed correctly below the navigation bar, so let WebKit
-        // manage its own keyboard scrolling instead of layering an automatic content inset
-        // on top. The automatic inset is the piece that gets stuck after the keyboard hides
-        // and drags the page's touch coordinates out of alignment with what's drawn.
+        // Keep native control of the web view's insets: it is already framed correctly below
+        // the navigation bar, so the automatic content inset only adds a keyboard-height
+        // inset that can get stuck after the keyboard hides and drag the page's touch
+        // coordinates out of alignment with what's drawn. This is a native WKWebView setting
+        // — it changes nothing inside SimBrief's page.
         webView.scrollView.contentInsetAdjustmentBehavior = .never
 
         model.webView = webView
