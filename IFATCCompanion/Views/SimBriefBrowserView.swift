@@ -1,156 +1,52 @@
 import SwiftUI
-import WebKit
+import SafariServices
 
-/// Full-screen embedded browser for SimBrief dispatch, presented from the Flight view.
+/// Full-screen SimBrief dispatch, presented from the Flight view inside an in-app Safari
+/// view (`SFSafariViewController`).
 ///
-/// Uses the shared persistent `WKWebsiteDataStore` so cookies and cache are written to
-/// disk: the pilot signs in to SimBrief once and stays logged in across app relaunches.
-/// The intent is that a pilot builds their SimBrief flight plan, loads it straight into
-/// Infinite Flight from here, and then returns to refresh from Infinite Flight.
-struct SimBriefBrowserView: View {
+/// We deliberately use real Safari here instead of an embedded `WKWebView`. SimBrief's
+/// page text fields — most visibly the Depart/Arrive airport-search boxes — only behave
+/// correctly under Safari's own keyboard and focus handling. Embedding the page in a
+/// `WKWebView` produced WebKit keyboard/focus races that could not be fixed from the app
+/// side: on a direct tap from one field into another the keyboard would hop down and back,
+/// and on the search fields it would drop and never return, leaving the page unusable. The
+/// only in-page cure is JavaScript injected into SimBrief's page, which we do not do out of
+/// respect for the site. `SFSafariViewController` sidesteps all of it — it is the same
+/// engine and behavior the pilot gets opening SimBrief in Safari directly, and no script of
+/// ours ever runs in the page.
+///
+/// Trade-off: unlike the previous embedded view (which kept the SimBrief session in the
+/// app's own persistent data store), `SFSafariViewController` manages its own storage.
+/// Persistent SimBrief login cookies still survive — and are shared with Safari — but a
+/// session-only login may need to be re-entered a little more often. The pilot still builds
+/// their flight plan here, loads it into Infinite Flight, and returns to refresh.
+struct SimBriefBrowserView: UIViewControllerRepresentable {
     /// SimBrief dispatch entry point.
     private let url = URL(string: "https://dispatch.simbrief.com")!
 
     var onDone: () -> Void
 
-    @StateObject private var web = SimBriefWebModel()
-
-    var body: some View {
-        NavigationStack {
-            SimBriefWebView(url: url, model: web)
-                // Let WKWebView own its keyboard insets. Without this, tapping a page
-                // text field (e.g. SimBrief's Depart/Arrive boxes) makes SwiftUI's
-                // automatic keyboard avoidance shrink/shift the full-screen web view at
-                // the same time WKWebView scrolls the focused field above the keyboard.
-                // The two layout passes fight and leave the web view's touch hit-testing
-                // misaligned, so it appears frozen until another focus change re-runs the
-                // layout. Ignoring the keyboard safe area hands keyboard handling to
-                // WKWebView alone (native Safari-style behavior) and removes the freeze.
-                .ignoresSafeArea(.keyboard, edges: .bottom)
-                .navigationTitle("SimBrief")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button("Done") { onDone() }
-                    }
-                    // Navigation controls live in the top bar so nothing overlaps the
-                    // bottom of the page — SimBrief's "Add to Home Screen" banner and
-                    // its "Don't show this again" link stay reachable and tappable.
-                    ToolbarItemGroup(placement: .topBarTrailing) {
-                        Button { web.goBack() } label: {
-                            Image(systemName: "chevron.left")
-                        }
-                        .disabled(!web.canGoBack)
-                        Button { web.goForward() } label: {
-                            Image(systemName: "chevron.right")
-                        }
-                        .disabled(!web.canGoForward)
-                        Button { web.reload() } label: {
-                            Image(systemName: "arrow.clockwise")
-                        }
-                    }
-                }
-                .overlay(alignment: .top) {
-                    if web.isLoading {
-                        ProgressView()
-                            .progressViewStyle(.linear)
-                            .frame(maxWidth: .infinity)
-                    }
-                }
-        }
-    }
-}
-
-/// Bridges `WKWebView` navigation state to the SwiftUI toolbar and exposes the
-/// back/forward/reload actions the toolbar buttons trigger.
-final class SimBriefWebModel: ObservableObject {
-    @Published var canGoBack = false
-    @Published var canGoForward = false
-    @Published var isLoading = false
-
-    fileprivate weak var webView: WKWebView?
-
-    func goBack() { webView?.goBack() }
-    func goForward() { webView?.goForward() }
-    func reload() { webView?.reload() }
-}
-
-/// A `WKWebView` wrapper backed by the persistent default data store so the SimBrief
-/// session survives relaunches. New-window navigations (used by the SimBrief/Navigraph
-/// sign-in flow) are kept inside this same web view instead of being dropped.
-struct SimBriefWebView: UIViewRepresentable {
-    let url: URL
-    @ObservedObject var model: SimBriefWebModel
-
-    func makeUIView(context: Context) -> WKWebView {
-        let config = WKWebViewConfiguration()
-        // Persistent (disk-backed) store: cookies + cache are retained between launches,
-        // so the pilot's SimBrief login stays valid. `.default()` is already persistent;
-        // set explicitly to make that guarantee obvious.
-        config.websiteDataStore = .default()
-
-        let webView = WKWebView(frame: .zero, configuration: config)
-        webView.navigationDelegate = context.coordinator
-        webView.uiDelegate = context.coordinator
-        webView.allowsBackForwardNavigationGestures = true
-        // Deliberately leave keyboardDismissMode at its default (.none). Interactive dismiss
-        // wires the on-screen keyboard to the scroll view's drag/touch handling, and that
-        // "interactive gesture + keyboard" combination freezes WKWebView touch delivery when
-        // a page text field is focused: tapping directly from one field (Depart) into another
-        // (Flight Number) locks the page until a focus change unsticks it. WebKit's own paths
-        // never touch the scroll view, so the keyboard's accessory bar — the up/down field
-        // arrows and the checkmark that dismisses it — keep working and give the pilot a
-        // reliable way to move between fields and close the keyboard.
-        // Keep native control of the web view's insets: it is already framed correctly below
-        // the navigation bar, so the automatic content inset only adds a keyboard-height
-        // inset that can get stuck after the keyboard hides and drag the page's touch
-        // coordinates out of alignment with what's drawn. This is a native WKWebView setting
-        // — it changes nothing inside SimBrief's page.
-        webView.scrollView.contentInsetAdjustmentBehavior = .never
-
-        model.webView = webView
-        webView.load(URLRequest(url: url))
-        return webView
+    func makeUIViewController(context: Context) -> SFSafariViewController {
+        let controller = SFSafariViewController(url: url)
+        controller.delegate = context.coordinator
+        // Match the previous "Done" affordance for leaving the browser.
+        controller.dismissButtonStyle = .done
+        return controller
     }
 
-    func updateUIView(_ webView: WKWebView, context: Context) {}
+    func updateUIViewController(_ controller: SFSafariViewController, context: Context) {}
 
-    func makeCoordinator() -> Coordinator { Coordinator(model: model) }
+    func makeCoordinator() -> Coordinator { Coordinator(onDone: onDone) }
 
-    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
-        let model: SimBriefWebModel
+    /// Bridges the Safari view's Done button back to the SwiftUI presenter so the
+    /// full-screen cover dismisses.
+    final class Coordinator: NSObject, SFSafariViewControllerDelegate {
+        private let onDone: () -> Void
 
-        init(model: SimBriefWebModel) { self.model = model }
+        init(onDone: @escaping () -> Void) { self.onDone = onDone }
 
-        private func sync(_ webView: WKWebView) {
-            model.canGoBack = webView.canGoBack
-            model.canGoForward = webView.canGoForward
-            model.isLoading = webView.isLoading
-        }
-
-        func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
-            sync(webView)
-        }
-        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            sync(webView)
-        }
-        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-            sync(webView)
-        }
-        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-            sync(webView)
-        }
-
-        /// Keep `target="_blank"` / popup navigations (SimBrief + Navigraph auth) in the
-        /// same web view rather than silently discarding them.
-        func webView(_ webView: WKWebView,
-                     createWebViewWith configuration: WKWebViewConfiguration,
-                     for navigationAction: WKNavigationAction,
-                     windowFeatures: WKWindowFeatures) -> WKWebView? {
-            if navigationAction.targetFrame == nil {
-                webView.load(navigationAction.request)
-            }
-            return nil
+        func safariViewControllerDidFinish(_ controller: SFSafariViewController) {
+            onDone()
         }
     }
 }

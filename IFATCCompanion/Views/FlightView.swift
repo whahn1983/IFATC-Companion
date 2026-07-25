@@ -102,7 +102,10 @@ struct FlightView: View {
             }
         }
         .fullScreenCover(isPresented: $showSimBrief) {
+            // Let the Safari view own the full screen (including the status-bar area) the
+            // way it does when presented modally, rather than being inset by the cover.
             SimBriefBrowserView { showSimBrief = false }
+                .ignoresSafeArea()
         }
     }
 
