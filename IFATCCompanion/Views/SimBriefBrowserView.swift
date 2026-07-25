@@ -96,6 +96,12 @@ struct SimBriefWebView: UIViewRepresentable {
         // Let the pilot dismiss the keyboard by dragging the page, so leaving a focused
         // Depart/Arrive field never depends on finding somewhere else to tap.
         webView.scrollView.keyboardDismissMode = .interactive
+        // Keep native control of the web view's insets: it is already framed correctly below
+        // the navigation bar, so the automatic content inset only adds a keyboard-height
+        // inset that can get stuck after the keyboard hides and drag the page's touch
+        // coordinates out of alignment with what's drawn. This is a native WKWebView setting
+        // — it changes nothing inside SimBrief's page.
+        webView.scrollView.contentInsetAdjustmentBehavior = .never
 
         model.webView = webView
         webView.load(URLRequest(url: url))
