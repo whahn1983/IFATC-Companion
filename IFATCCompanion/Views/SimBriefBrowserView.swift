@@ -93,9 +93,14 @@ struct SimBriefWebView: UIViewRepresentable {
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = true
-        // Let the pilot dismiss the keyboard by dragging the page, so leaving a focused
-        // Depart/Arrive field never depends on finding somewhere else to tap.
-        webView.scrollView.keyboardDismissMode = .interactive
+        // Deliberately leave keyboardDismissMode at its default (.none). Interactive dismiss
+        // wires the on-screen keyboard to the scroll view's drag/touch handling, and that
+        // "interactive gesture + keyboard" combination freezes WKWebView touch delivery when
+        // a page text field is focused: tapping directly from one field (Depart) into another
+        // (Flight Number) locks the page until a focus change unsticks it. WebKit's own paths
+        // never touch the scroll view, so the keyboard's accessory bar — the up/down field
+        // arrows and the checkmark that dismisses it — keep working and give the pilot a
+        // reliable way to move between fields and close the keyboard.
         // Keep native control of the web view's insets: it is already framed correctly below
         // the navigation bar, so the automatic content inset only adds a keyboard-height
         // inset that can get stuck after the keyboard hides and drag the page's touch
