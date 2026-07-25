@@ -18,6 +18,15 @@ struct SimBriefBrowserView: View {
     var body: some View {
         NavigationStack {
             SimBriefWebView(url: url, model: web)
+                // Let WKWebView own its keyboard insets. Without this, tapping a page
+                // text field (e.g. SimBrief's Depart/Arrive boxes) makes SwiftUI's
+                // automatic keyboard avoidance shrink/shift the full-screen web view at
+                // the same time WKWebView scrolls the focused field above the keyboard.
+                // The two layout passes fight and leave the web view's touch hit-testing
+                // misaligned, so it appears frozen until another focus change re-runs the
+                // layout. Ignoring the keyboard safe area hands keyboard handling to
+                // WKWebView alone (native Safari-style behavior) and removes the freeze.
+                .ignoresSafeArea(.keyboard, edges: .bottom)
                 .navigationTitle("SimBrief")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
@@ -84,6 +93,9 @@ struct SimBriefWebView: UIViewRepresentable {
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = true
+        // Let the pilot dismiss the keyboard by dragging the page, so leaving a focused
+        // Depart/Arrive field never depends on finding somewhere else to tap.
+        webView.scrollView.keyboardDismissMode = .interactive
 
         model.webView = webView
         webView.load(URLRequest(url: url))
