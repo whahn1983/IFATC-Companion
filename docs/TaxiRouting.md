@@ -77,6 +77,23 @@ still made — routing never fails for this reason — but it is flagged as cros
 penalizes it in the router and lowers route confidence (with the note *"gate lead‑in passes through
 a building footprint"*). Footprints are **not routable**; they only shape stand attachment.
 
+### Attaching to a taxiway edge, not just its nodes
+
+A stand attaches to the nearest routable **node** within a fixed radius. That works where OSM maps a
+lane up to each stand, but an apron taxilane is often drawn as one long, sparsely‑noded way whose
+**line** runs right past a row of stands while its nearest *node* is hundreds of metres away — so a
+stand can sit well within taxi distance of a taxiway yet have no node to snap to (e.g. KDEN's inner
+Concourse‑B gates sit ~260 m from the nearest node on the "Green" apron taxilane, whose centreline
+passes ~140 m away as a single 800 m+ segment). A node‑only snap left those stands **orphaned** —
+no connector, unroutable — so an arrival to one silently ended at a different stand.
+
+When no node is in range (or the only node's lead‑in would cross a terminal but an edge lead‑in
+stays clear), the stand instead attaches to the nearest point **projected onto a taxiway edge**,
+splitting that edge to insert the junction. The building‑avoidance and reversal scoring above apply
+to the projected lead‑in exactly as they do to a node, so an edge whose lead‑in cuts through a
+concourse is still passed over for a clear one. Stands that already have a clear node in range keep
+their exact previous attachment, so well‑mapped fields are unchanged.
+
 ### Aircraft classification
 
 Infinite Flight aircraft type is used when available (`AircraftSizeClass.classify`); otherwise

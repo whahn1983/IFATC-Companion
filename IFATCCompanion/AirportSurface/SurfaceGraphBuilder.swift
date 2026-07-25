@@ -256,28 +256,161 @@ enum SurfaceGraphBuilder {
                 .map { $0 }
         }
 
-        // Attach gates / parking via inferred connectors, preferring a nearby node the
-        // lead-in can reach without crossing a concourse or doubling back.
+        // A stand normally snaps to the nearest routable *node* within `gateAttachMeters`. But
+        // an apron taxilane is often drawn as one long, sparsely-noded OSM way whose *line* runs
+        // right past a row of stands while its nearest node is hundreds of metres away — so a
+        // stand can sit well within taxi distance of a taxiway yet have no node to attach to
+        // (e.g. KDEN's inner Concourse-B gates sit ~260 m from the nearest node on the "Green"
+        // apron taxilane, whose centreline passes ~140 m away as a single 800 m+ segment). When
+        // no node is in range — or when the only node's lead-in would cut through a terminal —
+        // the stand instead attaches to the nearest point *projected onto a taxiway edge*,
+        // splitting that edge to insert the junction. Stands that already have a clear node in
+        // range keep their exact existing attachment, so well-mapped fields are unchanged.
+        struct EdgeAttach { let edgeIndex: Int; let projection: CLLocationCoordinate2D; let alongFromFrom: Double; let perpMeters: Double }
+
+        func edgeAttachCandidates(to coord: CLLocationCoordinate2D) -> [EdgeAttach] {
+            var out: [EdgeAttach] = []
+            for idx in edges.indices {
+                let e = edges[idx]
+                // Skip inferred connectors, closed segments, and runway-occupancy/crossing edges
+                // (a stand never leads onto a runway, and splitting a crossing edge would drop
+                // its crossing metadata).
+                if e.inferred || e.closed || e.runwayOccupancy { continue }
+                let line = e.clGeometry
+                guard line.count >= 2, let proj = SurfaceGeometry.nearestPointOnPath(coord, line),
+                      proj.distanceMeters <= gateAttachMeters else { continue }
+                out.append(EdgeAttach(edgeIndex: idx, projection: proj.point,
+                                      alongFromFrom: proj.alongMeters, perpMeters: proj.distanceMeters))
+            }
+            return Array(out.sorted { $0.perpMeters < $1.perpMeters }.prefix(maxGateConnectorCandidates))
+        }
+
+        /// Reversal penalty for leaving a stand onto a mid-edge projection: the sharpest turn
+        /// from the lead-in bearing onto the taxiway (either direction, or forward only when the
+        /// edge is one-way) — mirrors `reversalPenalty(from:to:)` for node candidates.
+        func edgeReversalPenalty(from gate: CLLocationCoordinate2D, _ c: EdgeAttach) -> Double {
+            let e = edges[c.edgeIndex]
+            let line = e.clGeometry
+            let arrival = Geo.bearing(from: gate, to: c.projection)
+            var bestTurn = 180.0
+            if let fwd = SurfaceGeometry.pointAlong(line, meters: c.alongFromFrom + 8),
+               SurfaceGeometry.distanceMeters(c.projection, fwd) > 0.5 {
+                bestTurn = min(bestTurn, Geo.headingDifference(arrival, Geo.bearing(from: c.projection, to: fwd)))
+            }
+            if !e.oneway, c.alongFromFrom > 0.5,
+               let bwd = SurfaceGeometry.pointAlong(line, meters: max(0, c.alongFromFrom - 8)),
+               SurfaceGeometry.distanceMeters(c.projection, bwd) > 0.5 {
+                bestTurn = min(bestTurn, Geo.headingDifference(arrival, Geo.bearing(from: c.projection, to: bwd)))
+            }
+            return bestTurn > connectorReversalDegrees ? connectorReversalPenaltyMeters : 0
+        }
+
+        func nodeAttachScore(_ gate: CLLocationCoordinate2D, _ c: (id: Int, distance: Double)) -> (score: Double, crosses: Bool) {
+            let crosses = connectorCrossesBuilding(gate, nodes[c.id].clLocation)
+            var s = c.distance
+            if crosses { s += buildingConnectorPenaltyMeters }
+            s += reversalPenalty(from: gate, to: c.id)
+            return (s, crosses)
+        }
+        func edgeAttachScore(_ gate: CLLocationCoordinate2D, _ c: EdgeAttach) -> (score: Double, crosses: Bool) {
+            let crosses = connectorCrossesBuilding(gate, c.projection)
+            var s = c.perpMeters
+            if crosses { s += buildingConnectorPenaltyMeters }
+            s += edgeReversalPenalty(from: gate, c)
+            return (s, crosses)
+        }
+
+        /// Split real edge `eIdx` at `along` metres from its `from`, inserting a routable node at
+        /// `point` and returning its id (or an existing endpoint's id when the projection lands
+        /// essentially on one). The original edge index becomes the from→split half and a new
+        /// edge is appended for the split→to half; every attribute (name, taxilane, oneway,
+        /// confidence, OSM ids, width) is carried onto both halves. Runway-crossing edges are
+        /// never passed here (excluded as candidates), so no crossing metadata is lost.
+        func splitEdgeForConnector(_ eIdx: Int, at point: CLLocationCoordinate2D, alongFromFrom along: Double) -> Int {
+            let e = edges[eIdx]
+            if along <= 1.0 { return e.from }
+            if along >= e.distanceMeters - 1.0 { return e.to }
+            let geo = e.geometry
+            var cumulative = [0.0]
+            for i in 1..<geo.count {
+                cumulative.append(cumulative[i - 1] + SurfaceGeometry.distanceMeters(geo[i - 1].clLocation, geo[i].clLocation))
+            }
+            let pGeo = GeoCoordinate(point)
+            var geomA: [GeoCoordinate] = []
+            var geomB: [GeoCoordinate] = []
+            for i in geo.indices {
+                if cumulative[i] < along - 0.5 { geomA.append(geo[i]) }
+                else if cumulative[i] > along + 0.5 { geomB.append(geo[i]) }
+            }
+            geomA.append(pGeo)
+            geomB.insert(pGeo, at: 0)
+            guard geomA.count >= 2, geomB.count >= 2 else { return e.to }
+            let pID = makeNode(at: pGeo, kind: .apronConnector)
+            if pID == e.from || pID == e.to { return pID }   // snapped onto an existing endpoint
+            func half(from a: Int, to b: Int, geometry: [GeoCoordinate], newID: Int) -> SurfaceEdge {
+                SurfaceEdge(id: newID, from: a, to: b, geometry: geometry,
+                            distanceMeters: SurfaceGeometry.pathLengthMeters(geometry.clLocations),
+                            taxiwayName: e.taxiwayName, hasName: e.hasName, isTaxilane: e.isTaxilane,
+                            runwayCrossing: nil, runwayCrossingName: nil, crossingPoint: nil,
+                            runwayOccupancy: e.runwayOccupancy, oneway: e.oneway, closed: e.closed,
+                            inferred: e.inferred, crossesBuilding: e.crossesBuilding,
+                            confidence: e.confidence, osmIDs: e.osmIDs, widthMeters: e.widthMeters)
+            }
+            edges[eIdx] = half(from: e.from, to: pID, geometry: geomA, newID: e.id)
+            edges.append(half(from: pID, to: e.to, geometry: geomB, newID: edges.count))
+            return pID
+        }
+
+        // Attach gates / parking via inferred connectors, preferring a nearby node the lead-in
+        // can reach without crossing a concourse or doubling back — and, when no node is in range
+        // (or the only node lead-in crosses a terminal), a point projected onto a nearby taxiway
+        // edge so a stand beside a long, sparsely-noded apron taxilane still connects.
         var inferredConnectors = 0
         for parking in model.parkingPositions {
             let gateCoord = parking.coordinate.clLocation
-            let candidates = connectorCandidates(to: gateCoord)
-            guard !candidates.isEmpty else { continue }
 
-            func score(_ c: (id: Int, distance: Double)) -> Double {
-                var s = c.distance
-                if connectorCrossesBuilding(gateCoord, nodes[c.id].clLocation) {
-                    s += buildingConnectorPenaltyMeters
-                }
-                s += reversalPenalty(from: gateCoord, to: c.id)
-                return s
+            let bestNode = connectorCandidates(to: gateCoord)
+                .map { (c: $0, s: nodeAttachScore(gateCoord, $0)) }
+                .min { $0.s.score < $1.s.score }
+
+            // Only pay for the edge scan when a node snap is unavailable or would cross a
+            // building — the well-mapped stands keep their exact existing node attachment.
+            var bestEdge: (c: EdgeAttach, s: (score: Double, crosses: Bool))?
+            let needEdge: Bool
+            if let bestNode { needEdge = bestNode.s.crosses } else { needEdge = true }
+            if needEdge {
+                bestEdge = edgeAttachCandidates(to: gateCoord)
+                    .map { (c: $0, s: edgeAttachScore(gateCoord, $0)) }
+                    .min { $0.s.score < $1.s.score }
             }
-            guard let taxiIdx = candidates.min(by: { score($0) < score($1) })?.id else { continue }
+
+            // Prefer the in-range node (unchanged routing); fall to an edge projection when
+            // there is no node in range, or when the node lead-in crosses a terminal but an edge
+            // lead-in stays clear.
+            let useEdge: Bool
+            if let bestNode {
+                useEdge = bestNode.s.crosses && (bestEdge?.s.crosses == false)
+            } else {
+                useEdge = bestEdge != nil
+            }
+
+            let taxiIdx: Int
+            if useEdge, let bestEdge {
+                taxiIdx = splitEdgeForConnector(bestEdge.c.edgeIndex, at: bestEdge.c.projection,
+                                                alongFromFrom: bestEdge.c.alongFromFrom)
+            } else if let bestNode {
+                taxiIdx = bestNode.c.id
+            } else {
+                continue
+            }
 
             let gateNodeID = makeNode(at: parking.coordinate,
                                       kind: parking.kind == .gate ? .gate : .parking,
                                       osmID: parking.osmID, inferred: true)
             nodes[gateNodeID].name = parking.name
+            // A stand sitting essentially on the taxiway can resolve to its own attach node;
+            // skip the zero-length self-connector.
+            guard taxiIdx != gateNodeID else { continue }
             let a = nodes[gateNodeID].coordinate, b = nodes[taxiIdx].coordinate
             let dist = SurfaceGeometry.distanceMeters(a.clLocation, b.clLocation)
             // Even the best available lead-in may still clip a footprint (a stand ringed by
