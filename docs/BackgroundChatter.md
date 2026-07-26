@@ -11,11 +11,15 @@ Two opt-in Settings toggles under **Background Radio & Notification**:
    alive in the background.
 
 A third, independent toggle — **Radio voice effect** — runs the main ATC and pilot voices
-through a VHF-radio filter (band-pass + gentle soft-clip saturation, via `RadioVoiceProcessor`) so the
-same iOS voices sound like real radio transmissions, and brackets your own read-backs with a
-mic-key/un-key static burst. It's the same toggle for both (persisted as
-`transmissionStaticEnabled`). When off, the original clean-voice playback path is used
+through a VHF-radio filter (band-pass + soft-clip saturation, via `RadioVoiceProcessor`) so the
+same iOS voices sound like real over-the-air transmissions. (Persisted as
+`transmissionStaticEnabled`.) When off, the original clean-voice playback path is used
 unchanged.
+
+> The mic-key/un-key **static bursts** that used to bracket the pilot's own transmissions are
+> **currently disabled** — the toggle is just the radio grit for now. The squelch machinery
+> (`RadioAudioEngine`'s squelch player, `AmbientChatterService.transmissionStaticBurst`,
+> `SpeechService.transmissionStatic`) is left in place, dormant, so it's easy to bring back.
 
 ## Why chatter is the background anchor
 
@@ -74,9 +78,11 @@ AmbientChatterService (orchestrator, @MainActor)
 - **Silent switch:** background chatter overrides the silent switch (it forces `.playback`
   via `SpeechService.forcePlaybackForBackground`), because audible background audio is the
   whole point.
-- **Transmission static:** `SpeechService` brackets pilot transmissions with a squelch
-  burst (`transmissionStatic`), which works even when the continuous chatter is off (the
-  engine is started transiently for the burst).
+- **Transmission static (currently disabled):** `SpeechService` can bracket pilot
+  transmissions with a squelch burst (`transmissionStatic`), but the calls to it are
+  commented out for now — the "Radio voice effect" toggle is just the voice grit. The
+  machinery is intact and can be re-enabled by restoring the two calls in
+  `runProcessedPump`.
 
 ## Live notification
 
