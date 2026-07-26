@@ -99,7 +99,7 @@ final class RadioAudioEngine {
         eq.bands[0].frequency = 320
         eq.bands[0].bypass = false
         eq.bands[1].filterType = .lowPass
-        eq.bands[1].frequency = 3_000
+        eq.bands[1].frequency = 3_300   // a bit wider so the saturation harmonics (grit) survive
         eq.bands[1].bypass = false
         eq.globalGain = 1
 
@@ -201,9 +201,10 @@ final class RadioAudioEngine {
         guard isRunning, !buffers.isEmpty else { completion(); return }
         let converted = buffers.compactMap(convertToCommon)
         guard !converted.isEmpty else { completion(); return }
-        // Gentle radio saturation (soft-clip) before the band-pass EQ — the chatter can be
-        // a touch grittier than the main voice since it sits behind static.
-        for buffer in converted { applyRadioSaturation(to: buffer, drive: 2.2, mix: 0.35) }
+        // Radio saturation (soft-clip) before the band-pass EQ — driven fairly hard, since
+        // the chatter sits behind static and can take the extra grit. `drive` is the main
+        // grit knob (tanh is near-linear, and inaudible, below ~4).
+        for buffer in converted { applyRadioSaturation(to: buffer, drive: 8, mix: 0.7, outputGain: 0.75) }
         if !speechPlayer.isPlaying { speechPlayer.play() }
 
         let total = converted.count
