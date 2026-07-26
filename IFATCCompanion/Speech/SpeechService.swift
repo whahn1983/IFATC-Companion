@@ -21,9 +21,9 @@ final class SpeechService: NSObject, ObservableObject {
 
     /// Fires one short mic-key/un-key static burst. Wired to the radio engine so the
     /// pilot's own transmissions are bracketed with radio static. No-op when unset.
+    /// Whether to actually bracket a given transmission is read live from
+    /// `AppSettings.transmissionStaticEnabled` in `speak(_:)`.
     var transmissionStatic: (() -> Void)?
-    /// Whether to bracket pilot transmissions with `transmissionStatic`.
-    var transmissionStaticEnabled = false
 
     /// Identities of in-flight pilot utterances, so the un-key burst fires when the
     /// matching utterance finishes.
@@ -85,7 +85,9 @@ final class SpeechService: NSObject, ObservableObject {
         // fires from `didStart` (not here), so if the pilot readback is queued behind a
         // still-playing ATC call it plays when the pilot's voice actually begins — not
         // over the controller. The un-key burst fires from `didFinish`/`didCancel`.
-        if isPilot, transmissionStaticEnabled, transmissionStatic != nil {
+        // Read the setting *live* (not a cached copy) so toggling it off takes effect on
+        // the very next transmission.
+        if isPilot, settings.transmissionStaticEnabled, transmissionStatic != nil {
             pilotUtterances.insert(ObjectIdentifier(utterance))
         }
 

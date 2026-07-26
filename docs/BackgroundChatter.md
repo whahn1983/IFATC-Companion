@@ -54,8 +54,8 @@ AmbientChatterService (orchestrator, @MainActor)
 - **`RadioAudioEngine`** generates the static bed (a filtered-noise `AVAudioSourceNode` — no
   bundled asset), runs the chatter voice through a band-pass EQ + the `.speechRadioTower`
   distortion preset so it sounds like a real, barely-readable transmission, and fires
-  mic-key squelch bursts (~130 ms, band-limited to the ~300 Hz–3 kHz comms passband, modelled
-  on a real radio squelch tail). The bed behaves like a real **squelch**: it is kept well
+  mic-key bursts shaped as a click with a soft tail (~110 ms, band-limited so it reads as
+  radio noise). The bed behaves like a real **squelch**: it is kept well
   below the voice and only opens up (`setTransmitting`) while a call is playing, falling to
   near-silent between calls.
 
