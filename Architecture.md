@@ -123,7 +123,12 @@ Full detail in [`docs/BackgroundChatter.md`](docs/BackgroundChatter.md) and
   process — and therefore the Infinite Flight poll loop and the Live Activity — alive. This
   is a legitimate, audible feature rather than a silent keep-alive (App Store guideline
   2.5.4). It ducks under real ATC calls (`SpeechService.isSpeaking`) and pauses around
-  push-to-talk (`SpeechRecognitionService.isListening`).
+  push-to-talk (`SpeechRecognitionService.isListening`). It runs only for the working part of
+  the flight — `AppModel.shouldRunAmbientChatter` gates it on the pilot's **first ATC
+  communication** and stops it when the flight **ends** (parked) or is **reset**. Background
+  **controllers** are spoken in the user's configured per-facility voices
+  (`AppSettings.controllerVoiceID(for:)`, shared with `SpeechService`); background **pilots**
+  are a fresh random pick from the curated chatter pool per read-back.
 - **ChatterScriptGenerator** — deterministic, template-based generator **bounded to the
   tuned facility** (`AppModel.currentFacility`), reusing `Phonetic` and `AirlineDatabase`
   so callsigns/headings/altitudes/frequencies match the real calls: Center works ride

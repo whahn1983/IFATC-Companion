@@ -233,14 +233,25 @@ final class AmbientChatterService: ObservableObject {
     // MARK: - Voice selection
 
     private func voice(for line: ChatterLine, facility: ATCFacility) -> AVSpeechSynthesisVoice? {
-        guard !voicePool.isEmpty else { return nil }
-        // The pilot side uses a distinct, consistent voice from the pool.
-        if line.isPilot { return voicePool.last }
-        // Controller line: a stable index per facility (normalise a possibly-negative
-        // remainder into range) so a frequency keeps a consistent "controller" voice.
-        let count = voicePool.count
-        let index = ((facility.rawValue.hashValue % count) + count) % count
-        return voicePool[index]
+        // Background pilots are other aircraft, each a different station: pick a fresh random
+        // voice from the curated chatter pool per transmission so consecutive read-backs don't
+        // all sound like the same pilot.
+        if line.isPilot { return voicePool.randomElement() }
+        // Controller lines use the same per-facility voice the pilot hears from the real
+        // controllers (from Settings), so the background <facility> matches the <facility> in
+        // use — Ground sounds like Ground, Tower like Tower.
+        return controllerVoice(for: facility)
+    }
+
+    /// The controller voice for a facility, mirroring `SpeechService`: the configured
+    /// per-facility voice, then the default controller voice, then a system English voice.
+    private func controllerVoice(for facility: ATCFacility) -> AVSpeechSynthesisVoice? {
+        guard let settings else { return voicePool.first }
+        let id = settings.controllerVoiceID(for: facility)
+        if !id.isEmpty, let v = AVSpeechSynthesisVoice(identifier: id) { return v }
+        if !settings.defaultVoiceID.isEmpty,
+           let v = AVSpeechSynthesisVoice(identifier: settings.defaultVoiceID) { return v }
+        return AVSpeechSynthesisVoice(language: "en-US")
     }
 
     // MARK: - Synthesis

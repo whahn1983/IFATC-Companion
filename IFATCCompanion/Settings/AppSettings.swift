@@ -151,6 +151,23 @@ final class AppSettings: ObservableObject {
     /// said it).
     @Published var speakPilot: Bool { didSet { save(speakPilot, .speakPilot) } }
 
+    /// The configured controller-voice identifier for a facility (empty = fall back to the
+    /// default controller voice). Ramp shares the Ground voice (both work the surface);
+    /// Clearance uses the default controller voice. Shared by the real-controller speech and
+    /// the background chatter so a simulated <facility> is spoken in the same voice as the
+    /// <facility> the pilot is actually working.
+    func controllerVoiceID(for facility: ATCFacility) -> String {
+        switch facility {
+        case .ground: return voiceGround
+        case .tower: return voiceTower
+        case .departure: return voiceDeparture
+        case .center: return voiceCenter
+        case .approach: return voiceApproach
+        case .ramp: return voiceGround
+        case .clearance: return defaultVoiceID
+        }
+    }
+
     // Phraseology
     @Published var phraseologyMode: PhraseologyMode { didSet { save(phraseologyMode.rawValue, .phraseologyMode) } }
     @Published var digitStyle: CallsignDigitStyle { didSet { save(digitStyle.rawValue, .digitStyle) } }

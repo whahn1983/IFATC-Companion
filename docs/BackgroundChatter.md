@@ -4,7 +4,10 @@ Two opt-in Settings toggles under **Background Radio & Notification**:
 
 1. **Background radio chatter** — plays quiet, static-wrapped, randomly-generated ATC
    traffic on the frequency you're tuned to, and (crucially) keeps the app running in the
-   background so live Infinite Flight callbacks no longer stall when you leave the app.
+   background so live Infinite Flight callbacks no longer stall when you leave the app. It
+   comes up only **after your first ATC communication** (you don't hear other traffic on
+   frequency before you've checked in) and goes quiet again when the flight **ends** (parked
+   at the destination gate) or you **reset** the flight.
 2. **Live flight notification** — a live-updating Lock Screen / Dynamic Island card with
    Read Back / Check In buttons. It **requires** background chatter, because the chatter is
    what supplies the continuous audio that keeps the app (and the notification's updates)
@@ -31,7 +34,16 @@ chatter bed satisfies both — and, unlike playing silent audio to stay alive (w
 Store review guideline 2.5.4 prohibits), it is genuine, purposeful, audible content.
 
 While the chatter runs it holds a `.playback` audio session active; that is also what lets
-TTS callouts play in the background and what keeps the Live Activity updating.
+TTS callouts play in the background and what keeps the Live Activity updating. Because the
+chatter is gated on the first ATC communication (and stops at flight end), the background
+anchor is active for the working portion of the flight — from the first call-up through the
+arrival — which is exactly when the poll loop and notification need to keep running.
+
+`AppModel` owns this lifecycle: `shouldRunAmbientChatter` is `backgroundChatterEnabled && `
+`atcCommunicationStarted && !flightHasEnded`, and `updateChatterRunState()` starts/stops the
+service whenever any of those change (first `post()` of a controller/pilot line, the `.parked`
+transition, a flight reset, or a Settings toggle). On a reconnect the "communication started"
+flag is re-derived from the restored transcript so a resumed flight keeps its chatter.
 
 ## Components
 
@@ -65,12 +77,16 @@ AmbientChatterService (orchestrator, @MainActor)
   runway, while Tower landings and Approach clearances use an **arrival** runway — matching
   how the field is really being run. Until the surface/ATIS load (or with no flight plan) the
   pools are empty and the generator falls back to a plausible random runway.
-- **`VoiceCatalog`** limits the chatter to a curated set of natural English voices —
-  **Karen, Daniel, Moira, Rishi, Samantha** (a good AU/GB/IE/IN/US spread) — using whichever
-  are installed, preferring the enhanced/premium variant of each. If none are installed it
-  falls back to the general English-human filter (English, non-novelty, non-Personal-Voice,
-  non-Eloquence). Each facility keeps a stable voice, and the pilot side uses a distinct one.
-  The chatter speaks at a fixed rate (0.55) independent of the user's main voice-rate setting.
+- **`VoiceCatalog`** limits the chatter's **pilot** voices to a curated set of natural English
+  voices — **Karen, Daniel, Moira, Rishi, Samantha** (a good AU/GB/IE/IN/US spread) — using
+  whichever are installed, preferring the enhanced/premium variant of each. If none are
+  installed it falls back to the general English-human filter (English, non-novelty,
+  non-Personal-Voice, non-Eloquence). Each background **pilot** read-back is a fresh random
+  pick from that pool (different aircraft sound different). The background **controllers**,
+  however, use the **same per-facility voices the user configured for the real controllers**
+  (`AppSettings.controllerVoiceID(for:)`, shared with `SpeechService`) — so the simulated
+  Ground/Tower/Approach sounds like the controller actually on frequency. The chatter speaks at
+  a fixed rate (0.55) independent of the user's main voice-rate setting.
 - **`RadioAudioEngine`** generates the static bed (a filtered-noise `AVAudioSourceNode` — no
   bundled asset), gives the chatter voice a gentle soft-clip saturation
   (`applyRadioSaturation`) then band-passes it so it sounds like a real, barely-readable

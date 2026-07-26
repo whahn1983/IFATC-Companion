@@ -425,6 +425,13 @@ final class AppModel: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private var started = false
 
+    /// Whether the pilot has begun communicating with ATC this flight — the first controller
+    /// or pilot call has been posted. The ambient background chatter is held silent until then
+    /// (you don't hear other traffic on frequency before you've checked in) and stops again when
+    /// the flight ends or is reset. Not persisted directly — re-derived from the transcript on a
+    /// reconnect so a resumed flight keeps the chatter going.
+    private var atcCommunicationStarted = false
+
     /// Persists the in-progress ATC session so a disconnect/reconnect (or app
     /// relaunch) resumes where the flight left off instead of re-deriving the
     /// conversation from raw telemetry — which would jump a parked aircraft to cruise.
@@ -624,6 +631,8 @@ final class AppModel: ObservableObject {
                     }
                 case .parked:
                     self.airportSurface.hideTaxiMap()
+                    // Flight complete at the gate — end the ambient background chatter.
+                    self.updateChatterRunState()
                 default:
                     break
                 }
@@ -1009,16 +1018,29 @@ final class AppModel: ObservableObject {
         updateLiveActivityRunState()
     }
 
-    /// Run the continuous chatter while it's enabled and the app is active; otherwise
-    /// stop it (the transient mic-key bursts still work on demand).
+    /// Run the continuous chatter while it's enabled, the flight is under way (the pilot has
+    /// made their first ATC call), and it hasn't ended; otherwise stop it (the transient
+    /// mic-key bursts still work on demand).
     private func updateChatterRunState() {
         guard started else { return }
-        if settings.backgroundChatterEnabled {
+        if shouldRunAmbientChatter {
             chatter.start()
         } else {
             chatter.stop()
         }
     }
+
+    /// Whether the ambient chatter should be playing right now: enabled in Settings, the flight
+    /// has begun communicating with ATC, and it hasn't ended (parked at the destination gate).
+    var shouldRunAmbientChatter: Bool {
+        settings.backgroundChatterEnabled && atcCommunicationStarted && !flightHasEnded
+    }
+
+    /// Whether the flight is over — arrived and parked at the destination gate. The state
+    /// machine's cursor reaches `.parked` only at the end of the flight (never at the gate
+    /// before pushback), and it is updated synchronously before `atcState`, so this reads
+    /// correctly even from the `$atcState` observer.
+    private var flightHasEnded: Bool { stateMachine.current == .parked }
 
     /// One-time wiring: route the Live Activity's Read Back / Check In buttons back into
     /// the same actions the on-screen buttons drive.
@@ -1193,6 +1215,9 @@ final class AppModel: ObservableObject {
         arrivalAnnounced = false
         awaitingGateArrival = false
         gateMonitored = false
+        // Fresh flight: hold the ambient chatter until the pilot's first ATC call.
+        atcCommunicationStarted = false
+        updateChatterRunState()
         atcState = .connectedIdle
         currentFacility = .clearance
         stateMachine.setConnected()
@@ -1238,6 +1263,8 @@ final class AppModel: ObservableObject {
             arrivalAnnounced = false
             awaitingGateArrival = false
             gateMonitored = false
+            // Fresh flight: hold the ambient chatter until the pilot's first ATC call.
+            atcCommunicationStarted = false
             currentFacility = .clearance
             // A genuinely fresh flight: no ATIS has been fetched or received yet.
             departureATIS = nil
@@ -1249,6 +1276,9 @@ final class AppModel: ObservableObject {
             arrivalInfoAppended = false
             updateATISDiagnostics()
         }
+        // Reflect the new/restored flight in the chatter: stopped for a fresh flight (awaiting
+        // the first ATC call), resumed when a mid-flight session was restored.
+        updateChatterRunState()
         if settings.autoDiscover && settings.host.isEmpty {
             connect.startAutoDiscover { [weak self] device in
                 guard let self else { return }
@@ -2430,6 +2460,12 @@ final class AppModel: ObservableObject {
             latestTransmission = tx
             lastATCTransmission = tx
         }
+        // The first real controller/pilot exchange starts the ambient chatter — background
+        // traffic only comes up once the pilot is working ATC (an ATIS broadcast never counts).
+        if !atcCommunicationStarted, tx.isControllerExchange {
+            atcCommunicationStarted = true
+            updateChatterRunState()
+        }
         diagnostics.log(.atc, "[\(tx.sender.rawValue.uppercased())] \(tx.displayText)")
         if speak { speech.speak(tx) }
         // A new transcript line is a meaningful change — capture it immediately so a
@@ -2551,6 +2587,10 @@ final class AppModel: ObservableObject {
             latestTransmission = lastATC
             lastATCTransmission = lastATC
         }
+        // A resumed flight has already been talking to ATC if its transcript holds any
+        // controller/pilot exchange — keep the ambient chatter going rather than waiting for
+        // the next call.
+        atcCommunicationStarted = transcript.contains { $0.isControllerExchange }
     }
 
     /// If the restored session was mid-taxi, arm the taxi-map restore. The map itself is
@@ -5400,6 +5440,7 @@ final class AppModel: ObservableObject {
     func resetAppData() {
         transcript.removeAll()
         latestTransmission = nil
+        atcCommunicationStarted = false
         clearSavedSession()
         resetWeatherDeviation()
         radarOverlay.mockCells = []
@@ -5428,6 +5469,10 @@ final class AppModel: ObservableObject {
         airportSurface.clear()
         pendingTaxiMapRestore = .none
         speech.stop()
+        // End the ambient chatter with the flight; it restarts on the new flight's first ATC
+        // call (the mock feed below re-begins the conversation).
+        atcCommunicationStarted = false
+        updateChatterRunState()
         transcript.removeAll()
         latestTransmission = nil
         lastATCTransmission = nil

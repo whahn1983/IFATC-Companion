@@ -204,6 +204,43 @@ final class ChatterTests: XCTestCase {
                       "chatter pool must be the allowed named voices, or the English-human fallback")
     }
 
+    // MARK: - Controller voice mapping
+
+    /// The chatter's controller voices are resolved from the same per-facility Settings the
+    /// real controllers use, so a simulated Ground/Tower/etc. sounds like the one on frequency.
+    func testControllerVoiceIDMatchesTheFacilitySetting() {
+        let defaults = UserDefaults(suiteName: "voice.test.\(UUID().uuidString)")!
+        let settings = AppSettings(defaults: defaults)
+        settings.voiceGround = "com.apple.voice.G"
+        settings.voiceTower = "com.apple.voice.T"
+        settings.voiceDeparture = "com.apple.voice.D"
+        settings.voiceCenter = "com.apple.voice.C"
+        settings.voiceApproach = "com.apple.voice.A"
+        settings.defaultVoiceID = "com.apple.voice.DEF"
+
+        XCTAssertEqual(settings.controllerVoiceID(for: .ground), "com.apple.voice.G")
+        XCTAssertEqual(settings.controllerVoiceID(for: .tower), "com.apple.voice.T")
+        XCTAssertEqual(settings.controllerVoiceID(for: .departure), "com.apple.voice.D")
+        XCTAssertEqual(settings.controllerVoiceID(for: .center), "com.apple.voice.C")
+        XCTAssertEqual(settings.controllerVoiceID(for: .approach), "com.apple.voice.A")
+        // Ramp shares the Ground voice; Clearance uses the default controller voice.
+        XCTAssertEqual(settings.controllerVoiceID(for: .ramp), "com.apple.voice.G")
+        XCTAssertEqual(settings.controllerVoiceID(for: .clearance), "com.apple.voice.DEF")
+    }
+
+    // MARK: - Transmission classification
+
+    func testIsControllerExchangeExcludesATISAndSystem() {
+        let atc = ATCTransmission(sender: .atc, facility: .tower, displayText: "Cleared to land.")
+        let pilot = ATCTransmission(sender: .pilot, facility: .tower, displayText: "Cleared to land.")
+        let system = ATCTransmission(sender: .system, facility: .ramp, displayText: "Flight complete.")
+        let atis = ATCTransmission(sender: .system, facility: .center, displayText: "Info Alpha.", isATIS: true)
+        XCTAssertTrue(atc.isControllerExchange)
+        XCTAssertTrue(pilot.isControllerExchange)
+        XCTAssertFalse(system.isControllerExchange)
+        XCTAssertFalse(atis.isControllerExchange)
+    }
+
     // MARK: - Settings coupling
 
     func testLiveActivityRequiresChatter() {
