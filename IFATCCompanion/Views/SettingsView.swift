@@ -25,6 +25,7 @@ struct SettingsView: View {
                 pilotVoiceSection
                 phraseologySection
                 automationSection
+                backgroundAudioSection
                 sigmetPirepSection
                 weatherDataSection
                 dataSourcesSection
@@ -240,6 +241,29 @@ struct SettingsView: View {
             Text("ATC Automation")
         } footer: {
             Text("You drive your own calls with the buttons — clearance, pushback, engine start, taxi and ready. The controller's position-based calls play automatically: takeoff clearance once you line up, the hand-off to Departure after you're airborne, and the en-route and arrival sequence. Read backs and check-ins stay manual. Initial climb is set above the field, so at high-elevation airports the callouts are raised to a valid MSL altitude (e.g. Denver's initial climb and the approach descent clear the ground).")
+        }
+    }
+
+    // MARK: - Background audio & Live Activity
+
+    private var backgroundAudioSection: some View {
+        Section {
+            Toggle("Background radio chatter", isOn: $settings.backgroundChatterEnabled)
+            if settings.backgroundChatterEnabled {
+                VStack(alignment: .leading) {
+                    Text("Chatter volume")
+                    Slider(value: $settings.chatterVolume, in: 0.02...0.5)
+                }
+                Picker("Traffic level", selection: $settings.chatterDensity) {
+                    ForEach(ChatterDensity.allCases) { Text($0.title).tag($0) }
+                }
+                Toggle("Live flight notification", isOn: $settings.liveActivityEnabled)
+            }
+            Toggle("Static on my transmissions", isOn: $settings.transmissionStaticEnabled)
+        } header: {
+            Text("Background Radio & Notification")
+        } footer: {
+            Text("Background radio chatter plays quiet, static-wrapped ATC traffic on the frequency you're tuned to — and keeps the app running in the background so live calls no longer stall when you switch apps or lock the screen. Audio keeps playing in the background and overrides the silent switch while this is on. The Live flight notification shows a live-updating Lock Screen / Dynamic Island card (phase, altitude, heading, controller) with Read Back and Check In buttons; it needs background chatter for its audio, so turning it on enables chatter too. Both use more battery. \"Static on my transmissions\" brackets your own read-backs with a mic-key static burst.")
         }
     }
 

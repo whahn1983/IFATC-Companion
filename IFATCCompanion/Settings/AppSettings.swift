@@ -56,6 +56,31 @@ enum NOAARadarOverlayMode: String, CaseIterable, Identifiable {
     }
 }
 
+/// How busy the ambient background radio-chatter frequency sounds. Controls the
+/// gap between simulated transmissions (shorter gaps = busier sector).
+enum ChatterDensity: String, CaseIterable, Identifiable {
+    case light
+    case moderate
+    case busy
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .light: return "Light"
+        case .moderate: return "Moderate"
+        case .busy: return "Busy"
+        }
+    }
+    /// Random gap (seconds) between the end of one transmission and the start of the
+    /// next, as a closed range sampled uniformly.
+    var gapRange: ClosedRange<Double> {
+        switch self {
+        case .light: return 9...22
+        case .moderate: return 5...14
+        case .busy: return 2...7
+        }
+    }
+}
+
 /// How airline flight numbers are spoken (e.g. "twelve thirty four" vs "one two three four").
 enum CallsignDigitStyle: String, CaseIterable, Identifiable {
     case grouped     // 1234 -> "twelve thirty four"
@@ -129,6 +154,44 @@ final class AppSettings: ObservableObject {
     // Phraseology
     @Published var phraseologyMode: PhraseologyMode { didSet { save(phraseologyMode.rawValue, .phraseologyMode) } }
     @Published var digitStyle: CallsignDigitStyle { didSet { save(digitStyle.rawValue, .digitStyle) } }
+
+    // Background radio chatter & Live Activity
+    /// Play ambient, randomly-generated background ATC radio chatter — quiet,
+    /// static-wrapped transmissions bounded to the frequency the pilot is tuned to.
+    /// This is also what keeps the app running (and audio flowing) in the background,
+    /// so live callbacks no longer stall when you switch apps or lock the screen.
+    @Published var backgroundChatterEnabled: Bool {
+        didSet {
+            save(backgroundChatterEnabled, .backgroundChatterEnabled)
+            // The Live Activity rides on the chatter audio; turning chatter off must
+            // turn the notification off too.
+            if !isLoading, !backgroundChatterEnabled, liveActivityEnabled {
+                liveActivityEnabled = false
+            }
+        }
+    }
+    /// Show a live-updating Lock Screen / Dynamic Island notification for the flight
+    /// (phase, altitude, heading, controller, weather) with Read Back / Check In
+    /// buttons. Requires background chatter, which supplies the continuous audio that
+    /// keeps the flight updating while the app is backgrounded.
+    @Published var liveActivityEnabled: Bool {
+        didSet {
+            save(liveActivityEnabled, .liveActivityEnabled)
+            // Enabling the Live Activity requires the background chatter that keeps the
+            // app (and its live updates) running while backgrounded.
+            if !isLoading, liveActivityEnabled, !backgroundChatterEnabled {
+                backgroundChatterEnabled = true
+            }
+        }
+    }
+    /// Loudness of the background chatter bed (0…1). Deliberately low so it sits under
+    /// the real ATC calls.
+    @Published var chatterVolume: Double { didSet { save(chatterVolume, .chatterVolume) } }
+    /// How busy the simulated chatter frequency sounds.
+    @Published var chatterDensity: ChatterDensity { didSet { save(chatterDensity.rawValue, .chatterDensity) } }
+    /// Bracket the pilot's own transmissions with a short mic-key / squelch static
+    /// burst so keying up sounds like a real radio.
+    @Published var transmissionStaticEnabled: Bool { didSet { save(transmissionStaticEnabled, .transmissionStaticEnabled) } }
 
     // ATC automation
     /// Initial climb height (ft above field) assigned in the clearance/takeoff
@@ -220,6 +283,12 @@ final class AppSettings: ObservableObject {
         phraseologyMode = PhraseologyMode(rawValue: defaults.string(forKey: Key.phraseologyMode.rawValue) ?? "") ?? .faa
         digitStyle = CallsignDigitStyle(rawValue: defaults.string(forKey: Key.digitStyle.rawValue) ?? "") ?? .grouped
 
+        backgroundChatterEnabled = defaults.object(forKey: Key.backgroundChatterEnabled.rawValue) as? Bool ?? false
+        liveActivityEnabled = defaults.object(forKey: Key.liveActivityEnabled.rawValue) as? Bool ?? false
+        chatterVolume = defaults.object(forKey: Key.chatterVolume.rawValue) as? Double ?? 0.16
+        chatterDensity = ChatterDensity(rawValue: defaults.string(forKey: Key.chatterDensity.rawValue) ?? "") ?? .moderate
+        transmissionStaticEnabled = defaults.object(forKey: Key.transmissionStaticEnabled.rawValue) as? Bool ?? true
+
         initialClimbAltitudeFt = defaults.object(forKey: Key.initialClimbAltitudeFt.rawValue) as? Int ?? 5000
         traconCeilingFL = defaults.object(forKey: Key.traconCeilingFL.rawValue) as? Int ?? 180
 
@@ -266,6 +335,10 @@ final class AppSettings: ObservableObject {
         voiceApproach = other.voiceApproach; voiceATIS = other.voiceATIS
         voicePilot = other.voicePilot; speakPilot = other.speakPilot
         phraseologyMode = other.phraseologyMode; digitStyle = other.digitStyle
+        backgroundChatterEnabled = other.backgroundChatterEnabled
+        liveActivityEnabled = other.liveActivityEnabled
+        chatterVolume = other.chatterVolume; chatterDensity = other.chatterDensity
+        transmissionStaticEnabled = other.transmissionStaticEnabled
         initialClimbAltitudeFt = other.initialClimbAltitudeFt
         traconCeilingFL = other.traconCeilingFL
         routeCorridorNM = other.routeCorridorNM; altitudeBandFt = other.altitudeBandFt
@@ -290,6 +363,7 @@ final class AppSettings: ObservableObject {
         case voiceGround, voiceTower, voiceDeparture, voiceCenter, voiceApproach, voiceATIS
         case voicePilot, speakPilot
         case phraseologyMode, digitStyle
+        case backgroundChatterEnabled, liveActivityEnabled, chatterVolume, chatterDensity, transmissionStaticEnabled
         case initialClimbAltitudeFt, traconCeilingFL
         case routeCorridorNM, altitudeBandFt, weatherBaseURL
         case noaaRadarOverlay, radarOpacity, weatherDeviationAlerts, satelliteDeviationsEnabled

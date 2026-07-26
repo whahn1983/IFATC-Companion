@@ -34,6 +34,12 @@
 	<string>IFATC Companion uses the microphone for push-to-talk so you can speak readbacks and requests instead of tapping. Audio is processed on-device and is not recorded or sent anywhere.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>IFATC Companion recognizes your spoken readbacks and requests on-device to drive the ATC conversation. Speech is processed locally and is not stored or transmitted.</string>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

@@ -13,6 +13,22 @@ final class SpeechService: NSObject, ObservableObject {
     private let synthesizer = AVSpeechSynthesizer()
     private weak var settings: AppSettings?
 
+    /// When true, always use the `.playback` category even if the user asked to respect
+    /// the silent switch. Set while background chatter / Live Activity is enabled, where
+    /// audible background audio is the whole point (and `.ambient` cannot play in the
+    /// background). Owned by `AppModel`.
+    var forcePlaybackForBackground = false
+
+    /// Fires one short mic-key/un-key static burst. Wired to the radio engine so the
+    /// pilot's own transmissions are bracketed with radio static. No-op when unset.
+    var transmissionStatic: (() -> Void)?
+    /// Whether to bracket pilot transmissions with `transmissionStatic`.
+    var transmissionStaticEnabled = false
+
+    /// Identities of in-flight pilot utterances, so the un-key burst fires when the
+    /// matching utterance finishes.
+    private var pilotUtterances = Set<ObjectIdentifier>()
+
     override init() {
         super.init()
         synthesizer.delegate = self
@@ -64,6 +80,13 @@ final class SpeechService: NSObject, ObservableObject {
         utterance.volume = Float(min(max(settings.voiceVolume, 0), 1))
         utterance.preUtteranceDelay = 0.05
         utterance.postUtteranceDelay = 0.1
+
+        // Bracket the pilot's own transmissions with a mic-key static burst (the un-key
+        // burst fires from `didFinish`/`didCancel`), so keying up sounds like a radio.
+        if isPilot, transmissionStaticEnabled, let burst = transmissionStatic {
+            burst()
+            pilotUtterances.insert(ObjectIdentifier(utterance))
+        }
 
         synthesizer.speak(utterance)
     }
@@ -168,8 +191,9 @@ final class SpeechService: NSObject, ObservableObject {
         #if canImport(UIKit)
         let session = AVAudioSession.sharedInstance()
         do {
-            let respectSilent = settings?.respectSilentSwitch ?? false
-            // .playback ignores the silent switch; .ambient respects it.
+            // .playback ignores the silent switch; .ambient respects it. Background
+            // chatter / Live Activity force .playback (audible background audio).
+            let respectSilent = (settings?.respectSilentSwitch ?? false) && !forcePlaybackForBackground
             let category: AVAudioSession.Category = respectSilent ? .ambient : .playback
             try session.setCategory(category, mode: .spokenAudio, options: [.duckOthers])
             try session.setActive(true)
@@ -185,9 +209,18 @@ extension SpeechService: AVSpeechSynthesizerDelegate {
         Task { @MainActor in self.isSpeaking = true }
     }
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        Task { @MainActor in self.isSpeaking = false }
+        Task { @MainActor in self.finishPilotTransmission(utterance); self.isSpeaking = false }
     }
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        Task { @MainActor in self.isSpeaking = false }
+        Task { @MainActor in self.finishPilotTransmission(utterance); self.isSpeaking = false }
+    }
+}
+
+private extension SpeechService {
+    /// If the finished utterance was a bracketed pilot transmission, fire the un-key
+    /// static burst and stop tracking it.
+    func finishPilotTransmission(_ utterance: AVSpeechUtterance) {
+        guard pilotUtterances.remove(ObjectIdentifier(utterance)) != nil else { return }
+        transmissionStatic?()
     }
 }

@@ -47,6 +47,7 @@ IFATC Companion is organized into five tabs:
 - **Simulated weather-deviation flow.** When weather is detected along your route, ATC gives an advisory and you can request a deviation ("twenty degrees right for weather"), get a suggested heading and a rejoin point, then report clear of weather and be cleared back on course — all simulated, for immersion only.
 
 ### Convenience
+- **Background radio & live notification.** Optionally play quiet, static-wrapped ambient ATC chatter on the frequency you're tuned to — which also keeps the app running in the background so live calls no longer stall when you switch apps or lock the screen. Turn on the **live flight notification** for a Lock Screen / Dynamic Island card that updates in real time (phase, altitude, heading, controller, weather) with **Read Back** and **Check In** buttons right on the notification. Both are off by default and use more battery; the notification needs background chatter for its audio.
 - **Resume on reconnect.** If your Wi-Fi drops or you relaunch the app, your in-progress flight and conversation pick up where they left off.
 - **Clear Flight** button to reset the conversation and start fresh.
 - **Auto-discover** to find Infinite Flight on your local network.

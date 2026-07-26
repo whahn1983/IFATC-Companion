@@ -51,6 +51,11 @@ final class AppModel: ObservableObject {
     let mock: MockSimulatorFeed
     let phraseologyProfiles: PhraseologyProfileStore
     let speechRecognizer: SpeechRecognitionService
+    /// Ambient background radio chatter + the mic-key static effects. Also the app's
+    /// background-audio anchor (keeps the flight updating while backgrounded).
+    let chatter = AmbientChatterService()
+    /// Drives the live Lock Screen / Dynamic Island flight notification (iOS 16.1+).
+    let liveActivity = LiveActivityController()
     /// Owns the StoreKit subscription state. Live Connected Mode is available
     /// only while `entitlements.hasLiveAccess` is true; otherwise the app is
     /// locked to Mock Mode.
@@ -832,6 +837,8 @@ final class AppModel: ObservableObject {
         diagnostics.verbose = settings.debugLogging
         applyKeepScreenAwake()
         speech.configure(settings: settings)
+        configureLiveActivity()
+        configureChatter()
         connect.configure(diagnostics: diagnostics)
         Task { await weatherService.configure(baseURL: settings.weatherBaseURL, diagnostics: diagnostics) }
         Task { await atisService.configure(diagnostics: diagnostics) }
@@ -920,6 +927,119 @@ final class AppModel: ObservableObject {
         #endif
     }
 
+    // MARK: - Background chatter & Live Activity
+
+    /// One-time wiring: give the chatter service its live context and hook the pilot's
+    /// transmissions up to the mic-key static effect. Called from `onAppear`.
+    private func configureChatter() {
+        chatter.configure(settings: settings)
+        chatter.bindContext(
+            facility: { [weak self] in self?.currentFacility ?? .center },
+            facilityVoiceID: { [weak self] facility in self?.facilityVoiceID(facility) },
+            pilotVoiceID: { [weak self] in
+                let id = self?.settings.voicePilot ?? ""
+                return id.isEmpty ? nil : id
+            })
+        // Pilot transmissions get a mic-key/un-key static burst via the radio engine.
+        speech.transmissionStatic = { [weak self] in self?.chatter.transmissionStaticBurst() }
+        applyChatterSettings()
+    }
+
+    /// The user-chosen voice identifier for a controller position, or nil when unset.
+    private func facilityVoiceID(_ facility: ATCFacility) -> String? {
+        let id: String
+        switch facility {
+        case .ground, .ramp: id = settings.voiceGround
+        case .tower: id = settings.voiceTower
+        case .departure: id = settings.voiceDeparture
+        case .center: id = settings.voiceCenter
+        case .approach: id = settings.voiceApproach
+        case .clearance: id = settings.defaultVoiceID
+        }
+        return id.isEmpty ? nil : id
+    }
+
+    /// Apply the current chatter/Live-Activity settings and start or stop the ambient
+    /// chatter (the background-audio anchor) accordingly.
+    private func applyChatterSettings() {
+        chatter.refreshConfig()
+        speech.transmissionStaticEnabled = settings.transmissionStaticEnabled
+        // Audible background audio needs the `.playback` category regardless of the
+        // silent-switch preference.
+        speech.forcePlaybackForBackground = settings.backgroundChatterEnabled || settings.liveActivityEnabled
+        updateChatterRunState()
+        updateLiveActivityRunState()
+    }
+
+    /// Run the continuous chatter while it's enabled and the app is active; otherwise
+    /// stop it (the transient mic-key bursts still work on demand).
+    private func updateChatterRunState() {
+        guard started else { return }
+        if settings.backgroundChatterEnabled {
+            chatter.start()
+        } else {
+            chatter.stop()
+        }
+    }
+
+    /// One-time wiring: route the Live Activity's Read Back / Check In buttons back into
+    /// the same actions the on-screen buttons drive.
+    private func configureLiveActivity() {
+        CompanionActionCenter.shared.handler = { [weak self] action in
+            guard let self else { return }
+            switch action {
+            case .readBack: self.readBack()
+            case .checkIn: self.requestHandoff()
+            }
+            self.refreshLiveActivity(force: true)
+        }
+    }
+
+    /// Start or end the live flight notification to match the setting.
+    private func updateLiveActivityRunState() {
+        guard started else { return }
+        if settings.liveActivityEnabled {
+            liveActivity.start(buildLiveActivityState())
+        } else {
+            liveActivity.end()
+        }
+    }
+
+    /// Push the current flight state to the notification (throttled unless `force`).
+    private func refreshLiveActivity(force: Bool = false) {
+        guard settings.liveActivityEnabled, liveActivity.isActive else { return }
+        liveActivity.update(buildLiveActivityState(), force: force)
+    }
+
+    private func buildLiveActivityState() -> CompanionActivityAttributes.ContentState {
+        let alt = Int((aircraftState.altitudeMSL ?? 0).rounded())
+        let hdg = ((Int((aircraftState.heading ?? 0).rounded()) % 360) + 360) % 360
+        let spd = Int((aircraftState.groundSpeed ?? 0).rounded())
+        let route = [flightPlan.departure, flightPlan.destination]
+            .filter { !$0.isEmpty }
+            .joined(separator: " → ")
+        return CompanionActivityAttributes.ContentState(
+            phase: phase.title,
+            facility: currentFacility.title,
+            facilitySymbol: currentFacility.symbol,
+            altitude: alt,
+            heading: hdg,
+            speed: spd,
+            callsign: notificationCallsign(),
+            route: route,
+            nextFacility: pendingCheckInFacility?.title,
+            weatherAlert: activeWeatherConflict != nil ? "Weather ahead on route" : nil,
+            canReadBack: lastATCTransmission != nil && !companionStandby,
+            canCheckIn: availableActions.contains(.checkIn),
+            standby: companionStandby)
+    }
+
+    private func notificationCallsign() -> String {
+        if !settings.callsign.isEmpty { return settings.callsign }
+        let combined = settings.airline + settings.flightNumber
+        return combined.isEmpty ? "IFATC" : combined
+    }
+
     private func observeSettings() {
         // Keep phraseology engines and dependent objects in sync with settings.
         settings.$digitStyle
@@ -944,6 +1064,31 @@ final class AppModel: ObservableObject {
 
         settings.$keepScreenAwake
             .sink { [weak self] _ in self?.applyKeepScreenAwake() }
+            .store(in: &cancellables)
+
+        // Background chatter / Live Activity: react to the toggles and tuning knobs.
+        settings.$backgroundChatterEnabled
+            .combineLatest(settings.$liveActivityEnabled)
+            .sink { [weak self] _, _ in self?.applyChatterSettings() }
+            .store(in: &cancellables)
+        settings.$chatterVolume
+            .combineLatest(settings.$chatterDensity, settings.$transmissionStaticEnabled)
+            .sink { [weak self] _, _, _ in self?.applyChatterSettings() }
+            .store(in: &cancellables)
+
+        // Duck the ambient chatter whenever a real ATC/ATIS/pilot call is speaking.
+        speech.$isSpeaking
+            .removeDuplicates()
+            .sink { [weak self] speaking in self?.chatter.setDucked(speaking) }
+            .store(in: &cancellables)
+
+        // Pause the chatter around push-to-talk so it never bleeds into the mic.
+        speechRecognizer.$isListening
+            .removeDuplicates()
+            .sink { [weak self] listening in
+                guard let self else { return }
+                if listening { self.chatter.pauseForPTT() } else { self.chatter.resumeAfterPTT() }
+            }
             .store(in: &cancellables)
 
         // Track live ATC-staffing status from the Connect link (live mode only).
@@ -1229,8 +1374,8 @@ final class AppModel: ObservableObject {
         aircraftState = state
         stateMachine.setConnected()
         // Persist the session on the way out of every path so a drop after this tick
-        // resumes from here.
-        defer { persistSession() }
+        // resumes from here, and keep the live notification current (throttled).
+        defer { persistSession(); refreshLiveActivity() }
 
         // Ignore an empty telemetry snapshot — Infinite Flight returns one during the
         // reconnect handshake, and PhaseDetector would read its nil "on ground" as
@@ -2252,6 +2397,8 @@ final class AppModel: ObservableObject {
         // A new transcript line is a meaningful change — capture it immediately so a
         // button-driven call (which doesn't go through the telemetry loop) is saved.
         persistSession()
+        // A new call (or read-back) is a meaningful change — push it to the notification.
+        refreshLiveActivity(force: tx.sender == .atc)
     }
 
     /// Post a pilot transmission, speaking it aloud when appropriate. The pilot
