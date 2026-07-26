@@ -53,8 +53,9 @@ AmbientChatterService (orchestrator, @MainActor)
   The chatter speaks at a fixed rate (0.5) independent of the user's main voice-rate setting.
 - **`RadioAudioEngine`** generates the static bed (a filtered-noise `AVAudioSourceNode` — no
   bundled asset), runs the chatter voice through a band-pass EQ + the `.speechRadioTower`
-  distortion preset so it sounds like a real, barely-readable transmission, and fires short,
-  sharp mic-key squelch bursts. The bed behaves like a real **squelch**: it is kept well
+  distortion preset so it sounds like a real, barely-readable transmission, and fires
+  mic-key squelch bursts (~130 ms, band-limited to the ~300 Hz–3 kHz comms passband, modelled
+  on a real radio squelch tail). The bed behaves like a real **squelch**: it is kept well
   below the voice and only opens up (`setTransmitting`) while a call is playing, falling to
   near-silent between calls.
 
