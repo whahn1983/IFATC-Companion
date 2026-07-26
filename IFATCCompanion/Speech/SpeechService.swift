@@ -19,9 +19,17 @@ final class SpeechService: NSObject, ObservableObject {
     /// background). Owned by `AppModel`.
     var forcePlaybackForBackground = false
 
-    /// Plays the mic key-up click / un-key squelch tail that bracket the pilot's own
+    /// Plays the PTT key-down thump / release squelch tail that bracket the pilot's own
     /// transmissions. Wired to the radio engine by `AppModel`. No-op when unset.
     var micKey: ((MicKeyEvent) -> Void)?
+
+    /// Silence held after the pilot's final syllable before the PTT-release squelch tail
+    /// fires — a short "release hang" so the tail doesn't clip the last word.
+    private static let pttReleaseHangNanos: UInt64 = 45_000_000     // ~45 ms
+    /// Length of the receiver-return squelch tail (matches `RadioAudioEngine`'s tail
+    /// buffer). The controller's response is held off until this has elapsed, so it never
+    /// starts over the tail.
+    private static let pttReleaseTailNanos: UInt64 = 140_000_000    // ~140 ms
 
     // MARK: Radio voice effect
     //
@@ -136,12 +144,12 @@ final class SpeechService: NSObject, ObservableObject {
         while !processedQueue.isEmpty {
             let item = processedQueue.removeFirst()
 
-            // Render first (if using the effect), so the mic key-up click fires tight
+            // Render first (if using the effect), so the PTT key-down thump fires tight
             // against the start of the voice rather than before the synthesis delay.
             var buffers: [AVAudioPCMBuffer] = []
             if effectAvailable { buffers = await renderToBuffers(item.utterance) }
 
-            if item.isPilot { micKey?(.keyUp) }        // pilot keys the mic — short click
+            if item.isPilot { micKey?(.keyUp) }        // pilot presses PTT — key-down thump
             if !buffers.isEmpty {
                 await radioVoice.play(buffers, volume: item.utterance.volume)
             } else {
@@ -149,7 +157,14 @@ final class SpeechService: NSObject, ObservableObject {
                 // the call is never silent.
                 await speakUnprocessedAndWait(item.utterance)
             }
-            if item.isPilot { micKey?(.keyDown) }      // pilot un-keys — softer squelch tail
+            if item.isPilot {
+                // Let the final syllable breathe, then fire the receiver-return squelch
+                // tail and hold until it has finished — the controller's response must
+                // not begin while the release tail is still playing.
+                try? await Task.sleep(nanoseconds: Self.pttReleaseHangNanos)
+                micKey?(.keyDown)                       // pilot un-keys — release squelch tail
+                try? await Task.sleep(nanoseconds: Self.pttReleaseTailNanos)
+            }
         }
 
         pumpActive = false

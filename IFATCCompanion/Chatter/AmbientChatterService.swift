@@ -2,11 +2,11 @@ import Foundation
 import AVFoundation
 import Combine
 
-/// A push-to-talk transition on the pilot's radio: keying the mic (a short click) or
-/// un-keying it (the softer squelch tail).
+/// A push-to-talk transition on the pilot's radio: keying the mic (a dull contact thump)
+/// or un-keying it (the receiver-return squelch tail).
 enum MicKeyEvent {
-    case keyUp
-    case keyDown
+    case keyUp   // pilot presses PTT — key-down thump
+    case keyDown // pilot releases PTT — release squelch tail
 }
 
 /// Drives the ambient background radio chatter: it decides *when* to transmit (paced by
@@ -20,7 +20,7 @@ enum MicKeyEvent {
 /// Activity keep updating while the app is backgrounded.
 ///
 /// The service ducks the chatter under real ATC calls, pauses for push-to-talk, and
-/// also provides the short mic-key/un-key static bursts that bracket the pilot's own
+/// also provides the mic-key thump and release squelch tail that bracket the pilot's own
 /// transmissions.
 @MainActor
 final class AmbientChatterService: ObservableObject {
