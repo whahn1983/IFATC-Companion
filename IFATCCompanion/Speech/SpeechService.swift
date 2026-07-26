@@ -21,13 +21,35 @@ final class SpeechService: NSObject, ObservableObject {
 
     /// Fires one short mic-key/un-key static burst. Wired to the radio engine so the
     /// pilot's own transmissions are bracketed with radio static. No-op when unset.
-    /// Whether to actually bracket a given transmission is read live from
-    /// `AppSettings.transmissionStaticEnabled` in `speak(_:)`.
     var transmissionStatic: (() -> Void)?
 
-    /// Identities of in-flight pilot utterances, so the un-key burst fires when the
-    /// matching utterance finishes.
-    private var pilotUtterances = Set<ObjectIdentifier>()
+    // MARK: Radio voice effect
+    //
+    // When `AppSettings.transmissionStaticEnabled` is on, the main calls are routed
+    // through `RadioVoiceProcessor` (band-pass + light distortion) so they sound like
+    // radio transmissions, and the pilot's own calls are still bracketed with mic-key
+    // static. This is the SAME toggle as the transmission static. When it's off, the
+    // original clean-voice path (`synthesizer.speak`) is used, entirely unchanged.
+
+    /// Renders/plays the radio-effected voice. Only active while the effect is enabled.
+    private let radioVoice = RadioVoiceProcessor()
+    /// A second synthesizer used only to render utterances to PCM buffers for the effect
+    /// path (kept separate from `synthesizer`, which handles direct playback/fallback).
+    private let writeSynth = AVSpeechSynthesizer()
+
+    private struct ProcessedItem { let utterance: AVSpeechUtterance; let isPilot: Bool }
+    /// Serial queue of calls awaiting effect processing, so they play in order and each
+    /// pilot call's mic-key static lands exactly at its start.
+    private var processedQueue: [ProcessedItem] = []
+    private var pumpTask: Task<Void, Never>?
+    /// True while the effect pump owns `isSpeaking` (so the delegate doesn't fight it).
+    private var pumpActive = false
+    /// Continuations for utterances the pump is playing via the *fallback* (unprocessed)
+    /// path, resolved from the synthesizer delegate on finish/cancel.
+    private var fallbackContinuations: [ObjectIdentifier: CheckedContinuation<Void, Never>] = [:]
+
+    /// Whether the radio voice effect (and pilot mic-key static) is enabled right now.
+    private var radioEffectEnabled: Bool { settings?.transmissionStaticEnabled ?? false }
 
     override init() {
         super.init()
@@ -81,17 +103,107 @@ final class SpeechService: NSObject, ObservableObject {
         utterance.preUtteranceDelay = 0.05
         utterance.postUtteranceDelay = 0.1
 
-        // Bracket the pilot's own transmissions with mic-key static: the key-up burst
-        // fires from `didStart` (not here), so if the pilot readback is queued behind a
-        // still-playing ATC call it plays when the pilot's voice actually begins — not
-        // over the controller. The un-key burst fires from `didFinish`/`didCancel`.
-        // Read the setting *live* (not a cached copy) so toggling it off takes effect on
-        // the very next transmission.
-        if isPilot, settings.transmissionStaticEnabled, transmissionStatic != nil {
-            pilotUtterances.insert(ObjectIdentifier(utterance))
+        // With the radio effect enabled, route the call through the processor so it
+        // sounds like a radio transmission; the pump also brackets the pilot's own calls
+        // with mic-key static at the right moment. Otherwise use the original clean path.
+        // The toggle is read live so turning it off takes effect on the next call.
+        if radioEffectEnabled {
+            enqueueProcessed(ProcessedItem(utterance: utterance, isPilot: isPilot))
+        } else {
+            synthesizer.speak(utterance)
+        }
+    }
+
+    // MARK: - Radio-effect pump
+
+    private func enqueueProcessed(_ item: ProcessedItem) {
+        processedQueue.append(item)
+        isSpeaking = true
+        if pumpTask == nil {
+            pumpTask = Task { [weak self] in await self?.runProcessedPump() }
+        }
+    }
+
+    /// Play queued calls one at a time through the radio effect (falling back to the
+    /// plain synthesizer for any voice that can't render to buffers, or if the effect
+    /// engine won't start), bracketing pilot calls with mic-key static.
+    private func runProcessedPump() async {
+        pumpActive = true
+        activatePlaybackSession()
+        radioVoice.start()
+        let effectAvailable = radioVoice.isRunning
+
+        while !processedQueue.isEmpty {
+            let item = processedQueue.removeFirst()
+
+            // Render first (if using the effect), so the mic key-up static fires tight
+            // against the start of the voice rather than before the synthesis delay.
+            var buffers: [AVAudioPCMBuffer] = []
+            if effectAvailable { buffers = await renderToBuffers(item.utterance) }
+
+            if item.isPilot { transmissionStatic?() }   // mic key-up
+            if !buffers.isEmpty {
+                await radioVoice.play(buffers, volume: item.utterance.volume)
+            } else {
+                // Voice couldn't render to buffers (or no engine) — speak it plainly so
+                // the call is never silent.
+                await speakUnprocessedAndWait(item.utterance)
+            }
+            if item.isPilot { transmissionStatic?() }   // mic un-key
         }
 
-        synthesizer.speak(utterance)
+        pumpActive = false
+        pumpTask = nil
+        isSpeaking = false
+        radioVoice.stop()
+    }
+
+    /// Render an utterance to PCM buffers on the dedicated write synthesizer. Returns an
+    /// empty array if the voice can't be rendered (caller falls back to plain playback).
+    ///
+    /// A *fresh* utterance is rendered so the original stays pristine for the fallback
+    /// path (an `AVSpeechUtterance` can't be handed to both `write` and `speak`), and it
+    /// renders at full volume — the final level is set by the processor's mixer, so the
+    /// voice-volume setting isn't applied twice.
+    private func renderToBuffers(_ source: AVSpeechUtterance) async -> [AVAudioPCMBuffer] {
+        let utterance = AVSpeechUtterance(string: source.speechString)
+        utterance.voice = source.voice
+        utterance.rate = source.rate
+        utterance.pitchMultiplier = source.pitchMultiplier
+        utterance.preUtteranceDelay = source.preUtteranceDelay
+        utterance.postUtteranceDelay = source.postUtteranceDelay
+        utterance.volume = 1
+
+        return await withCheckedContinuation { (continuation: CheckedContinuation<[AVAudioPCMBuffer], Never>) in
+            let lock = NSLock()
+            var collected: [AVAudioPCMBuffer] = []
+            var resumed = false
+            func finish() {
+                lock.lock()
+                if resumed { lock.unlock(); return }
+                resumed = true
+                let snapshot = collected
+                lock.unlock()
+                continuation.resume(returning: snapshot)
+            }
+            writeSynth.write(utterance) { buffer in
+                guard let pcm = buffer as? AVAudioPCMBuffer, pcm.frameLength > 0 else {
+                    finish()
+                    return
+                }
+                lock.lock(); collected.append(pcm); lock.unlock()
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 15) { finish() }
+        }
+    }
+
+    /// Speak an utterance on the main synthesizer and resolve when it finishes — the
+    /// fallback playback path when the effect can't render a voice.
+    private func speakUnprocessedAndWait(_ utterance: AVSpeechUtterance) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            fallbackContinuations[ObjectIdentifier(utterance)] = continuation
+            synthesizer.speak(utterance)
+        }
     }
 
     /// Sample line spoken when auditioning a voice from Settings.
@@ -130,6 +242,12 @@ final class SpeechService: NSObject, ObservableObject {
 
     func stop() {
         synthesizer.stopSpeaking(at: .immediate)
+        writeSynth.stopSpeaking(at: .immediate)
+        // Drop any queued effect work and unblock the pump so it can unwind.
+        processedQueue.removeAll()
+        radioVoice.stop()
+        for (_, continuation) in fallbackContinuations { continuation.resume() }
+        fallbackContinuations.removeAll()
         isSpeaking = false
     }
 
@@ -209,30 +327,24 @@ final class SpeechService: NSObject, ObservableObject {
 
 extension SpeechService: AVSpeechSynthesizerDelegate {
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
-        Task { @MainActor in self.startPilotTransmission(utterance); self.isSpeaking = true }
+        // While the effect pump is running it owns `isSpeaking`; don't fight it.
+        Task { @MainActor in if !self.pumpActive { self.isSpeaking = true } }
     }
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        Task { @MainActor in self.finishPilotTransmission(utterance); self.isSpeaking = false }
+        Task { @MainActor in self.synthesizerFinished(utterance) }
     }
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        Task { @MainActor in self.finishPilotTransmission(utterance); self.isSpeaking = false }
+        Task { @MainActor in self.synthesizerFinished(utterance) }
     }
 }
 
 private extension SpeechService {
-    /// When a bracketed pilot transmission actually begins speaking (after any queued
-    /// controller call has finished), fire the key-up static burst — so it lands at the
-    /// start of the pilot's call rather than over the ATC call it was queued behind. The
-    /// utterance stays tracked so the un-key burst still fires on finish.
-    func startPilotTransmission(_ utterance: AVSpeechUtterance) {
-        guard pilotUtterances.contains(ObjectIdentifier(utterance)) else { return }
-        transmissionStatic?()
-    }
-
-    /// If the finished utterance was a bracketed pilot transmission, fire the un-key
-    /// static burst and stop tracking it.
-    func finishPilotTransmission(_ utterance: AVSpeechUtterance) {
-        guard pilotUtterances.remove(ObjectIdentifier(utterance)) != nil else { return }
-        transmissionStatic?()
+    /// A direct-synthesizer utterance finished (or was cancelled): resume the pump if it
+    /// was a fallback playback, and clear `isSpeaking` when the pump isn't in control.
+    func synthesizerFinished(_ utterance: AVSpeechUtterance) {
+        if let continuation = fallbackContinuations.removeValue(forKey: ObjectIdentifier(utterance)) {
+            continuation.resume()
+        }
+        if !pumpActive { isSpeaking = false }
     }
 }
