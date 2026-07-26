@@ -52,7 +52,7 @@ enum ATISRunwayParser {
     private static let arrivalKeywords: Set<String> = [
         "LDG", "LNDG", "LANDING", "ARR", "ARRS", "ARRIVAL", "ARRIVALS", "ARRIVING",
         "APCH", "APCHS", "APPCH", "APPCHS", "APPROACH", "APPROACHES", "APP", "APPS",
-        "ILS", "RNAV", "RNP", "LOC", "VOR", "LDA", "SDF", "GLS", "VISUAL", "VIS"
+        "ILS", "RNAV", "RNP", "LOC", "VOR", "LDA", "SDF", "GLS", "VISUAL", "VIS", "VA"
     ]
     /// Words that introduce a run of runway idents.
     private static let runwayKeywords: Set<String> = ["RWY", "RWYS", "RUNWAY", "RUNWAYS", "RY", "RYS"]
