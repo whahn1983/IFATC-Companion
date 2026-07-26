@@ -10,8 +10,12 @@ Two opt-in Settings toggles under **Background Radio & Notification**:
    what supplies the continuous audio that keeps the app (and the notification's updates)
    alive in the background.
 
-A third, independent toggle — **Static on my transmissions** — brackets your own
-read-backs with a mic-key/un-key static burst.
+A third, independent toggle — **Radio voice effect** — runs the main ATC and pilot voices
+through a VHF-radio filter (band-pass + light distortion, via `RadioVoiceProcessor`) so the
+same iOS voices sound like real radio transmissions, and brackets your own read-backs with a
+mic-key/un-key static burst. It's the same toggle for both (persisted as
+`transmissionStaticEnabled`). When off, the original clean-voice playback path is used
+unchanged.
 
 ## Why chatter is the background anchor
 
