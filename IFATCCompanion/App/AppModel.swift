@@ -943,7 +943,6 @@ final class AppModel: ObservableObject {
     /// chatter (the background-audio anchor) accordingly.
     private func applyChatterSettings() {
         chatter.refreshConfig()
-        speech.transmissionStaticEnabled = settings.transmissionStaticEnabled
         // Audible background audio needs the `.playback` category regardless of the
         // silent-switch preference.
         speech.forcePlaybackForBackground = settings.backgroundChatterEnabled || settings.liveActivityEnabled
