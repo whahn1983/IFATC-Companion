@@ -17,7 +17,8 @@ import AVFoundation
 /// calls stay clearly intelligible.
 ///
 /// Driven from the main actor (its `play`/`stop` are awaited by `SpeechService`); the
-/// only off-main code is the buffer-completion callback, which hops back to main.
+/// only off-main code is the buffer-completion callback, which resumes the awaiting
+/// caller through the thread-safe `ResumeOnceVoice` box.
 @MainActor
 final class RadioVoiceProcessor {
 
@@ -101,15 +102,11 @@ final class RadioVoiceProcessor {
         if !player.isPlaying { player.play() }
 
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            let box = ResumeOnceVoice(continuation)
+            let box = ResumeOnceVoice(continuation, bufferCount: converted.count)
             currentPlay = box
-            let total = converted.count
-            let lock = NSLock()
-            var done = 0
             for buffer in converted {
                 player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { _ in
-                    lock.lock(); done += 1; let finished = done >= total; lock.unlock()
-                    if finished { DispatchQueue.main.async { box.resume() } }
+                    box.bufferPlayed()
                 }
             }
             // Safety timeout sized to the audio length so the caller never hangs if a
@@ -140,7 +137,10 @@ final class RadioVoiceProcessor {
         let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 2_048
         guard let output = AVAudioPCMBuffer(pcmFormat: commonFormat, frameCapacity: capacity) else { return nil }
 
-        var supplied = false
+        // `convert(to:error:withInputFrom:)` calls this block synchronously on the current
+        // thread, so the one-shot flag is never touched concurrently — `nonisolated(unsafe)`
+        // tells the Swift 6 concurrency checker as much.
+        nonisolated(unsafe) var supplied = false
         let inputBlock: AVAudioConverterInputBlock = { _, statusOut in
             if supplied { statusOut.pointee = .noDataNow; return nil }
             supplied = true
@@ -154,14 +154,30 @@ final class RadioVoiceProcessor {
     }
 }
 
-/// Guarantees a `CheckedContinuation` is resumed exactly once, from any thread.
-private final class ResumeOnceVoice {
+/// Guarantees a `CheckedContinuation` is resumed exactly once, from any thread, and
+/// counts buffer-completion callbacks so the continuation resumes only after the last
+/// scheduled buffer has played. Marked `@unchecked Sendable` because every piece of
+/// mutable state is guarded by `lock`, which makes instances safe to capture in the
+/// `@Sendable` audio-completion callbacks.
+private final class ResumeOnceVoice: @unchecked Sendable {
     private let lock = NSLock()
     private var resumed = false
+    private var played = 0
+    private let bufferCount: Int
     private let continuation: CheckedContinuation<Void, Never>
 
-    init(_ continuation: CheckedContinuation<Void, Never>) {
+    init(_ continuation: CheckedContinuation<Void, Never>, bufferCount: Int) {
         self.continuation = continuation
+        self.bufferCount = bufferCount
+    }
+
+    /// Records one played-back buffer; resumes once every scheduled buffer has played.
+    func bufferPlayed() {
+        lock.lock()
+        played += 1
+        let finished = played >= bufferCount
+        lock.unlock()
+        if finished { resume() }
     }
 
     func resume() {
