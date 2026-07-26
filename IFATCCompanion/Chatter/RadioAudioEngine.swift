@@ -42,9 +42,9 @@ final class RadioAudioEngine {
     /// benign, tear-free race for a single `Float` (standard for an audio gain).
     private let bedGain = UnsafeMutablePointer<Float>.allocate(capacity: 1)
 
-    /// Short "tick" for keying the mic (pilot presses PTT).
+    /// Dull contact "thump" for keying the mic (pilot presses PTT).
     private var keyClickBuffer: AVAudioPCMBuffer?
-    /// Softer noise burst for un-keying (the AM squelch tail after the pilot's call).
+    /// Receiver-return squelch tail after un-keying (the burst before the receiver mutes).
     private var squelchTailBuffer: AVAudioPCMBuffer?
     private var converters: [AVAudioFormat: AVAudioConverter] = [:]
     private var built = false
@@ -226,12 +226,12 @@ final class RadioAudioEngine {
         }
     }
 
-    /// Fire the short mic-key "click" (pilot keys up the mic).
+    /// Fire the dull PTT key-down "thump" (pilot presses the mic key).
     func playKeyClick() {
         play(squelch: keyClickBuffer)
     }
 
-    /// Fire the softer squelch tail (pilot un-keys — the AM tail before the receiver mutes).
+    /// Fire the PTT-release squelch tail (pilot un-keys — the receiver-return burst).
     func playSquelchTail() {
         play(squelch: squelchTailBuffer)
     }
@@ -278,29 +278,97 @@ final class RadioAudioEngine {
         return output
     }
 
-    /// The mic key-up **click** (~55 ms): a short, low tick wrapped in a wash of static —
-    /// the pilot keying the mic. Near-instant attack and fast decay for the transient, a
-    /// lower band-pass (smaller `aLow`) so it reads as a warm "thunk" rather than a bright
-    /// tick, and a `staticFloor` so a bit of hiss brackets the click.
+    /// The **PTT key-down thump** (~32 ms): a subtle, dull contact "thump" as the pilot
+    /// presses the mic key — deliberately *not* static and *not* a sharp button click.
+    /// Band-limited noise (no oscillator, so there's no audible pitch or ring), gently
+    /// emphasized in the low-mids (~180–300 Hz, set by `aHigh`) and rolled off above
+    /// ~1.7 kHz (`aLow`), with a soft ~4 ms attack rather than an instant transient and
+    /// no static wash. Sits ~16 dB under the pilot voice, so it reads as a muffled contact.
     private func makeKeyClickBuffer() -> AVAudioPCMBuffer? {
-        makeBurst(duration: 0.055, aLow: 0.3, aHigh: 0.03, attack: 0.01, decayPower: 3.5, amplitude: 0.6, staticFloor: 0.2)
+        makeBurst(duration: 0.032, aLow: 0.22, aHigh: 0.026, attack: 0.12, decayPower: 2.5, amplitude: 0.30)
     }
 
-    /// The un-key **squelch tail** (~120 ms): a softer, gentler noise burst — the AM tail
-    /// after the pilot's call. Quieter and smoother than the key click, and held slightly
-    /// longer so the static lingers before the receiver mutes.
+    /// The **PTT-release squelch tail** (~140 ms): the receiver-return burst you hear when
+    /// the pilot un-keys. Band-limited static (≈350 Hz–3 kHz) with a fast ~2 ms attack and
+    /// ~40 ms of open-squelch noise that then decays rapidly to complete silence, plus a
+    /// few sparse, irregular crackles poking through the decay. No beep, chirp, or lingering
+    /// hiss; its initial level sits ~12 dB under the pilot voice.
     private func makeSquelchTailBuffer() -> AVAudioPCMBuffer? {
-        makeBurst(duration: 0.12, aLow: 0.4, aHigh: 0.03, attack: 0.1, decayPower: 1.6, amplitude: 0.4)
+        let duration = 0.140
+        let frames = AVAudioFrameCount(commonFormat.sampleRate * duration)
+        guard frames > 0,
+              let buffer = AVAudioPCMBuffer(pcmFormat: commonFormat, frameCapacity: frames),
+              let channels = buffer.floatChannelData else { return nil }
+        buffer.frameLength = frames
+        let n = Int(frames)
+        let fs = Float(commonFormat.sampleRate)
+        let durationF = Float(duration)
+
+        // Band-pass ≈350 Hz–3 kHz via two cascaded one-pole filters (see `makeBurst`).
+        let aLow: Float = 0.35       // ≈3 kHz low-pass (upper edge)
+        let aHigh: Float = 0.049     // ≈350 Hz high-pass (lower edge)
+        let amplitude: Float = 0.47  // initial level ≈12 dB below the pilot voice
+
+        // Envelope (seconds): fast attack → a short body of open-squelch noise → a rapid
+        // exponential collapse to silence.
+        let attack: Float = 0.002    // 2 ms attack
+        let bodyEnd: Float = 0.042   // ~40 ms of noise, then decay
+        let decayTau: Float = 0.020  // rapid decay time constant
+
+        // One to three sparse, irregular crackles: brief spikes that poke above the
+        // decaying noise at uneven spacings and levels. Baked into the buffer (it is
+        // generated once); each is a fast attack/decay bump modulating the same noise.
+        let crackleCenters: [Float] = [0.052, 0.083, 0.121]  // seconds, irregular spacing
+        let cracklePeaks: [Float]   = [0.50, 0.40, 0.30]     // trailing off
+        let crackleAttack: Float = 0.0004
+        let crackleTau: Float = 0.0018
+
+        var state: UInt32 = 0x2B7E_1516
+        var low: Float = 0
+        var lowLow: Float = 0
+        for i in 0..<n {
+            state ^= state << 13; state ^= state >> 17; state ^= state << 5
+            let white = Float(Int32(bitPattern: state)) / Float(Int32.max)
+            low += aLow * (white - low)          // low-pass (upper edge)
+            lowLow += aHigh * (low - lowLow)     // low-frequency tracker
+            let band = low - lowLow              // band-pass
+            let ts = Float(i) / fs
+
+            // Body: attack ramp, short plateau, then a rapid decay to silence.
+            let body: Float
+            if ts < attack {
+                body = ts / attack
+            } else if ts < bodyEnd {
+                body = 1
+            } else {
+                body = expf(-(ts - bodyEnd) / decayTau)
+            }
+
+            // Crackles layered on top of the body envelope.
+            var crackle: Float = 0
+            for (center, peak) in zip(crackleCenters, cracklePeaks) {
+                let dt = ts - center
+                if dt < -crackleAttack { continue }
+                crackle += dt < 0 ? peak * (dt + crackleAttack) / crackleAttack
+                                  : peak * expf(-dt / crackleTau)
+            }
+
+            var env = body + crackle
+            // Guarantee a clean, click-free finish into complete silence.
+            let fade: Float = 0.003
+            if ts > durationF - fade { env *= max(0, (durationF - ts) / fade) }
+
+            let sample = band * env * amplitude
+            for channel in 0..<Int(commonFormat.channelCount) {
+                channels[channel][i] = sample
+            }
+        }
+        return buffer
     }
 
-    /// Build a band-limited noise burst with a fast attack and a power-curve decay.
-    ///
-    /// `staticFloor` (0 = off) adds a low static wash under the main transient: it fades
-    /// in over the attack and back out to zero by the end of the burst, so a bit of hiss
-    /// surrounds the click without introducing a boundary pop.
+    /// Build a band-limited noise burst with an attack ramp and a power-curve decay.
     private func makeBurst(duration: Double, aLow: Float, aHigh: Float,
-                           attack: Float, decayPower: Float, amplitude: Float,
-                           staticFloor: Float = 0) -> AVAudioPCMBuffer? {
+                           attack: Float, decayPower: Float, amplitude: Float) -> AVAudioPCMBuffer? {
         let frames = AVAudioFrameCount(commonFormat.sampleRate * duration)
         guard frames > 0,
               let buffer = AVAudioPCMBuffer(pcmFormat: commonFormat, frameCapacity: frames),
@@ -317,10 +385,7 @@ final class RadioAudioEngine {
             lowLow += aHigh * (low - lowLow)    // low-frequency tracker
             let band = low - lowLow             // band-pass
             let t = Float(i) / Float(n)
-            let peak: Float = t < attack ? (t / attack) : powf(1 - (t - attack) / (1 - attack), decayPower)
-            // Static wash bracketing the transient: fades in with the attack, out to zero.
-            let floor = staticFloor > 0 ? staticFloor * min(t / attack, 1) * (1 - t) : 0
-            let env = max(peak, floor)
+            let env: Float = t < attack ? (t / attack) : powf(1 - (t - attack) / (1 - attack), decayPower)
             let sample = band * env * amplitude
             for channel in 0..<Int(commonFormat.channelCount) {
                 channels[channel][i] = sample

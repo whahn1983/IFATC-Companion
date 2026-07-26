@@ -19,10 +19,14 @@ same iOS voices sound like real over-the-air transmissions. (Persisted as
 `transmissionStaticEnabled`.) When off, the original clean-voice playback path is used
 unchanged.
 
-> The pilot's own transmissions are also bracketed with subtle mic-key static: a short
-> **click** when the pilot keys up (`MicKeyEvent.keyUp` → `RadioAudioEngine.playKeyClick`)
-> and a softer **squelch tail** when they un-key (`.keyDown` → `playSquelchTail`) — the
-> asymmetric, quieter shape real (AM) aviation radios have. Wired via `SpeechService.micKey`.
+> The pilot's own transmissions are also bracketed with subtle mic-key sounds: a dull,
+> low **contact thump** when the pilot presses PTT (`MicKeyEvent.keyUp` →
+> `RadioAudioEngine.playKeyClick`, ~32 ms) and a short **receiver-return squelch tail**
+> when they release it (`.keyDown` → `playSquelchTail`, ~140 ms: a band-limited noise
+> burst that decays to silence with a couple of sparse crackles) — the asymmetric, quieter
+> shape real (AM) aviation radios have. After the pilot's final syllable the pump waits
+> ~45 ms before the tail, and holds the controller's reply until the tail finishes so it
+> never starts over it. Wired via `SpeechService.micKey`.
 
 ## Why chatter is the background anchor
 
@@ -91,9 +95,9 @@ AmbientChatterService (orchestrator, @MainActor)
   bundled asset), gives the chatter voice a gentle soft-clip saturation
   (`applyRadioSaturation`) then band-passes it so it sounds like a real, barely-readable
   transmission — **not** the robotic ring-modulator artifact of `AVAudioUnitDistortion`'s
-  speech presets — and fires the pilot mic-key bursts: a low **key-up click** (~55 ms,
-  wrapped in a wash of static) and a softer **un-key squelch tail** (~120 ms), both
-  band-limited so they read as radio noise. The bed behaves like a real **squelch**: it is kept well
+  speech presets — and fires the pilot mic-key sounds: a dull low **key-down thump** (~32 ms,
+  no static) and a **release squelch tail** (~140 ms: band-limited noise that decays to
+  silence with a few sparse crackles), both band-limited so they read as radio noise. The bed behaves like a real **squelch**: it is kept well
   below the voice and only opens up (`setTransmitting`) while a call is playing, falling to
   near-silent between calls.
 
@@ -107,10 +111,11 @@ AmbientChatterService (orchestrator, @MainActor)
 - **Silent switch:** background chatter overrides the silent switch (it forces `.playback`
   via `SpeechService.forcePlaybackForBackground`), because audible background audio is the
   whole point.
-- **Mic-key static:** the effect pump (`runProcessedPump`) brackets each pilot call with
-  `micKey?(.keyUp)` (a short click, before playback) and `micKey?(.keyDown)` (a softer
-  squelch tail, after) — wired to `AmbientChatterService.micKey` → the radio engine. Kept
-  subtle and asymmetric to match real AM aviation radios.
+- **Mic-key sounds:** the effect pump (`runProcessedPump`) brackets each pilot call with
+  `micKey?(.keyUp)` (a dull PTT key-down thump, before playback) and `micKey?(.keyDown)`
+  (a release squelch tail, ~45 ms after the final syllable) — wired to
+  `AmbientChatterService.micKey` → the radio engine. The pump then holds the controller's
+  reply until the tail finishes. Kept subtle and asymmetric to match real AM aviation radios.
 
 ## Live notification
 
