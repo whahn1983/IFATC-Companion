@@ -123,7 +123,7 @@ final class RadioAudioEngine {
         // Kept well below the spoken calls — the mic-key burst brackets the pilot's own
         // (full-volume) transmissions, so it should sit under the voice, not compete with it.
         // Subtle — the mic click / squelch tail sit under the voice, not over it.
-        squelchMixer.outputVolume = 0.32
+        squelchMixer.outputVolume = 0.40
         applyLevels()
         keyClickBuffer = makeKeyClickBuffer()
         squelchTailBuffer = makeSquelchTailBuffer()
