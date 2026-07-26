@@ -1036,6 +1036,7 @@ final class AppModel: ObservableObject {
         } else {
             chatter.stop()
         }
+        updateTelemetryWatchdogRunState()
     }
 
     /// Whether the ambient chatter should be playing right now: enabled in Settings, the flight
@@ -1077,6 +1078,90 @@ final class AppModel: ObservableObject {
     private func refreshLiveActivity(force: Bool = false) {
         guard settings.liveActivityEnabled, liveActivity.isActive else { return }
         liveActivity.update(buildLiveActivityState(), force: force)
+    }
+
+    // MARK: - Telemetry-stall watchdog
+
+    /// When the last usable telemetry snapshot arrived. Advanced on every `handle(state:)`
+    /// that carries real data; the watchdog measures staleness against it.
+    private var lastUsableTelemetryAt = Date.distantPast
+    /// When the watchdog last forced a reconnect, so it doesn't reconnect-storm while the
+    /// handshake settles.
+    private var lastForcedReconnectAt = Date.distantPast
+    private var telemetryWatchdog: Task<Void, Never>?
+
+    /// How often the watchdog checks the feed.
+    private let watchdogInterval: TimeInterval = 5
+    /// No fresh usable telemetry for this long (in live mode, while connected) means the
+    /// Infinite Flight socket has silently stalled — which happens when the screen locks:
+    /// the link still looks "connected" but no data flows, so the Live Activity freezes on
+    /// its last numbers. The 1 Hz poll makes a real gap this large unambiguous.
+    private let telemetryStallThreshold: TimeInterval = 12
+    /// Minimum spacing between forced reconnects, so a reconnect that itself takes a few
+    /// seconds to re-establish telemetry isn't treated as a fresh stall.
+    private let reconnectCooldown: TimeInterval = 20
+
+    /// The watchdog is only useful in live mode while the background-audio anchor keeps the
+    /// app alive (the same condition under which the Live Activity keeps updating). The mock
+    /// feed never stalls, and without the anchor the app is suspended in the background so no
+    /// timer would fire anyway.
+    private func updateTelemetryWatchdogRunState() {
+        if !settings.mockMode && shouldRunAmbientChatter {
+            armTelemetryWatchdog()
+        } else {
+            cancelTelemetryWatchdog()
+        }
+    }
+
+    private func armTelemetryWatchdog() {
+        guard telemetryWatchdog == nil else { return }
+        // Start the stall clock at arm time so a flight that just resumed gets a full grace
+        // period before the first check.
+        lastUsableTelemetryAt = Date()
+        let interval = watchdogInterval
+        telemetryWatchdog = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                guard let self, !Task.isCancelled else { return }
+                self.checkTelemetryStall()
+            }
+        }
+    }
+
+    private func cancelTelemetryWatchdog() {
+        telemetryWatchdog?.cancel()
+        telemetryWatchdog = nil
+    }
+
+    /// If the live feed has stalled, force a reconnect — the same recovery
+    /// `handleReturnToForeground()` performs, applied proactively while backgrounded so the
+    /// notification's data keeps flowing instead of waiting for the user to reopen the app.
+    private func checkTelemetryStall() {
+        // Only fight a stall on an otherwise-healthy connection; a real handshake in progress
+        // (`.connecting` / `.receivingManifest`) or a surfaced failure is left to the normal
+        // connect machinery.
+        guard started, connect.connectionState.isConnected else { return }
+        let now = Date()
+        guard telemetryStallDetected(now: now) else { return }
+        // Push the clocks forward so the reconnect's own quiet handshake window isn't counted
+        // as a second stall.
+        lastForcedReconnectAt = now
+        lastUsableTelemetryAt = now
+        diagnostics.log(.connect, "Live telemetry stalled (no fresh data for \(Int(telemetryStallThreshold))s+) — "
+            + "forcing an Infinite Flight reconnect to keep the flight notification current.")
+        // The canonical reconnect (same as the on-screen Reconnect button and the
+        // foreground-return recovery); the mock branch is unreachable here (guarded above).
+        reconnect()
+    }
+
+    /// Pure staleness decision (mode + timing only), so it can be unit-tested with injected
+    /// clocks. The caller additionally requires an active connection.
+    func telemetryStallDetected(now: Date) -> Bool {
+        guard !settings.mockMode else { return false }
+        guard lastUsableTelemetryAt != .distantPast else { return false }   // no first fix yet
+        guard now.timeIntervalSince(lastUsableTelemetryAt) > telemetryStallThreshold else { return false }
+        guard now.timeIntervalSince(lastForcedReconnectAt) > reconnectCooldown else { return false }
+        return true
     }
 
     private func buildLiveActivityState() -> CompanionActivityAttributes.ContentState {
@@ -1390,6 +1475,18 @@ final class AppModel: ObservableObject {
     /// drive a full mock scenario without starting timers, networking, or audio.
     func ingestStateForTesting(_ state: AircraftState) { handle(state: state) }
 
+    /// Test hook: seed the telemetry-stall watchdog's clocks so its pure decision
+    /// (`telemetryStallDetected(now:)`) can be exercised with injected times, without
+    /// real networking. `lastUsable == .distantPast` models "no first fix yet".
+    func setTelemetryClocksForTesting(lastUsable: Date, lastForcedReconnect: Date = .distantPast) {
+        lastUsableTelemetryAt = lastUsable
+        lastForcedReconnectAt = lastForcedReconnect
+    }
+
+    /// Test hook: the last-usable-telemetry timestamp the watchdog measures against, so a
+    /// test can confirm a usable snapshot advances it and an empty one does not.
+    var lastUsableTelemetryAtForTesting: Date { lastUsableTelemetryAt }
+
     /// Test hook: capture the current session as a snapshot (as persistence would).
     func snapshotForTesting() -> SessionSnapshot { currentSnapshot() }
 
@@ -1449,6 +1546,9 @@ final class AppModel: ObservableObject {
     private func handle(state: AircraftState) {
         aircraftState = state
         stateMachine.setConnected()
+        // Record the arrival of real data so the telemetry-stall watchdog knows the feed is
+        // alive; an empty reconnect-handshake snapshot (all-nil) doesn't count.
+        if state.hasUsableTelemetry { lastUsableTelemetryAt = Date() }
         // Persist the session on the way out of every path so a drop after this tick
         // resumes from here, and keep the live notification current (throttled).
         defer { persistSession(); refreshLiveActivity() }
