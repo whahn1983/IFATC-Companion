@@ -91,9 +91,9 @@ AmbientChatterService (orchestrator, @MainActor)
   bundled asset), gives the chatter voice a gentle soft-clip saturation
   (`applyRadioSaturation`) then band-passes it so it sounds like a real, barely-readable
   transmission — **not** the robotic ring-modulator artifact of `AVAudioUnitDistortion`'s
-  speech presets — and fires the pilot mic-key bursts: a short **key-up click** (~28 ms)
-  and a softer **un-key squelch tail** (~85 ms), both band-limited so they read as radio
-  noise. The bed behaves like a real **squelch**: it is kept well
+  speech presets — and fires the pilot mic-key bursts: a low **key-up click** (~55 ms,
+  wrapped in a wash of static) and a softer **un-key squelch tail** (~120 ms), both
+  band-limited so they read as radio noise. The bed behaves like a real **squelch**: it is kept well
   below the voice and only opens up (`setTransmitting`) while a call is playing, falling to
   near-silent between calls.
 
