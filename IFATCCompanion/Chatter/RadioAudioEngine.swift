@@ -157,6 +157,18 @@ final class RadioAudioEngine {
         transmitting = false
     }
 
+    /// Cut any chatter speech that is currently playing — e.g. the pilot tuned away
+    /// mid-call — while leaving the static bed and the engine running. The speech player is
+    /// immediately re-armed so the next `scheduleSpeech` plays normally, and the bed drops
+    /// back to its near-silent between-calls level.
+    func stopSpeech() {
+        guard built, isRunning else { return }
+        speechPlayer.stop()
+        speechPlayer.play()
+        transmitting = false
+        applyLevels()
+    }
+
     // MARK: - Levels
 
     /// Set the un-ducked chatter loudness (0…1) for both the static bed and the voice.
