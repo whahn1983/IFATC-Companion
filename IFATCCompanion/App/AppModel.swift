@@ -934,18 +934,56 @@ final class AppModel: ObservableObject {
     private func configureChatter() {
         chatter.configure(settings: settings)
         chatter.bindContext(facility: { [weak self] in self?.currentFacility ?? .center },
-                            runways: { [weak self] in self?.chatterRunwayIdents() ?? [] })
+                            runways: { [weak self] in self?.chatterRunwayContext() ?? ChatterRunwayContext() })
         // Pilot transmissions get a mic-key/un-key static burst via the radio engine.
         speech.micKey = { [weak self] event in self?.chatter.micKey(event) }
         applyChatterSettings()
     }
 
-    /// The real runway-end idents the background chatter should reference right now — from the
-    /// origin field while operating pre-departure/climbing, the destination once descending or
-    /// arriving — read from the loaded OSM surface. Empty when that surface hasn't loaded yet
-    /// (or no flight plan is set), so the chatter falls back to a plausible random runway.
-    private func chatterRunwayIdents() -> [String] {
-        airportSurface.cachedRunwayIdents(icao: chatterAirportICAO)
+    /// The runways the background chatter should reference right now, for the airport in play —
+    /// the origin field while operating pre-departure/climbing, the destination once descending
+    /// or arriving. When the field's ATIS is available its active departure/arrival runways are
+    /// used (reconciled against the OSM map when loaded); otherwise the field's full OSM runway
+    /// set; and with neither, all-empty so the chatter falls back to a plausible random runway.
+    private func chatterRunwayContext() -> ChatterRunwayContext {
+        let icao = chatterAirportICAO
+        guard !icao.isEmpty else { return ChatterRunwayContext() }
+        let field = airportSurface.cachedRunwayIdents(icao: icao)
+        guard let atis = atisReport(forICAO: icao) else {
+            return ChatterRunwayContext(all: field)
+        }
+        let active = ATISRunwayParser.activeRunways(atis)
+        let departures = reconcileRunways(active.departures, field: field)
+        let arrivals = reconcileRunways(active.arrivals, field: field)
+        let union = orderedRunwayUnion(departures, arrivals)
+        return ChatterRunwayContext(all: union.isEmpty ? field : union,
+                                    departures: departures, arrivals: arrivals)
+    }
+
+    /// The ATIS report for a field, matched by ICAO: the departure ATIS covers the origin, the
+    /// arrival ATIS the destination. Nil when we hold no ATIS for that field.
+    private func atisReport(forICAO icao: String) -> AirportATIS? {
+        let key = icao.uppercased().trimmingCharacters(in: .whitespaces)
+        guard !key.isEmpty else { return nil }
+        if let departureATIS, departureATIS.airport.uppercased() == key { return departureATIS }
+        if let arrivalATIS, arrivalATIS.airport.uppercased() == key { return arrivalATIS }
+        return nil
+    }
+
+    /// Keep only the ATIS runways the field's OSM map confirms — guarding the map's "never name
+    /// a runway that isn't there" guarantee against a parse slip. With no map loaded yet the
+    /// ATIS runways are trusted as-is (they're real); an empty result means "use the field set".
+    private func reconcileRunways(_ atisRunways: [String], field: [String]) -> [String] {
+        guard !atisRunways.isEmpty else { return [] }
+        guard !field.isEmpty else { return atisRunways }
+        let fieldSet = Set(field.map(ATISRunwayParser.canonical))
+        return atisRunways.filter { fieldSet.contains(ATISRunwayParser.canonical($0)) }
+    }
+
+    /// Departure and arrival runways combined, de-duplicated in first-seen order.
+    private func orderedRunwayUnion(_ a: [String], _ b: [String]) -> [String] {
+        var seen = Set<String>()
+        return (a + b).filter { seen.insert(ATISRunwayParser.canonical($0)).inserted }
     }
 
     /// Which field's runways the chatter simulates: the destination while on approach or once

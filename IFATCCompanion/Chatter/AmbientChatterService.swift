@@ -44,11 +44,11 @@ final class AmbientChatterService: ObservableObject {
     /// chatter always matches the position.
     private var facilityProvider: () -> ATCFacility = { .center }
 
-    /// The real runway-end idents for the airport the chatter should reference right now —
-    /// the origin field pre-departure/climb, the destination once descending/arriving —
-    /// supplied by `AppModel` from the loaded OSM surface. Empty when no surface is loaded
-    /// (or no flight plan), which lets the generator fall back to a random runway.
-    private var runwaysProvider: () -> [String] = { [] }
+    /// The runways for the airport the chatter should reference right now — the origin field
+    /// pre-departure/climb, the destination once descending/arriving — supplied by `AppModel`
+    /// from the field's ATIS (active departure/arrival runways) and the loaded OSM surface.
+    /// All-empty when nothing is loaded yet, which lets the generator fall back to random.
+    private var runwaysProvider: () -> ChatterRunwayContext = { ChatterRunwayContext() }
 
     private var voicePool: [AVSpeechSynthesisVoice] = []
     private var loopTask: Task<Void, Never>?
@@ -80,9 +80,9 @@ final class AmbientChatterService: ObservableObject {
     }
 
     /// Supply the live context (called once from `AppModel`): the tuned facility and the
-    /// runway idents of the airport the chatter is currently simulating.
+    /// runways of the airport the chatter is currently simulating.
     func bindContext(facility: @escaping () -> ATCFacility,
-                     runways: @escaping () -> [String] = { [] }) {
+                     runways: @escaping () -> ChatterRunwayContext = { ChatterRunwayContext() }) {
         self.facilityProvider = facility
         self.runwaysProvider = runways
     }
@@ -187,9 +187,12 @@ final class AmbientChatterService: ObservableObject {
                 continue
             }
             let facility = facilityProvider()
-            // Refresh the runway pool each cycle so it tracks the airport in play (origin on
-            // departure, destination on arrival) as the flight progresses.
-            generator.runwayIdents = runwaysProvider()
+            // Refresh the runway pools each cycle so they track the airport in play (origin on
+            // departure, destination on arrival) and its current ATIS as the flight progresses.
+            let runways = runwaysProvider()
+            generator.runwayIdents = runways.all
+            generator.departureRunwayIdents = runways.departures
+            generator.arrivalRunwayIdents = runways.arrivals
             var rng = SystemRandomNumberGenerator()
             let lines = generator.exchange(for: facility, using: &rng)
             for line in lines {

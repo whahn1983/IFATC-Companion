@@ -13,7 +13,10 @@ import Foundation
 /// When the tuned airport's OpenStreetMap surface has loaded, its real runway ends are
 /// supplied via `runwayIdents` so runway references (Ground taxi/hold-short, Tower
 /// takeoff/land/line-up, Approach clearances) name runways that actually exist at the
-/// origin/destination field, rather than an invented "runway 18" the airport lacks.
+/// origin/destination field, rather than an invented "runway 18" the airport lacks. When the
+/// field's ATIS is also available, `departureRunwayIdents` / `arrivalRunwayIdents` carry the
+/// runways actually in use, so a takeoff or taxi call names a departure runway and a
+/// landing/approach call an arrival runway — matching how the field is really being run.
 ///
 /// The generator is intentionally generic over `RandomNumberGenerator` so tests can
 /// drive it deterministically with a seeded generator.
@@ -30,6 +33,17 @@ struct ChatterScriptGenerator {
     /// cleared for a runway the field does not have. Empty (no surface loaded yet, or no flight
     /// plan) falls back to a plausible random runway, preserving the previous behavior.
     var runwayIdents: [String] = []
+
+    /// The runways in use for **departures** per the field's ATIS (a subset of `runwayIdents`).
+    /// Ground taxi/hold-short and Tower takeoff/line-up draw from here so departing traffic uses
+    /// a departure runway. Empty when no ATIS is available — the departure calls then fall back
+    /// to `runwayIdents` (any real runway), then to a random one.
+    var departureRunwayIdents: [String] = []
+
+    /// The runways in use for **arrivals** per the field's ATIS. Tower landing/final and Approach
+    /// clearances draw from here so arriving traffic uses an arrival runway. Empty falls back to
+    /// `runwayIdents`, then a random runway.
+    var arrivalRunwayIdents: [String] = []
 
     private var icao: Bool { mode == .icao }
 
@@ -105,7 +119,7 @@ struct ChatterScriptGenerator {
                     readback(cs: cs, "\(dir) heading \(hdg), down to \(alt)")]
         case 1:
             let type = ["ILS", "R NAV", "visual"].randomElement(using: &rng)!
-            let rwy = Phonetic.runway(runway(using: &rng), icao: icao)
+            let rwy = Phonetic.runway(arrivalRunway(using: &rng), icao: icao)
             return [ctrl("\(cs.spoken), cleared \(type) runway \(rwy) approach."),
                     readback(cs: cs, "cleared \(type) runway \(rwy) approach")]
         case 2:
@@ -142,25 +156,30 @@ struct ChatterScriptGenerator {
     }
 
     private func towerExchange<G: RandomNumberGenerator>(cs: Callsign, using rng: inout G) -> [ChatterLine] {
-        let rwy = Phonetic.runway(runway(using: &rng), icao: icao)
         switch Int.random(in: 0..<5, using: &rng) {
         case 0:
+            let rwy = Phonetic.runway(departureRunway(using: &rng), icao: icao)
             return [ctrl("\(cs.spoken), runway \(rwy), cleared for takeoff."), readback(cs: cs, "cleared for takeoff runway \(rwy)")]
         case 1:
+            let rwy = Phonetic.runway(arrivalRunway(using: &rng), icao: icao)
             return [ctrl("\(cs.spoken), runway \(rwy), cleared to land."), readback(cs: cs, "cleared to land runway \(rwy)")]
         case 2:
+            let rwy = Phonetic.runway(departureRunway(using: &rng), icao: icao)
             return [ctrl("\(cs.spoken), runway \(rwy), line up and wait."), readback(cs: cs, "line up and wait runway \(rwy)")]
         case 3:
             let freq = Phonetic.frequency(departureFreq(using: &rng), icao: icao)
             return [ctrl("\(cs.spoken), contact departure \(freq)."), readback(cs: cs, "departure \(freq)")]
         default:
+            let rwy = Phonetic.runway(arrivalRunway(using: &rng), icao: icao)
             let miles = spellNumber(String(Int.random(in: 2...8, using: &rng)))
             return [ctrl("\(cs.spoken), traffic on a \(miles) mile final, runway \(rwy), continue."), readback(cs: cs, "continue, \(cs.spoken)")]
         }
     }
 
     private func groundExchange<G: RandomNumberGenerator>(cs: Callsign, using rng: inout G) -> [ChatterLine] {
-        let rwy = Phonetic.runway(runway(using: &rng), icao: icao)
+        // Ground traffic is taxiing out to depart, so it holds short of / taxis to a departure
+        // runway.
+        let rwy = Phonetic.runway(departureRunway(using: &rng), icao: icao)
         let taxi = taxiways(using: &rng)
         switch Int.random(in: 0..<4, using: &rng) {
         case 0:
@@ -247,6 +266,20 @@ struct ChatterScriptGenerator {
         let num = Int.random(in: 1...36, using: &rng)
         let suffix = ["", "", "L", "C", "R"].randomElement(using: &rng)!
         return String(format: "%02d", num) + suffix
+    }
+
+    /// A runway used for departures: an ATIS-active departure runway when known, else any real
+    /// runway at the field, else a random one.
+    private func departureRunway<G: RandomNumberGenerator>(using rng: inout G) -> String {
+        if let ident = departureRunwayIdents.randomElement(using: &rng) { return ident }
+        return runway(using: &rng)
+    }
+
+    /// A runway used for arrivals: an ATIS-active arrival runway when known, else any real
+    /// runway at the field, else a random one.
+    private func arrivalRunway<G: RandomNumberGenerator>(using rng: inout G) -> String {
+        if let ident = arrivalRunwayIdents.randomElement(using: &rng) { return ident }
+        return runway(using: &rng)
     }
 
     private func flightLevel<G: RandomNumberGenerator>(using rng: inout G) -> Int {

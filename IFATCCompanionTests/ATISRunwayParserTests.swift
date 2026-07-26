@@ -1,0 +1,99 @@
+import XCTest
+@testable import IFATCCompanion
+
+/// Tests the deterministic extraction of active departure / arrival runways from D-ATIS text,
+/// used to ground the background chatter in the runways actually in use at a field.
+final class ATISRunwayParserTests: XCTestCase {
+
+    private func atis(_ airport: String, _ parts: [(AirportATIS.Kind, String)]) -> AirportATIS {
+        AirportATIS(airport: airport,
+                    parts: parts.map { AirportATIS.Part(kind: $0.0, letter: "A", text: $0.1) },
+                    fetchedAt: Date(timeIntervalSince1970: 0))
+    }
+
+    // MARK: - Combined ATIS
+
+    func testSeparateLandingAndDepartingRunways() {
+        let r = ATISRunwayParser.parse("ILS RWY 24R APCH IN USE. DEPG RWY 25R.", kind: .combined)
+        XCTAssertEqual(r.arrivals, ["24R"])
+        XCTAssertEqual(r.departures, ["25R"])
+    }
+
+    func testLandingAndDepartingSameRunwayCountsAsBoth() {
+        let r = ATISRunwayParser.parse("LDG AND DEPG RWY 13.", kind: .combined)
+        XCTAssertEqual(r.departures, ["13"])
+        XCTAssertEqual(r.arrivals, ["13"])
+    }
+
+    func testMultipleRunwaysPerOperation() {
+        let text = "DEPG RWYS 24L AND 25R. ILS RWY 24R AND ILS RWY 25L APCHS IN USE."
+        let r = ATISRunwayParser.parse(text, kind: .combined)
+        XCTAssertEqual(Set(r.departures), ["24L", "25R"])
+        XCTAssertEqual(Set(r.arrivals), ["24R", "25L"])
+    }
+
+    func testCommaSeparatedRunwayList() {
+        let r = ATISRunwayParser.parse("LANDING AND DEPARTING RWYS 27L, 27R.", kind: .combined)
+        XCTAssertEqual(Set(r.departures), ["27L", "27R"])
+        XCTAssertEqual(Set(r.arrivals), ["27L", "27R"])
+    }
+
+    func testTwoClausesInOneSentence() {
+        // No period between the clauses — the keyword still re-scopes each runway.
+        let r = ATISRunwayParser.parse("LDG RWY 4R DEPG RWY 4L", kind: .combined)
+        XCTAssertEqual(r.arrivals, ["4R"])
+        XCTAssertEqual(r.departures, ["4L"])
+    }
+
+    // MARK: - Single-operation parts default by kind
+
+    func testDepartureOnlyPartDefaultsToDepartures() {
+        let r = ATISRunwayParser.parse("RWY 22 IN USE FOR DEPARTURE.", kind: .departure)
+        XCTAssertEqual(r.departures, ["22"])
+        XCTAssertTrue(r.arrivals.isEmpty)
+    }
+
+    func testArrivalOnlyPartDefaultsToArrivals() {
+        let r = ATISRunwayParser.parse("EXPECT ILS RWY 27L. RWY 27L IN USE.", kind: .arrival)
+        XCTAssertEqual(r.arrivals, ["27L"])
+        XCTAssertTrue(r.departures.isEmpty)
+    }
+
+    func testCombinedBareRunwayCountsAsBoth() {
+        let r = ATISRunwayParser.parse("RWY 4 IN USE.", kind: .combined)
+        XCTAssertEqual(r.departures, ["4"])
+        XCTAssertEqual(r.arrivals, ["4"])
+    }
+
+    // MARK: - Robustness
+
+    func testNoRunwaysYieldsEmpty() {
+        let r = ATISRunwayParser.parse("WIND 25012KT. VISIBILITY 10SM. ALTIMETER A2992.", kind: .combined)
+        XCTAssertTrue(r.isEmpty)
+    }
+
+    func testRVRIsNotMistakenForARunwayInUse() {
+        // An RVR group ("R28L/2400FT") is not preceded by a runway keyword, so it is ignored.
+        let r = ATISRunwayParser.parse("R28L/2400FT. INFO BRAVO.", kind: .combined)
+        XCTAssertTrue(r.isEmpty)
+    }
+
+    func testCanonicalDropsLeadingZeroAndUppercases() {
+        XCTAssertEqual(ATISRunwayParser.canonical("04L"), "4L")
+        XCTAssertEqual(ATISRunwayParser.canonical("09"), "9")
+        XCTAssertEqual(ATISRunwayParser.canonical("16l"), "16L")
+        XCTAssertEqual(ATISRunwayParser.canonical("36"), "36")
+    }
+
+    // MARK: - Whole report (multiple parts)
+
+    func testActiveRunwaysAcrossSeparateArrivalAndDepartureParts() {
+        let report = atis("KLAX", [
+            (.arrival, "ILS RWY 24R AND ILS RWY 25L APCHS IN USE."),
+            (.departure, "DEPG RWYS 24L AND 25R.")
+        ])
+        let r = ATISRunwayParser.activeRunways(report)
+        XCTAssertEqual(Set(r.arrivals), ["24R", "25L"])
+        XCTAssertEqual(Set(r.departures), ["24L", "25R"])
+    }
+}

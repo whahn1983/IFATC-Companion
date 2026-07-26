@@ -19,11 +19,15 @@ final class ChatterTests: XCTestCase {
     }
 
     /// Concatenate many exchanges for a facility so keyword assertions are robust to the
-    /// per-call randomness. `runwayIdents` seeds the generator's real-runway pool.
+    /// per-call randomness. `runwayIdents` seeds the generator's real-runway pool, and
+    /// `departures`/`arrivals` the ATIS-active departure/arrival pools.
     private func corpus(for facility: ATCFacility, samples: Int = 80,
-                        runwayIdents: [String] = []) -> String {
+                        runwayIdents: [String] = [],
+                        departures: [String] = [], arrivals: [String] = []) -> String {
         var gen = ChatterScriptGenerator()
         gen.runwayIdents = runwayIdents
+        gen.departureRunwayIdents = departures
+        gen.arrivalRunwayIdents = arrivals
         var rng = SeededRNG(seed: 42)
         var text = ""
         for _ in 0..<samples {
@@ -141,6 +145,41 @@ final class ChatterTests: XCTestCase {
         XCTAssertTrue(["cleared for takeoff", "cleared to land", "line up and wait"]
                         .contains { text.contains($0) },
                       "tower chatter should still work runway operations without a pool")
+    }
+
+    // MARK: - ATIS-active departure vs arrival runways
+
+    /// When the ATIS gives distinct departure and arrival runways, Tower clears takeoffs on the
+    /// departure runway and landings on the arrival runway — never the other way around.
+    func testTowerSplitsTakeoffAndLandingByAtisRunways() {
+        let text = corpus(for: .tower, runwayIdents: ["24R", "25R"],
+                          departures: ["25R"], arrivals: ["24R"])
+        XCTAssertTrue(text.contains("cleared for takeoff runway two five right"),
+                      "takeoffs should use the ATIS departure runway")
+        XCTAssertFalse(text.contains("cleared for takeoff runway two four right"),
+                       "takeoffs must not use the arrival runway")
+        XCTAssertTrue(text.contains("cleared to land runway two four right"),
+                      "landings should use the ATIS arrival runway")
+        XCTAssertFalse(text.contains("cleared to land runway two five right"),
+                       "landings must not use the departure runway")
+    }
+
+    /// Ground taxis departing traffic to the ATIS departure runway, never the arrival-only one.
+    func testGroundUsesTheAtisDepartureRunway() {
+        let text = corpus(for: .ground, runwayIdents: ["24R", "25R"],
+                          departures: ["25R"], arrivals: ["24R"])
+        XCTAssertTrue(text.contains("runway two five right"), "ground should taxi to the departure runway")
+        XCTAssertFalse(text.contains("runway two four right"),
+                       "ground must not send departing traffic to the arrival-only runway")
+    }
+
+    /// Approach clears traffic for the ATIS arrival runway, never the departure-only one.
+    func testApproachUsesTheAtisArrivalRunway() {
+        let text = corpus(for: .approach, runwayIdents: ["24R", "25R"],
+                          departures: ["25R"], arrivals: ["24R"])
+        XCTAssertTrue(text.contains("runway two four right"), "approach should use the arrival runway")
+        XCTAssertFalse(text.contains("runway two five right"),
+                       "approach must not clear an approach to the departure-only runway")
     }
 
     // MARK: - Voice filtering

@@ -133,9 +133,12 @@ Full detail in [`docs/BackgroundChatter.md`](docs/BackgroundChatter.md) and
   the real field**: `AmbientChatterService` feeds it the runway ends of the airport in play
   (the origin pre-departure/climb, the destination once descending/arriving) from the loaded
   OpenStreetMap surface (`AirportSurfaceCoordinator.cachedRunwayIdents`), so background
-  traffic is never taxied to or cleared for a runway the airport doesn't have; with no
-  surface loaded yet it falls back to a plausible random runway. Generic over
-  `RandomNumberGenerator` for deterministic tests.
+  traffic is never taxied to or cleared for a runway the airport doesn't have. When the
+  field's ATIS is available, `ATISRunwayParser` pulls the active departure/arrival runways
+  and the generator uses a **departure** runway for Ground taxi and Tower takeoff/line-up and
+  an **arrival** runway for Tower landing and Approach clearances. With no surface/ATIS loaded
+  it falls back to a plausible random runway. Generic over `RandomNumberGenerator` for
+  deterministic tests.
 - **RadioAudioEngine** — the `AVAudioEngine` graph: a generated filtered-noise static bed
   (an `AVAudioSourceNode`, no bundled asset), the chatter voice routed through a band-pass
   EQ + the `.speechRadioTower` distortion preset (so a call sounds like a real,
