@@ -58,6 +58,12 @@ deterministic keyword matching.
   a button (`tuneTo`/`arriveAtGate`). The first manual tune sets `manualTuning`,
   which suppresses the automatic telemetry-driven calls so they no longer play one
   after the next — the pilot drives every frequency change from then on.
+- ✅ **Auto-tune on hand-off** (`autoTuneOnHandoff`, on by default) — after a
+  "contact <next> on …" hand-off, the active frequency (`currentFacility`) follows
+  the hand-off **only once the pilot reads it back**, never the moment ATC issues
+  it. The controller the pilot is dealing with in the meantime (response buttons,
+  check-in) is `workingFacility = pendingCheckInFacility ?? currentFacility`. Turn
+  the setting off to tune every frequency by hand — nothing changes on its own.
 - ✅ **Clear Flight** — a button on the ATC tab (`clearFlight()`) wipes the
   conversation and ATC/phase state to start a new flight, keeping settings and the
   flight plan.
