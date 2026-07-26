@@ -51,7 +51,7 @@ final class RadioVoiceProcessor {
         eq.bands[0].frequency = 300
         eq.bands[0].bypass = false
         eq.bands[1].filterType = .lowPass
-        eq.bands[1].frequency = 3_400
+        eq.bands[1].frequency = 3_600   // a bit wider so the saturation harmonics (grit) survive
         eq.bands[1].bypass = false
         eq.globalGain = 2
 
@@ -94,9 +94,10 @@ final class RadioVoiceProcessor {
         guard isRunning else { return }
         let converted = buffers.compactMap(convertToCommon)
         guard !converted.isEmpty else { return }
-        // Gentle radio saturation (soft-clip) before the band-pass EQ. Kept subtle on the
-        // main calls so the controller/pilot voices stay clearly intelligible.
-        for buffer in converted { applyRadioSaturation(to: buffer, drive: 1.6, mix: 0.25) }
+        // Radio saturation (soft-clip) before the band-pass EQ. Driven enough to hear the
+        // grit, but less than the chatter so the controller/pilot calls stay clearly
+        // readable. `drive` is the main grit knob (tanh is near-linear below ~4).
+        for buffer in converted { applyRadioSaturation(to: buffer, drive: 5, mix: 0.5, outputGain: 0.8) }
         mixer.outputVolume = max(0, min(1, volume))
         if !player.isPlaying { player.play() }
 
