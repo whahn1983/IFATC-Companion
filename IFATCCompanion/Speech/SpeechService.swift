@@ -136,12 +136,11 @@ final class SpeechService: NSObject, ObservableObject {
         while !processedQueue.isEmpty {
             let item = processedQueue.removeFirst()
 
-            // Render first (if using the effect), so the mic key-up static fires tight
-            // against the start of the voice rather than before the synthesis delay.
+            // (The mic-key/un-key static bursts that used to bracket pilot calls here are
+            // disabled for now — the toggle is just the radio voice grit.)
             var buffers: [AVAudioPCMBuffer] = []
             if effectAvailable { buffers = await renderToBuffers(item.utterance) }
 
-            if item.isPilot { transmissionStatic?() }   // mic key-up
             if !buffers.isEmpty {
                 await radioVoice.play(buffers, volume: item.utterance.volume)
             } else {
@@ -149,7 +148,6 @@ final class SpeechService: NSObject, ObservableObject {
                 // the call is never silent.
                 await speakUnprocessedAndWait(item.utterance)
             }
-            if item.isPilot { transmissionStatic?() }   // mic un-key
         }
 
         pumpActive = false

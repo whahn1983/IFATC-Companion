@@ -43,17 +43,17 @@ final class RadioVoiceProcessor {
         guard !built else { return }
         built = true
 
-        // Band-pass ~300 Hz–3.4 kHz (a little wider than a pure comms band so the ATC
-        // calls stay intelligible). The "over the air" grit comes from a gentle soft-clip
-        // applied to the buffers in `play(...)`, not a ring-modulator distortion unit — so
-        // the calls sound driven, not robotic.
+        // Band-pass matched to the background chatter's (RadioAudioEngine) so the main
+        // calls get the exact same radio grit. The "over the air" grit comes from the
+        // soft-clip applied to the buffers in `play(...)`, not a ring-modulator distortion
+        // unit — so the calls sound driven, not robotic.
         eq.bands[0].filterType = .highPass
-        eq.bands[0].frequency = 300
+        eq.bands[0].frequency = 320
         eq.bands[0].bypass = false
         eq.bands[1].filterType = .lowPass
-        eq.bands[1].frequency = 3_600   // a bit wider so the saturation harmonics (grit) survive
+        eq.bands[1].frequency = 3_300
         eq.bands[1].bypass = false
-        eq.globalGain = 2
+        eq.globalGain = 1
 
         for node in [player as AVAudioNode, eq, mixer] { engine.attach(node) }
         engine.connect(player, to: eq, format: commonFormat)
@@ -94,10 +94,9 @@ final class RadioVoiceProcessor {
         guard isRunning else { return }
         let converted = buffers.compactMap(convertToCommon)
         guard !converted.isEmpty else { return }
-        // Radio saturation (soft-clip) before the band-pass EQ. Driven enough to hear the
-        // grit, but less than the chatter so the controller/pilot calls stay clearly
-        // readable. `drive` is the main grit knob (tanh is near-linear below ~4).
-        for buffer in converted { applyRadioSaturation(to: buffer, drive: 5, mix: 0.5, outputGain: 0.8) }
+        // Radio saturation (soft-clip) before the band-pass EQ — the SAME grit as the
+        // background chatter (RadioAudioEngine.scheduleSpeech).
+        for buffer in converted { applyRadioSaturation(to: buffer, drive: 8, mix: 0.7, outputGain: 0.75) }
         mixer.outputVolume = max(0, min(1, volume))
         if !player.isPlaying { player.play() }
 
