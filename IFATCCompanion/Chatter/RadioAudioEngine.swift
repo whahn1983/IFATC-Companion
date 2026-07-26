@@ -259,22 +259,46 @@ final class RadioAudioEngine {
         return output
     }
 
-    /// A short, sharp mic-key/un-key static burst (~60 ms) with a near-instant attack and
-    /// a steep decay — a crisp squelch click rather than a long hiss.
+    /// A mic-key/un-key squelch burst (~130 ms), modelled on a real radio squelch tail.
+    ///
+    /// Two research-backed properties give it the right character:
+    ///  - **Duration ~130 ms.** Real squelch tails / mic bursts run roughly 100–200 ms;
+    ///    the earlier ~60 ms version read as a click rather than a squelch "shhht".
+    ///  - **Band-limited to ~300 Hz–3 kHz** (the aviation VHF audio passband), so it
+    ///    sounds like radio noise heard through a receiver rather than bright, full-
+    ///    spectrum white static.
+    ///
+    /// The envelope is a quick attack, a brief sustain, then a gentle decay — a defined
+    /// key-up onset followed by the fading tail.
     private func makeSquelchBuffer() -> AVAudioPCMBuffer? {
-        let frames = AVAudioFrameCount(commonFormat.sampleRate * 0.06)
+        let frames = AVAudioFrameCount(commonFormat.sampleRate * 0.13)
         guard let buffer = AVAudioPCMBuffer(pcmFormat: commonFormat, frameCapacity: frames),
               let channels = buffer.floatChannelData else { return nil }
         buffer.frameLength = frames
         var state: UInt32 = 0x1234_5678
+        // One-pole coefficients (a = 1 − e^(−2π·fc/fs)) for a ~250 Hz–3.4 kHz band-pass.
+        let aLow: Float = 0.38    // low-pass ≈ 3.4 kHz
+        let aHigh: Float = 0.035  // tracks sub-~250 Hz content to subtract (high-pass)
+        var low: Float = 0
+        var lowLow: Float = 0
         let n = Int(frames)
         for i in 0..<n {
             state ^= state << 13; state ^= state >> 17; state ^= state << 5
             let white = Float(Int32(bitPattern: state)) / Float(Int32.max)
-            // Near-instant attack (first 3%), then a steep cubic decay for a sharp click.
+            low += aLow * (white - low)         // low-pass
+            lowLow += aHigh * (low - lowLow)    // low-frequency tracker
+            let band = low - lowLow             // band-pass ≈ 250 Hz–3.4 kHz
+            // Quick attack (~8 ms), brief sustain, then a gentle decaying tail.
             let t = Float(i) / Float(n)
-            let env: Float = t < 0.03 ? (t / 0.03) : powf(1 - (t - 0.03) / 0.97, 3)
-            let sample = white * env * 0.6
+            let env: Float
+            if t < 0.06 {
+                env = t / 0.06
+            } else if t < 0.35 {
+                env = 1
+            } else {
+                env = powf(1 - (t - 0.35) / 0.65, 1.4)
+            }
+            let sample = band * env * 0.9
             for channel in 0..<Int(commonFormat.channelCount) {
                 channels[channel][i] = sample
             }
