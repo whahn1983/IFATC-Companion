@@ -237,10 +237,11 @@ struct SettingsView: View {
             Stepper(value: $settings.traconCeilingFL, in: 80...240, step: 10) {
                 Text("Departure → Center at FL\(settings.traconCeilingFL)")
             }
+            Toggle("Auto-tune on hand-off", isOn: $settings.autoTuneOnHandoff)
         } header: {
             Text("ATC Automation")
         } footer: {
-            Text("You drive your own calls with the buttons — clearance, pushback, engine start, taxi and ready. The controller's position-based calls play automatically: takeoff clearance once you line up, the hand-off to Departure after you're airborne, and the en-route and arrival sequence. Read backs and check-ins stay manual. Initial climb is set above the field, so at high-elevation airports the callouts are raised to a valid MSL altitude (e.g. Denver's initial climb and the approach descent clear the ground).")
+            Text("You drive your own calls with the buttons — clearance, pushback, engine start, taxi and ready. The controller's position-based calls play automatically: takeoff clearance once you line up, the hand-off to Departure after you're airborne, and the en-route and arrival sequence. Read backs and check-ins stay manual. Auto-tune on hand-off switches the active frequency to the next controller once you read the hand-off back — never before; turn it off to change every frequency by hand with the tune buttons. Initial climb is set above the field, so at high-elevation airports the callouts are raised to a valid MSL altitude (e.g. Denver's initial climb and the approach descent clear the ground).")
         }
     }
 

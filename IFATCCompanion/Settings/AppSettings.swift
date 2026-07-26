@@ -218,6 +218,12 @@ final class AppSettings: ObservableObject {
     @Published var initialClimbAltitudeFt: Int { didSet { save(initialClimbAltitudeFt, .initialClimbAltitudeFt) } }
     /// Flight level at which Departure hands off to Center (TRACON ceiling), e.g. 180.
     @Published var traconCeilingFL: Int { didSet { save(traconCeilingFL, .traconCeilingFL) } }
+    /// Auto-tune the radio to the next controller when the pilot reads back a frequency
+    /// hand-off. On by default: the active frequency follows the hand-off, but only once
+    /// the pilot has read it back — never the moment the controller issues it. When off,
+    /// nothing tunes on its own; the pilot changes every frequency by hand with the tune
+    /// buttons.
+    @Published var autoTuneOnHandoff: Bool { didSet { save(autoTuneOnHandoff, .autoTuneOnHandoff) } }
 
     // Weather
     @Published var routeCorridorNM: Double { didSet { save(routeCorridorNM, .routeCorridorNM) } }
@@ -308,6 +314,7 @@ final class AppSettings: ObservableObject {
 
         initialClimbAltitudeFt = defaults.object(forKey: Key.initialClimbAltitudeFt.rawValue) as? Int ?? 5000
         traconCeilingFL = defaults.object(forKey: Key.traconCeilingFL.rawValue) as? Int ?? 180
+        autoTuneOnHandoff = defaults.object(forKey: Key.autoTuneOnHandoff.rawValue) as? Bool ?? true
 
         routeCorridorNM = defaults.object(forKey: Key.routeCorridorNM.rawValue) as? Double ?? 100
         altitudeBandFt = defaults.object(forKey: Key.altitudeBandFt.rawValue) as? Double ?? 5000
@@ -370,6 +377,7 @@ final class AppSettings: ObservableObject {
         transmissionStaticEnabled = other.transmissionStaticEnabled
         initialClimbAltitudeFt = other.initialClimbAltitudeFt
         traconCeilingFL = other.traconCeilingFL
+        autoTuneOnHandoff = other.autoTuneOnHandoff
         routeCorridorNM = other.routeCorridorNM; altitudeBandFt = other.altitudeBandFt
         weatherBaseURL = other.weatherBaseURL
         noaaRadarOverlay = other.noaaRadarOverlay; radarOpacity = other.radarOpacity
@@ -394,7 +402,7 @@ final class AppSettings: ObservableObject {
         case phraseologyMode, digitStyle
         case backgroundChatterEnabled, liveActivityEnabled, chatterVolume, chatterDensity, transmissionStaticEnabled
         case radioEffectDefaultMigration
-        case initialClimbAltitudeFt, traconCeilingFL
+        case initialClimbAltitudeFt, traconCeilingFL, autoTuneOnHandoff
         case routeCorridorNM, altitudeBandFt, weatherBaseURL
         case noaaRadarOverlay, radarOpacity, weatherDeviationAlerts, satelliteDeviationsEnabled
         case showWeatherDataSourceLabels, showWeatherCoverageWarnings, reduceCellularData

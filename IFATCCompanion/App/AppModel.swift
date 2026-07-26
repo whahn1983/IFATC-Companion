@@ -98,7 +98,11 @@ final class AppModel: ObservableObject {
     @Published var phase: FlightPhase = .preflight
     @Published var atcState: ATCState = .notConnected
     // Clearance Delivery is the first controller a flight calls, so the radio starts
-    // tuned there (not Ground) at the gate.
+    // tuned there (not Ground) at the gate. This is the frequency the radio is actually
+    // tuned to — it changes only when the pilot tunes by hand or reads a hand-off back
+    // (auto-tune), never the moment a controller issues a hand-off. The controller the
+    // pilot is *dealing with* (which may be a not-yet-tuned hand-off target) is
+    // `workingFacility`.
     @Published var currentFacility: ATCFacility = .clearance
     @Published var transcript: [ATCTransmission] = []
     @Published var latestTransmission: ATCTransmission?
@@ -149,20 +153,28 @@ final class AppModel: ObservableObject {
 
     // MARK: - Response-button visibility
     //
-    // The response buttons are tied to the controller the pilot is currently tuned
-    // to (`currentFacility`) and gated by the phase of flight, so only the calls
+    // The response buttons are tied to the controller the pilot is currently working
+    // (`workingFacility`) and gated by the phase of flight, so only the calls
     // that make sense right now are shown — e.g. Clearance at the gate, push/start
     // on Ramp, taxi on Ground, takeoff on Tower, and the enroute/arrival requests on
     // their respective controllers. This drives the ATC view's button grid.
 
-    /// The response-button actions to surface right now, keyed off the tuned facility
+    /// The controller the pilot is currently dealing with for responses and check-ins:
+    /// the facility a hand-off has told them to contact (`pendingCheckInFacility`) if one
+    /// is outstanding, otherwise the frequency they're tuned to (`currentFacility`). This
+    /// is distinct from `currentFacility` on purpose — the radio does not tune to a new
+    /// controller until the pilot reads the hand-off back (or tunes by hand), yet the
+    /// check-in / request buttons must already point at the controller taking over.
+    var workingFacility: ATCFacility { pendingCheckInFacility ?? currentFacility }
+
+    /// The response-button actions to surface right now, keyed off the working facility
     /// and the flight phase.
     var availableActions: Set<PilotAction> {
         // Defer entirely to a human controller when one is staffing the position.
         if companionStandby { return [] }
 
         if isPreDeparture {
-            switch currentFacility {
+            switch workingFacility {
             case .clearance:
                 // Offer the IFR clearance until it's issued. The push is NOT offered
                 // here — the clearance ends by telling the pilot to contact Ramp (or
@@ -200,8 +212,9 @@ final class AppModel: ObservableObject {
         // Flight finished at the gate — nothing left to request.
         if stateMachine.current == .parked { return [] }
 
-        // Airborne / arrival — tie the requests to the controller currently tuned.
-        switch currentFacility {
+        // Airborne / arrival — tie the requests to the controller currently working
+        // the flight (the pending hand-off target, if any, else the tuned frequency).
+        switch workingFacility {
         case .departure:
             return [.checkIn, .requestHigher, .requestLower]
         case .center:
@@ -231,7 +244,7 @@ final class AppModel: ObservableObject {
     /// approach / contacting Tower (`.final`) or cleared to land (`.landing`). Hidden
     /// on the ground and throughout the departure.
     var canGoAround: Bool {
-        guard currentFacility == .tower, hasDeparted,
+        guard workingFacility == .tower, hasDeparted,
               !(aircraftState.onGround ?? false) else { return false }
         return [.final, .landing].contains(stateMachine.current)
     }
@@ -241,8 +254,15 @@ final class AppModel: ObservableObject {
     /// tune ahead for the upcoming hand-off without every facility cluttering the
     /// page (e.g. Tower doesn't appear until the taxi is underway).
     var relevantFacilities: Set<ATCFacility> {
+        // The frequency you're on now, plus where you're headed: a hand-off you've been
+        // told to take but haven't tuned yet (so its button is there to tap), or — with
+        // none pending — the next distinct controller ahead.
         var set: Set<ATCFacility> = [currentFacility]
-        if let next = nextDistinctFacility(after: stateMachine.current) { set.insert(next) }
+        if let pending = pendingCheckInFacility {
+            set.insert(pending)
+        } else if let next = nextDistinctFacility(after: stateMachine.current) {
+            set.insert(next)
+        }
         return set
     }
 
@@ -1578,7 +1598,11 @@ final class AppModel: ObservableObject {
         if manualTuning {
             if !settings.mockMode { advanceSemiAutomatic(mapped: mapped, state: state) }
             atcState = stateMachine.current
-            currentFacility = tunedFacility ?? pendingCheckInFacility ?? controller(for: stateMachine.current)
+            // The dialed frequency stays on the controller the pilot is actually tuned to
+            // — it does not jump to a pending hand-off target the moment ATC issues it.
+            // Reading the hand-off back (or tuning by hand) is what moves it; the pending
+            // controller is surfaced separately via `workingFacility` / the header.
+            currentFacility = tunedFacility ?? controller(for: stateMachine.current)
             return
         }
 
@@ -1597,7 +1621,7 @@ final class AppModel: ObservableObject {
         // cleared-approach call while the aircraft is still flying the pattern.
         if goAroundInProgress {
             atcState = stateMachine.current
-            currentFacility = tunedFacility ?? pendingCheckInFacility ?? controller(for: stateMachine.current)
+            currentFacility = tunedFacility ?? controller(for: stateMachine.current)
             return
         }
 
@@ -2971,8 +2995,11 @@ final class AppModel: ObservableObject {
             postPilot(ATCTransmission(sender: .pilot, facility: rb.facility,
                                       displayText: rb.displayText, spokenText: rb.spokenText))
             // A frequency hand-off: only after reading it back do we move the radio to
-            // the next controller (switching the active frequency button).
-            if let tune = rb.tuneTo {
+            // the next controller (switching the active frequency button) — never the
+            // moment the controller issues the hand-off. With auto-tune off, the radio
+            // never moves on its own: the pilot taps the next controller's tune button by
+            // hand, so the read-back leaves the frequency where it is.
+            if let tune = rb.tuneTo, settings.autoTuneOnHandoff {
                 tunedFacility = tune
                 currentFacility = tune
                 // While the pilot is tuning by hand, hold the new controller's
@@ -3227,11 +3254,15 @@ final class AppModel: ObservableObject {
 
     func requestHandoff() {
         guard !companionStandby else { return }
+        // The controller the pilot is checking in with: the pending hand-off target if
+        // one was prompted, otherwise the frequency they're tuned to. Captured up front
+        // because clearing `pendingCheckInFacility` below would otherwise change it.
+        let facility = workingFacility
         // Re-establishing with Approach after a go-around: Approach holds the pattern
         // altitude and clears the aircraft to continue inbound, then the normal
         // cleared-approach → Tower sequence replays. Handled before the generic
         // check-in so it isn't collapsed into a plain radar-contact re-check-in.
-        if goAroundInProgress, currentFacility == .approach {
+        if goAroundInProgress, facility == .approach {
             resumeApproachAfterGoAround()
             return
         }
@@ -3241,18 +3272,18 @@ final class AppModel: ObservableObject {
         // On arrival, the pilot reports the destination ATIS code when first checking in
         // with Approach ("…with you at seven thousand, information Bravo"). Only Approach
         // gets it, only when the arrival ATIS has been received, and only once.
-        let atisWord = (currentFacility == .approach) ? consumeATISInfoWord(arrival: true) : nil
-        guard let target = nextState(workedBy: currentFacility, after: stateMachine.current),
+        let atisWord = (facility == .approach) ? consumeATISInfoWord(arrival: true) : nil
+        guard let target = nextState(workedBy: facility, after: stateMachine.current),
               target != stateMachine.current else {
             // Nothing new ahead for this controller — a plain check-in / radar-contact
             // exchange (e.g. a same-sector Center re-check-in).
             let c = buildContext(for: atcState)
-            postPilot(appendingATISInfo(pilotEngine.requestHandoff(context: c, facility: currentFacility,
+            postPilot(appendingATISInfo(pilotEngine.requestHandoff(context: c, facility: facility,
                                                  currentAltitude: checkInAltitude(),
                                                  targetAltitude: assignedAltitude,
                                                  onGround: aircraftState.onGround ?? false),
                                         word: atisWord))
-            post(engine.radarContact(cs: c.callsign, facility: currentFacility), speak: true)
+            post(engine.radarContact(cs: c.callsign, facility: facility), speak: true)
             return
         }
         if !target.isManualGroundFlow { hasDeparted = true }
@@ -3262,7 +3293,7 @@ final class AppModel: ObservableObject {
         // hand-off (announceHandoff: false). The pilot reports altitude relative to
         // the currently assigned altitude (still the previous controller's assignment
         // here — advanceAndPost updates it afterwards).
-        postPilot(appendingATISInfo(pilotEngine.requestHandoff(context: c, facility: currentFacility,
+        postPilot(appendingATISInfo(pilotEngine.requestHandoff(context: c, facility: facility,
                                              currentAltitude: checkInAltitude(),
                                              targetAltitude: assignedAltitude,
                                              onGround: aircraftState.onGround ?? false),
