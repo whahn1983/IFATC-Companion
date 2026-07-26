@@ -48,21 +48,24 @@ enum VoiceCatalog {
         }
     }
 
-    /// Build the pool of voices the chatter draws from. Starts with the natural English
-    /// voices, then folds in any voices the user explicitly chose for the real
-    /// controllers/pilot/ATIS (deduplicated) so their preferences are represented and so
-    /// there is always *something* to speak with even on a device with a thin voice set.
-    ///
-    /// - Parameter userChosenIDs: identifiers from `AppSettings` (per-facility voices,
-    ///   pilot voice, ATIS voice, default voice) — empty strings are ignored.
-    static func chatterVoicePool(userChosenIDs: [String]) -> [AVSpeechSynthesisVoice] {
-        var pool = englishHumanVoices()
-        var seen = Set(pool.map(\.identifier))
-        for id in userChosenIDs where !id.isEmpty {
-            guard !seen.contains(id), let voice = AVSpeechSynthesisVoice(identifier: id) else { continue }
-            pool.append(voice)
-            seen.insert(id)
+    /// The specific system voices the background chatter is limited to — a curated set of
+    /// natural English voices with a good regional spread (AU, GB, IE, IN, US). The exact
+    /// set installed varies by device; whichever of these are present are used.
+    static let allowedChatterVoiceNames = ["Karen", "Daniel", "Moira", "Rishi", "Samantha"]
+
+    /// The pool of voices the chatter draws from: the installed subset of
+    /// `allowedChatterVoiceNames`, one entry per name (best quality when a name has both a
+    /// compact and enhanced/premium variant). Falls back to the general English-human set
+    /// only if none of the named voices are installed, so the chatter is never silent.
+    static func chatterVoicePool() -> [AVSpeechSynthesisVoice] {
+        let all = AVSpeechSynthesisVoice.speechVoices()
+        var pool: [AVSpeechSynthesisVoice] = []
+        for name in allowedChatterVoiceNames {
+            let matches = all.filter { $0.name == name && $0.language.hasPrefix("en") }
+            if let best = matches.max(by: { qualityRank($0) < qualityRank($1) }) {
+                pool.append(best)
+            }
         }
-        return pool
+        return pool.isEmpty ? englishHumanVoices() : pool
     }
 }

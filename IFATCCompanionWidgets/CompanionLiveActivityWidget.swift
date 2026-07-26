@@ -42,11 +42,13 @@ struct CompanionLiveActivityWidget: Widget {
                     }
                 }
             } compactLeading: {
+                // The icon conveys the controller; pair it with a short status so the
+                // pill always shows something relevant (never a bare "0k" at the gate).
                 Image(systemName: state.facilitySymbol).foregroundStyle(.cyan)
             } compactTrailing: {
-                Text(altitudeShort(state.altitude)).font(.caption2).foregroundStyle(.white)
+                Text(compactStatus(state)).font(.caption2).monospacedDigit().foregroundStyle(.white)
             } minimal: {
-                Image(systemName: "airplane").foregroundStyle(.cyan)
+                Image(systemName: state.facilitySymbol).foregroundStyle(.cyan)
             }
             .keylineTint(.cyan)
         }
@@ -148,4 +150,18 @@ private struct ActionButtons: View {
 
 private func altitudeShort(_ feet: Int) -> String {
     feet >= 18_000 ? "FL\(feet / 100)" : "\(feet / 1_000)k"
+}
+
+/// The single most relevant datum for the tiny compact Dynamic Island: the altitude once
+/// airborne, otherwise a short flight-phase word (so it reads e.g. "Taxi"/"Gate" at the
+/// gate instead of a meaningless "0k").
+private func compactStatus(_ state: CompanionActivityAttributes.ContentState) -> String {
+    if state.altitude >= 1_000 { return altitudeShort(state.altitude) }
+    switch state.phase {
+    case "Preflight", "Parked": return "Gate"
+    case "Taxi Out", "Taxi In": return "Taxi"
+    case "Takeoff": return "Dep"
+    case "Initial Climb": return "Climb"
+    default: return state.phase   // Climb, Cruise, Descent, Approach, Landing already fit
+    }
 }

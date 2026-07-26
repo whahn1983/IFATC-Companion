@@ -110,10 +110,13 @@ final class ChatterTests: XCTestCase {
         }
     }
 
-    func testChatterPoolIgnoresEmptyUserIDs() {
-        let base = VoiceCatalog.englishHumanVoices()
-        let pool = VoiceCatalog.chatterVoicePool(userChosenIDs: ["", "", ""])
-        XCTAssertEqual(pool.count, base.count, "empty user IDs should not change the pool")
+    func testChatterPoolIsLimitedOrFallsBack() {
+        let pool = VoiceCatalog.chatterVoicePool()
+        guard !pool.isEmpty else { return } // bare image with no installed voices
+        let allAllowed = pool.allSatisfy { VoiceCatalog.allowedChatterVoiceNames.contains($0.name) }
+        let allEnglishHuman = pool.allSatisfy(VoiceCatalog.isEnglishHumanVoice)
+        XCTAssertTrue(allAllowed || allEnglishHuman,
+                      "chatter pool must be the allowed named voices, or the English-human fallback")
     }
 
     // MARK: - Settings coupling

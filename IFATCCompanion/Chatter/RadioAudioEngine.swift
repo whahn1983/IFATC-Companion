@@ -49,6 +49,11 @@ final class RadioAudioEngine {
 
     /// Target (un-ducked) chatter level, remembered so un-ducking restores it.
     private var chatterLevel: Float = 0.16
+    /// Ducked under a real ATC call.
+    private var ducked = false
+    /// A chatter transmission is currently playing — the static "opens up" for it and
+    /// falls back to near-silent between calls (radio squelch behaviour).
+    private var transmitting = false
 
     init() {
         bedGain.initialize(to: 0)
@@ -114,7 +119,7 @@ final class RadioAudioEngine {
         engine.connect(squelchMixer, to: engine.mainMixerNode, format: commonFormat)
 
         squelchMixer.outputVolume = 0.9
-        applyLevels(ducked: false)
+        applyLevels()
         squelchBuffer = makeSquelchBuffer()
     }
 
@@ -142,6 +147,8 @@ final class RadioAudioEngine {
         squelchPlayer.stop()
         engine.stop()
         isRunning = false
+        // Clear the squelch state so a restart doesn't come back with the bed held open.
+        transmitting = false
     }
 
     // MARK: - Levels
@@ -149,20 +156,37 @@ final class RadioAudioEngine {
     /// Set the un-ducked chatter loudness (0…1) for both the static bed and the voice.
     func setChatterLevel(_ level: Float) {
         chatterLevel = max(0, min(1, level))
-        applyLevels(ducked: false)
+        applyLevels()
     }
 
     /// Duck the chatter (voice + bed) under a real ATC call, or restore it. The squelch
     /// path is never ducked.
     func setDucked(_ ducked: Bool) {
-        applyLevels(ducked: ducked)
+        self.ducked = ducked
+        applyLevels()
     }
 
-    private func applyLevels(ducked: Bool) {
-        // The static bed sits under the voice; the voice is set a touch higher so it is
-        // "barely" readable through the hiss.
-        let voice = ducked ? 0 : chatterLevel * 1.9
-        let bed = ducked ? chatterLevel * 0.25 : chatterLevel
+    /// Raise the static bed while a chatter transmission is playing, and drop it back to
+    /// near-silent between calls.
+    func setTransmitting(_ transmitting: Bool) {
+        self.transmitting = transmitting
+        applyLevels()
+    }
+
+    private func applyLevels() {
+        // The chatter voice sits well above the static so the calls read clearly. The
+        // static bed is kept much lower than the voice, and — like a real squelch — it
+        // only "opens up" while a transmission is playing, falling to near-silent in the
+        // gaps between calls.
+        let voice: Float = ducked ? 0 : chatterLevel * 2.0
+        let bed: Float
+        if ducked {
+            bed = chatterLevel * 0.05          // faint hiss under a real ATC call
+        } else if transmitting {
+            bed = chatterLevel * 0.35          // static wraps the active chatter call
+        } else {
+            bed = chatterLevel * 0.04          // almost inaudible between calls
+        }
         speechMixer.outputVolume = max(0, min(1, voice))
         bedGain.pointee = max(0, min(1, bed))
         bedMixer.outputVolume = 1
@@ -235,9 +259,10 @@ final class RadioAudioEngine {
         return output
     }
 
-    /// A ~180 ms static burst with a fast attack and decay — the classic squelch tail.
+    /// A short, sharp mic-key/un-key static burst (~60 ms) with a near-instant attack and
+    /// a steep decay — a crisp squelch click rather than a long hiss.
     private func makeSquelchBuffer() -> AVAudioPCMBuffer? {
-        let frames = AVAudioFrameCount(commonFormat.sampleRate * 0.18)
+        let frames = AVAudioFrameCount(commonFormat.sampleRate * 0.06)
         guard let buffer = AVAudioPCMBuffer(pcmFormat: commonFormat, frameCapacity: frames),
               let channels = buffer.floatChannelData else { return nil }
         buffer.frameLength = frames
@@ -246,10 +271,10 @@ final class RadioAudioEngine {
         for i in 0..<n {
             state ^= state << 13; state ^= state >> 17; state ^= state << 5
             let white = Float(Int32(bitPattern: state)) / Float(Int32.max)
-            // Fast attack (first 8%), exponential-ish decay after.
+            // Near-instant attack (first 3%), then a steep cubic decay for a sharp click.
             let t = Float(i) / Float(n)
-            let env: Float = t < 0.08 ? (t / 0.08) : powf(1 - (t - 0.08) / 0.92, 2)
-            let sample = white * env * 0.5
+            let env: Float = t < 0.03 ? (t / 0.03) : powf(1 - (t - 0.03) / 0.97, 3)
+            let sample = white * env * 0.6
             for channel in 0..<Int(commonFormat.channelCount) {
                 channels[channel][i] = sample
             }
