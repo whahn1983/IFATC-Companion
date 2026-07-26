@@ -263,7 +263,7 @@ struct SettingsView: View {
         } header: {
             Text("Background Radio & Notification")
         } footer: {
-            Text("Background radio chatter plays quiet, static-wrapped ATC traffic on the frequency you're tuned to — and keeps the app running in the background so live calls no longer stall when you switch apps or lock the screen. Audio keeps playing in the background and overrides the silent switch while this is on. The Live flight notification shows a live-updating Lock Screen / Dynamic Island card (phase, altitude, heading, controller) with Read Back and Check In buttons; it needs background chatter for its audio, so turning it on enables chatter too. Both use more battery. \"Radio voice effect\" runs the ATC and pilot voices through a VHF-radio filter (band-pass + saturation) so they sound like real over-the-air transmissions.")
+            Text("Background radio chatter plays quiet, static-wrapped ATC traffic on the frequency you're tuned to — and keeps the app running in the background so live calls no longer stall when you switch apps or lock the screen. Audio keeps playing in the background and overrides the silent switch while this is on. The Live flight notification shows a live-updating Lock Screen / Dynamic Island card (phase, altitude, heading, controller) with Read Back and Check In buttons; it needs background chatter for its audio, so turning it on enables chatter too. Both use more battery. \"Radio voice effect\" runs the ATC and pilot voices through a VHF-radio filter (band-pass + saturation) so they sound like real over-the-air transmissions, and brackets your own read-backs with a subtle mic-key click and a softer squelch tail.")
         }
     }
 

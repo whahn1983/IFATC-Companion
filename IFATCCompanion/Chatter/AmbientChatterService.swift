@@ -2,6 +2,13 @@ import Foundation
 import AVFoundation
 import Combine
 
+/// A push-to-talk transition on the pilot's radio: keying the mic (a short click) or
+/// un-keying it (the softer squelch tail).
+enum MicKeyEvent {
+    case keyUp
+    case keyDown
+}
+
 /// Drives the ambient background radio chatter: it decides *when* to transmit (paced by
 /// the chosen density), asks `ChatterScriptGenerator` for a frequency-appropriate
 /// exchange, synthesizes each line to audio with a natural English voice, and plays it
@@ -131,19 +138,26 @@ final class AmbientChatterService: ObservableObject {
 
     // MARK: - Transmission static (mic key / un-key)
 
-    /// Play one short static burst to bracket the pilot's own transmission. Works even
-    /// when the continuous chatter is off — the engine is started transiently and stopped
-    /// again after a short idle window.
-    func transmissionStaticBurst() {
+    /// Play the mic key-up click or the un-key squelch tail to bracket the pilot's own
+    /// transmission. Works even when the continuous chatter is off — the engine is started
+    /// transiently and stopped again after a short idle window.
+    func micKey(_ event: MicKeyEvent) {
         if isRunning {
-            radio.playSquelch()
+            fire(event)
             return
         }
         guard !pausedForPTT else { return }
         activateSession()
         if !radio.isRunning { radio.start() }
-        radio.playSquelch()
+        fire(event)
         armIdleStop()
+    }
+
+    private func fire(_ event: MicKeyEvent) {
+        switch event {
+        case .keyUp: radio.playKeyClick()
+        case .keyDown: radio.playSquelchTail()
+        }
     }
 
     private func armIdleStop() {

@@ -19,9 +19,9 @@ final class SpeechService: NSObject, ObservableObject {
     /// background). Owned by `AppModel`.
     var forcePlaybackForBackground = false
 
-    /// Fires one short mic-key/un-key static burst. Wired to the radio engine so the
-    /// pilot's own transmissions are bracketed with radio static. No-op when unset.
-    var transmissionStatic: (() -> Void)?
+    /// Plays the mic key-up click / un-key squelch tail that bracket the pilot's own
+    /// transmissions. Wired to the radio engine by `AppModel`. No-op when unset.
+    var micKey: ((MicKeyEvent) -> Void)?
 
     // MARK: Radio voice effect
     //
@@ -136,11 +136,12 @@ final class SpeechService: NSObject, ObservableObject {
         while !processedQueue.isEmpty {
             let item = processedQueue.removeFirst()
 
-            // (The mic-key/un-key static bursts that used to bracket pilot calls here are
-            // disabled for now — the toggle is just the radio voice grit.)
+            // Render first (if using the effect), so the mic key-up click fires tight
+            // against the start of the voice rather than before the synthesis delay.
             var buffers: [AVAudioPCMBuffer] = []
             if effectAvailable { buffers = await renderToBuffers(item.utterance) }
 
+            if item.isPilot { micKey?(.keyUp) }        // pilot keys the mic — short click
             if !buffers.isEmpty {
                 await radioVoice.play(buffers, volume: item.utterance.volume)
             } else {
@@ -148,6 +149,7 @@ final class SpeechService: NSObject, ObservableObject {
                 // the call is never silent.
                 await speakUnprocessedAndWait(item.utterance)
             }
+            if item.isPilot { micKey?(.keyDown) }      // pilot un-keys — softer squelch tail
         }
 
         pumpActive = false

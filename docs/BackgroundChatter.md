@@ -16,10 +16,10 @@ same iOS voices sound like real over-the-air transmissions. (Persisted as
 `transmissionStaticEnabled`.) When off, the original clean-voice playback path is used
 unchanged.
 
-> The mic-key/un-key **static bursts** that used to bracket the pilot's own transmissions are
-> **currently disabled** — the toggle is just the radio grit for now. The squelch machinery
-> (`RadioAudioEngine`'s squelch player, `AmbientChatterService.transmissionStaticBurst`,
-> `SpeechService.transmissionStatic`) is left in place, dormant, so it's easy to bring back.
+> The pilot's own transmissions are also bracketed with subtle mic-key static: a short
+> **click** when the pilot keys up (`MicKeyEvent.keyUp` → `RadioAudioEngine.playKeyClick`)
+> and a softer **squelch tail** when they un-key (`.keyDown` → `playSquelchTail`) — the
+> asymmetric, quieter shape real (AM) aviation radios have. Wired via `SpeechService.micKey`.
 
 ## Why chatter is the background anchor
 
@@ -63,8 +63,9 @@ AmbientChatterService (orchestrator, @MainActor)
   bundled asset), gives the chatter voice a gentle soft-clip saturation
   (`applyRadioSaturation`) then band-passes it so it sounds like a real, barely-readable
   transmission — **not** the robotic ring-modulator artifact of `AVAudioUnitDistortion`'s
-  speech presets — and fires mic-key bursts shaped as a click with a soft tail (~110 ms,
-  band-limited so it reads as radio noise). The bed behaves like a real **squelch**: it is kept well
+  speech presets — and fires the pilot mic-key bursts: a short **key-up click** (~28 ms)
+  and a softer **un-key squelch tail** (~85 ms), both band-limited so they read as radio
+  noise. The bed behaves like a real **squelch**: it is kept well
   below the voice and only opens up (`setTransmitting`) while a call is playing, falling to
   near-silent between calls.
 
@@ -78,11 +79,10 @@ AmbientChatterService (orchestrator, @MainActor)
 - **Silent switch:** background chatter overrides the silent switch (it forces `.playback`
   via `SpeechService.forcePlaybackForBackground`), because audible background audio is the
   whole point.
-- **Transmission static (currently disabled):** `SpeechService` can bracket pilot
-  transmissions with a squelch burst (`transmissionStatic`), but the calls to it are
-  commented out for now — the "Radio voice effect" toggle is just the voice grit. The
-  machinery is intact and can be re-enabled by restoring the two calls in
-  `runProcessedPump`.
+- **Mic-key static:** the effect pump (`runProcessedPump`) brackets each pilot call with
+  `micKey?(.keyUp)` (a short click, before playback) and `micKey?(.keyDown)` (a softer
+  squelch tail, after) — wired to `AmbientChatterService.micKey` → the radio engine. Kept
+  subtle and asymmetric to match real AM aviation radios.
 
 ## Live notification
 

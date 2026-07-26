@@ -935,7 +935,7 @@ final class AppModel: ObservableObject {
         chatter.configure(settings: settings)
         chatter.bindContext(facility: { [weak self] in self?.currentFacility ?? .center })
         // Pilot transmissions get a mic-key/un-key static burst via the radio engine.
-        speech.transmissionStatic = { [weak self] in self?.chatter.transmissionStaticBurst() }
+        speech.micKey = { [weak self] event in self?.chatter.micKey(event) }
         applyChatterSettings()
     }
 
