@@ -212,6 +212,33 @@ struct PhraseologyEngine {
            spoken: "\(cs.spoken), runway \(Phonetic.runway(runway, icao: icao)), line up and wait.")
     }
 
+    /// Ground → Tower *monitor* hand-off, issued as the aircraft approaches the departure
+    /// runway (real-world "monitor Tower on …", the red sign short of the runway). Unlike a
+    /// "contact" hand-off the pilot switches and just monitors — no check-in required — so
+    /// the read-back is "monitor Tower on <freq>" and it tunes the radio to Tower.
+    func monitorTower(cs: Callsign, frequency: Double) -> ATCTransmission {
+        var t = tx(.ground,
+           display: "\(cs.display), monitor Tower on \(String(format: "%.3f", frequency)).",
+           spoken: "\(cs.spoken), monitor Tower on \(Phonetic.frequency(frequency, icao: icao)).")
+        t.readback = ATCTransmission.Readback(
+            displayText: "Monitor Tower on \(String(format: "%.3f", frequency)), \(cs.display).",
+            spokenText: "Monitor Tower on \(Phonetic.frequency(frequency, icao: icao)), \(cs.spoken).",
+            facility: .tower,
+            tuneTo: .tower)
+        return t
+    }
+
+    /// Tower — acknowledges a pilot who checks in while monitoring before departure. No
+    /// check-in is required after "monitor Tower"; if the pilot does call up (typically
+    /// well before the runway), Tower **only reports the sequence** — it does *not* issue
+    /// a takeoff clearance. The clearance still comes automatically once the aircraft is
+    /// lined up on the runway.
+    func numberOneForTakeoff(cs: Callsign, runway: String) -> ATCTransmission {
+        tx(.tower,
+           display: "\(cs.display), roger, you're number one for departure, runway \(runway).",
+           spoken: "\(cs.spoken), roger, you're number one for departure, runway \(Phonetic.runway(runway, icao: icao)).")
+    }
+
     // Tower — cleared for takeoff.
     func clearedForTakeoff(cs: Callsign, runway: String, windDir: Int, windSpeed: Int) -> ATCTransmission {
         if let template = profile?.template(for: .takeoff) {

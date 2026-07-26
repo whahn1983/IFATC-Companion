@@ -17,6 +17,11 @@ struct SessionSnapshot: Codable {
     var arrivalAnnounced: Bool
     var awaitingGateArrival: Bool
     var manualTuning: Bool
+    /// Whether Ground has already handed the departing aircraft to Tower to *monitor*
+    /// (the "monitor Tower on …" hand-off short of the runway), so a reconnect mid-taxi
+    /// doesn't re-issue it. Optional so snapshots written before this field decode cleanly
+    /// (missing key → nil → treated as false).
+    var monitoringTower: Bool? = nil
     /// The in-progress weather-deviation interaction, so a reconnect mid-diversion
     /// restores the deviation card (and its "clear of weather" button) rather than
     /// dropping it. Optional so snapshots written before this field decode cleanly.

@@ -79,6 +79,12 @@ final class AirportSurfaceCoordinator: ObservableObject {
     @Published private(set) var nextInstruction = ""
     @Published private(set) var offRoute = false
     @Published private(set) var reachedDestination = false
+    /// Latches true once a **departure** taxi comes within `OSMSurface.monitorTowerLeadMeters`
+    /// of the runway hold-short — the cue for Ground to hand the pilot to Tower to *monitor*
+    /// ("monitor Tower on …"). One-shot per taxi; `AppModel` consumes it and issues the call.
+    /// OSM has no explicit "monitor tower" line, so this is derived from the route, not a
+    /// mapped feature (see `OSMSurface.monitorTowerLeadMeters`).
+    @Published private(set) var approachingRunwayHandoff = false
     @Published private(set) var lastError: String?
     @Published private(set) var awaitingCrossingReadback = false
     @Published private(set) var awaitingTaxiReadback = false
@@ -549,6 +555,7 @@ final class AirportSurfaceCoordinator: ObservableObject {
         emittedResumeFor.removeAll()
         offRoute = false
         reachedDestination = false
+        approachingRunwayHandoff = false
         crossingState = .noCrossingPending
         activeCrossing = nil
         awaitingCrossingReadback = false
@@ -790,6 +797,7 @@ final class AirportSurfaceCoordinator: ObservableObject {
         nextInstruction = ""
         offRoute = false
         reachedDestination = false
+        approachingRunwayHandoff = false
         status = .idle
     }
 
@@ -934,6 +942,16 @@ final class AirportSurfaceCoordinator: ObservableObject {
         // Destination.
         if prog.reachedDestination && !reachedDestination {
             reachedDestination = true
+        }
+
+        // Approaching the departure runway: a short distance before the hold-short, cue
+        // Ground to hand the pilot to Tower to *monitor* ("monitor Tower on …"). One-shot.
+        // Requires the aircraft to have left the gate (some distance travelled) so a very
+        // short taxi doesn't fire it on the stand. OSM maps no monitor-tower line, so the
+        // point is derived from the route rather than a feature.
+        if kind == .departure, !approachingRunwayHandoff,
+           prog.alongMeters > 15, prog.remainingMeters <= OSMSurface.monitorTowerLeadMeters {
+            approachingRunwayHandoff = true
         }
 
         runCrossingWorkflow(route: route, aircraft: ac, progress: prog)
@@ -1194,8 +1212,12 @@ final class AirportSurfaceCoordinator: ObservableObject {
         }
         if reachedDestination {
             nextInstruction = kind == .departure
-                ? "Hold short runway \(Phonetic.runwayPairDisplay(assignedRunway)) — contact Tower when ready"
+                ? "Hold short runway \(Phonetic.runwayPairDisplay(assignedRunway)) — monitor Tower"
                 : "Arriving at \(route?.destinationLabel ?? "gate")"
+            return
+        }
+        if kind == .departure, approachingRunwayHandoff {
+            nextInstruction = "Approaching runway \(assignedRunway) — monitor Tower"
             return
         }
         if kind == .departure {
