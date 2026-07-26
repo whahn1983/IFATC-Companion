@@ -307,6 +307,18 @@ final class AppSettings: ObservableObject {
         debugLogging = defaults.object(forKey: Key.debugLogging.rawValue) as? Bool ?? true
         mockMode = defaults.object(forKey: Key.mockMode.rawValue) as? Bool ?? true
 
+        // One-time migration: the radio voice effect ships ON by default. Fresh installs
+        // already default `transmissionStaticEnabled` to true above; this additionally
+        // flips it on once for installs that persisted it OFF during earlier testing, so
+        // the release is on-by-default for everyone. After this runs, the user's own
+        // on/off choice sticks. (Persisted directly since `save()` is disabled while
+        // `isLoading` is still true here.)
+        if defaults.object(forKey: Key.radioEffectDefaultMigration.rawValue) == nil {
+            transmissionStaticEnabled = true
+            defaults.set(true, forKey: Key.transmissionStaticEnabled.rawValue)
+            defaults.set(true, forKey: Key.radioEffectDefaultMigration.rawValue)
+        }
+
         isLoading = false
     }
 
@@ -364,6 +376,7 @@ final class AppSettings: ObservableObject {
         case voicePilot, speakPilot
         case phraseologyMode, digitStyle
         case backgroundChatterEnabled, liveActivityEnabled, chatterVolume, chatterDensity, transmissionStaticEnabled
+        case radioEffectDefaultMigration
         case initialClimbAltitudeFt, traconCeilingFL
         case routeCorridorNM, altitudeBandFt, weatherBaseURL
         case noaaRadarOverlay, radarOpacity, weatherDeviationAlerts, satelliteDeviationsEnabled
