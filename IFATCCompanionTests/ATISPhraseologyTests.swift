@@ -248,6 +248,15 @@ final class ATISPhraseologyTests: XCTestCase {
         XCTAssertTrue(s.contains("read back all hold short instructions"), s)
     }
 
+    func testExpandsSurfaceSurveillanceAcronyms() {
+        // Bare acronyms must be spelled on the air, not voiced as an invented word.
+        XCTAssertEqual(spoken("ATC"), "a t c")
+        XCTAssertEqual(spoken("ADS-B"), "a d s b")
+        XCTAssertEqual(spoken("ADSB"), "a d s b")
+        XCTAssertEqual(spoken("ASDE-X"), "a s d e x")
+        XCTAssertEqual(spoken("ASDEX"), "a s d e x")
+    }
+
     // MARK: - A full, real broadcast
 
     func testFullBostonBroadcastDecodes() {
@@ -268,6 +277,31 @@ final class ATISPhraseologyTests: XCTestCase {
         XCTAssertTrue(s.contains("expect full length unless advised otherwise"), s)
         XCTAssertTrue(s.contains("read back all hold short instructions"), s)
         XCTAssertTrue(s.contains("advise you have information lima"), s)
+    }
+
+    func testFullNewarkBroadcastDecodes() {
+        let raw = "EWR ATIS INFO V 1851Z. 11007KT 10SM SCT065 SCT180 BKN250 29/12 A2985 "
+            + "(TWO NINER EIGHT FIVE) RMK AO2 SLP106 T02890122. ILS RWY 4R APCH IN USE. "
+            + "DEPARTING RWY 4L. ASDE-X IS ONLY AVAILABLE FOR ADS-B EQUIPPED AIRCRAFT AND "
+            + "VEHICLES. RWY 22R GLIDESLOPE OTS, RY 4L GS OTS, RY 4L DME OTS. RY 4 DEPARTURES, "
+            + "USE UPPER ANTENNA FOR ATC COMMUNICATIONS. READBACK ALL RUNWAY HOLD SHORT "
+            + "INSTRUCTIONS AND ASSIGNED ALT. ...ADVS YOU HAVE INFO V."
+        let s = ATISPhraseology.spokenText(raw).lowercased()
+        XCTAssertTrue(s.contains("information victor"), s)
+        XCTAssertTrue(s.contains("wind one one zero at seven"), s)
+        XCTAssertTrue(s.contains("altimeter two niner eight five"), s)
+        // The coded remarks group is dropped, not spoken.
+        XCTAssertFalse(s.contains("slp"), s)
+        XCTAssertFalse(s.contains("a o 2"), s)
+        XCTAssertTrue(s.contains("i l s runway four right approach in use"), s)
+        XCTAssertTrue(s.contains("departing runway four left"), s)
+        XCTAssertTrue(s.contains("a s d e x is only available for a d s b equipped"), s)
+        XCTAssertTrue(s.contains("glideslope out of service"), s)
+        XCTAssertTrue(s.contains("d m e out of service"), s)
+        XCTAssertTrue(s.contains("for a t c communications"), s)
+        XCTAssertTrue(s.contains("read back all runway hold short instructions"), s)
+        XCTAssertTrue(s.contains("assigned altitude"), s)
+        XCTAssertTrue(s.contains("advise you have information victor"), s)
     }
 
     func testFullRealBroadcastDecodes() {

@@ -434,6 +434,7 @@ enum ATISPhraseology {
         ("CONV", "converging"), ("PARL", "parallel"), ("DPNDNT", "dependent"), ("DPENDT", "dependent"),
         ("TWR", "tower"), ("GND", "ground"), ("CLNC", "clearance"), ("CLRNC", "clearance"),
         ("DEL", "delivery"), ("CTL", "control"), ("CTLR", "controller"), ("CTRL", "control"),
+        ("ATC", "A T C"),
         ("ACFT", "aircraft"), ("EQUIP", "equipment"), ("EQPT", "equipment"),
         ("PERS", "personnel"), ("PERSONNEL", "personnel"), ("VEH", "vehicles"),
         ("CONST", "construction"), ("CONSTR", "construction"), ("OPS", "operations"),
@@ -441,6 +442,9 @@ enum ATISPhraseology {
         ("EXP", "expect"), ("EXPC", "expect"), ("EXPCT", "expect"), ("XPCT", "expect"),
         ("XPDR", "transponder"), ("XPNDR", "transponder"), ("TRNSPNDR", "transponder"),
         ("MODEC", "mode charlie"),
+        // Surface-surveillance / equipage acronyms read on the air as spelled letters. Both the
+        // hyphenated and unhyphenated feed spellings expand ("ADS-B"/"ADSB", "ASDE-X"/"ASDEX").
+        ("ADS-B", "A D S B"), ("ADSB", "A D S B"), ("ASDE-X", "A S D E X"), ("ASDEX", "A S D E X"),
         ("BTN", "between"), ("BTWN", "between"), ("FT", "feet"), ("KTS", "knots"),
         ("HLDG", "holding"), ("DLA", "delay"), ("DLY", "delay"), ("DLAY", "delay"),
         ("NE", "northeast"), ("NW", "northwest"), ("SE", "southeast"), ("SW", "southwest"),
