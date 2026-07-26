@@ -138,6 +138,16 @@ final class ATISPhraseologyTests: XCTestCase {
         XCTAssertFalse(s.contains("small hail"), s)
     }
 
+    func testBareVAReadsAsVisualApproachNotVolcanicAsh() {
+        // In the compact approach list ("ILS 4R, VA 4L") a lone "VA" is the visual approach,
+        // not the volcanic-ash weather code.
+        let s = ATISPhraseology.spokenText("ILS 4R, VA 4L, DEP 9.").lowercased()
+        XCTAssertTrue(s.contains("visual approach four left"), s)
+        XCTAssertFalse(s.contains("volcanic ash"), s)
+        // A vicinity-qualified VA is still the real weather group.
+        XCTAssertEqual(spoken("VCVA"), "volcanic ash in the vicinity")
+    }
+
     // MARK: - Altimeter, time, remarks, info letter
 
     func testAltimeterDropsSpelledReadback() {
@@ -223,7 +233,42 @@ final class ATISPhraseologyTests: XCTestCase {
         XCTAssertTrue(s.contains("hazard"), s)
     }
 
+    // MARK: - Instruction / advisory abbreviations
+
+    func testExpandsInstructionAndAdvisoryAbbreviations() {
+        // Abbreviations that appear in the NOTAM/instruction body must be read as full words,
+        // not spelled or voiced as the raw token.
+        XCTAssertEqual(spoken("ADVSD"), "advised")
+        XCTAssertEqual(spoken("OTHRWSE"), "otherwise")
+        XCTAssertEqual(spoken("INSTRCNS"), "instructions")
+        XCTAssertEqual(spoken("READBACK"), "read back")
+        let s = ATISPhraseology.spokenText(
+            "EXPCT FULL LENGTH UNLESS ADVSD OTHRWSE. READBACK ALL HOLD SHORT INSTRCNS.").lowercased()
+        XCTAssertTrue(s.contains("expect full length unless advised otherwise"), s)
+        XCTAssertTrue(s.contains("read back all hold short instructions"), s)
+    }
+
     // MARK: - A full, real broadcast
+
+    func testFullBostonBroadcastDecodes() {
+        let raw = "BOS ATIS INFO L 1954Z. 10012KT 10SM SCT090 BKN250 21/12 A2988 "
+            + "(TWO NINER EIGHT EIGHT). ILS 4R, VA 4L, DEP 9. RWY 33R IS APPROVED FOR TURN OFF. "
+            + "LAHSO IN EFFECT ON RWY 4L. EXPCT FULL LENGTH UNLESS ADVSD OTHRWSE. READBACK ALL "
+            + "HOLD SHORT INSTRCNS AND ASSIGNED ALTITUDES. ...ADVS YOU HAVE INFO L."
+        let s = ATISPhraseology.spokenText(raw).lowercased()
+        XCTAssertTrue(s.contains("information lima"), s)
+        XCTAssertTrue(s.contains("one niner five four zulu"), s)
+        XCTAssertTrue(s.contains("wind one zero zero at one two"), s)
+        XCTAssertTrue(s.contains("visibility one zero"), s)
+        XCTAssertTrue(s.contains("altimeter two niner eight eight"), s)
+        XCTAssertTrue(s.contains("i l s four right"), s)
+        XCTAssertTrue(s.contains("visual approach four left"), s)
+        XCTAssertFalse(s.contains("volcanic ash"), s)
+        XCTAssertTrue(s.contains("land and hold short operations"), s)
+        XCTAssertTrue(s.contains("expect full length unless advised otherwise"), s)
+        XCTAssertTrue(s.contains("read back all hold short instructions"), s)
+        XCTAssertTrue(s.contains("advise you have information lima"), s)
+    }
 
     func testFullRealBroadcastDecodes() {
         let raw = "SFO ATIS INFO A 100056. 28027G40KT 8SM SCT016 BKN024 BKN070 12/09 "

@@ -335,6 +335,11 @@ enum ATISPhraseology {
         // in practice always carries intensity or another code ("-GS", "SHGS"). Leave a
         // lone, unqualified GS for the abbreviation pass.
         if codes == ["GS"], intensity == nil, !vicinity { return nil }
+        // Likewise a bare "VA" in an ATIS body is nearly always the "visual approach" in the
+        // approach list ("ILS 4R, VA 4L") rather than volcanic ash, which in practice carries
+        // vicinity or sits among other observation groups ("VCVA"). Leave a lone, unqualified
+        // VA for the abbreviation pass to read as "visual approach".
+        if codes == ["VA"], intensity == nil, !vicinity { return nil }
 
         // A thunderstorm carries its own name; any intensity belongs to the precipitation
         // that comes with it ("+TSRA" -> "thunderstorm with heavy rain"), so pull TS out
@@ -408,11 +413,14 @@ enum ATISPhraseology {
         ("LDA", "L D A"), ("SDF", "S D F"), ("BC", "back course"),
         // In the spoken D-ATIS body the observed visibility is always the coded group
         // (e.g. "10SM"), so a bare "VIS" is the approach kind — "VIS APP" = visual approach.
-        ("VIS", "visual"), ("VCTR", "vector"), ("VCTRS", "vectors"), ("PROG", "progress"),
+        // "VA" is the compact approach-list form of visual approach ("ILS 4R, VA 4L"); the
+        // weather pass leaves a lone VA alone (see decodeWeather) so it reads here.
+        ("VIS", "visual"), ("VA", "visual approach"),
+        ("VCTR", "vector"), ("VCTRS", "vectors"), ("PROG", "progress"),
         ("INTL", "international"), ("INTXN", "intersection"), ("INTX", "intersection"), ("APRN", "apron"),
         ("CLSD", "closed"), ("CTC", "contact"), ("FREQ", "frequency"), ("FREQS", "frequencies"),
         ("INFO", "information"), ("ADVS", "advise"), ("ADVZ", "advise"), ("ADZ", "advise"),
-        ("ADZYS", "advisories"), ("ADVZY", "advisory"),
+        ("ADVSD", "advised"), ("ADZYS", "advisories"), ("ADVZY", "advisory"),
         ("TEMP", "temperature"), ("DWPT", "dewpoint"), ("DEWPT", "dewpoint"),
         ("WX", "weather"), ("TFC", "traffic"), ("CIG", "ceiling"),
         // The observed altimeter is always coded (A####), so a bare "ALT" in the body is
@@ -448,7 +456,10 @@ enum ATISPhraseology {
         ("CONT", "continuous"), ("CONTINUOS", "continuous"),
         ("LAHSO", "land and hold short operations"), ("EFCT", "effect"),
         ("IM", "inner marker"), ("MM", "middle marker"), ("OM", "outer marker"), ("GS", "glideslope"),
-        ("NOTAMS", "notams"), ("NOTAM", "notam"), ("RDBK", "read back"),
+        ("NOTAMS", "notams"), ("NOTAM", "notam"), ("RDBK", "read back"), ("READBACK", "read back"),
+        ("INSTRCNS", "instructions"), ("INSTRCN", "instruction"),
+        ("INSTRS", "instructions"), ("INSTR", "instruction"),
+        ("OTHRWSE", "otherwise"), ("OTHW", "otherwise"),
         // Hold short appears as both "HS" and the slashed "H/S"; the slash is a literal in
         // the escaped pattern, so "H/S" needs its own entry ("\bHS\b" can't reach across it).
         ("HS", "hold short"), ("H/S", "hold short"),
