@@ -81,10 +81,11 @@ final class SpeechService: NSObject, ObservableObject {
         utterance.preUtteranceDelay = 0.05
         utterance.postUtteranceDelay = 0.1
 
-        // Bracket the pilot's own transmissions with a mic-key static burst (the un-key
-        // burst fires from `didFinish`/`didCancel`), so keying up sounds like a radio.
-        if isPilot, transmissionStaticEnabled, let burst = transmissionStatic {
-            burst()
+        // Bracket the pilot's own transmissions with mic-key static: the key-up burst
+        // fires from `didStart` (not here), so if the pilot readback is queued behind a
+        // still-playing ATC call it plays when the pilot's voice actually begins — not
+        // over the controller. The un-key burst fires from `didFinish`/`didCancel`.
+        if isPilot, transmissionStaticEnabled, transmissionStatic != nil {
             pilotUtterances.insert(ObjectIdentifier(utterance))
         }
 
@@ -206,7 +207,7 @@ final class SpeechService: NSObject, ObservableObject {
 
 extension SpeechService: AVSpeechSynthesizerDelegate {
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
-        Task { @MainActor in self.isSpeaking = true }
+        Task { @MainActor in self.startPilotTransmission(utterance); self.isSpeaking = true }
     }
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
         Task { @MainActor in self.finishPilotTransmission(utterance); self.isSpeaking = false }
@@ -217,6 +218,15 @@ extension SpeechService: AVSpeechSynthesizerDelegate {
 }
 
 private extension SpeechService {
+    /// When a bracketed pilot transmission actually begins speaking (after any queued
+    /// controller call has finished), fire the key-up static burst — so it lands at the
+    /// start of the pilot's call rather than over the ATC call it was queued behind. The
+    /// utterance stays tracked so the un-key burst still fires on finish.
+    func startPilotTransmission(_ utterance: AVSpeechUtterance) {
+        guard pilotUtterances.contains(ObjectIdentifier(utterance)) else { return }
+        transmissionStatic?()
+    }
+
     /// If the finished utterance was a bracketed pilot transmission, fire the un-key
     /// static burst and stop tracking it.
     func finishPilotTransmission(_ utterance: AVSpeechUtterance) {

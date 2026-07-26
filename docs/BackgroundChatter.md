@@ -50,7 +50,7 @@ AmbientChatterService (orchestrator, @MainActor)
   are installed, preferring the enhanced/premium variant of each. If none are installed it
   falls back to the general English-human filter (English, non-novelty, non-Personal-Voice,
   non-Eloquence). Each facility keeps a stable voice, and the pilot side uses a distinct one.
-  The chatter speaks at a fixed rate (0.5) independent of the user's main voice-rate setting.
+  The chatter speaks at a fixed rate (0.55) independent of the user's main voice-rate setting.
 - **`RadioAudioEngine`** generates the static bed (a filtered-noise `AVAudioSourceNode` — no
   bundled asset), runs the chatter voice through a band-pass EQ + the `.speechRadioTower`
   distortion preset so it sounds like a real, barely-readable transmission, and fires

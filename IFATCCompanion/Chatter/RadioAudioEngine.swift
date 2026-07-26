@@ -118,7 +118,9 @@ final class RadioAudioEngine {
         engine.connect(squelchPlayer, to: squelchMixer, format: commonFormat)
         engine.connect(squelchMixer, to: engine.mainMixerNode, format: commonFormat)
 
-        squelchMixer.outputVolume = 0.9
+        // Kept well below the spoken calls — the mic-key burst brackets the pilot's own
+        // (full-volume) transmissions, so it should sit under the voice, not compete with it.
+        squelchMixer.outputVolume = 0.45
         applyLevels()
         squelchBuffer = makeSquelchBuffer()
     }

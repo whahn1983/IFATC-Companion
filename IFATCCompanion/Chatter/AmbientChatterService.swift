@@ -31,7 +31,7 @@ final class AmbientChatterService: ObservableObject {
 
     /// Fixed speech rate for the background chatter (AVSpeechUtterance scale, where 0.5
     /// is the natural default), independent of the user's main voice-rate setting.
-    private static let chatterRate: Float = 0.5
+    private static let chatterRate: Float = 0.55
 
     /// The frequency the pilot is tuned to right now — supplied by `AppModel` so the
     /// chatter always matches the position.
