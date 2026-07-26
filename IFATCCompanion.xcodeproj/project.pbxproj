@@ -6,6 +6,12 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		D1F4F8E5301593960038E8E4 /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D1F4F8E4301593960038E8E4 /* WidgetKit.framework */; };
+		D1F4F8E7301593960038E8E4 /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D1F4F8E6301593960038E8E4 /* SwiftUI.framework */; };
+		D1F4F8F6301593970038E8E4 /* IFATCCompanionWidgetsExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = D1F4F8E2301593960038E8E4 /* IFATCCompanionWidgetsExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		A00000000000000000000018 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -14,11 +20,35 @@
 			remoteGlobalIDString = A00000000000000000000004;
 			remoteInfo = IFATCCompanion;
 		};
+		D1F4F8F4301593970038E8E4 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A00000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D1F4F8E1301593960038E8E4;
+			remoteInfo = IFATCCompanionWidgetsExtension;
+		};
 /* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		D1F4F8F7301593970038E8E4 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				D1F4F8F6301593970038E8E4 /* IFATCCompanionWidgetsExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		A00000000000000000000005 /* IFATCCompanion.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = IFATCCompanion.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A00000000000000000000007 /* IFATCCompanionTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = IFATCCompanionTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		D1F4F8E2301593960038E8E4 /* IFATCCompanionWidgetsExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = IFATCCompanionWidgetsExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		D1F4F8E4301593960038E8E4 /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
+		D1F4F8E6301593960038E8E4 /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = System/Library/Frameworks/SwiftUI.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -29,6 +59,22 @@
 			);
 			target = A00000000000000000000004 /* IFATCCompanion */;
 		};
+		D1F4F8FB301593970038E8E4 /* Exceptions for "IFATCCompanionWidgets" folder in "IFATCCompanionWidgetsExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = D1F4F8E1301593960038E8E4 /* IFATCCompanionWidgetsExtension */;
+		};
+		D1F4F903301597C60038E8E4 /* Exceptions for "IFATCCompanion" folder in "IFATCCompanionWidgetsExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				LiveActivity/CompanionActionCenter.swift,
+				LiveActivity/CompanionActivityAttributes.swift,
+				LiveActivity/CompanionIntents.swift,
+			);
+			target = D1F4F8E1301593960038E8E4 /* IFATCCompanionWidgetsExtension */;
+		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -36,6 +82,7 @@
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
 				A00000000000000000000020 /* Exceptions for "IFATCCompanion" folder in "IFATCCompanion" target */,
+				D1F4F903301597C60038E8E4 /* Exceptions for "IFATCCompanion" folder in "IFATCCompanionWidgetsExtension" target */,
 			);
 			path = IFATCCompanion;
 			sourceTree = "<group>";
@@ -43,6 +90,14 @@
 		A00000000000000000000016 /* IFATCCompanionTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = IFATCCompanionTests;
+			sourceTree = "<group>";
+		};
+		D1F4F8E8301593960038E8E4 /* IFATCCompanionWidgets */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				D1F4F8FB301593970038E8E4 /* Exceptions for "IFATCCompanionWidgets" folder in "IFATCCompanionWidgetsExtension" target */,
+			);
+			path = IFATCCompanionWidgets;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -62,6 +117,15 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		D1F4F8DF301593960038E8E4 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D1F4F8E7301593960038E8E4 /* SwiftUI.framework in Frameworks */,
+				D1F4F8E5301593960038E8E4 /* WidgetKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -70,6 +134,8 @@
 			children = (
 				A00000000000000000000015 /* IFATCCompanion */,
 				A00000000000000000000016 /* IFATCCompanionTests */,
+				D1F4F8E8301593960038E8E4 /* IFATCCompanionWidgets */,
+				D1F4F8E3301593960038E8E4 /* Frameworks */,
 				A00000000000000000000003 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -79,8 +145,18 @@
 			children = (
 				A00000000000000000000005 /* IFATCCompanion.app */,
 				A00000000000000000000007 /* IFATCCompanionTests.xctest */,
+				D1F4F8E2301593960038E8E4 /* IFATCCompanionWidgetsExtension.appex */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		D1F4F8E3301593960038E8E4 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				D1F4F8E4301593960038E8E4 /* WidgetKit.framework */,
+				D1F4F8E6301593960038E8E4 /* SwiftUI.framework */,
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -93,10 +169,12 @@
 				A00000000000000000000011 /* Sources */,
 				A00000000000000000000012 /* Frameworks */,
 				A00000000000000000000013 /* Resources */,
+				D1F4F8F7301593970038E8E4 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				D1F4F8F5301593970038E8E4 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				A00000000000000000000015 /* IFATCCompanion */,
@@ -126,6 +204,28 @@
 			productReference = A00000000000000000000007 /* IFATCCompanionTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		D1F4F8E1301593960038E8E4 /* IFATCCompanionWidgetsExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D1F4F8FA301593970038E8E4 /* Build configuration list for PBXNativeTarget "IFATCCompanionWidgetsExtension" */;
+			buildPhases = (
+				D1F4F8DE301593960038E8E4 /* Sources */,
+				D1F4F8DF301593960038E8E4 /* Frameworks */,
+				D1F4F8E0301593960038E8E4 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				D1F4F8E8301593960038E8E4 /* IFATCCompanionWidgets */,
+			);
+			name = IFATCCompanionWidgetsExtension;
+			packageProductDependencies = (
+			);
+			productName = IFATCCompanionWidgetsExtension;
+			productReference = D1F4F8E2301593960038E8E4 /* IFATCCompanionWidgetsExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -133,7 +233,7 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 2600;
+				LastSwiftUpdateCheck = 2660;
 				LastUpgradeCheck = 2600;
 				TargetAttributes = {
 					A00000000000000000000004 = {
@@ -142,6 +242,9 @@
 					A00000000000000000000006 = {
 						CreatedOnToolsVersion = 26.0;
 						TestTargetID = A00000000000000000000004;
+					};
+					D1F4F8E1301593960038E8E4 = {
+						CreatedOnToolsVersion = 26.6;
 					};
 				};
 			};
@@ -161,12 +264,20 @@
 			targets = (
 				A00000000000000000000004 /* IFATCCompanion */,
 				A00000000000000000000006 /* IFATCCompanionTests */,
+				D1F4F8E1301593960038E8E4 /* IFATCCompanionWidgetsExtension */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		A00000000000000000000013 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D1F4F8E0301593960038E8E4 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -190,6 +301,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		D1F4F8DE301593960038E8E4 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -197,6 +315,11 @@
 			isa = PBXTargetDependency;
 			target = A00000000000000000000004 /* IFATCCompanion */;
 			targetProxy = A00000000000000000000018 /* PBXContainerItemProxy */;
+		};
+		D1F4F8F5301593970038E8E4 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = D1F4F8E1301593960038E8E4 /* IFATCCompanionWidgetsExtension */;
+			targetProxy = D1F4F8F4301593970038E8E4 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -422,6 +545,68 @@
 			};
 			name = Release;
 		};
+		D1F4F8F8301593970038E8E4 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = JFTUN6NUAB;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = IFATCCompanionWidgets/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = IFATCCompanionWidgets;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.h3consultingpartners.ifatccompanion.IFATCCompanionWidgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		D1F4F8F9301593970038E8E4 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = JFTUN6NUAB;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = IFATCCompanionWidgets/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = IFATCCompanionWidgets;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.h3consultingpartners.ifatccompanion.IFATCCompanionWidgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -448,6 +633,15 @@
 			buildConfigurations = (
 				A0000000000000000000000F /* Debug */,
 				A00000000000000000000010 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		D1F4F8FA301593970038E8E4 /* Build configuration list for PBXNativeTarget "IFATCCompanionWidgetsExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D1F4F8F8301593970038E8E4 /* Debug */,
+				D1F4F8F9301593970038E8E4 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
