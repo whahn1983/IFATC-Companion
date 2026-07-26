@@ -933,30 +933,10 @@ final class AppModel: ObservableObject {
     /// transmissions up to the mic-key static effect. Called from `onAppear`.
     private func configureChatter() {
         chatter.configure(settings: settings)
-        chatter.bindContext(
-            facility: { [weak self] in self?.currentFacility ?? .center },
-            facilityVoiceID: { [weak self] facility in self?.facilityVoiceID(facility) },
-            pilotVoiceID: { [weak self] in
-                let id = self?.settings.voicePilot ?? ""
-                return id.isEmpty ? nil : id
-            })
+        chatter.bindContext(facility: { [weak self] in self?.currentFacility ?? .center })
         // Pilot transmissions get a mic-key/un-key static burst via the radio engine.
         speech.transmissionStatic = { [weak self] in self?.chatter.transmissionStaticBurst() }
         applyChatterSettings()
-    }
-
-    /// The user-chosen voice identifier for a controller position, or nil when unset.
-    private func facilityVoiceID(_ facility: ATCFacility) -> String? {
-        let id: String
-        switch facility {
-        case .ground, .ramp: id = settings.voiceGround
-        case .tower: id = settings.voiceTower
-        case .departure: id = settings.voiceDeparture
-        case .center: id = settings.voiceCenter
-        case .approach: id = settings.voiceApproach
-        case .clearance: id = settings.defaultVoiceID
-        }
-        return id.isEmpty ? nil : id
     }
 
     /// Apply the current chatter/Live-Activity settings and start or stop the ambient

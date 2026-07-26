@@ -30,7 +30,7 @@ TTS callouts play in the background and what keeps the Live Activity updating.
 ```
 AmbientChatterService (orchestrator, @MainActor)
   ├─ ChatterScriptGenerator   — random, frequency-bounded phraseology (reuses Phonetic + AirlineDatabase)
-  ├─ VoiceCatalog             — English, non-novelty, non-personal voices (+ the user's chosen voices)
+  ├─ VoiceCatalog             — a curated set of natural English voices (Karen/Daniel/Moira/Rishi/Samantha)
   ├─ AVSpeechSynthesizer.write — renders a chatter line to PCM buffers
   └─ RadioAudioEngine (AVAudioEngine graph)
         ├─ bedSource (generated static)   ─► bedMixer ────────────┐
@@ -45,14 +45,18 @@ AmbientChatterService (orchestrator, @MainActor)
   contact, climbs, headings and the Center hand-off; Clearance reads IFR clearances; Ramp
   works pushback/start/monitor. It is generic over `RandomNumberGenerator` for
   deterministic tests.
-- **`VoiceCatalog`** filters `AVSpeechSynthesisVoice.speechVoices()` to English voices that
-  are not novelty voices, not Personal Voice, and not the robotic Eloquence set (using
-  `voiceTraits`), ranked by quality. It also folds in the voices the user picked for the
-  real controllers/pilot, so a given frequency keeps a consistent "controller" voice.
+- **`VoiceCatalog`** limits the chatter to a curated set of natural English voices —
+  **Karen, Daniel, Moira, Rishi, Samantha** (a good AU/GB/IE/IN/US spread) — using whichever
+  are installed, preferring the enhanced/premium variant of each. If none are installed it
+  falls back to the general English-human filter (English, non-novelty, non-Personal-Voice,
+  non-Eloquence). Each facility keeps a stable voice, and the pilot side uses a distinct one.
+  The chatter speaks at a fixed rate (0.5) independent of the user's main voice-rate setting.
 - **`RadioAudioEngine`** generates the static bed (a filtered-noise `AVAudioSourceNode` — no
   bundled asset), runs the chatter voice through a band-pass EQ + the `.speechRadioTower`
-  distortion preset so it sounds like a real, barely-readable transmission, and fires short
-  squelch bursts.
+  distortion preset so it sounds like a real, barely-readable transmission, and fires short,
+  sharp mic-key squelch bursts. The bed behaves like a real **squelch**: it is kept well
+  below the voice and only opens up (`setTransmitting`) while a call is playing, falling to
+  near-silent between calls.
 
 ## Interaction with the rest of the app
 

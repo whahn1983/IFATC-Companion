@@ -29,12 +29,13 @@ final class AmbientChatterService: ObservableObject {
     private weak var settings: AppSettings?
     private var generator = ChatterScriptGenerator()
 
+    /// Fixed speech rate for the background chatter (AVSpeechUtterance scale, where 0.5
+    /// is the natural default), independent of the user's main voice-rate setting.
+    private static let chatterRate: Float = 0.5
+
     /// The frequency the pilot is tuned to right now — supplied by `AppModel` so the
     /// chatter always matches the position.
     private var facilityProvider: () -> ATCFacility = { .center }
-    /// User-chosen voice for a given controller position (empty when unset).
-    private var facilityVoiceID: (ATCFacility) -> String? = { _ in nil }
-    private var pilotVoiceID: () -> String? = { nil }
 
     private var voicePool: [AVSpeechSynthesisVoice] = []
     private var loopTask: Task<Void, Never>?
@@ -65,13 +66,9 @@ final class AmbientChatterService: ObservableObject {
         }
     }
 
-    /// Supply the live context providers (called once from `AppModel`).
-    func bindContext(facility: @escaping () -> ATCFacility,
-                     facilityVoiceID: @escaping (ATCFacility) -> String?,
-                     pilotVoiceID: @escaping () -> String?) {
+    /// Supply the live context (called once from `AppModel`).
+    func bindContext(facility: @escaping () -> ATCFacility) {
         self.facilityProvider = facility
-        self.facilityVoiceID = facilityVoiceID
-        self.pilotVoiceID = pilotVoiceID
     }
 
     /// Pull volume/density/phraseology/voice-pool from settings. Call when they change.
@@ -84,11 +81,7 @@ final class AmbientChatterService: ObservableObject {
     }
 
     private func rebuildVoicePool() {
-        guard let settings else { voicePool = VoiceCatalog.englishHumanVoices(); return }
-        let chosen = [settings.voiceGround, settings.voiceTower, settings.voiceDeparture,
-                      settings.voiceCenter, settings.voiceApproach, settings.voicePilot,
-                      settings.defaultVoiceID]
-        voicePool = VoiceCatalog.chatterVoicePool(userChosenIDs: chosen)
+        voicePool = VoiceCatalog.chatterVoicePool()
     }
 
     // MARK: - Lifecycle
@@ -195,6 +188,10 @@ final class AmbientChatterService: ObservableObject {
             try? await Task.sleep(nanoseconds: 2_500_000_000)
             return
         }
+        // Open the static bed for the duration of the transmission (squelch), then let
+        // it fall back to near-silent in the gap.
+        radio.setTransmitting(true)
+        defer { radio.setTransmitting(false) }
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             // Resume on playback-complete, but never hang the loop: a stopped player
             // (PTT / interruption) may drop its completion, so a timeout also resumes.
@@ -207,15 +204,10 @@ final class AmbientChatterService: ObservableObject {
     // MARK: - Voice selection
 
     private func voice(for line: ChatterLine, facility: ATCFacility) -> AVSpeechSynthesisVoice? {
-        if line.isPilot {
-            if let id = pilotVoiceID(), let v = AVSpeechSynthesisVoice(identifier: id) { return v }
-            return voicePool.last ?? voicePool.first
-        }
-        // Controller line: prefer the user's chosen voice for this position so a given
-        // frequency keeps a consistent "controller"; otherwise a stable pool voice.
-        if let id = facilityVoiceID(facility), let v = AVSpeechSynthesisVoice(identifier: id) { return v }
         guard !voicePool.isEmpty else { return nil }
-        // Stable index per facility (avoid abs(Int.min); normalise a possibly-negative
+        // The pilot side uses a distinct, consistent voice from the pool.
+        if line.isPilot { return voicePool.last }
+        // Controller line: a stable index per facility (normalise a possibly-negative
         // remainder into range) so a frequency keeps a consistent "controller" voice.
         let count = voicePool.count
         let index = ((facility.rawValue.hashValue % count) + count) % count
@@ -228,8 +220,7 @@ final class AmbientChatterService: ObservableObject {
         await withCheckedContinuation { (continuation: CheckedContinuation<[AVAudioPCMBuffer], Never>) in
             let utterance = AVSpeechUtterance(string: text)
             utterance.voice = voice
-            utterance.rate = min(max(Float(settings?.speechRate ?? 0.5), AVSpeechUtteranceMinimumSpeechRate),
-                                 AVSpeechUtteranceMaximumSpeechRate)
+            utterance.rate = Self.chatterRate
             let lock = NSLock()
             var collected: [AVAudioPCMBuffer] = []
             var resumed = false
@@ -260,8 +251,7 @@ final class AmbientChatterService: ObservableObject {
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice = voice
         utterance.volume = Float(min(max((settings?.chatterVolume ?? 0.16) * 1.4, 0), 1))
-        utterance.rate = min(max(Float(settings?.speechRate ?? 0.5), AVSpeechUtteranceMinimumSpeechRate),
-                             AVSpeechUtteranceMaximumSpeechRate)
+        utterance.rate = Self.chatterRate
         fallbackSynth.speak(utterance)
     }
 
