@@ -58,6 +58,17 @@ final class AmbientChatterService: ObservableObject {
     private var pausedForPTT = false
     private var sessionConfigured = false
 
+    /// The facility the exchange currently being spoken is for; `nil` in the gap between
+    /// exchanges. Lets a mid-exchange frequency switch be detected so the current call — and
+    /// any read-back tied to it — is dropped in favour of chatter for the new frequency.
+    private var activeFacility: ATCFacility?
+    /// Set when a mid-exchange frequency switch means the rest of the current exchange (its
+    /// pending read-back) must be abandoned and a fresh exchange started for the new facility.
+    private var exchangeInterrupted = false
+    /// The resume handle for the in-flight `speak()`, so an interruption can cut the call
+    /// immediately rather than waiting out its playback (or the 25 s safety timeout).
+    private var activeSpeechResume: ResumeOnce?
+
     // MARK: - Setup
 
     func configure(settings: AppSettings) {
@@ -121,6 +132,10 @@ final class AmbientChatterService: ObservableObject {
         chatterSynth.stopSpeaking(at: .immediate)
         radio.stop()
         isRunning = false
+        activeFacility = nil
+        // The player is stopped, so its completion may never fire — release the awaiting
+        // `speak()` now rather than leaving it on the 25 s safety timeout.
+        activeSpeechResume?.resume()
     }
 
     /// Duck (or restore) the chatter under a real ATC call.
@@ -129,12 +144,46 @@ final class AmbientChatterService: ObservableObject {
         radio.setDucked(ducked)
     }
 
+    /// Called by `AppModel` whenever the tuned facility changes. If the chatter is mid-exchange
+    /// on the previous frequency, end that call immediately (cutting its audio and dropping any
+    /// pending read-back) so the loop can start chatter appropriate for the newly-tuned
+    /// frequency. A switch during the gap between exchanges needs no action — the next cycle
+    /// already reads the current facility.
+    func facilityDidChange() {
+        guard isRunning, !pausedForPTT else { return }
+        guard Self.shouldAbandonExchange(active: activeFacility, current: facilityProvider()) else { return }
+        abandonCurrentExchange()
+    }
+
+    /// Whether an exchange being spoken for `active` should be abandoned because the pilot has
+    /// tuned to `current`. Only a mid-exchange (`active` non-nil) switch to a *different*
+    /// facility interrupts; a switch in the gap (`active` nil) or back to the same facility does
+    /// not. Extracted as a pure decision for testing.
+    nonisolated static func shouldAbandonExchange(active: ATCFacility?, current: ATCFacility) -> Bool {
+        guard let active else { return false }
+        return active != current
+    }
+
+    /// End the exchange currently on the air: mark it interrupted so the loop drops any pending
+    /// read-back, stop synthesis, cut the playing call's audio, and unblock the awaiting
+    /// `speak()` so the loop can immediately start fresh chatter for the new frequency.
+    private func abandonCurrentExchange() {
+        exchangeInterrupted = true
+        chatterSynth.stopSpeaking(at: .immediate)
+        // The buffer-render fallback speaks straight to the session via `fallbackSynth`; stop
+        // it too so a switch during that path also silences the call on the air.
+        fallbackSynth.stopSpeaking(at: .immediate)
+        radio.stopSpeech()
+        activeSpeechResume?.resume()
+    }
+
     /// Pause/resume around push-to-talk so the chatter never bleeds into the mic and the
     /// recording session can take over the audio route.
     func pauseForPTT() {
         pausedForPTT = true
         chatterSynth.stopSpeaking(at: .immediate)
         radio.stop()
+        activeSpeechResume?.resume()
     }
 
     func resumeAfterPTT() {
@@ -187,6 +236,8 @@ final class AmbientChatterService: ObservableObject {
                 continue
             }
             let facility = facilityProvider()
+            exchangeInterrupted = false
+            activeFacility = facility
             // Refresh the runway pools each cycle so they track the airport in play (origin on
             // departure, destination on arrival) and its current ATIS as the flight progresses.
             let runways = runwaysProvider()
@@ -196,10 +247,18 @@ final class AmbientChatterService: ObservableObject {
             var rng = SystemRandomNumberGenerator()
             let lines = generator.exchange(for: facility, using: &rng)
             for line in lines {
-                if Task.isCancelled || !isRunning || pausedForPTT { break }
+                if Task.isCancelled || !isRunning || pausedForPTT || exchangeInterrupted { break }
                 await speak(line, facility: facility)
-                if Task.isCancelled { break }
+                if Task.isCancelled || exchangeInterrupted { break }
                 try? await Task.sleep(nanoseconds: UInt64(Double.random(in: 0.3...1.1) * 1_000_000_000))
+            }
+            activeFacility = nil
+            if exchangeInterrupted {
+                // A mid-exchange frequency switch cut this exchange short: settle briefly, then
+                // the next iteration starts fresh chatter for the newly-tuned facility rather
+                // than waiting out the full inter-exchange gap.
+                try? await Task.sleep(nanoseconds: UInt64(Double.random(in: 0.4...0.8) * 1_000_000_000))
+                continue
             }
             let gap = settings?.chatterDensity.gapRange ?? (5...14)
             try? await Task.sleep(nanoseconds: UInt64(Double.random(in: gap) * 1_000_000_000))
@@ -220,11 +279,14 @@ final class AmbientChatterService: ObservableObject {
         // Open the static bed for the duration of the transmission (squelch), then let
         // it fall back to near-silent in the gap.
         radio.setTransmitting(true)
-        defer { radio.setTransmitting(false) }
+        defer { radio.setTransmitting(false); activeSpeechResume = nil }
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             // Resume on playback-complete, but never hang the loop: a stopped player
-            // (PTT / interruption) may drop its completion, so a timeout also resumes.
+            // (PTT / interruption / a mid-exchange frequency switch) may drop its
+            // completion, so a timeout also resumes. Holding the box lets
+            // `abandonCurrentExchange()` cut the call immediately on a frequency switch.
             let box = ResumeOnce(continuation)
+            activeSpeechResume = box
             radio.scheduleSpeech(buffers) { box.resume() }
             DispatchQueue.main.asyncAfter(deadline: .now() + 25) { box.resume() }
         }

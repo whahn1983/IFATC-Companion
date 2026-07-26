@@ -944,6 +944,12 @@ final class AppModel: ObservableObject {
         chatter.configure(settings: settings)
         chatter.bindContext(facility: { [weak self] in self?.currentFacility ?? .center },
                             runways: { [weak self] in self?.chatterRunwayContext() ?? ChatterRunwayContext() })
+        // When the pilot switches frequencies, end any chatter mid-exchange on the old
+        // frequency (and its pending read-back) and start chatter for the new one.
+        $currentFacility
+            .removeDuplicates()
+            .sink { [weak self] _ in self?.chatter.facilityDidChange() }
+            .store(in: &cancellables)
         // Pilot transmissions get a mic-key/un-key static burst via the radio engine.
         speech.micKey = { [weak self] event in self?.chatter.micKey(event) }
         applyChatterSettings()

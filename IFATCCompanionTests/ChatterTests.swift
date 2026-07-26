@@ -241,6 +241,44 @@ final class ChatterTests: XCTestCase {
         XCTAssertFalse(atis.isControllerExchange)
     }
 
+    // MARK: - Mid-exchange frequency switching
+
+    /// Tuning to a different facility while an exchange is on the air abandons that exchange
+    /// (and any read-back tied to it) so chatter for the new frequency can start.
+    func testMidExchangeSwitchToADifferentFacilityAbandonsExchange() {
+        XCTAssertTrue(AmbientChatterService.shouldAbandonExchange(active: .tower, current: .ground))
+        XCTAssertTrue(AmbientChatterService.shouldAbandonExchange(active: .center, current: .approach))
+        XCTAssertTrue(AmbientChatterService.shouldAbandonExchange(active: .ground, current: .ramp))
+    }
+
+    /// A "change" that stays on the same facility must not interrupt the exchange in progress.
+    func testSwitchToTheSameFacilityDoesNotInterrupt() {
+        for facility in ATCFacility.allCases {
+            XCTAssertFalse(AmbientChatterService.shouldAbandonExchange(active: facility, current: facility),
+                           "\(facility) → \(facility) should not interrupt")
+        }
+    }
+
+    /// A frequency switch in the gap between exchanges (nothing on the air) needs no
+    /// interruption — the next cycle already reads the newly-tuned facility.
+    func testSwitchInTheGapBetweenExchangesDoesNotInterrupt() {
+        XCTAssertFalse(AmbientChatterService.shouldAbandonExchange(active: nil, current: .tower))
+        XCTAssertFalse(AmbientChatterService.shouldAbandonExchange(active: nil, current: .ground))
+    }
+
+    /// Calling `facilityDidChange()` while the chatter isn't running is a safe no-op.
+    @MainActor
+    func testFacilityChangeIsANoOpWhenNotRunning() {
+        let defaults = UserDefaults(suiteName: "chatter.switch.\(UUID().uuidString)")!
+        let service = AmbientChatterService()
+        service.configure(settings: AppSettings(defaults: defaults))
+        var facility = ATCFacility.tower
+        service.bindContext(facility: { facility })
+        facility = .ground
+        service.facilityDidChange()   // not running — must not crash or start audio
+        XCTAssertFalse(service.isRunning)
+    }
+
     // MARK: - Settings coupling
 
     func testLiveActivityRequiresChatter() {
