@@ -547,7 +547,7 @@ final class AppModel: ObservableObject {
     private var readbackPrompts = 0
 
     /// Seconds of pilot silence before the controller repeats the call.
-    var readbackRepeatInterval: TimeInterval = 10
+    var readbackRepeatInterval: TimeInterval = 30
     /// How many times to repeat before giving up (the gate stays closed so the
     /// flow does not run away; the pilot can still act via the buttons/PTT).
     var readbackMaxPrompts = 3
