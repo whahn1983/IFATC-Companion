@@ -263,18 +263,7 @@ final class SpeechService: NSObject, ObservableObject {
 
     private func voice(for facility: ATCFacility) -> AVSpeechSynthesisVoice? {
         guard let settings else { return nil }
-        let id: String
-        switch facility {
-        case .ground: id = settings.voiceGround
-        case .tower: id = settings.voiceTower
-        case .departure: id = settings.voiceDeparture
-        case .center: id = settings.voiceCenter
-        case .approach: id = settings.voiceApproach
-        // Ramp shares the Ground voice (both work the surface); Clearance uses the
-        // default controller voice.
-        case .ramp: id = settings.voiceGround
-        case .clearance: id = settings.defaultVoiceID
-        }
+        let id = settings.controllerVoiceID(for: facility)
         if !id.isEmpty, let v = AVSpeechSynthesisVoice(identifier: id) { return v }
         if !settings.defaultVoiceID.isEmpty,
            let v = AVSpeechSynthesisVoice(identifier: settings.defaultVoiceID) { return v }

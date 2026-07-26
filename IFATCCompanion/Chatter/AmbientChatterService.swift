@@ -44,6 +44,12 @@ final class AmbientChatterService: ObservableObject {
     /// chatter always matches the position.
     private var facilityProvider: () -> ATCFacility = { .center }
 
+    /// The runways for the airport the chatter should reference right now — the origin field
+    /// pre-departure/climb, the destination once descending/arriving — supplied by `AppModel`
+    /// from the field's ATIS (active departure/arrival runways) and the loaded OSM surface.
+    /// All-empty when nothing is loaded yet, which lets the generator fall back to random.
+    private var runwaysProvider: () -> ChatterRunwayContext = { ChatterRunwayContext() }
+
     private var voicePool: [AVSpeechSynthesisVoice] = []
     private var loopTask: Task<Void, Never>?
     private var idleStopTask: Task<Void, Never>?
@@ -73,9 +79,12 @@ final class AmbientChatterService: ObservableObject {
         }
     }
 
-    /// Supply the live context (called once from `AppModel`).
-    func bindContext(facility: @escaping () -> ATCFacility) {
+    /// Supply the live context (called once from `AppModel`): the tuned facility and the
+    /// runways of the airport the chatter is currently simulating.
+    func bindContext(facility: @escaping () -> ATCFacility,
+                     runways: @escaping () -> ChatterRunwayContext = { ChatterRunwayContext() }) {
         self.facilityProvider = facility
+        self.runwaysProvider = runways
     }
 
     /// Pull volume/density/phraseology/voice-pool from settings. Call when they change.
@@ -178,6 +187,12 @@ final class AmbientChatterService: ObservableObject {
                 continue
             }
             let facility = facilityProvider()
+            // Refresh the runway pools each cycle so they track the airport in play (origin on
+            // departure, destination on arrival) and its current ATIS as the flight progresses.
+            let runways = runwaysProvider()
+            generator.runwayIdents = runways.all
+            generator.departureRunwayIdents = runways.departures
+            generator.arrivalRunwayIdents = runways.arrivals
             var rng = SystemRandomNumberGenerator()
             let lines = generator.exchange(for: facility, using: &rng)
             for line in lines {
@@ -218,14 +233,25 @@ final class AmbientChatterService: ObservableObject {
     // MARK: - Voice selection
 
     private func voice(for line: ChatterLine, facility: ATCFacility) -> AVSpeechSynthesisVoice? {
-        guard !voicePool.isEmpty else { return nil }
-        // The pilot side uses a distinct, consistent voice from the pool.
-        if line.isPilot { return voicePool.last }
-        // Controller line: a stable index per facility (normalise a possibly-negative
-        // remainder into range) so a frequency keeps a consistent "controller" voice.
-        let count = voicePool.count
-        let index = ((facility.rawValue.hashValue % count) + count) % count
-        return voicePool[index]
+        // Background pilots are other aircraft, each a different station: pick a fresh random
+        // voice from the curated chatter pool per transmission so consecutive read-backs don't
+        // all sound like the same pilot.
+        if line.isPilot { return voicePool.randomElement() }
+        // Controller lines use the same per-facility voice the pilot hears from the real
+        // controllers (from Settings), so the background <facility> matches the <facility> in
+        // use — Ground sounds like Ground, Tower like Tower.
+        return controllerVoice(for: facility)
+    }
+
+    /// The controller voice for a facility, mirroring `SpeechService`: the configured
+    /// per-facility voice, then the default controller voice, then a system English voice.
+    private func controllerVoice(for facility: ATCFacility) -> AVSpeechSynthesisVoice? {
+        guard let settings else { return voicePool.first }
+        let id = settings.controllerVoiceID(for: facility)
+        if !id.isEmpty, let v = AVSpeechSynthesisVoice(identifier: id) { return v }
+        if !settings.defaultVoiceID.isEmpty,
+           let v = AVSpeechSynthesisVoice(identifier: settings.defaultVoiceID) { return v }
+        return AVSpeechSynthesisVoice(language: "en-US")
     }
 
     // MARK: - Synthesis

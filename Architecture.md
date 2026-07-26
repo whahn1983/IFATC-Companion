@@ -123,14 +123,27 @@ Full detail in [`docs/BackgroundChatter.md`](docs/BackgroundChatter.md) and
   process — and therefore the Infinite Flight poll loop and the Live Activity — alive. This
   is a legitimate, audible feature rather than a silent keep-alive (App Store guideline
   2.5.4). It ducks under real ATC calls (`SpeechService.isSpeaking`) and pauses around
-  push-to-talk (`SpeechRecognitionService.isListening`).
+  push-to-talk (`SpeechRecognitionService.isListening`). It runs only for the working part of
+  the flight — `AppModel.shouldRunAmbientChatter` gates it on the pilot's **first ATC
+  communication** and stops it when the flight **ends** (parked) or is **reset**. Background
+  **controllers** are spoken in the user's configured per-facility voices
+  (`AppSettings.controllerVoiceID(for:)`, shared with `SpeechService`); background **pilots**
+  are a fresh random pick from the curated chatter pool per read-back.
 - **ChatterScriptGenerator** — deterministic, template-based generator **bounded to the
   tuned facility** (`AppModel.currentFacility`), reusing `Phonetic` and `AirlineDatabase`
   so callsigns/headings/altitudes/frequencies match the real calls: Center works ride
   reports, hand-offs and descend-via-STAR; Ground works taxi and hand-offs; Tower works
   takeoff/landing/line-up-and-wait; Approach works vectors and approaches; Departure works
-  climbs and hand-offs; Clearance reads IFR clearances. Generic over `RandomNumberGenerator`
-  for deterministic tests.
+  climbs and hand-offs; Clearance reads IFR clearances. Runway references are **grounded in
+  the real field**: `AmbientChatterService` feeds it the runway ends of the airport in play
+  (the origin pre-departure/climb, the destination once descending/arriving) from the loaded
+  OpenStreetMap surface (`AirportSurfaceCoordinator.cachedRunwayIdents`), so background
+  traffic is never taxied to or cleared for a runway the airport doesn't have. When the
+  field's ATIS is available, `ATISRunwayParser` pulls the active departure/arrival runways
+  and the generator uses a **departure** runway for Ground taxi and Tower takeoff/line-up and
+  an **arrival** runway for Tower landing and Approach clearances. With no surface/ATIS loaded
+  it falls back to a plausible random runway. Generic over `RandomNumberGenerator` for
+  deterministic tests.
 - **RadioAudioEngine** — the `AVAudioEngine` graph: a generated filtered-noise static bed
   (an `AVAudioSourceNode`, no bundled asset), the chatter voice routed through a band-pass
   EQ + the `.speechRadioTower` distortion preset (so a call sounds like a real,

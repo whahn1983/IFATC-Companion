@@ -42,6 +42,13 @@ struct ATCTransmission: Identifiable, Equatable, Codable {
     /// Whether this line is an ATIS broadcast (nil and false read as "no").
     var isATISLine: Bool { isATIS == true }
 
+    /// Whether this is a two-way ATC communication — a controller call or the pilot's own
+    /// call — as opposed to a one-way ATIS broadcast or a `.system` advisory. Marks that the
+    /// pilot is actively working ATC (used to gate the ambient background chatter).
+    var isControllerExchange: Bool {
+        !isATISLine && (sender == .atc || sender == .pilot)
+    }
+
     init(sender: Sender,
          facility: ATCFacility,
          displayText: String,
