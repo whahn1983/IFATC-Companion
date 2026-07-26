@@ -11,7 +11,7 @@ Two opt-in Settings toggles under **Background Radio & Notification**:
    alive in the background.
 
 A third, independent toggle — **Radio voice effect** — runs the main ATC and pilot voices
-through a VHF-radio filter (band-pass + light distortion, via `RadioVoiceProcessor`) so the
+through a VHF-radio filter (band-pass + gentle soft-clip saturation, via `RadioVoiceProcessor`) so the
 same iOS voices sound like real radio transmissions, and brackets your own read-backs with a
 mic-key/un-key static burst. It's the same toggle for both (persisted as
 `transmissionStaticEnabled`). When off, the original clean-voice playback path is used
@@ -38,7 +38,7 @@ AmbientChatterService (orchestrator, @MainActor)
   ├─ AVSpeechSynthesizer.write — renders a chatter line to PCM buffers
   └─ RadioAudioEngine (AVAudioEngine graph)
         ├─ bedSource (generated static)   ─► bedMixer ────────────┐
-        ├─ speechPlayer ► EQ(bandpass) ► distortion(radio) ► speechMixer ─► mainMixer ─► out
+        ├─ speechPlayer (soft-clipped) ► EQ(bandpass) ► speechMixer ─► mainMixer ─► out
         └─ squelchPlayer (mic-key bursts) ─► squelchMixer ────────┘
 ```
 
@@ -56,10 +56,11 @@ AmbientChatterService (orchestrator, @MainActor)
   non-Eloquence). Each facility keeps a stable voice, and the pilot side uses a distinct one.
   The chatter speaks at a fixed rate (0.55) independent of the user's main voice-rate setting.
 - **`RadioAudioEngine`** generates the static bed (a filtered-noise `AVAudioSourceNode` — no
-  bundled asset), runs the chatter voice through a band-pass EQ + the `.speechRadioTower`
-  distortion preset so it sounds like a real, barely-readable transmission, and fires
-  mic-key bursts shaped as a click with a soft tail (~110 ms, band-limited so it reads as
-  radio noise). The bed behaves like a real **squelch**: it is kept well
+  bundled asset), gives the chatter voice a gentle soft-clip saturation
+  (`applyRadioSaturation`) then band-passes it so it sounds like a real, barely-readable
+  transmission — **not** the robotic ring-modulator artifact of `AVAudioUnitDistortion`'s
+  speech presets — and fires mic-key bursts shaped as a click with a soft tail (~110 ms,
+  band-limited so it reads as radio noise). The bed behaves like a real **squelch**: it is kept well
   below the voice and only opens up (`setTransmitting`) while a call is playing, falling to
   near-silent between calls.
 
