@@ -266,16 +266,14 @@ final class ChatterTests: XCTestCase {
         XCTAssertFalse(AmbientChatterService.shouldAbandonExchange(active: nil, current: .ground))
     }
 
-    /// Calling `facilityDidChange()` while the chatter isn't running is a safe no-op.
+    /// Calling `facilityDidChange(to:)` while the chatter isn't running is a safe no-op.
     @MainActor
     func testFacilityChangeIsANoOpWhenNotRunning() {
         let defaults = UserDefaults(suiteName: "chatter.switch.\(UUID().uuidString)")!
         let service = AmbientChatterService()
         service.configure(settings: AppSettings(defaults: defaults))
-        var facility = ATCFacility.tower
-        service.bindContext(facility: { facility })
-        facility = .ground
-        service.facilityDidChange()   // not running — must not crash or start audio
+        service.bindContext(facility: { .tower })
+        service.facilityDidChange(to: .ground)   // not running — must not crash or start audio
         XCTAssertFalse(service.isRunning)
     }
 

@@ -109,13 +109,15 @@ AmbientChatterService (orchestrator, @MainActor)
 - **Push-to-talk:** `AppModel` observes `SpeechRecognitionService.isListening` and pauses
   the chatter (and its engine) around PTT so it never bleeds into the microphone.
 - **Frequency switching:** `AppModel` observes `$currentFacility` and calls
-  `AmbientChatterService.facilityDidChange()` on every distinct change. If the pilot tunes a
-  new frequency **mid-exchange**, the service ends the call that's on the air *and drops any
-  read-back tied to it* (`abandonCurrentExchange` cuts the speech player via
-  `RadioAudioEngine.stopSpeech()` and unblocks the awaiting `speak()`), then the loop starts a
+  `AmbientChatterService.facilityDidChange(to:)` on every distinct change, passing the **new**
+  facility. If the pilot tunes a new frequency **mid-exchange**, the service ends the call that's
+  on the air *and drops any read-back tied to it* (`abandonCurrentExchange` cuts the speech player
+  via `RadioAudioEngine.stopSpeech()` and unblocks the awaiting `speak()`), then the loop starts a
   fresh exchange appropriate for the new facility — rather than finishing a Tower exchange after
   you've already switched to Ground. A switch in the gap between exchanges needs no interruption:
-  the next loop cycle already reads the current facility.
+  the next loop cycle already reads the current facility. The new facility is passed in rather
+  than re-read because `@Published` fires in `willSet`, so `currentFacility` still holds the old
+  value inside the observer — the same reason the airport-surface observer uses its emitted value.
 - **Silent switch:** background chatter overrides the silent switch (it forces `.playback`
   via `SpeechService.forcePlaybackForBackground`), because audible background audio is the
   whole point.

@@ -144,14 +144,18 @@ final class AmbientChatterService: ObservableObject {
         radio.setDucked(ducked)
     }
 
-    /// Called by `AppModel` whenever the tuned facility changes. If the chatter is mid-exchange
-    /// on the previous frequency, end that call immediately (cutting its audio and dropping any
-    /// pending read-back) so the loop can start chatter appropriate for the newly-tuned
-    /// frequency. A switch during the gap between exchanges needs no action — the next cycle
-    /// already reads the current facility.
-    func facilityDidChange() {
+    /// Called by `AppModel` whenever the tuned facility changes, with the **new** facility. If
+    /// the chatter is mid-exchange on the previous frequency, end that call immediately (cutting
+    /// its audio and dropping any pending read-back) so the loop can start chatter appropriate
+    /// for the newly-tuned frequency. A switch during the gap between exchanges needs no action —
+    /// the next cycle already reads the current facility.
+    ///
+    /// The new facility is passed in rather than re-read from `facilityProvider()`: `AppModel`
+    /// drives this from a Combine `@Published` observer, which fires in `willSet` (before the
+    /// stored `currentFacility` is updated), so re-reading it here would still see the old value.
+    func facilityDidChange(to facility: ATCFacility) {
         guard isRunning, !pausedForPTT else { return }
-        guard Self.shouldAbandonExchange(active: activeFacility, current: facilityProvider()) else { return }
+        guard Self.shouldAbandonExchange(active: activeFacility, current: facility) else { return }
         abandonCurrentExchange()
     }
 
