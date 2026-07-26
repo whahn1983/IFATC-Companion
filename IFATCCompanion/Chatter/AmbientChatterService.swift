@@ -44,6 +44,12 @@ final class AmbientChatterService: ObservableObject {
     /// chatter always matches the position.
     private var facilityProvider: () -> ATCFacility = { .center }
 
+    /// The real runway-end idents for the airport the chatter should reference right now —
+    /// the origin field pre-departure/climb, the destination once descending/arriving —
+    /// supplied by `AppModel` from the loaded OSM surface. Empty when no surface is loaded
+    /// (or no flight plan), which lets the generator fall back to a random runway.
+    private var runwaysProvider: () -> [String] = { [] }
+
     private var voicePool: [AVSpeechSynthesisVoice] = []
     private var loopTask: Task<Void, Never>?
     private var idleStopTask: Task<Void, Never>?
@@ -73,9 +79,12 @@ final class AmbientChatterService: ObservableObject {
         }
     }
 
-    /// Supply the live context (called once from `AppModel`).
-    func bindContext(facility: @escaping () -> ATCFacility) {
+    /// Supply the live context (called once from `AppModel`): the tuned facility and the
+    /// runway idents of the airport the chatter is currently simulating.
+    func bindContext(facility: @escaping () -> ATCFacility,
+                     runways: @escaping () -> [String] = { [] }) {
         self.facilityProvider = facility
+        self.runwaysProvider = runways
     }
 
     /// Pull volume/density/phraseology/voice-pool from settings. Call when they change.
@@ -178,6 +187,9 @@ final class AmbientChatterService: ObservableObject {
                 continue
             }
             let facility = facilityProvider()
+            // Refresh the runway pool each cycle so it tracks the airport in play (origin on
+            // departure, destination on arrival) as the flight progresses.
+            generator.runwayIdents = runwaysProvider()
             var rng = SystemRandomNumberGenerator()
             let lines = generator.exchange(for: facility, using: &rng)
             for line in lines {

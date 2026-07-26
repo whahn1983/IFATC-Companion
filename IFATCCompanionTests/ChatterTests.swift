@@ -19,9 +19,11 @@ final class ChatterTests: XCTestCase {
     }
 
     /// Concatenate many exchanges for a facility so keyword assertions are robust to the
-    /// per-call randomness.
-    private func corpus(for facility: ATCFacility, samples: Int = 80) -> String {
+    /// per-call randomness. `runwayIdents` seeds the generator's real-runway pool.
+    private func corpus(for facility: ATCFacility, samples: Int = 80,
+                        runwayIdents: [String] = []) -> String {
         var gen = ChatterScriptGenerator()
+        gen.runwayIdents = runwayIdents
         var rng = SeededRNG(seed: 42)
         var text = ""
         for _ in 0..<samples {
@@ -95,6 +97,50 @@ final class ChatterTests: XCTestCase {
         let text = corpus(for: .clearance)
         XCTAssertTrue(text.contains("cleared to") || text.contains("squawk"),
                       "Clearance chatter should read IFR clearances")
+    }
+
+    // MARK: - Real-runway grounding
+
+    /// With a real runway pool supplied (the field's OSM runway ends), the surface- and
+    /// runway-working positions must only ever name runways that exist at the field — never a
+    /// made-up one like "runway 18" at a field that has only 09/27.
+    func testRunwayReferencesUseTheProvidedFieldRunways() {
+        let idents = ["09", "27"]
+        let allowedSpoken = Set(idents.map { Phonetic.runway($0) })   // "zero niner", "two seven"
+        for facility in [ATCFacility.ground, .tower, .approach] {
+            let text = corpus(for: facility, runwayIdents: idents)
+            // The real runways do get referenced.
+            XCTAssertTrue(allowedSpoken.contains { text.contains("runway \($0)") },
+                          "\(facility) never referenced a runway from the field's pool")
+            // No runway the field doesn't have is ever named.
+            for n in 1...36 {
+                let spoken = Phonetic.runway(String(format: "%02d", n))
+                if allowedSpoken.contains(spoken) { continue }
+                XCTAssertFalse(text.contains("runway \(spoken)"),
+                               "\(facility) named runway \(n), which isn't at the field")
+            }
+        }
+    }
+
+    /// A single-runway field (both ends in the pool): every Ground runway reference resolves
+    /// to that runway's ends, never anything else.
+    func testGroundNeverTaxisToARunwayNotAtTheField() {
+        let idents = ["16L", "34R"]
+        let text = corpus(for: .ground, runwayIdents: idents)
+        XCTAssertTrue(text.contains("runway one six left") || text.contains("runway three four right"),
+                      "expected the field's real runways in the ground chatter")
+        XCTAssertFalse(text.contains("runway one eight"), "named a runway not at the field")
+        XCTAssertFalse(text.contains("runway three six"), "named a runway not at the field")
+    }
+
+    /// With no pool supplied (no surface loaded yet / no flight plan) the generator keeps its
+    /// previous behavior and still produces plausible runway operations.
+    func testEmptyRunwayPoolFallsBackToPlausibleRunways() {
+        let text = corpus(for: .tower)
+        XCTAssertTrue(text.contains("runway"), "tower chatter should still reference runways")
+        XCTAssertTrue(["cleared for takeoff", "cleared to land", "line up and wait"]
+                        .contains { text.contains($0) },
+                      "tower chatter should still work runway operations without a pool")
     }
 
     // MARK: - Voice filtering

@@ -127,6 +127,11 @@ final class AirportSurfaceCoordinator: ObservableObject {
     /// surface when it wasn't pre-cached in time (a large destination like KMSP whose extract
     /// is still fetching) — without ever firing a network fetch for an arbitrary/test field.
     private var simulatedReferences: [String: CLLocationCoordinate2D] = [:]
+    /// Real runway-end idents (e.g. `["16L","34R","09","27"]`) for every airport whose surface
+    /// has loaded or pre-cached this session, keyed by ICAO. Populated as departure/arrival
+    /// surfaces load, and read synchronously by the ambient-chatter generator so background
+    /// runway calls reference runways that actually exist at the origin/destination field.
+    private var runwayIdentsByICAO: [String: [String]] = [:]
 
     private var taxiReadBack = false
     /// A generic Ground taxi clearance was issued before the surface finished loading
@@ -250,7 +255,26 @@ final class AirportSurfaceCoordinator: ObservableObject {
     private func storeSimulatedSurface(_ model: AirportSurfaceModel, key: String) {
         guard model.hasUsableGeometry else { return }
         simulatedSurfaces[key] = model
+        recordRunwayIdents(model)
         diagnostics?.log(.app, "Mock demo surface pre-cached for \(key): \(model.runways.count) rwy, \(model.taxiways.count) twy, \(model.confidence.title)")
+    }
+
+    /// Remember an airport's real runway-end idents so the ambient chatter can reference them
+    /// synchronously (see `cachedRunwayIdents`). No-op for a surface with no parsed runways.
+    private func recordRunwayIdents(_ model: AirportSurfaceModel) {
+        let key = model.icao.uppercased().trimmingCharacters(in: .whitespaces)
+        let idents = model.allRunwayIdents
+        guard !key.isEmpty, !idents.isEmpty else { return }
+        runwayIdentsByICAO[key] = idents
+    }
+
+    /// The real runway-end idents cached for an airport this session, or an empty array when
+    /// its surface hasn't loaded yet. Read by the ambient chatter so its background runway
+    /// references match the origin/destination field's actual runways rather than a made-up one.
+    func cachedRunwayIdents(icao: String) -> [String] {
+        let key = icao.uppercased().trimmingCharacters(in: .whitespaces)
+        guard !key.isEmpty else { return [] }
+        return runwayIdentsByICAO[key] ?? []
     }
 
     /// Warm the disk/memory surface cache for an airport without disturbing the active
@@ -261,7 +285,8 @@ final class AirportSurfaceCoordinator: ObservableObject {
         guard key.count >= 3, reference.isValid else { return }
         Task {
             do {
-                _ = try await provider.surface(for: key, reference: reference, forceRefresh: false)
+                let model = try await provider.surface(for: key, reference: reference, forceRefresh: false)
+                recordRunwayIdents(model)
                 diagnostics?.log(.app, "OSM surface pre-cached for \(key)")
             } catch {
                 let message = (error as? LocalizedError)?.errorDescription ?? "\(error)"
@@ -308,6 +333,7 @@ final class AirportSurfaceCoordinator: ObservableObject {
         var m = model
         m.confidence = SurfaceConfidenceEvaluator.datasetConfidence(model: model, graph: builtGraph)
         surface = m
+        recordRunwayIdents(m)
         graph = builtGraph
         datasetConfidence = m.confidence
         lastError = nil

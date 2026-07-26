@@ -933,10 +933,31 @@ final class AppModel: ObservableObject {
     /// transmissions up to the mic-key static effect. Called from `onAppear`.
     private func configureChatter() {
         chatter.configure(settings: settings)
-        chatter.bindContext(facility: { [weak self] in self?.currentFacility ?? .center })
+        chatter.bindContext(facility: { [weak self] in self?.currentFacility ?? .center },
+                            runways: { [weak self] in self?.chatterRunwayIdents() ?? [] })
         // Pilot transmissions get a mic-key/un-key static burst via the radio engine.
         speech.micKey = { [weak self] event in self?.chatter.micKey(event) }
         applyChatterSettings()
+    }
+
+    /// The real runway-end idents the background chatter should reference right now — from the
+    /// origin field while operating pre-departure/climbing, the destination once descending or
+    /// arriving — read from the loaded OSM surface. Empty when that surface hasn't loaded yet
+    /// (or no flight plan is set), so the chatter falls back to a plausible random runway.
+    private func chatterRunwayIdents() -> [String] {
+        airportSurface.cachedRunwayIdents(icao: chatterAirportICAO)
+    }
+
+    /// Which field's runways the chatter simulates: the destination while on approach or once
+    /// the flight has passed top-of-descent, otherwise the departure/origin field.
+    private var chatterAirportICAO: String {
+        if currentFacility == .approach { return flightPlan.destination }
+        switch phase {
+        case .descent, .approach, .landing, .taxiIn, .parked:
+            return flightPlan.destination
+        default:
+            return flightPlan.departure
+        }
     }
 
     /// Apply the current chatter/Live-Activity settings and start or stop the ambient

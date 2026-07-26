@@ -10,12 +10,26 @@ import Foundation
 /// frequencies match the real calls) and `AirlineDatabase` (so callsigns are real
 /// radio names). No AI, no network — pure templates filled with random values.
 ///
+/// When the tuned airport's OpenStreetMap surface has loaded, its real runway ends are
+/// supplied via `runwayIdents` so runway references (Ground taxi/hold-short, Tower
+/// takeoff/land/line-up, Approach clearances) name runways that actually exist at the
+/// origin/destination field, rather than an invented "runway 18" the airport lacks.
+///
 /// The generator is intentionally generic over `RandomNumberGenerator` so tests can
 /// drive it deterministically with a seeded generator.
 struct ChatterScriptGenerator {
 
     var mode: PhraseologyMode = .faa
     var digitStyle: CallsignDigitStyle = .grouped
+
+    /// Real runway-end idents for the airport this chatter is simulating right now — the
+    /// origin field while pre-departure/climbing, the destination once descending/arriving —
+    /// taken from the loaded OpenStreetMap surface (e.g. `["16L","34R","09","27"]`). When
+    /// non-empty, every runway reference (Ground taxi/hold-short, Tower takeoff/land/line-up,
+    /// Approach clearances) is drawn from these so the background traffic never taxis to or is
+    /// cleared for a runway the field does not have. Empty (no surface loaded yet, or no flight
+    /// plan) falls back to a plausible random runway, preserving the previous behavior.
+    var runwayIdents: [String] = []
 
     private var icao: Bool { mode == .icao }
 
@@ -227,6 +241,9 @@ struct ChatterScriptGenerator {
     }
 
     private func runway<G: RandomNumberGenerator>(using rng: inout G) -> String {
+        // Prefer a real runway end at the field so the chatter never names a runway that
+        // doesn't exist there; fall back to a plausible random one when none are known yet.
+        if let ident = runwayIdents.randomElement(using: &rng) { return ident }
         let num = Int.random(in: 1...36, using: &rng)
         let suffix = ["", "", "L", "C", "R"].randomElement(using: &rng)!
         return String(format: "%02d", num) + suffix

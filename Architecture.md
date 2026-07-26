@@ -129,8 +129,13 @@ Full detail in [`docs/BackgroundChatter.md`](docs/BackgroundChatter.md) and
   so callsigns/headings/altitudes/frequencies match the real calls: Center works ride
   reports, hand-offs and descend-via-STAR; Ground works taxi and hand-offs; Tower works
   takeoff/landing/line-up-and-wait; Approach works vectors and approaches; Departure works
-  climbs and hand-offs; Clearance reads IFR clearances. Generic over `RandomNumberGenerator`
-  for deterministic tests.
+  climbs and hand-offs; Clearance reads IFR clearances. Runway references are **grounded in
+  the real field**: `AmbientChatterService` feeds it the runway ends of the airport in play
+  (the origin pre-departure/climb, the destination once descending/arriving) from the loaded
+  OpenStreetMap surface (`AirportSurfaceCoordinator.cachedRunwayIdents`), so background
+  traffic is never taxied to or cleared for a runway the airport doesn't have; with no
+  surface loaded yet it falls back to a plausible random runway. Generic over
+  `RandomNumberGenerator` for deterministic tests.
 - **RadioAudioEngine** — the `AVAudioEngine` graph: a generated filtered-noise static bed
   (an `AVAudioSourceNode`, no bundled asset), the chatter voice routed through a band-pass
   EQ + the `.speechRadioTower` distortion preset (so a call sounds like a real,

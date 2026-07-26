@@ -52,7 +52,15 @@ AmbientChatterService (orchestrator, @MainActor)
   Approach works vectors, approaches, speed and the Tower hand-off; Departure works radar
   contact, climbs, headings and the Center hand-off; Clearance reads IFR clearances; Ramp
   works pushback/start/monitor. It is generic over `RandomNumberGenerator` for
-  deterministic tests.
+  deterministic tests. **Runway references are grounded in the real field:** each cycle
+  `AmbientChatterService` sets the generator's `runwayIdents` to the runway ends of the
+  airport currently in play — the origin while pre-departure/climbing, the destination once
+  descending/arriving — pulled from the loaded OpenStreetMap surface
+  (`AirportSurfaceCoordinator.cachedRunwayIdents`, keyed off `AppModel.phase` /
+  `currentFacility`). So Ground never taxis a jet to a runway the field doesn't have, Tower
+  never clears one for a nonexistent runway, and Approach's runway clearances match the
+  arrival airport. Until that surface has loaded (or with no flight plan) the pool is empty
+  and the generator falls back to a plausible random runway.
 - **`VoiceCatalog`** limits the chatter to a curated set of natural English voices —
   **Karen, Daniel, Moira, Rishi, Samantha** (a good AU/GB/IE/IN/US spread) — using whichever
   are installed, preferring the enhanced/premium variant of each. If none are installed it
