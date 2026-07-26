@@ -1,0 +1,85 @@
+import XCTest
+@testable import IFATCCompanion
+
+/// Verifies the telemetry-stall watchdog that keeps the live flight notification current:
+/// its pure staleness decision, and that only real telemetry advances the clock it measures
+/// against. The watchdog force-reconnects the Infinite Flight link when the feed silently
+/// stalls (e.g. the screen locks), so the Lock Screen / Dynamic Island card keeps updating
+/// instead of freezing on its last numbers.
+@MainActor
+final class LiveActivityStalenessTests: XCTestCase {
+
+    /// A fixed base instant so the tests don't depend on the wall clock.
+    private let base = Date(timeIntervalSince1970: 1_000_000)
+
+    private func makeLiveModel() -> AppModel {
+        let model = AppModel()
+        model.settings.voiceEnabled = false
+        model.settings.mockMode = false
+        return model
+    }
+
+    // MARK: - The pure staleness decision
+
+    /// Before the first fix arrives (`lastUsable == .distantPast`) the feed can't be judged
+    /// stalled — there's nothing to reconnect to yet.
+    func testNoStallBeforeFirstFix() {
+        let model = makeLiveModel()
+        model.setTelemetryClocksForTesting(lastUsable: .distantPast)
+        XCTAssertFalse(model.telemetryStallDetected(now: base.addingTimeInterval(3600)))
+    }
+
+    /// Fresh telemetry within the stall window is healthy — no reconnect.
+    func testNoStallWithinWindow() {
+        let model = makeLiveModel()
+        model.setTelemetryClocksForTesting(lastUsable: base)
+        XCTAssertFalse(model.telemetryStallDetected(now: base.addingTimeInterval(5)),
+                       "5 s since the last fix is well inside the stall window")
+    }
+
+    /// A long gap since the last usable snapshot, with no recent reconnect, is a stall.
+    func testStallAfterThreshold() {
+        let model = makeLiveModel()
+        model.setTelemetryClocksForTesting(lastUsable: base, lastForcedReconnect: .distantPast)
+        XCTAssertTrue(model.telemetryStallDetected(now: base.addingTimeInterval(15)),
+                      "15 s with no fresh telemetry is a stall")
+    }
+
+    /// A reconnect that just fired is given time to re-establish the feed before the watchdog
+    /// considers reconnecting again, so it never reconnect-storms.
+    func testCooldownSuppressesRepeatReconnect() {
+        let model = makeLiveModel()
+        model.setTelemetryClocksForTesting(lastUsable: base,
+                                           lastForcedReconnect: base.addingTimeInterval(14))
+        XCTAssertFalse(model.telemetryStallDetected(now: base.addingTimeInterval(15)),
+                       "a reconnect 1 s ago is still inside the cooldown")
+    }
+
+    /// The mock feed never stalls, so the watchdog stays out of Mock Mode entirely.
+    func testNoStallInMockMode() {
+        let model = makeLiveModel()
+        model.settings.mockMode = true
+        model.setTelemetryClocksForTesting(lastUsable: base)
+        XCTAssertFalse(model.telemetryStallDetected(now: base.addingTimeInterval(3600)))
+    }
+
+    // MARK: - Only real telemetry advances the clock
+
+    /// A usable snapshot advances the last-usable-telemetry clock; an empty reconnect-handshake
+    /// snapshot (all-nil) must not — otherwise a stalled link that keeps returning empties would
+    /// look forever "fresh" and never recover.
+    func testUsableTelemetryAdvancesClockButEmptyDoesNot() {
+        let model = makeLiveModel()
+        XCTAssertEqual(model.lastUsableTelemetryAtForTesting, .distantPast,
+                       "no telemetry has arrived yet")
+
+        model.ingestStateForTesting(.empty)
+        XCTAssertEqual(model.lastUsableTelemetryAtForTesting, .distantPast,
+                       "an empty handshake snapshot is not usable telemetry")
+
+        let real = model.mock.state(for: .preflight)   // on ground, valid position
+        model.ingestStateForTesting(real)
+        XCTAssertGreaterThan(model.lastUsableTelemetryAtForTesting, .distantPast,
+                             "a real snapshot advances the stall clock")
+    }
+}

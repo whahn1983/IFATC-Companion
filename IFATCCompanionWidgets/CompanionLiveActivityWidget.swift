@@ -13,11 +13,12 @@ import AppIntents
 struct CompanionLiveActivityWidget: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: CompanionActivityAttributes.self) { context in
-            LockScreenLiveActivityView(state: context.state)
+            LockScreenLiveActivityView(state: context.state, isStale: context.isStale)
                 .activityBackgroundTint(Color.black.opacity(0.55))
                 .activitySystemActionForegroundColor(.white)
         } dynamicIsland: { context in
             let state = context.state
+            let isStale = context.isStale
             return DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
                     Label(state.facility, systemImage: state.facilitySymbol)
@@ -33,22 +34,25 @@ struct CompanionLiveActivityWidget: Widget {
                 }
                 DynamicIslandExpandedRegion(.bottom) {
                     VStack(spacing: 6) {
-                        TelemetryRow(state: state)
+                        TelemetryRow(state: state, isStale: isStale)
                         if let alert = state.weatherAlert {
                             Label(alert, systemImage: "cloud.bolt.rain")
                                 .font(.caption2).foregroundStyle(.orange)
                         }
+                        FreshnessLine(asOf: state.asOf, isStale: isStale)
                         ActionButtons(state: state)
                     }
                 }
             } compactLeading: {
                 // The icon conveys the controller; pair it with a short status so the
                 // pill always shows something relevant (never a bare "0k" at the gate).
-                Image(systemName: state.facilitySymbol).foregroundStyle(.cyan)
+                // A stalled feed greys the pill so it doesn't read as live.
+                Image(systemName: state.facilitySymbol).foregroundStyle(isStale ? .gray : .cyan)
             } compactTrailing: {
-                Text(compactStatus(state)).font(.caption2).monospacedDigit().foregroundStyle(.white)
+                Text(compactStatus(state)).font(.caption2).monospacedDigit()
+                    .foregroundStyle(isStale ? .gray : .white)
             } minimal: {
-                Image(systemName: state.facilitySymbol).foregroundStyle(.cyan)
+                Image(systemName: state.facilitySymbol).foregroundStyle(isStale ? .gray : .cyan)
             }
             .keylineTint(.cyan)
         }
@@ -59,6 +63,9 @@ struct CompanionLiveActivityWidget: Widget {
 
 private struct LockScreenLiveActivityView: View {
     let state: CompanionActivityAttributes.ContentState
+    /// True once iOS marks the activity stale (no push within the controller's stale
+    /// window) — i.e. the telemetry behind these numbers has stopped refreshing.
+    let isStale: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -79,7 +86,7 @@ private struct LockScreenLiveActivityView: View {
                 Text(state.route).font(.caption).foregroundStyle(.secondary)
             }
 
-            TelemetryRow(state: state)
+            TelemetryRow(state: state, isStale: isStale)
 
             HStack {
                 Text(state.phase).font(.caption).foregroundStyle(.cyan)
@@ -95,6 +102,8 @@ private struct LockScreenLiveActivityView: View {
                     .font(.caption2).foregroundStyle(.orange)
             }
 
+            FreshnessLine(asOf: state.asOf, isStale: isStale)
+
             ActionButtons(state: state)
         }
         .padding()
@@ -105,12 +114,15 @@ private struct LockScreenLiveActivityView: View {
 
 private struct TelemetryRow: View {
     let state: CompanionActivityAttributes.ContentState
+    /// Dim the numbers when the feed has stalled so they don't read as live.
+    var isStale: Bool = false
     var body: some View {
         HStack(spacing: 16) {
             metric("ALT", "\(state.altitude) ft")
             metric("HDG", String(format: "%03d°", state.heading))
             metric("GS", "\(state.speed) kt")
         }
+        .opacity(isStale ? 0.5 : 1)
     }
 
     private func metric(_ label: String, _ value: String) -> some View {
@@ -118,6 +130,32 @@ private struct TelemetryRow: View {
             Text(label).font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
             Text(value).font(.caption).monospacedDigit().foregroundStyle(.white)
         }
+    }
+}
+
+/// A one-line freshness indicator. When live it shows a self-updating "Updated Xm ago"
+/// (a relative `Text` refreshes on the Lock Screen without a new push); once stale it
+/// switches to "Reconnecting…" so the user knows the numbers above are no longer current.
+private struct FreshnessLine: View {
+    let asOf: Date
+    let isStale: Bool
+
+    var body: some View {
+        Group {
+            if isStale {
+                Label("Reconnecting…", systemImage: "arrow.triangle.2.circlepath")
+                    .foregroundStyle(.orange)
+            } else {
+                HStack(spacing: 3) {
+                    Image(systemName: "dot.radiowaves.left.and.right")
+                    Text("Updated")
+                    Text(asOf, style: .relative)
+                    Text("ago")
+                }
+                .foregroundStyle(.secondary)
+            }
+        }
+        .font(.system(size: 10))
     }
 }
 

@@ -131,10 +131,35 @@ AmbientChatterService (orchestrator, @MainActor)
 
 `LiveActivityController` starts/updates/ends an ActivityKit `Activity`. The content
 (`CompanionActivityAttributes.ContentState`) carries phase, tuned controller, altitude,
-heading, ground speed, callsign, route, the next controller, a weather advisory flag, and
-which of the Read Back / Check In buttons apply. Updates are throttled (2 s) and pushed
-from the telemetry loop and on every new call. The buttons are `LiveActivityIntent`s that
-run in the app process and call the same actions as the on-screen buttons.
+heading, ground speed, callsign, route, the next controller, a weather advisory flag,
+which of the Read Back / Check In buttons apply, and an `asOf` timestamp. Updates are
+throttled (2 s) and pushed from the telemetry loop and on every new call. The buttons are
+`LiveActivityIntent`s that run in the app process and call the same actions as the
+on-screen buttons.
+
+### Keeping the notification fresh (staleness handling)
+
+There is no push server (the app is local-only), so the notification is only as fresh as
+the last state the app pushed — which is only as fresh as the last telemetry it received.
+Two mechanisms keep it honest and current while backgrounded:
+
+- **Telemetry-stall watchdog (`AppModel`).** When the screen locks, Infinite Flight's
+  Connect socket can go quiet while still looking "connected" — the poll loop keeps ticking
+  but every state read comes back empty, so the notification would freeze on its last
+  numbers. While a live flight's background-audio anchor is running, a 5 s watchdog watches
+  the time since the last *usable* telemetry snapshot (`lastUsableTelemetryAt`, advanced in
+  `handle(state:)`); if it exceeds ~12 s it forces a reconnect (`connect.disconnect()` +
+  `startLive()`) — the same recovery `handleReturnToForeground()` does, applied proactively
+  rather than waiting for the user to reopen the app. A 20 s cooldown between forced
+  reconnects keeps a slow handshake from being read as a fresh stall, and the mock feed
+  (which never stalls) is excluded. The pure decision is `telemetryStallDetected(now:)`.
+- **`staleDate` + self-updating freshness line (widget).** Every push sets the activity's
+  `staleDate` to `asOf + 60 s`. If no push arrives within that window (e.g. the app is fully
+  suspended and the watchdog can't run), iOS flips `context.isStale`; the widget then dims
+  the telemetry, greys the Dynamic Island pill, and shows "Reconnecting…". While fresh it
+  shows a self-updating "Updated Xm ago" line — a relative `Text` that refreshes on the Lock
+  Screen *without* a new push — so the age of the data is always visible instead of stale
+  numbers reading as live.
 
 The widget UI lives in a separate extension target — see
 [LiveActivitySetup.md](LiveActivitySetup.md).
