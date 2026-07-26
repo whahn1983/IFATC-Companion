@@ -1,5 +1,18 @@
 # Live Activity widget-extension setup
 
+> **Status: the `IFATCCompanionWidgetsExtension` target has been created** and wired up
+> (synchronized group for `IFATCCompanionWidgets/`, the three shared files added to its
+> membership, the Embed Foundation Extensions phase, and the target dependency). Two
+> things were cleaned up after the target was generated, worth knowing if you regenerate
+> it:
+> - **Delete Xcode's sample files.** The template generates `IFATCCompanionWidgets.swift`,
+>   `…Bundle.swift`, `…Control.swift`, and `…LiveActivity.swift`. The generated `…Bundle`
+>   is a second `@main`, which won't compile alongside `CompanionWidgetBundle`. Keep only
+>   `CompanionWidgetBundle.swift` and `CompanionLiveActivityWidget.swift`.
+> - **Match the deployment target.** Xcode 26 defaults a new extension to the current SDK
+>   (e.g. iOS 26.5). Set the widget target's **iOS Deployment Target to 17.0** to match the
+>   app, otherwise the Live Activity won't render on the iOS 17–26 devices the app supports.
+
 The live flight notification (Lock Screen + Dynamic Island) is rendered by a **WidgetKit
 extension**. Everything on the app side is already implemented and wired; all that remains
 is adding the extension target, which must be done in Xcode (creating an app-extension
