@@ -203,7 +203,10 @@ final class AppModel: ObservableObject {
                 }
                 return [.taxi]
             case .tower:
-                return [.ready, .takeoff]
+                // After a "monitor Tower" hand-off no check-in is required, but offer it —
+                // checking in gets a "number one for departure" acknowledgement — alongside
+                // the takeoff request. Otherwise the usual report-ready / takeoff pair.
+                return monitoringTower ? [.checkIn, .takeoff] : [.ready, .takeoff]
             default:
                 return [.clearance]
             }
@@ -482,6 +485,14 @@ final class AppModel: ObservableObject {
 
     /// Guards the one-time arrival courtesy call at the gate.
     private var arrivalAnnounced = false
+
+    /// True once Ground has automatically handed a departing aircraft to Tower to
+    /// *monitor* ("monitor Tower on …"), as it approaches the departure runway. After
+    /// this no check-in is required — the takeoff clearance still fires automatically
+    /// once the aircraft is lined up — but if the pilot does check in, Tower replies
+    /// "number one for departure". Reset for each new flight; persisted across a
+    /// reconnect so the hand-off isn't re-issued mid-taxi.
+    private var monitoringTower = false
 
     /// True between contacting arrival Ramp (taxi-to-gate cleared) and the aircraft
     /// actually stopping at the gate with the parking brake set. While true, the
@@ -1327,6 +1338,7 @@ final class AppModel: ObservableObject {
         hasDeparted = false
         arrivalAnnounced = false
         awaitingGateArrival = false
+        monitoringTower = false
         gateMonitored = false
         // Fresh flight: hold the ambient chatter until the pilot's first ATC call.
         atcCommunicationStarted = false
@@ -1375,6 +1387,7 @@ final class AppModel: ObservableObject {
             hasDeparted = false
             arrivalAnnounced = false
             awaitingGateArrival = false
+            monitoringTower = false
             gateMonitored = false
             // Fresh flight: hold the ambient chatter until the pilot's first ATC call.
             atcCommunicationStarted = false
@@ -1666,6 +1679,9 @@ final class AppModel: ObservableObject {
         // automatically here is the takeoff clearance, once the aircraft is lined
         // up on the runway — Tower does not wait for a pilot prompt for that.
         if !hasDeparted {
+            // Approaching the departure runway, Ground hands the pilot to Tower to
+            // *monitor* ("monitor Tower on …"). One-shot; sets `monitoringTower`.
+            maybeMonitorTowerHandoff()
             if readbackGateClosed {
                 // Hold: the controller is waiting for the pilot to read back the
                 // last call (or to answer the "how do you read?" prompt) before
@@ -1675,6 +1691,11 @@ final class AppModel: ObservableObject {
                 // runway — immediately if it's already rolling, otherwise a few
                 // seconds after it settles lined up and stopped. This fires even while
                 // the pilot is tuning frequencies by hand (they tuned Tower for it).
+                autoAdvanceTakeoffClearance(state: state)
+            } else if monitoringTower, !settings.mockMode {
+                // Pilot is monitoring Tower (Ground already handed them off) — no "ready"
+                // report or check-in needed. The takeoff clearance still fires
+                // automatically once the aircraft is lined up on the runway.
                 autoAdvanceTakeoffClearance(state: state)
             } else if !manualTuning, !mapped.isManualGroundFlow, isForward(mapped) {
                 // Telemetry already shows the takeoff roll (the pilot rolled without
@@ -1887,8 +1908,35 @@ final class AppModel: ObservableObject {
     /// Tower automatically clears the aircraft for takeoff (no pilot prompt needed).
     private func autoIssueTakeoffClearance() {
         cancelTakeoffClearanceTimer()
+        // The aircraft is departing — no pre-departure check-in remains pending (a
+        // "monitor Tower" hand-off never requires one).
+        pendingCheckInFacility = nil
+        // When the pilot was already handed to Tower to monitor, Ground's "monitor Tower"
+        // call was the hand-off — so the takeoff clearance must not re-announce a
+        // "contact Tower" (it advances straight from the taxi state to the clearance).
         advanceAndPost(to: .towerDeparture, context: buildContext(for: .towerDeparture),
-                       automatic: true)
+                       announceHandoff: !monitoringTower, automatic: true)
+    }
+
+    /// As the aircraft nears the departure runway, Ground hands it to Tower to *monitor*
+    /// ("monitor Tower on …", the red sign short of the runway). Fires once per departure
+    /// taxi, the moment the surface coordinator flags the aircraft approaching the runway
+    /// hold-short. No check-in is required afterwards — the read-back tunes the radio to
+    /// Tower (when auto-tune is on) and the takeoff clearance still plays automatically
+    /// once the aircraft is lined up. Works in live and mock alike.
+    private func maybeMonitorTowerHandoff() {
+        guard !monitoringTower, !hasDeparted, !companionStandby,
+              airportSurface.kind == .departure,
+              airportSurface.approachingRunwayHandoff,
+              stateMachine.current == .groundTaxi,
+              currentFacility == .ground,
+              !readbackGateClosed,
+              !airportSurface.awaitingCrossingReadback,
+              !airportSurface.awaitingTaxiReadback else { return }
+        monitoringTower = true
+        let c = buildContext(for: .lineUpWait)
+        post(engine.monitorTower(cs: c.callsign, frequency: c.towerFrequency), speak: true)
+        persistSession()
     }
 
     /// Drive the automatic takeoff clearance from telemetry while at line-up-and-wait
@@ -1925,7 +1973,8 @@ final class AppModel: ObservableObject {
             // Stand by while tuned to a human controller — Tower's automatic takeoff
             // clearance must not fire over a live controller. The next telemetry tick
             // re-arms it once the pilot leaves the human frequency.
-            guard !self.hasDeparted, self.stateMachine.current == .lineUpWait,
+            guard !self.hasDeparted,
+                  self.stateMachine.current == .lineUpWait || self.monitoringTower,
                   !self.settings.mockMode, !self.readbackGateClosed, !self.companionStandby,
                   self.isReadyForTakeoffClearance(state: self.aircraftState) else { return }
             self.autoIssueTakeoffClearance()
@@ -2638,6 +2687,7 @@ final class AppModel: ObservableObject {
             arrivalAnnounced: arrivalAnnounced,
             awaitingGateArrival: awaitingGateArrival,
             manualTuning: manualTuning,
+            monitoringTower: monitoringTower,
             weatherDeviation: weatherDeviation,
             reportedDepartureInfo: reportedDepartureInfo,
             reportedArrivalInfo: reportedArrivalInfo,
@@ -2661,6 +2711,7 @@ final class AppModel: ObservableObject {
         let sig = [stateMachine.current.rawValue, atcState.rawValue, currentFacility.rawValue,
                    phase.rawValue, String(assignedAltitude), String(hasDeparted),
                    String(arrivalAnnounced), String(awaitingGateArrival), String(manualTuning),
+                   String(monitoringTower),
                    weatherDeviation.state.rawValue, String(transcript.count),
                    reportedDepartureInfo ?? "-", reportedArrivalInfo ?? "-"].joined(separator: "|")
         let now = Date()
@@ -2700,6 +2751,7 @@ final class AppModel: ObservableObject {
         arrivalAnnounced = snap.arrivalAnnounced
         awaitingGateArrival = snap.awaitingGateArrival
         manualTuning = snap.manualTuning
+        monitoringTower = snap.monitoringTower ?? false
         // Resume an in-progress weather diversion so the deviation card (and its
         // "clear of weather" button) survives the reconnect. A subsequent telemetry
         // tick may still clear a non-committed lifecycle if the weather is gone, but
@@ -3366,6 +3418,20 @@ final class AppModel: ObservableObject {
             resumeApproachAfterGoAround()
             return
         }
+        // Monitoring Tower before departure: a check-in isn't required, but if the pilot
+        // does call up, Tower acknowledges with "number one for departure". The state
+        // machine is left at the taxi state — the takeoff clearance still fires
+        // automatically once the aircraft is lined up (or via the Takeoff button).
+        if monitoringTower, !hasDeparted, facility == .tower {
+            pendingCheckInFacility = nil
+            let c = buildContext(for: .lineUpWait)
+            postPilot(pilotEngine.requestHandoff(context: c, facility: .tower,
+                                                 currentAltitude: checkInAltitude(),
+                                                 targetAltitude: assignedAltitude,
+                                                 onGround: aircraftState.onGround ?? true))
+            post(engine.numberOneForTakeoff(cs: c.callsign, runway: c.runway), speak: true)
+            return
+        }
         // Checking in satisfies any pending hand-off the controller prompted: the new
         // controller now speaks for itself, so the semi-automatic flow resumes.
         pendingCheckInFacility = nil
@@ -3505,6 +3571,9 @@ final class AppModel: ObservableObject {
     }
 
     func requestTakeoff() {
+        // The aircraft is departing — no pre-departure check-in remains pending (a
+        // "monitor Tower" hand-off never requires one), so it can't stall the airborne flow.
+        pendingCheckInFacility = nil
         groundFlow(pilotEngine.requestTakeoff(context: buildContext(for: .towerDeparture)), to: .towerDeparture)
         // Cleared for takeoff — the pilot has departed, so switch the response
         // buttons from the ground flow to the enroute set (which includes Check In
@@ -5619,6 +5688,7 @@ final class AppModel: ObservableObject {
         hasDeparted = false
         arrivalAnnounced = false
         awaitingGateArrival = false
+        monitoringTower = false
         arrivalGatePosition = nil
         arrivalRouteWaitStartedAt = nil
         pendingArrivalTaxiClearance = nil

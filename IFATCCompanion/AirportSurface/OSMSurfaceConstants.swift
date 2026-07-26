@@ -93,6 +93,21 @@ enum OSMSurface {
     /// movement surfaces (runways/taxiways/gates) always use the full `bboxHalfSpanDegrees`.
     static let buildingBboxHalfSpanDegrees = 0.017
 
+    // MARK: - Ground → Tower "monitor" hand-off
+
+    /// How far (meters) before the departure runway hold-short the companion has Ground
+    /// hand the pilot to Tower to *monitor* (real-world "monitor Tower on …", the red
+    /// sign by the checkered line short of the runway).
+    ///
+    /// OpenStreetMap has **no distinct feature** for that monitor-tower line/sign — the
+    /// only runway-proximity feature it maps is the `aeroway=holding_position`
+    /// (hold-short) line at the runway itself. So the trigger point cannot be read from
+    /// OSM; it is derived from the calculated taxi route instead — the hand-off fires
+    /// once the aircraft is within this distance of the route's end (the runway
+    /// hold-short). A few hundred meters keeps it "well before" the hold-short on a
+    /// normal-length taxi while still being on the final leg to the runway.
+    static let monitorTowerLeadMeters = 200.0
+
     // MARK: - Cache / refresh policy
 
     /// How long a cached airport extract is considered fresh before a refresh is

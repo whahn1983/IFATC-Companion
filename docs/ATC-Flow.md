@@ -28,6 +28,9 @@ mode and Mock Mode.
 
 - The flight plan is read from IF (`aircraft/0/flightplan`) and parsed for the
   departure, destination and enroute fixes (`IFFlightPlanParser`).
+- Approaching the departure runway on the taxi, **Ground automatically hands the
+  pilot to Tower to *monitor*** ("monitor Tower on …") — no check-in required (see
+  step 5).
 - The **takeoff clearance is issued automatically once the aircraft is lined up**
   on the assigned runway (`RunwayLineupDetector`: on the ground, low speed,
   heading aligned with the runway) — Tower does not wait for a prompt.
@@ -75,7 +78,7 @@ flight from the gate; your settings and flight plan are kept.
 | 2 | At gate | **Ground** | "Push back approved." | `pushbackApproved` | IF pushback |
 | 3 | At gate | **Ground** | "Start up approved." (often pilot's discretion) | `startupApproved` | n/a in IF (courtesy) |
 | 4 | Taxi out | **Ground** | "Taxi to runway *XX* via *taxiways*, hold short *…*. Contact Tower when ready." | `taxiToRunway` | IF taxi/hold-short |
-| 5 | Approaching rwy | **Ground → Tower** | "Contact Tower on *freq*." | `handoff(from:to:)` | IF hand-off |
+| 5 | Approaching rwy | **Ground → Tower** | "Monitor Tower on *freq*." | `monitorTower(cs:frequency:)` | IF hand-off |
 | 6 | Holding short | **Tower** | "Runway *XX*, line up and wait." | `lineUpAndWait` | IF LUAW |
 | 7 | Lined up | **Tower** | "Wind *…*, runway *XX*, cleared for takeoff, fly heading *XXX* / runway heading, climb and maintain *initial alt*." | `clearedForTakeoff(departureHeading:…)` | IF takeoff clearance (+ real-world departure instructions) |
 
@@ -99,6 +102,20 @@ filed fix after the runway. It is airport-agnostic and never uses the bearing to
 the destination. When no such fix can be located the heading is unknown and the
 clearance says "fly runway heading"; the heading is likewise spoken as "fly runway
 heading" whenever it lands within 10° of the runway heading.
+
+**Monitor Tower (step 5).** As the aircraft nears the departure runway on the taxi,
+Ground **automatically** hands it to Tower to *monitor* — "monitor Tower on *freq*" —
+mirroring the real-world red "MONITOR TOWER ON …" sign by the yellow checkered line
+short of the runway. Reading it back (which auto-tunes to Tower when *Auto-tune on
+hand-off* is on) is "monitor Tower on *freq*"; **no check-in is required**. The takeoff
+clearance still fires automatically once the aircraft is lined up (step 7). If the pilot
+*does* check in on Tower, Tower acknowledges with "number one for departure"
+(`numberOneForTakeoff`) — but that is optional. The trigger point is **derived from the
+taxi route**, not read from the map data: OpenStreetMap has no distinct feature for the
+monitor-tower line/sign — the only runway-proximity marking it maps is the
+`aeroway=holding_position` (hold-short) line *at* the runway — so the hand-off fires once
+the aircraft comes within `OSMSurface.monitorTowerLeadMeters` of the route's runway
+hold-short. Runs in both live mode and Mock Mode.
 
 ## 2. Enroute / Cruise
 
