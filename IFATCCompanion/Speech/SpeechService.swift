@@ -26,7 +26,7 @@ final class SpeechService: NSObject, ObservableObject {
     // MARK: Radio voice effect
     //
     // When `AppSettings.transmissionStaticEnabled` is on, the main calls are routed
-    // through `RadioVoiceProcessor` (band-pass + light distortion) so they sound like
+    // through `RadioVoiceProcessor` (band-pass + gentle soft-clip) so they sound like
     // radio transmissions, and the pilot's own calls are still bracketed with mic-key
     // static. This is the SAME toggle as the transmission static. When it's off, the
     // original clean-voice path (`synthesizer.speak`) is used, entirely unchanged.

@@ -4,14 +4,17 @@ import AVFoundation
 /// Applies a VHF-radio effect to the **main** ATC/pilot calls so the same iOS voices
 /// sound like they're coming over the radio, the way a flight sim does it. This is *not*
 /// an echo/reverb (that sounds like a room, not a radio) — the effect is the same one
-/// real radios impose: a **band-pass filter to the comms band** plus a **little
-/// distortion**. The band-pass is what strips the fullness and gives the tinny,
-/// boxed-in radio timbre; the distortion adds the gritty "through a speaker" edge.
+/// real radios impose: a **band-pass filter to the comms band** plus a **gentle
+/// soft-clip saturation**. The band-pass is what strips the fullness and gives the tinny,
+/// boxed-in radio timbre; the soft clip adds the driven "through a speaker" edge — the
+/// harmonic grit of a tube/transmitter, *not* the ring-modulator robot voice that
+/// `AVAudioUnitDistortion`'s speech presets produce.
 ///
-/// Synthesized speech buffers are scheduled through `player → EQ → distortion → mixer`
-/// and played at full voice volume (this is the real call, not the ambient chatter, so
-/// it is never ducked). The band-pass is kept a touch wider than a pure 300 Hz–3 kHz
-/// comms band, and the distortion mix low, so the calls stay clearly intelligible.
+/// Synthesized speech buffers are soft-clipped (`applyRadioSaturation`) and scheduled
+/// through `player → EQ(band-pass) → mixer`, played at full voice volume (this is the
+/// real call, not the ambient chatter, so it is never ducked). The band-pass is kept a
+/// touch wider than a pure 300 Hz–3 kHz comms band, and the saturation subtle, so the
+/// calls stay clearly intelligible.
 ///
 /// Driven from the main actor (its `play`/`stop` are awaited by `SpeechService`); the
 /// only off-main code is the buffer-completion callback, which hops back to main.
@@ -24,7 +27,6 @@ final class RadioVoiceProcessor {
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
     private let eq = AVAudioUnitEQ(numberOfBands: 2)
-    private let distortion = AVAudioUnitDistortion()
     private let mixer = AVAudioMixerNode()
 
     private var converters: [AVAudioFormat: AVAudioConverter] = [:]
@@ -42,24 +44,20 @@ final class RadioVoiceProcessor {
         built = true
 
         // Band-pass ~300 Hz–3.4 kHz (a little wider than a pure comms band so the ATC
-        // calls stay intelligible).
+        // calls stay intelligible). The "over the air" grit comes from a gentle soft-clip
+        // applied to the buffers in `play(...)`, not a ring-modulator distortion unit — so
+        // the calls sound driven, not robotic.
         eq.bands[0].filterType = .highPass
         eq.bands[0].frequency = 300
         eq.bands[0].bypass = false
         eq.bands[1].filterType = .lowPass
         eq.bands[1].frequency = 3_400
         eq.bands[1].bypass = false
-        eq.globalGain = 3
+        eq.globalGain = 2
 
-        // Light radio-tower distortion — enough for the "over the air" edge without
-        // hurting readability.
-        distortion.loadFactoryPreset(.speechRadioTower)
-        distortion.wetDryMix = 12
-
-        for node in [player as AVAudioNode, eq, distortion, mixer] { engine.attach(node) }
+        for node in [player as AVAudioNode, eq, mixer] { engine.attach(node) }
         engine.connect(player, to: eq, format: commonFormat)
-        engine.connect(eq, to: distortion, format: commonFormat)
-        engine.connect(distortion, to: mixer, format: commonFormat)
+        engine.connect(eq, to: mixer, format: commonFormat)
         engine.connect(mixer, to: engine.mainMixerNode, format: commonFormat)
     }
 
@@ -96,6 +94,9 @@ final class RadioVoiceProcessor {
         guard isRunning else { return }
         let converted = buffers.compactMap(convertToCommon)
         guard !converted.isEmpty else { return }
+        // Gentle radio saturation (soft-clip) before the band-pass EQ. Kept subtle on the
+        // main calls so the controller/pilot voices stay clearly intelligible.
+        for buffer in converted { applyRadioSaturation(to: buffer, drive: 1.6, mix: 0.25) }
         mixer.outputVolume = max(0, min(1, volume))
         if !player.isPlaying { player.play() }
 

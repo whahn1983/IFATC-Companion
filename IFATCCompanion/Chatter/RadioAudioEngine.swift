@@ -5,16 +5,17 @@ import AVFoundation
 ///
 /// ```
 /// bedSource (generated static) ─► bedMixer ───────────────┐
-/// speechPlayer (chatter voice) ─► EQ ─► distortion ─► speechMixer ─► mainMixer ─► out
+/// speechPlayer (soft-clipped voice) ─► EQ(band-pass) ─► speechMixer ─► mainMixer ─► out
 /// squelchPlayer (mic-key burst) ─► squelchMixer ──────────┘
 /// ```
 ///
 /// * The **static bed** is generated on the fly (a filtered-noise `AVAudioSourceNode`),
 ///   so there is no bundled audio asset and it can hiss continuously — which is exactly
 ///   what keeps the app alive in the background (see `AmbientChatterService`).
-/// * The **chatter voice** is routed through a band-pass EQ + a radio-tower distortion
-///   preset so a synthesized call sounds like a real, half-readable transmission buried
-///   in the static.
+/// * The **chatter voice** buffers are given a gentle soft-clip saturation
+///   (`applyRadioSaturation`) and then band-passed, so a synthesized call sounds like a
+///   real, half-readable transmission buried in the static — without the robotic ring-mod
+///   artifact of `AVAudioUnitDistortion`'s speech presets.
 /// * The **squelch** player fires short static bursts to bracket the pilot's own
 ///   transmissions (mic key / un-key), and is deliberately *not* ducked so it stays
 ///   audible over a real call.
@@ -34,7 +35,6 @@ final class RadioAudioEngine {
     private let speechPlayer = AVAudioPlayerNode()
     private let squelchPlayer = AVAudioPlayerNode()
     private let eq = AVAudioUnitEQ(numberOfBands: 2)
-    private let distortion = AVAudioUnitDistortion()
     private var bedSource: AVAudioSourceNode!
 
     /// Heap-held so the realtime render block can read the current static level without
@@ -91,19 +91,19 @@ final class RadioAudioEngine {
             return noErr
         }
 
-        // Band-pass the chatter voice to the "comms band" (~300 Hz–3 kHz).
+        // Band-pass the chatter voice to the "comms band". The radio grit comes from a
+        // gentle soft-clip on the buffers (`applyRadioSaturation` in `scheduleSpeech`),
+        // not a ring-modulator distortion unit — so it sounds like a driven radio rather
+        // than a robot.
         eq.bands[0].filterType = .highPass
         eq.bands[0].frequency = 320
         eq.bands[0].bypass = false
         eq.bands[1].filterType = .lowPass
-        eq.bands[1].frequency = 2_900
+        eq.bands[1].frequency = 3_000
         eq.bands[1].bypass = false
-        eq.globalGain = 2
+        eq.globalGain = 1
 
-        distortion.loadFactoryPreset(.speechRadioTower)
-        distortion.wetDryMix = 22
-
-        for node in [bedSource as AVAudioNode, speechPlayer, squelchPlayer, eq, distortion, bedMixer, speechMixer, squelchMixer] {
+        for node in [bedSource as AVAudioNode, speechPlayer, squelchPlayer, eq, bedMixer, speechMixer, squelchMixer] {
             engine.attach(node)
         }
 
@@ -111,8 +111,7 @@ final class RadioAudioEngine {
         engine.connect(bedMixer, to: engine.mainMixerNode, format: commonFormat)
 
         engine.connect(speechPlayer, to: eq, format: commonFormat)
-        engine.connect(eq, to: distortion, format: commonFormat)
-        engine.connect(distortion, to: speechMixer, format: commonFormat)
+        engine.connect(eq, to: speechMixer, format: commonFormat)
         engine.connect(speechMixer, to: engine.mainMixerNode, format: commonFormat)
 
         engine.connect(squelchPlayer, to: squelchMixer, format: commonFormat)
@@ -202,6 +201,9 @@ final class RadioAudioEngine {
         guard isRunning, !buffers.isEmpty else { completion(); return }
         let converted = buffers.compactMap(convertToCommon)
         guard !converted.isEmpty else { completion(); return }
+        // Gentle radio saturation (soft-clip) before the band-pass EQ — the chatter can be
+        // a touch grittier than the main voice since it sits behind static.
+        for buffer in converted { applyRadioSaturation(to: buffer, drive: 2.2, mix: 0.35) }
         if !speechPlayer.isPlaying { speechPlayer.play() }
 
         let total = converted.count
