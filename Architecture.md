@@ -106,9 +106,56 @@ The **ATIS** layer surfaces the real airport ATIS at the origin and destination,
 
 - **SpeechService** — text-to-speech via `AVSpeechSynthesizer`, fully offline. Supports per-facility controller voices, a configurable **ATIS voice** for the one-way broadcast, plus a separate pilot voice (with a subtle pitch offset) so the controller and own-ship calls are distinguishable. Pilot transmissions are spoken when triggered by a button/text tap; push-to-talk input is not re-spoken because the user already said it.
 
+## Background radio chatter, background audio & Live Activity
+
+Two opt-in features let the flight keep running (and updating) while the app is
+backgrounded, addressing the fact that iOS suspends a normal app within seconds of leaving
+it — which previously stalled all live callbacks until the app returned to the foreground.
+Full detail in [`docs/BackgroundChatter.md`](docs/BackgroundChatter.md) and
+[`docs/LiveActivitySetup.md`](docs/LiveActivitySetup.md).
+
+- **AmbientChatterService** — orchestrates ambient background ATC radio chatter. It paces
+  transmissions by the chosen density, asks `ChatterScriptGenerator` for a
+  frequency-appropriate exchange, synthesizes each line to PCM buffers with a natural
+  English voice, and plays it through `RadioAudioEngine`'s radio-effect chain. It is the
+  app's **background-audio anchor**: while running it keeps a `.playback` session active and
+  a continuous static bed hissing, so iOS (via the `audio` `UIBackgroundMode`) keeps the
+  process — and therefore the Infinite Flight poll loop and the Live Activity — alive. This
+  is a legitimate, audible feature rather than a silent keep-alive (App Store guideline
+  2.5.4). It ducks under real ATC calls (`SpeechService.isSpeaking`) and pauses around
+  push-to-talk (`SpeechRecognitionService.isListening`).
+- **ChatterScriptGenerator** — deterministic, template-based generator **bounded to the
+  tuned facility** (`AppModel.currentFacility`), reusing `Phonetic` and `AirlineDatabase`
+  so callsigns/headings/altitudes/frequencies match the real calls: Center works ride
+  reports, hand-offs and descend-via-STAR; Ground works taxi and hand-offs; Tower works
+  takeoff/landing/line-up-and-wait; Approach works vectors and approaches; Departure works
+  climbs and hand-offs; Clearance reads IFR clearances. Generic over `RandomNumberGenerator`
+  for deterministic tests.
+- **RadioAudioEngine** — the `AVAudioEngine` graph: a generated filtered-noise static bed
+  (an `AVAudioSourceNode`, no bundled asset), the chatter voice routed through a band-pass
+  EQ + the `.speechRadioTower` distortion preset (so a call sounds like a real,
+  barely-readable transmission buried in static), and short squelch bursts. The squelch
+  path also brackets the pilot's own transmissions (mic key / un-key) via
+  `SpeechService.transmissionStatic`.
+- **VoiceCatalog** — selects **English human voices** for the chatter: filters
+  `AVSpeechSynthesisVoice.speechVoices()` to English, non-novelty, non-personal voices
+  (via `voiceTraits`), excludes the robotic Eloquence set, ranks by quality, and folds in
+  the voices the user chose for the real controllers/pilot so each frequency keeps a
+  consistent "controller".
+- **LiveActivityController / CompanionActivityAttributes / CompanionIntents /
+  CompanionActionCenter** — the ActivityKit live flight notification (Lock Screen + Dynamic
+  Island): phase, tuned controller, altitude/heading/speed, callsign, route, next
+  controller and a weather flag, updated (throttled) from the telemetry loop and every new
+  call. Its **Read Back / Check In** buttons are `LiveActivityIntent`s that run in the app
+  process and call the same `AppModel` actions as the on-screen buttons. Updates come from
+  the app while it runs (no push server — consistent with the local-only design), which is
+  why the notification requires background chatter. The rendering lives in a separate
+  WidgetKit extension target (`IFATCCompanionWidgets/`) added in Xcode per
+  `docs/LiveActivitySetup.md`.
+
 ## Settings
 
-- **AppSettings** — user preferences backed by `AppStorage` / `UserDefaults`: host/IP and port, auto-discovery, keep-screen-awake, voice selection, phraseology and unit preferences. No accounts or remote configuration. **Keep screen awake** (default on) disables the iOS idle timer while the app is open so the device never sleeps and drops the Infinite Flight Connect link.
+- **AppSettings** — user preferences backed by `AppStorage` / `UserDefaults`: host/IP and port, auto-discovery, keep-screen-awake, voice selection, phraseology and unit preferences, and the **background chatter / Live Activity** toggles (chatter volume, traffic density, transmission static; the Live Activity toggle requires chatter). No accounts or remote configuration. **Keep screen awake** (default on) disables the iOS idle timer while the app is open so the device never sleeps and drops the Infinite Flight Connect link.
 
 ## Diagnostics
 

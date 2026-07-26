@@ -1,0 +1,135 @@
+import XCTest
+import AVFoundation
+@testable import IFATCCompanion
+
+/// Tests for the background radio-chatter generator, the English-voice filter, and the
+/// chatter/Live-Activity settings coupling.
+final class ChatterTests: XCTestCase {
+
+    /// Deterministic generator so the frequency-bounding assertions are stable.
+    private struct SeededRNG: RandomNumberGenerator {
+        private var state: UInt64
+        init(seed: UInt64) { state = seed == 0 ? 0x9E3779B97F4A7C15 : seed }
+        mutating func next() -> UInt64 {
+            state ^= state << 13
+            state ^= state >> 7
+            state ^= state << 17
+            return state
+        }
+    }
+
+    /// Concatenate many exchanges for a facility so keyword assertions are robust to the
+    /// per-call randomness.
+    private func corpus(for facility: ATCFacility, samples: Int = 80) -> String {
+        var gen = ChatterScriptGenerator()
+        var rng = SeededRNG(seed: 42)
+        var text = ""
+        for _ in 0..<samples {
+            for line in gen.exchange(for: facility, using: &rng) {
+                text += " " + line.spokenText.lowercased()
+            }
+        }
+        return text
+    }
+
+    // MARK: - Shape
+
+    func testEveryFacilityProducesNonEmptyLines() {
+        var gen = ChatterScriptGenerator()
+        for facility in ATCFacility.allCases {
+            var rng = SeededRNG(seed: 7)
+            for _ in 0..<20 {
+                let lines = gen.exchange(for: facility, using: &rng)
+                XCTAssertFalse(lines.isEmpty, "\(facility) produced no lines")
+                for line in lines {
+                    XCTAssertFalse(line.spokenText.trimmingCharacters(in: .whitespaces).isEmpty,
+                                   "\(facility) produced an empty line")
+                }
+            }
+        }
+    }
+
+    func testCallsignsUseRealAirlineNames() {
+        let text = corpus(for: .center)
+        let anyAirline = ["united", "american", "delta", "southwest", "jetblue",
+                          "alaska", "air canada", "fedex"].contains { text.contains($0) }
+        XCTAssertTrue(anyAirline, "expected real airline radio names in the chatter")
+        // The raw ICAO designators should never be spoken verbatim.
+        XCTAssertFalse(text.contains(" ual "))
+        XCTAssertFalse(text.contains(" dal "))
+    }
+
+    // MARK: - Frequency bounding
+
+    func testCenterWorksEnrouteConceptsNotGroundOrTower() {
+        let text = corpus(for: .center)
+        let enroute = ["chop", "climb", "descend", "contact", "arrival", "direct"]
+            .contains { text.contains($0) }
+        XCTAssertTrue(enroute, "Center chatter should be en-route work")
+        XCTAssertFalse(text.contains("taxi to runway"), "Center must not issue taxi")
+        XCTAssertFalse(text.contains("cleared for takeoff"), "Center must not clear takeoffs")
+    }
+
+    func testGroundWorksSurfaceNotTakeoff() {
+        let text = corpus(for: .ground)
+        let surface = ["taxi", "hold short", "runway"].contains { text.contains($0) }
+        XCTAssertTrue(surface, "Ground chatter should be surface movement")
+        XCTAssertFalse(text.contains("cleared for takeoff"), "Ground must not clear takeoffs")
+        XCTAssertFalse(text.contains("descend via"), "Ground must not descend traffic")
+    }
+
+    func testTowerWorksRunwayOperations() {
+        let text = corpus(for: .tower)
+        let runwayOps = ["cleared for takeoff", "cleared to land", "line up and wait", "final"]
+            .contains { text.contains($0) }
+        XCTAssertTrue(runwayOps, "Tower chatter should be runway operations")
+    }
+
+    func testApproachWorksVectorsAndApproaches() {
+        let text = corpus(for: .approach)
+        let approachWork = ["heading", "approach", "reduce speed", "tower"].contains { text.contains($0) }
+        XCTAssertTrue(approachWork, "Approach chatter should be vectors/approaches")
+    }
+
+    func testClearanceIssuesIFRClearances() {
+        let text = corpus(for: .clearance)
+        XCTAssertTrue(text.contains("cleared to") || text.contains("squawk"),
+                      "Clearance chatter should read IFR clearances")
+    }
+
+    // MARK: - Voice filtering
+
+    func testEnglishHumanVoicesAreEnglishAndNotNovelty() {
+        let voices = VoiceCatalog.englishHumanVoices()
+        // Not asserting a non-empty set (a bare CI image might lack voices), but whatever
+        // is returned must satisfy the contract.
+        for voice in voices {
+            XCTAssertTrue(voice.language.hasPrefix("en"), "\(voice.name) is not English")
+            XCTAssertFalse(voice.voiceTraits.contains(.isNoveltyVoice), "\(voice.name) is a novelty voice")
+            XCTAssertFalse(voice.voiceTraits.contains(.isPersonalVoice), "\(voice.name) is a personal voice")
+        }
+    }
+
+    func testChatterPoolIgnoresEmptyUserIDs() {
+        let base = VoiceCatalog.englishHumanVoices()
+        let pool = VoiceCatalog.chatterVoicePool(userChosenIDs: ["", "", ""])
+        XCTAssertEqual(pool.count, base.count, "empty user IDs should not change the pool")
+    }
+
+    // MARK: - Settings coupling
+
+    func testLiveActivityRequiresChatter() {
+        let defaults = UserDefaults(suiteName: "chatter.test.\(UUID().uuidString)")!
+        let settings = AppSettings(defaults: defaults)
+        XCTAssertFalse(settings.backgroundChatterEnabled)
+        XCTAssertFalse(settings.liveActivityEnabled)
+
+        // Enabling the Live Activity turns on the chatter it depends on.
+        settings.liveActivityEnabled = true
+        XCTAssertTrue(settings.backgroundChatterEnabled)
+
+        // Turning the chatter back off turns the Live Activity off too.
+        settings.backgroundChatterEnabled = false
+        XCTAssertFalse(settings.liveActivityEnabled)
+    }
+}
