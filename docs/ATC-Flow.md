@@ -79,7 +79,7 @@ flight from the gate; your settings and flight plan are kept.
 | 3 | At gate | **Ground** | "Start up approved." (often pilot's discretion) | `startupApproved` | n/a in IF (courtesy) |
 | 4 | Taxi out | **Ground** | "Taxi to runway *XX* via *taxiways*, hold short *…*. Contact Tower when ready." | `taxiToRunway` | IF taxi/hold-short |
 | 5 | Approaching rwy | **Ground → Tower** | "Monitor Tower on *freq*." | `monitorTower(cs:frequency:)` | IF hand-off |
-| 6 | Holding short | **Tower** | "Runway *XX*, line up and wait." | `lineUpAndWait` | IF LUAW |
+| 6 | Monitoring / holding short | **Tower** | Optional check-in → "you're number one for departure" (`numberOneForTakeoff`, **no** takeoff clearance); or, on the fallback report-ready path, "runway *XX*, line up and wait" (`lineUpAndWait`). | `numberOneForTakeoff` / `lineUpAndWait` | IF LUAW |
 | 7 | Lined up | **Tower** | "Wind *…*, runway *XX*, cleared for takeoff, fly heading *XXX* / runway heading, climb and maintain *initial alt*." | `clearedForTakeoff(departureHeading:…)` | IF takeoff clearance (+ real-world departure instructions) |
 
 The takeoff clearance fires automatically once the aircraft is on the runway —
@@ -109,8 +109,10 @@ mirroring the real-world red "MONITOR TOWER ON …" sign by the yellow checkered
 short of the runway. Reading it back (which auto-tunes to Tower when *Auto-tune on
 hand-off* is on) is "monitor Tower on *freq*"; **no check-in is required**. The takeoff
 clearance still fires automatically once the aircraft is lined up (step 7). If the pilot
-*does* check in on Tower, Tower acknowledges with "number one for departure"
-(`numberOneForTakeoff`) — but that is optional. The trigger point is **derived from the
+*does* check in on Tower — typically well before the runway — Tower replies **only** with
+"you're number one for departure" (`numberOneForTakeoff`) and **does not** issue a takeoff
+clearance; the clearance still comes only once the aircraft is lined up. The trigger point
+is **derived from the
 taxi route**, not read from the map data: OpenStreetMap has no distinct feature for the
 monitor-tower line/sign — the only runway-proximity marking it maps is the
 `aeroway=holding_position` (hold-short) line *at* the runway — so the hand-off fires once

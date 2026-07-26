@@ -3419,9 +3419,10 @@ final class AppModel: ObservableObject {
             return
         }
         // Monitoring Tower before departure: a check-in isn't required, but if the pilot
-        // does call up, Tower acknowledges with "number one for departure". The state
-        // machine is left at the taxi state — the takeoff clearance still fires
-        // automatically once the aircraft is lined up (or via the Takeoff button).
+        // does call up — typically well before the runway — Tower replies ONLY with
+        // "you're number one for departure" and issues no takeoff clearance. The state
+        // machine is left at the taxi state, so the takeoff clearance still comes only once
+        // the aircraft is lined up on the runway (automatically, or via the Takeoff button).
         if monitoringTower, !hasDeparted, facility == .tower {
             pendingCheckInFacility = nil
             let c = buildContext(for: .lineUpWait)

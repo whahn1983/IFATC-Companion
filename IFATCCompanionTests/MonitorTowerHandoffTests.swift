@@ -35,9 +35,13 @@ final class MonitorTowerHandoffTests: XCTestCase {
         let cs = e.callsign(airline: "United", flightNumber: "598", fallback: "")
         let tx = e.numberOneForTakeoff(cs: cs, runway: "36")
         XCTAssertEqual(tx.facility, .tower)
-        XCTAssertTrue(tx.displayText.lowercased().contains("number one"),
+        XCTAssertTrue(tx.displayText.lowercased().contains("you're number one for departure"),
                       "Tower acknowledges the check-in with the departure sequence: \(tx.displayText)")
         XCTAssertTrue(tx.displayText.contains("36"), "the acknowledgement names the runway")
+        // A sequencing report only — never a takeoff clearance.
+        XCTAssertFalse(tx.displayText.lowercased().contains("cleared for takeoff"),
+                       "checking in while monitoring must not issue a takeoff clearance")
+        XCTAssertNil(tx.readback, "a sequence report needs no read-back")
     }
 
     // MARK: - Surface coordinator trigger
@@ -136,11 +140,18 @@ final class MonitorTowerHandoffTests: XCTestCase {
         }, "the pilot reads back 'monitor Tower on …'")
         XCTAssertEqual(model.currentFacility, .tower, "reading back auto-tunes the radio to Tower")
 
-        // No check-in is required, but if the pilot checks in, Tower gives the sequence.
+        // No check-in is required, but if the pilot checks in — well before the runway,
+        // not lined up — Tower gives ONLY the sequence, never a takeoff clearance.
+        XCTAssertFalse(model.aircraftState.onGround == true &&
+                       model.transcript.contains { $0.displayText.lowercased().contains("cleared for takeoff") },
+                       "precondition: no takeoff clearance issued yet")
         model.requestHandoff()
         XCTAssertTrue(model.transcript.contains {
             $0.sender == .atc && $0.facility == .tower &&
-            $0.displayText.lowercased().contains("number one")
-        }, "checking in while monitoring Tower gets a 'number one for departure' acknowledgement")
+            $0.displayText.lowercased().contains("you're number one for departure")
+        }, "checking in while monitoring Tower gets a 'you're number one for departure' acknowledgement")
+        XCTAssertFalse(model.transcript.contains {
+            $0.displayText.lowercased().contains("cleared for takeoff")
+        }, "checking in well before the runway must NOT issue a takeoff clearance")
     }
 }

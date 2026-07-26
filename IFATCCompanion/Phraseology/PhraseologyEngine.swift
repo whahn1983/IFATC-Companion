@@ -229,12 +229,14 @@ struct PhraseologyEngine {
     }
 
     /// Tower — acknowledges a pilot who checks in while monitoring before departure. No
-    /// check-in is required after "monitor Tower", but if the pilot does call up, Tower
-    /// replies with their sequence.
+    /// check-in is required after "monitor Tower"; if the pilot does call up (typically
+    /// well before the runway), Tower **only reports the sequence** — it does *not* issue
+    /// a takeoff clearance. The clearance still comes automatically once the aircraft is
+    /// lined up on the runway.
     func numberOneForTakeoff(cs: Callsign, runway: String) -> ATCTransmission {
         tx(.tower,
-           display: "\(cs.display), roger, number one for departure, runway \(runway).",
-           spoken: "\(cs.spoken), roger, number one for departure, runway \(Phonetic.runway(runway, icao: icao)).")
+           display: "\(cs.display), roger, you're number one for departure, runway \(runway).",
+           spoken: "\(cs.spoken), roger, you're number one for departure, runway \(Phonetic.runway(runway, icao: icao)).")
     }
 
     // Tower — cleared for takeoff.
