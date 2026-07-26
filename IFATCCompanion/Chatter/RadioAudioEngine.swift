@@ -42,7 +42,10 @@ final class RadioAudioEngine {
     /// benign, tear-free race for a single `Float` (standard for an audio gain).
     private let bedGain = UnsafeMutablePointer<Float>.allocate(capacity: 1)
 
-    private var squelchBuffer: AVAudioPCMBuffer?
+    /// Short "tick" for keying the mic (pilot presses PTT).
+    private var keyClickBuffer: AVAudioPCMBuffer?
+    /// Softer noise burst for un-keying (the AM squelch tail after the pilot's call).
+    private var squelchTailBuffer: AVAudioPCMBuffer?
     private var converters: [AVAudioFormat: AVAudioConverter] = [:]
     private var built = false
     private(set) var isRunning = false
@@ -119,9 +122,11 @@ final class RadioAudioEngine {
 
         // Kept well below the spoken calls — the mic-key burst brackets the pilot's own
         // (full-volume) transmissions, so it should sit under the voice, not compete with it.
-        squelchMixer.outputVolume = 0.45
+        // Subtle — the mic click / squelch tail sit under the voice, not over it.
+        squelchMixer.outputVolume = 0.32
         applyLevels()
-        squelchBuffer = makeSquelchBuffer()
+        keyClickBuffer = makeKeyClickBuffer()
+        squelchTailBuffer = makeSquelchTailBuffer()
     }
 
     // MARK: - Lifecycle
@@ -221,9 +226,18 @@ final class RadioAudioEngine {
         }
     }
 
-    /// Fire one short mic-key/un-key static burst.
-    func playSquelch() {
-        guard isRunning, let buffer = squelchBuffer else { return }
+    /// Fire the short mic-key "click" (pilot keys up the mic).
+    func playKeyClick() {
+        play(squelch: keyClickBuffer)
+    }
+
+    /// Fire the softer squelch tail (pilot un-keys — the AM tail before the receiver mutes).
+    func playSquelchTail() {
+        play(squelch: squelchTailBuffer)
+    }
+
+    private func play(squelch buffer: AVAudioPCMBuffer?) {
+        guard isRunning, let buffer else { return }
         if !squelchPlayer.isPlaying { squelchPlayer.play() }
         squelchPlayer.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack, completionHandler: nil)
     }
@@ -264,22 +278,28 @@ final class RadioAudioEngine {
         return output
     }
 
-    /// A mic-key/un-key burst shaped as a **click with a soft tail** (~110 ms): a sharp,
-    /// near-instant onset (the "kh" of keying the mic) followed by a gently decaying
-    /// noise tail, rather than a sustained squelch "shhht".
-    ///
-    /// Still band-limited (~215 Hz–4.2 kHz) so it reads as radio noise, but the low-pass
-    /// is opened up a little vs. a pure comms passband to keep the click crisp, and the
-    /// envelope has no sustain — the energy is front-loaded into the transient.
-    private func makeSquelchBuffer() -> AVAudioPCMBuffer? {
-        let frames = AVAudioFrameCount(commonFormat.sampleRate * 0.11)
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: commonFormat, frameCapacity: frames),
+    /// The mic key-up **click** (~28 ms): a short, crisp tick — the pilot keying the mic.
+    /// Near-instant attack, very fast decay, band-limited so it reads as a radio "tick"
+    /// rather than a white-noise pop.
+    private func makeKeyClickBuffer() -> AVAudioPCMBuffer? {
+        makeBurst(duration: 0.028, aLow: 0.5, aHigh: 0.03, attack: 0.01, decayPower: 3.5, amplitude: 0.6)
+    }
+
+    /// The un-key **squelch tail** (~85 ms): a softer, gentler noise burst — the AM tail
+    /// after the pilot's call. Quieter and smoother than the key click.
+    private func makeSquelchTailBuffer() -> AVAudioPCMBuffer? {
+        makeBurst(duration: 0.085, aLow: 0.4, aHigh: 0.03, attack: 0.1, decayPower: 1.6, amplitude: 0.4)
+    }
+
+    /// Build a band-limited noise burst with a fast attack and a power-curve decay.
+    private func makeBurst(duration: Double, aLow: Float, aHigh: Float,
+                           attack: Float, decayPower: Float, amplitude: Float) -> AVAudioPCMBuffer? {
+        let frames = AVAudioFrameCount(commonFormat.sampleRate * duration)
+        guard frames > 0,
+              let buffer = AVAudioPCMBuffer(pcmFormat: commonFormat, frameCapacity: frames),
               let channels = buffer.floatChannelData else { return nil }
         buffer.frameLength = frames
         var state: UInt32 = 0x1234_5678
-        // One-pole coefficients (a = 1 − e^(−2π·fc/fs)).
-        let aLow: Float = 0.45    // low-pass ≈ 4.2 kHz (crisper onset)
-        let aHigh: Float = 0.030  // tracks sub-~215 Hz content to subtract (high-pass)
         var low: Float = 0
         var lowLow: Float = 0
         let n = Int(frames)
@@ -288,11 +308,10 @@ final class RadioAudioEngine {
             let white = Float(Int32(bitPattern: state)) / Float(Int32.max)
             low += aLow * (white - low)         // low-pass
             lowLow += aHigh * (low - lowLow)    // low-frequency tracker
-            let band = low - lowLow             // band-pass ≈ 215 Hz–4.2 kHz
-            // Near-instant attack (~1.5 ms), then a soft decaying tail — no sustain.
+            let band = low - lowLow             // band-pass
             let t = Float(i) / Float(n)
-            let env: Float = t < 0.015 ? (t / 0.015) : powf(1 - (t - 0.015) / 0.985, 2.2)
-            let sample = band * env * 0.95
+            let env: Float = t < attack ? (t / attack) : powf(1 - (t - attack) / (1 - attack), decayPower)
+            let sample = band * env * amplitude
             for channel in 0..<Int(commonFormat.channelCount) {
                 channels[channel][i] = sample
             }
