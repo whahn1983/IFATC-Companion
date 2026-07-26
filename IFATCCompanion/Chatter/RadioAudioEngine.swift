@@ -278,22 +278,29 @@ final class RadioAudioEngine {
         return output
     }
 
-    /// The mic key-up **click** (~28 ms): a short, crisp tick — the pilot keying the mic.
-    /// Near-instant attack, very fast decay, band-limited so it reads as a radio "tick"
-    /// rather than a white-noise pop.
+    /// The mic key-up **click** (~55 ms): a short, low tick wrapped in a wash of static —
+    /// the pilot keying the mic. Near-instant attack and fast decay for the transient, a
+    /// lower band-pass (smaller `aLow`) so it reads as a warm "thunk" rather than a bright
+    /// tick, and a `staticFloor` so a bit of hiss brackets the click.
     private func makeKeyClickBuffer() -> AVAudioPCMBuffer? {
-        makeBurst(duration: 0.028, aLow: 0.5, aHigh: 0.03, attack: 0.01, decayPower: 3.5, amplitude: 0.6)
+        makeBurst(duration: 0.055, aLow: 0.3, aHigh: 0.03, attack: 0.01, decayPower: 3.5, amplitude: 0.6, staticFloor: 0.2)
     }
 
-    /// The un-key **squelch tail** (~85 ms): a softer, gentler noise burst — the AM tail
-    /// after the pilot's call. Quieter and smoother than the key click.
+    /// The un-key **squelch tail** (~120 ms): a softer, gentler noise burst — the AM tail
+    /// after the pilot's call. Quieter and smoother than the key click, and held slightly
+    /// longer so the static lingers before the receiver mutes.
     private func makeSquelchTailBuffer() -> AVAudioPCMBuffer? {
-        makeBurst(duration: 0.085, aLow: 0.4, aHigh: 0.03, attack: 0.1, decayPower: 1.6, amplitude: 0.4)
+        makeBurst(duration: 0.12, aLow: 0.4, aHigh: 0.03, attack: 0.1, decayPower: 1.6, amplitude: 0.4)
     }
 
     /// Build a band-limited noise burst with a fast attack and a power-curve decay.
+    ///
+    /// `staticFloor` (0 = off) adds a low static wash under the main transient: it fades
+    /// in over the attack and back out to zero by the end of the burst, so a bit of hiss
+    /// surrounds the click without introducing a boundary pop.
     private func makeBurst(duration: Double, aLow: Float, aHigh: Float,
-                           attack: Float, decayPower: Float, amplitude: Float) -> AVAudioPCMBuffer? {
+                           attack: Float, decayPower: Float, amplitude: Float,
+                           staticFloor: Float = 0) -> AVAudioPCMBuffer? {
         let frames = AVAudioFrameCount(commonFormat.sampleRate * duration)
         guard frames > 0,
               let buffer = AVAudioPCMBuffer(pcmFormat: commonFormat, frameCapacity: frames),
@@ -310,7 +317,10 @@ final class RadioAudioEngine {
             lowLow += aHigh * (low - lowLow)    // low-frequency tracker
             let band = low - lowLow             // band-pass
             let t = Float(i) / Float(n)
-            let env: Float = t < attack ? (t / attack) : powf(1 - (t - attack) / (1 - attack), decayPower)
+            let peak: Float = t < attack ? (t / attack) : powf(1 - (t - attack) / (1 - attack), decayPower)
+            // Static wash bracketing the transient: fades in with the attack, out to zero.
+            let floor = staticFloor > 0 ? staticFloor * min(t / attack, 1) * (1 - t) : 0
+            let env = max(peak, floor)
             let sample = band * env * amplitude
             for channel in 0..<Int(commonFormat.channelCount) {
                 channels[channel][i] = sample
