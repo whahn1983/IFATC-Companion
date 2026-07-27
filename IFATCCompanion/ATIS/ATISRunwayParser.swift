@@ -58,6 +58,14 @@ enum ATISRunwayParser {
     private static let runwayKeywords: Set<String> = ["RWY", "RWYS", "RUNWAY", "RUNWAYS", "RY", "RYS"]
     /// Tokens that join runway idents inside one group ("24R AND 25L", "27L, 27R").
     private static let connectorTokens: Set<String> = ["AND", "&"]
+    /// Words that mark a runway mention as a NAVAID-outage, closure, or surface-condition
+    /// report rather than a runway in use: "…OTS" (out of service), "COND" (condition code),
+    /// "CLSD"/"CLOSED", and the "unavailable" spellings. A runway named only in one of these
+    /// contexts (e.g. "RWY 22R LOC OTS", "RWY 9L PAPI OTS", "RWY 22L COND CODE 5 5 5 …") is
+    /// not the active runway, so it must not inherit the combined-ATIS "both operations" default.
+    private static let statusTokens: Set<String> = [
+        "OTS", "COND", "CLSD", "CLOSED", "UNAVBL", "UNAVAIL", "UNAVAILABLE"
+    ]
 
     /// Parse a single D-ATIS text into its active departure/arrival runways. `kind` supplies the
     /// default operation for a runway named with no explicit keyword: a departure-only or
@@ -97,11 +105,19 @@ enum ATISRunwayParser {
             }
             if !collected.isEmpty {
                 let hasContext = pendingDep || pendingArr
-                let toDep = pendingDep || (!hasContext && kind != .arrival)
-                let toArr = pendingArr || (!hasContext && kind != .departure)
-                for rwy in collected {
-                    if toDep { departures.append(rwy) }
-                    if toArr { arrivals.append(rwy) }
+                // A runway named with no arrival/departure keyword is only "in use" when it
+                // isn't a NAVAID-outage, closure, or surface-condition report. Without this,
+                // the combined-ATIS default would flag every "RWY x LOC OTS" / "RWY x COND
+                // CODE …" runway as an active arrival+departure runway. An explicitly keyworded
+                // group (ILS/APCH/DEPG/…) is always trusted.
+                let suppressed = !hasContext && groupIsStatusReport(tokens, from: j)
+                if !suppressed {
+                    let toDep = pendingDep || (!hasContext && kind != .arrival)
+                    let toArr = pendingArr || (!hasContext && kind != .departure)
+                    for rwy in collected {
+                        if toDep { departures.append(rwy) }
+                        if toArr { arrivals.append(rwy) }
+                    }
                 }
                 // Consume the context so a later group in the same clause re-derives its own.
                 pendingDep = false
@@ -109,6 +125,24 @@ enum ATISRunwayParser {
             }
             i = j
         }
+    }
+
+    /// Whether the tokens trailing a runway group — scanned up to the next runway/operation
+    /// keyword or the clause end — describe a component outage, closure, or surface condition,
+    /// meaning the runway was named for a status report rather than because it is in use.
+    private static func groupIsStatusReport(_ tokens: [String], from start: Int) -> Bool {
+        var k = start
+        while k < tokens.count {
+            let t = tokens[k]
+            // A following runway or operation keyword starts a new group — the current group's
+            // trailing context has ended without a status token.
+            if runwayKeywords.contains(t) || departureKeywords.contains(t) || arrivalKeywords.contains(t) {
+                return false
+            }
+            if statusTokens.contains(t) { return true }
+            k += 1
+        }
+        return false
     }
 
     /// A single runway token ("24R", "8", "04L") in canonical form (leading zero dropped), or

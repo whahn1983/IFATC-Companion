@@ -428,11 +428,16 @@ enum ATISPhraseology {
         ("ALSTG", "altimeter"), ("ALT", "altitude"),
         ("MAINT", "maintenance"), ("HDG", "heading"), ("HDGS", "headings"),
         ("BRKG", "braking"), ("BA", "braking action"), ("SFC", "surface"),
+        // Runway condition-code reports read "RWY 22L, COND CODE, 5 5 5 AT 1630Z". The
+        // observed altimeter/visibility are coded groups, so a bare "COND" in the body is
+        // always the surface/field condition ("condition code", "field condition").
+        ("COND", "condition"),
         ("OTS", "out of service"), ("UNAVBL", "unavailable"), ("UNAVAIL", "unavailable"),
         ("AVBL", "available"), ("AVL", "available"), ("AVLB", "available"), ("AVAIL", "available"),
         ("SIMUL", "simultaneous"), ("SIMULT", "simultaneous"), ("SIMO", "simultaneous"),
         ("CONV", "converging"), ("PARL", "parallel"), ("DPNDNT", "dependent"), ("DPENDT", "dependent"),
-        ("TWR", "tower"), ("GND", "ground"), ("CLNC", "clearance"), ("CLRNC", "clearance"),
+        ("TWR", "tower"), ("GND", "ground"), ("FSS", "flight service station"),
+        ("CLNC", "clearance"), ("CLRNC", "clearance"),
         ("DEL", "delivery"), ("CTL", "control"), ("CTLR", "controller"), ("CTRL", "control"),
         ("ATC", "A T C"),
         ("ACFT", "aircraft"), ("EQUIP", "equipment"), ("EQPT", "equipment"),

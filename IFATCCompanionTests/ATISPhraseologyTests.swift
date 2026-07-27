@@ -257,6 +257,34 @@ final class ATISPhraseologyTests: XCTestCase {
         XCTAssertEqual(spoken("ASDEX"), "a s d e x")
     }
 
+    // MARK: - Runway condition codes / flight service
+
+    func testRunwayConditionCodeReads() {
+        // FICON runway condition-code reports: "COND CODE" must read "condition code",
+        // not the bare token, and the codes/time read digit-by-digit.
+        let s = ATISPhraseology.spokenText("RWY 22L, COND CODE, 5 5 5 AT, 1630Z.").lowercased()
+        XCTAssertTrue(s.contains("runway two two left"), s)
+        XCTAssertTrue(s.contains("condition code"), s)
+        XCTAssertTrue(s.contains("five five five"), s)
+        XCTAssertTrue(s.contains("one six three zero zulu"), s)
+        // The bare "COND CODE" token must be gone (expanded to "condition code").
+        XCTAssertFalse(s.contains("cond code"), s)
+    }
+
+    func testSlipperyWhenWetConditionCode() {
+        let s = ATISPhraseology.spokenText("RWY 28C, COND CODE, 3, 3, 3. SLIPPERY WHEN WET, AT, 1630Z.").lowercased()
+        XCTAssertTrue(s.contains("runway two eight center"), s)
+        XCTAssertTrue(s.contains("condition code"), s)
+        XCTAssertTrue(s.contains("slippery when wet"), s)
+    }
+
+    func testFlightServiceStationAbbreviation() {
+        let s = ATISPhraseology.spokenText("HAZD WX INFO FOR ORD AREA AVBL ON FSS.").lowercased()
+        XCTAssertTrue(s.contains("weather information"), s)
+        XCTAssertTrue(s.contains("available on flight service station"), s)
+        XCTAssertFalse(s.contains(" fss"), s)
+    }
+
     // MARK: - A full, real broadcast
 
     func testFullBostonBroadcastDecodes() {
@@ -318,6 +346,42 @@ final class ATISPhraseologyTests: XCTestCase {
         XCTAssertTrue(s.contains("advise you have information alpha"), s)
         // The spelled altimeter readback isn't duplicated.
         XCTAssertEqual(s.components(separatedBy: "two niner seven eight").count - 1, 1, s)
+    }
+
+    func testFullOHareBroadcastDecodes() {
+        // Chicago O'Hare D-ATIS with the FICON runway condition-code block, ILS component
+        // outages, the flight-service hazardous-weather advisory, and the metering handoff.
+        let raw = "ORD ATIS INFO U 2151Z. 06015KT 10SM -TSRA SCT032CB BKN100 OVC250 24/21 A2974 "
+            + "(TWO NINER SEVEN FOUR) RMK AO2 PK WND 06056/2138 RAB48 TSB36 SLP064 CONS LTGICCG "
+            + "OHD TS OHD MOV S P0000 T02390206. ARR EXP VECTORS ILS RWY 10C APCH. DEPS EXP RWYS 9C. "
+            + "RWY 22R LOC OTS, RWY 28L GS OTS, RWY 9L IM OTS, RWY 9L PAPI OTS. "
+            + "RWY 22L, COND CODE, 5 5 5 AT, 1630Z, RWY 28C, COND CODE, 3, 3, 3. SLIPPERY WHEN WET, "
+            + "AT, 1630Z. PILOTS USE CTN FOR BIRD ACTIVITY IN THE VICINITY OF THE ARPT. HAZD WX "
+            + "INFO FOR ORD AREA AVBL ON FSS. READBACK ALL RWY HOLD SHORT INSTRUCTIONS. WHEN READY "
+            + "TO TAXI CONTACT GND METERING ON FREQ 121.67. ...ADVS YOU HAVE INFO U."
+        let s = ATISPhraseology.spokenText(raw).lowercased()
+        XCTAssertTrue(s.contains("information uniform"), s)
+        XCTAssertTrue(s.contains("wind zero six zero at one five"), s)
+        XCTAssertTrue(s.contains("thunderstorm with light rain"), s)
+        XCTAssertTrue(s.contains("altimeter two niner seven four"), s)
+        // The coded remarks group is dropped, not spoken.
+        XCTAssertFalse(s.contains("slp"), s)
+        XCTAssertFalse(s.contains("ltgiccg"), s)
+        XCTAssertFalse(s.contains("p0000"), s)
+        XCTAssertTrue(s.contains("i l s runway one zero center approach"), s)
+        XCTAssertTrue(s.contains("localizer out of service"), s)
+        XCTAssertTrue(s.contains("glideslope out of service"), s)
+        XCTAssertTrue(s.contains("inner marker out of service"), s)
+        // Runway condition-code block reads as full words + digit-by-digit codes.
+        XCTAssertTrue(s.contains("condition code"), s)
+        XCTAssertTrue(s.contains("five five five"), s)
+        XCTAssertTrue(s.contains("slippery when wet"), s)
+        XCTAssertFalse(s.contains("cond code"), s)
+        XCTAssertTrue(s.contains("use caution for bird activity"), s)
+        XCTAssertTrue(s.contains("available on flight service station"), s)
+        XCTAssertTrue(s.contains("read back all runway hold short instructions"), s)
+        XCTAssertTrue(s.contains("contact ground metering on frequency one two one point six seven"), s)
+        XCTAssertTrue(s.contains("advise you have information uniform"), s)
     }
 
     // Convenience: spoken text for a bare coded fragment, trimmed and case-folded so the
