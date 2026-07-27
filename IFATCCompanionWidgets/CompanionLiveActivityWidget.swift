@@ -147,9 +147,18 @@ private struct BottomBar: View {
     }
 }
 
-/// A one-line freshness indicator. When live it shows a self-updating "Updated Xm ago"
-/// (a relative `Text` refreshes on the Lock Screen without a new push); once stale it
-/// switches to "Reconnecting…" so the user knows the numbers above are no longer current.
+/// A one-line freshness indicator: the last-update clock time while live, switching to
+/// "Reconnecting…" once the feed goes stale so the user knows the numbers above are no
+/// longer current.
+///
+/// The live line deliberately shows a *static* pre-formatted time rather than an
+/// auto-updating `Text(asOf, style: .relative)`. A date-style Text can't be reconstructed
+/// from the Lock Screen's archived snapshot when the screen locks, and when that one
+/// element fails to render it takes the entire banner body down with it — every row below
+/// the header (telemetry, phase, buttons) renders blank. The stale branch was unaffected
+/// because it's a plain static Label, which is exactly what the live branch now mirrors.
+/// Freshness is still conveyed: the app pushes on every meaningful change, and the moment
+/// the feed stops flowing `isStale` flips this line to "Reconnecting…".
 private struct FreshnessLine: View {
     let asOf: Date
     let isStale: Bool
@@ -160,19 +169,9 @@ private struct FreshnessLine: View {
                 Label("Reconnecting…", systemImage: "arrow.triangle.2.circlepath")
                     .foregroundStyle(.orange)
             } else {
-                HStack(spacing: 3) {
-                    Image(systemName: "dot.radiowaves.left.and.right")
-                    Text("Updated")
-                    // A date-style Text (`.relative`) is the widget-safe way to show an
-                    // auto-updating age without a fresh push, but it MUST stay a standalone
-                    // Text. Concatenating it into another Text with `+` yields a text run
-                    // WidgetKit can't reconstruct from the Lock Screen's archived snapshot,
-                    // which blanks the whole banner the moment the screen locks. Keep it
-                    // last so the width it reserves for its longest value trails off the end
-                    // instead of opening a gap before a trailing word.
-                    Text(asOf, style: .relative)
-                }
-                .foregroundStyle(.secondary)
+                Label("Updated \(asOf.formatted(date: .omitted, time: .shortened))",
+                      systemImage: "dot.radiowaves.left.and.right")
+                    .foregroundStyle(.secondary)
             }
         }
         .font(.system(size: 10))
