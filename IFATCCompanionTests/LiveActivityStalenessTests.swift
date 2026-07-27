@@ -63,6 +63,22 @@ final class LiveActivityStalenessTests: XCTestCase {
         XCTAssertFalse(model.telemetryStallDetected(now: base.addingTimeInterval(3600)))
     }
 
+    // MARK: - Retrying a link that already failed
+
+    /// When a forced reconnect can't re-establish (common while the screen is locked) the link
+    /// lands in `.failed`. The watchdog must keep retrying that on the cooldown rather than
+    /// giving up until the user foregrounds the app — otherwise the notification sticks on
+    /// "Reconnecting…". The retry is gated purely on the reconnect cooldown.
+    func testFailedLinkRetriesOnlyAfterCooldown() {
+        let model = makeLiveModel()
+        model.setTelemetryClocksForTesting(lastUsable: base,
+                                           lastForcedReconnect: base)
+        XCTAssertFalse(model.reconnectCooldownElapsed(now: base.addingTimeInterval(5)),
+                       "a reconnect 5 s ago is still inside the cooldown — don't retry yet")
+        XCTAssertTrue(model.reconnectCooldownElapsed(now: base.addingTimeInterval(30)),
+                      "once the cooldown has elapsed the failed link is retried")
+    }
+
     // MARK: - Only real telemetry advances the clock
 
     /// A usable snapshot advances the last-usable-telemetry clock; an empty reconnect-handshake

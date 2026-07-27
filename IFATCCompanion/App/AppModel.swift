@@ -1164,22 +1164,39 @@ final class AppModel: ObservableObject {
         telemetryWatchdog = nil
     }
 
-    /// If the live feed has stalled, force a reconnect — the same recovery
-    /// `handleReturnToForeground()` performs, applied proactively while backgrounded so the
-    /// notification's data keeps flowing instead of waiting for the user to reopen the app.
+    /// If the live feed has stalled — or a prior recovery attempt gave up — force a reconnect,
+    /// the same recovery `handleReturnToForeground()` performs, applied proactively while
+    /// backgrounded so the notification's data keeps flowing instead of waiting for the user to
+    /// reopen the app.
     private func checkTelemetryStall() {
-        // Only fight a stall on an otherwise-healthy connection; a real handshake in progress
-        // (`.connecting` / `.receivingManifest`) or a surfaced failure is left to the normal
-        // connect machinery.
-        guard started, connect.connectionState.isConnected else { return }
+        guard started, !settings.mockMode else { return }
         let now = Date()
-        guard telemetryStallDetected(now: now) else { return }
+        switch connect.connectionState {
+        case .connected:
+            // A healthy-looking link that's gone quiet: the socket has silently stalled — typical
+            // when the screen locks, where it still reads "connected" but no data flows.
+            guard telemetryStallDetected(now: now) else { return }
+        case .failed:
+            // A previous recovery attempt already gave up. This is exactly what happens when a
+            // reconnect can't complete while the screen is locked: the link lands in `.failed`
+            // and — without this branch — nothing retries it until the user foregrounds the app,
+            // so the notification sticks on "Reconnecting…". Keep retrying on the cooldown instead,
+            // so the feed re-establishes the moment the network is reachable again.
+            guard reconnectCooldownElapsed(now: now) else { return }
+        case .connecting, .discovering, .receivingManifest:
+            // A handshake is in flight — let it finish (or time out to `.failed`), don't restart it.
+            return
+        case .disconnected:
+            // Idle, or a user-initiated disconnect — don't fight the user by reconnecting. (When a
+            // flight genuinely ends, the watchdog is cancelled, so we never reach here for it.)
+            return
+        }
         // Push the clocks forward so the reconnect's own quiet handshake window isn't counted
         // as a second stall.
         lastForcedReconnectAt = now
         lastUsableTelemetryAt = now
-        diagnostics.log(.connect, "Live telemetry stalled (no fresh data for \(Int(telemetryStallThreshold))s+) — "
-            + "forcing an Infinite Flight reconnect to keep the flight notification current.")
+        diagnostics.log(.connect, "Live telemetry stalled or the link dropped — forcing an "
+            + "Infinite Flight reconnect to keep the flight notification current.")
         // The canonical reconnect (same as the on-screen Reconnect button and the
         // foreground-return recovery); the mock branch is unreachable here (guarded above).
         reconnect()
@@ -1191,8 +1208,14 @@ final class AppModel: ObservableObject {
         guard !settings.mockMode else { return false }
         guard lastUsableTelemetryAt != .distantPast else { return false }   // no first fix yet
         guard now.timeIntervalSince(lastUsableTelemetryAt) > telemetryStallThreshold else { return false }
-        guard now.timeIntervalSince(lastForcedReconnectAt) > reconnectCooldown else { return false }
-        return true
+        return reconnectCooldownElapsed(now: now)
+    }
+
+    /// Whether enough time has passed since the last forced reconnect to try another. Spacing
+    /// retries by the cooldown keeps a reconnect that itself takes a few seconds to re-establish
+    /// from being treated as a fresh failure, so the watchdog never reconnect-storms.
+    func reconnectCooldownElapsed(now: Date) -> Bool {
+        now.timeIntervalSince(lastForcedReconnectAt) > reconnectCooldown
     }
 
     private func buildLiveActivityState() -> CompanionActivityAttributes.ContentState {

@@ -39,8 +39,7 @@ struct CompanionLiveActivityWidget: Widget {
                             Label(alert, systemImage: "cloud.bolt.rain")
                                 .font(.caption2).foregroundStyle(.orange)
                         }
-                        FreshnessLine(asOf: state.asOf, isStale: isStale)
-                        ActionButtons(state: state)
+                        BottomBar(state: state, isStale: isStale)
                     }
                 }
             } compactLeading: {
@@ -102,9 +101,7 @@ private struct LockScreenLiveActivityView: View {
                     .font(.caption2).foregroundStyle(.orange)
             }
 
-            FreshnessLine(asOf: state.asOf, isStale: isStale)
-
-            ActionButtons(state: state)
+            BottomBar(state: state, isStale: isStale)
         }
         .padding()
     }
@@ -133,6 +130,23 @@ private struct TelemetryRow: View {
     }
 }
 
+/// The bottom row of the flight notification: action buttons on the left, the freshness
+/// indicator tucked into the bottom-right corner. Sharing one row keeps the freshness text
+/// from claiming its own line and pushing the buttons past the notification's height.
+private struct BottomBar: View {
+    let state: CompanionActivityAttributes.ContentState
+    let isStale: Bool
+
+    var body: some View {
+        HStack(alignment: .bottom) {
+            ActionButtons(state: state)
+            Spacer(minLength: 8)
+            FreshnessLine(asOf: state.asOf, isStale: isStale)
+                .fixedSize()
+        }
+    }
+}
+
 /// A one-line freshness indicator. When live it shows a self-updating "Updated Xm ago"
 /// (a relative `Text` refreshes on the Lock Screen without a new push); once stale it
 /// switches to "Reconnecting…" so the user knows the numbers above are no longer current.
@@ -148,9 +162,10 @@ private struct FreshnessLine: View {
             } else {
                 HStack(spacing: 3) {
                     Image(systemName: "dot.radiowaves.left.and.right")
-                    Text("Updated")
-                    Text(asOf, style: .relative)
-                    Text("ago")
+                    // Concatenate into a single Text so the auto-updating relative time
+                    // flows inline with "ago". As a standalone HStack child, the relative
+                    // Text reserves its widest possible width and flings "ago" to the right.
+                    Text("Updated ") + Text(asOf, style: .relative) + Text(" ago")
                 }
                 .foregroundStyle(.secondary)
             }
