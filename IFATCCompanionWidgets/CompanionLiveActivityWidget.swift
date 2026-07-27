@@ -162,10 +162,15 @@ private struct FreshnessLine: View {
             } else {
                 HStack(spacing: 3) {
                     Image(systemName: "dot.radiowaves.left.and.right")
-                    // Concatenate into a single Text so the auto-updating relative time
-                    // flows inline with "ago". As a standalone HStack child, the relative
-                    // Text reserves its widest possible width and flings "ago" to the right.
-                    Text("Updated ") + Text(asOf, style: .relative) + Text(" ago")
+                    Text("Updated")
+                    // A date-style Text (`.relative`) is the widget-safe way to show an
+                    // auto-updating age without a fresh push, but it MUST stay a standalone
+                    // Text. Concatenating it into another Text with `+` yields a text run
+                    // WidgetKit can't reconstruct from the Lock Screen's archived snapshot,
+                    // which blanks the whole banner the moment the screen locks. Keep it
+                    // last so the width it reserves for its longest value trails off the end
+                    // instead of opening a gap before a trailing word.
+                    Text(asOf, style: .relative)
                 }
                 .foregroundStyle(.secondary)
             }
