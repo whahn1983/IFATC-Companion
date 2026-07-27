@@ -165,10 +165,11 @@ struct SettingsView: View {
         Section {
             Toggle("Speak pilot readbacks", isOn: $settings.speakPilot)
             voicePicker("Pilot voice", selection: $settings.voicePilot)
+            Toggle("Hold to Talk button", isOn: $settings.holdToTalkEnabled)
         } header: {
             Text("Pilot Voice")
         } footer: {
-            Text("Speaks your readbacks and requests aloud when you use the buttons. Push-to-talk input is never repeated.")
+            Text("Speaks your readbacks and requests aloud when you use the buttons; spoken input is never repeated. \"Hold to Talk\" is the push-to-talk mic in the ATC responses — turn it off to hide it.")
         }
     }
 
@@ -241,7 +242,7 @@ struct SettingsView: View {
         } header: {
             Text("ATC Automation")
         } footer: {
-            Text("You drive your own calls with the buttons — clearance, pushback, engine start, taxi and ready. The controller's position-based calls play automatically: takeoff clearance once you line up, the hand-off to Departure after you're airborne, and the en-route and arrival sequence. Read backs and check-ins stay manual. Auto-tune on hand-off switches the active frequency to the next controller once you read the hand-off back — never before; turn it off to change every frequency by hand with the tune buttons. Initial climb is set above the field, so at high-elevation airports the callouts are raised to a valid MSL altitude (e.g. Denver's initial climb and the approach descent clear the ground).")
+            Text("You make your own calls with the buttons (clearance through ready); the controller's position-based calls play automatically — takeoff once you line up, the Departure hand-off after you're airborne, and the en-route and arrival sequence. Read backs and check-ins stay manual. Auto-tune moves the active frequency to the next controller only after you read the hand-off back; turn it off to tune by hand. Initial climb is set above the field and raised to a valid MSL altitude at high-elevation airports (e.g. Denver).")
         }
     }
 
@@ -264,7 +265,7 @@ struct SettingsView: View {
         } header: {
             Text("Background Radio & Notification")
         } footer: {
-            Text("Background radio chatter plays quiet, static-wrapped ATC traffic on your tuned frequency and keeps the app running when backgrounded (overriding the silent switch), so live calls don't stall. The Live flight notification adds a Lock Screen / Dynamic Island card with Read Back and Check In buttons, and needs chatter for its audio. \"Radio voice effect\" gives the voices a VHF-radio sound. Both use more battery.")
+            Text("Background chatter plays quiet, static-wrapped traffic on your tuned frequency and keeps the app running when backgrounded (overriding the silent switch) so live calls don't stall. The Live flight notification adds a Lock Screen / Dynamic Island card with Read Back and Check In buttons, and needs chatter for its audio. \"Radio voice effect\" gives the voices a VHF-radio sound. Both use more battery.")
         }
     }
 
@@ -292,7 +293,7 @@ struct SettingsView: View {
         } header: {
             Text("SIGMET / PIREP")
         } footer: {
-            Text("Route corridor and altitude band set how close to your route — laterally and by altitude — a PIREP must be to count toward the ride report. SIGMETs are matched to your route by their area, so they aren't affected by these sliders. Neither affects the radar precipitation reroute, which uses its own corridor. Endpoint is the aviation weather data source (METAR, TAF, PIREP, SIGMET).")
+            Text("Route corridor and altitude band set how close — laterally and by altitude — a PIREP must be to count toward the ride report. SIGMETs match by area and the radar reroute uses its own corridor, so neither is affected by these sliders. Endpoint is the aviation weather source (METAR, TAF, PIREP, SIGMET).")
         }
     }
 

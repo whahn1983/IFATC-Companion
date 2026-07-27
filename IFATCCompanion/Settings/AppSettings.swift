@@ -150,6 +150,10 @@ final class AppSettings: ObservableObject {
     /// button/text tap. Push-to-talk input is never re-spoken (the user already
     /// said it).
     @Published var speakPilot: Bool { didSet { save(speakPilot, .speakPilot) } }
+    /// Show the "Hold to Talk" push-to-talk button in the ATC responses card. On by
+    /// default; turn off to hide the button for those who don't use voice input and
+    /// keep hitting it by accident.
+    @Published var holdToTalkEnabled: Bool { didSet { save(holdToTalkEnabled, .holdToTalkEnabled) } }
 
     /// The configured controller-voice identifier for a facility (empty = fall back to the
     /// default controller voice). Ramp shares the Ground voice (both work the surface);
@@ -302,6 +306,7 @@ final class AppSettings: ObservableObject {
         voiceATIS = defaults.string(forKey: Key.voiceATIS.rawValue) ?? ""
         voicePilot = defaults.string(forKey: Key.voicePilot.rawValue) ?? ""
         speakPilot = defaults.object(forKey: Key.speakPilot.rawValue) as? Bool ?? true
+        holdToTalkEnabled = defaults.object(forKey: Key.holdToTalkEnabled.rawValue) as? Bool ?? true
 
         phraseologyMode = PhraseologyMode(rawValue: defaults.string(forKey: Key.phraseologyMode.rawValue) ?? "") ?? .faa
         digitStyle = CallsignDigitStyle(rawValue: defaults.string(forKey: Key.digitStyle.rawValue) ?? "") ?? .grouped
@@ -370,6 +375,7 @@ final class AppSettings: ObservableObject {
         voiceDeparture = other.voiceDeparture; voiceCenter = other.voiceCenter
         voiceApproach = other.voiceApproach; voiceATIS = other.voiceATIS
         voicePilot = other.voicePilot; speakPilot = other.speakPilot
+        holdToTalkEnabled = other.holdToTalkEnabled
         phraseologyMode = other.phraseologyMode; digitStyle = other.digitStyle
         backgroundChatterEnabled = other.backgroundChatterEnabled
         liveActivityEnabled = other.liveActivityEnabled
@@ -398,7 +404,7 @@ final class AppSettings: ObservableObject {
         case cruiseAltitude, runway, sid, star, approach, departureGate, arrivalGate
         case voiceEnabled, defaultVoiceID, speechRate, speechPitch, voiceVolume, respectSilentSwitch
         case voiceGround, voiceTower, voiceDeparture, voiceCenter, voiceApproach, voiceATIS
-        case voicePilot, speakPilot
+        case voicePilot, speakPilot, holdToTalkEnabled
         case phraseologyMode, digitStyle
         case backgroundChatterEnabled, liveActivityEnabled, chatterVolume, chatterDensity, transmissionStaticEnabled
         case radioEffectDefaultMigration

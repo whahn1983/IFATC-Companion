@@ -457,7 +457,9 @@ struct ATCView: View {
                     }
                 }
                 acknowledgementGrid
-                pttPlaceholder
+                if settings.holdToTalkEnabled {
+                    pttPlaceholder
+                }
                 Text("Remember to continue using all proper Unicom calls throughout your flight.")
                     .font(.caption2).foregroundStyle(.tertiary)
                     .frame(maxWidth: .infinity, alignment: .leading)
