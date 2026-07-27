@@ -144,6 +144,12 @@ final class AirportSurfaceCoordinator: ObservableObject {
     /// (uncached live airports load asynchronously). Supersede it with the detailed OSM
     /// route clearance once `recomputeRoute()` produces a credible route.
     private var pendingDetailedClearance = false
+    /// Signature of the taxi instruction last issued to the pilot (taxiway sequence, assigned
+    /// runway / gate, first hold-short crossing). A recalculation that resolves to a materially
+    /// different route — a different signature — re-issues a Ground taxi clearance with its own
+    /// read-back; an identical route stays silent so recalculating doesn't repeat the same
+    /// instruction (see `recalculateRoute`).
+    private var lastIssuedTaxiClearanceSignature: String?
     /// The live position of the last route retry, so the "surface ready but no route yet"
     /// recovery only re-runs the A* once the aircraft has actually moved (see `updateLive`).
     private var lastRouteRetryCoordinate: CLLocationCoordinate2D?
@@ -543,6 +549,7 @@ final class AirportSurfaceCoordinator: ObservableObject {
         syntheticSurface = false
         taxiReadBack = false
         pendingDetailedClearance = false
+        lastIssuedTaxiClearanceSignature = nil
         lastRouteRetryCoordinate = nil
         lastAlong = 0
         offRouteTicks = 0
@@ -692,18 +699,16 @@ final class AirportSurfaceCoordinator: ObservableObject {
         guard pendingDetailedClearance, kind != .none,
               let route, routeConfidence.allowsDetailedRouting else { return }
         pendingDetailedClearance = false
+        emit(routeClearance(for: route, cs: cs()))
         if kind == .departure {
             let runway = route.holdShortRunway ?? assignedRunway
-            emit(phraseology.taxiClearance(cs: cs(), route: route, runway: runway,
-                                           holdShortCrossing: firstCrossingRunway(route)))
             diagnostics?.log(.atc, "OSM taxi route ready — superseding generic clearance with detailed route to runway \(runway)")
         } else {
             let g = route.arrivalGate ?? gate
-            emit(phraseology.arrivalTaxi(cs: cs(), route: route, gate: g,
-                                         holdShortCrossing: firstCrossingRunway(route)))
             diagnostics?.log(.atc, "OSM taxi route ready — superseding generic clearance with detailed route to \(g.isEmpty ? "parking" : "gate \(g)")")
         }
         awaitingTaxiReadback = true
+        lastIssuedTaxiClearanceSignature = taxiClearanceSignature(for: route)
     }
 
     // MARK: - Taxi clearance text (for AppModel to post)
@@ -714,13 +719,7 @@ final class AirportSurfaceCoordinator: ObservableObject {
     func taxiClearance(callsign: PhraseologyEngine.Callsign) -> ATCTransmission? {
         guard kind != .none else { return nil }
         if let route, routeConfidence.allowsDetailedRouting {
-            if kind == .departure {
-                return phraseology.taxiClearance(cs: callsign, route: route, runway: route.holdShortRunway ?? assignedRunway,
-                                                 holdShortCrossing: firstCrossingRunway(route))
-            } else {
-                return phraseology.arrivalTaxi(cs: callsign, route: route, gate: route.arrivalGate ?? gate,
-                                               holdShortCrossing: firstCrossingRunway(route))
-            }
+            return routeClearance(for: route, cs: callsign)
         }
         // Route unavailable/low: conservative departure fallback (arrival keeps generic).
         if kind == .departure, case .ready = status {
@@ -740,6 +739,11 @@ final class AirportSurfaceCoordinator: ObservableObject {
     func taxiClearanceIssued(supersedeWhenRouteReady: Bool = false) {
         awaitingTaxiReadback = true
         pendingDetailedClearance = supersedeWhenRouteReady
+        // Record what the pilot was just cleared for so a later recalculation can tell whether
+        // the route materially changed. When the clearance that went out was the generic
+        // fallback (no detailed route yet), this is nil until the deferred detailed clearance
+        // resolves and records its own signature.
+        lastIssuedTaxiClearanceSignature = taxiClearanceSignature(for: route)
     }
 
     /// Called by AppModel after the pilot reads back the taxi clearance.
@@ -936,7 +940,21 @@ final class AirportSurfaceCoordinator: ObservableObject {
         if !mockMode {
             if !prog.onRoute {
                 offRouteTicks += 1
-                if offRouteTicks >= offRouteTickThreshold { offRoute = true }
+                if offRouteTicks >= offRouteTickThreshold {
+                    // Auto-recalculate when enabled and route confidence is still acceptable:
+                    // re-plan from the current position and, if the route materially changes,
+                    // Ground issues a fresh taxi clearance with a read-back (never a silent
+                    // swap). Otherwise just raise the off-route banner and let the pilot choose
+                    // Recalculate / Continue / Request New Taxi.
+                    if autoRecalculate, routeConfidence.allowsDetailedRouting {
+                        // Re-plans (and updates instructions) from the current position; the
+                        // rest of this tick would run against the now-superseded route/progress,
+                        // so hand off to the next tick's fresh tracking pass.
+                        recalculateRoute()
+                        return
+                    }
+                    offRoute = true
+                }
             } else {
                 offRouteTicks = 0
                 offRoute = false
@@ -1098,6 +1116,34 @@ final class AirportSurfaceCoordinator: ObservableObject {
         route.crossings.min(by: { $0.alongMeters < $1.alongMeters })?.runwayIdent
     }
 
+    /// Build the Ground taxi clearance for a computed route — the departure runway route or the
+    /// arrival gate route — holding the pilot short of the first runway crossing. Shared by the
+    /// initial clearance, the deferred (async-load) clearance, and the recalculation clearance
+    /// so all three read identically.
+    private func routeClearance(for route: SurfaceTaxiRoute, cs callsign: PhraseologyEngine.Callsign) -> ATCTransmission {
+        if kind == .departure {
+            return phraseology.taxiClearance(cs: callsign, route: route,
+                                             runway: route.holdShortRunway ?? assignedRunway,
+                                             holdShortCrossing: firstCrossingRunway(route))
+        }
+        return phraseology.arrivalTaxi(cs: callsign, route: route, gate: route.arrivalGate ?? gate,
+                                       holdShortCrossing: firstCrossingRunway(route))
+    }
+
+    /// A stable identity for the taxi *instruction* a route yields — the taxiway sequence, the
+    /// destination runway/gate, and the first hold-short crossing. Two routes with the same
+    /// signature produce the same spoken clearance, so a recalculation between them is not
+    /// re-issued; a different signature means a genuinely new instruction. Nil when there is no
+    /// detail-worthy route to clear (unavailable / low-confidence fallback).
+    private func taxiClearanceSignature(for route: SurfaceTaxiRoute?) -> String? {
+        guard let route, routeConfidence.allowsDetailedRouting else { return nil }
+        let destination = kind == .departure ? (route.holdShortRunway ?? assignedRunway)
+                                             : (route.arrivalGate ?? gate)
+        let holdShort = firstCrossingRunway(route) ?? ""
+        let kindTag = kind == .departure ? "DEP" : "ARR"
+        return "\(kindTag)|\(destination)|\(route.taxiwaySequence.joined(separator: ">"))|\(holdShort)"
+    }
+
     // MARK: - Pilot / user actions
 
     /// Called by AppModel after the pilot reads back a crossing clearance.
@@ -1145,7 +1191,26 @@ final class AirportSurfaceCoordinator: ObservableObject {
         lastAlong = 0
         // Recompute from the current aircraft position.
         if let ac = displayAircraft { pendingStart = ac.coordinate.clLocation }
+        let previousSignature = lastIssuedTaxiClearanceSignature
         recomputeRoute()
+        issueRecalculatedTaxiClearanceIfChanged(previousSignature: previousSignature)
+    }
+
+    /// After a recalculation (the user tapping Recalculate / Request New Taxi Instructions, or
+    /// an automatic off-route recalculation), issue a fresh Ground taxi clearance — with its own
+    /// read-back — whenever the recalculated route is a materially different instruction than the
+    /// one the pilot last read back. An identical route stays silent so recalculating doesn't
+    /// repeat the same clearance. A recalculation issued while the async detailed clearance is
+    /// still pending is left to that deferred path (which arms its own read-back).
+    private func issueRecalculatedTaxiClearanceIfChanged(previousSignature: String?) {
+        guard !pendingDetailedClearance,
+              let route, routeConfidence.allowsDetailedRouting else { return }
+        let newSignature = taxiClearanceSignature(for: route)
+        guard newSignature != previousSignature else { return }
+        emit(routeClearance(for: route, cs: cs()))
+        awaitingTaxiReadback = true
+        lastIssuedTaxiClearanceSignature = newSignature
+        diagnostics?.log(.atc, "Taxi route recalculated — issuing updated Ground clearance for the new route")
     }
 
     func continueOriginalRoute() {
