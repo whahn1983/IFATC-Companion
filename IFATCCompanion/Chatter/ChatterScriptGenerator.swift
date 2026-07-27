@@ -185,7 +185,7 @@ struct ChatterScriptGenerator {
         case 0:
             return [ctrl("\(cs.spoken), taxi to runway \(rwy) via \(taxi)."), readback(cs: cs, "runway \(rwy) via \(taxi)")]
         case 1:
-            return [ctrl("\(cs.spoken), give way to the company jet, then continue taxi via \(taxi).")]
+            return [ctrl("\(cs.spoken), give way to company traffic, then continue taxi via \(taxi).")]
         case 2:
             let freq = Phonetic.frequency(towerFreq(using: &rng), icao: icao)
             return [ctrl("\(cs.spoken), monitor tower \(freq)."), readback(cs: cs, "tower \(freq)")]

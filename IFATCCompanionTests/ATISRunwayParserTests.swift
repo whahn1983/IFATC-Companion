@@ -85,6 +85,36 @@ final class ATISRunwayParserTests: XCTestCase {
         XCTAssertEqual(ATISRunwayParser.canonical("36"), "36")
     }
 
+    // MARK: - NAVAID-outage / condition-report runways are not "in use"
+
+    func testOutOfServiceAndConditionRunwaysAreNotActive() {
+        // The O'Hare shape: only ILS 10C (arr) and 9C (dep) are in use; the long lists of
+        // "RWY x LOC/GS/IM/PAPI OTS" and "RWY x COND CODE 5 5 5 …" must not become active
+        // runways just because they're named without an arrival/departure keyword.
+        let text = "ARR EXP VECTORS ILS RWY 10C APCH. DEPS EXP RWYS 9C. "
+            + "RWY 22R LOC OTS, RWY 28L GS OTS, RWY 9L IM OTS, RWY 9C IM OTS, RWY 9L PAPI OTS, "
+            + "RWY 27R PAPI OTS. RWY 22L, COND CODE, 5 5 5 AT, 1630Z, RWY 28R, COND CODE, 5 5 5 "
+            + "AT, 1630Z."
+        let r = ATISRunwayParser.parse(text, kind: .combined)
+        XCTAssertEqual(r.arrivals, ["10C"])
+        XCTAssertEqual(r.departures, ["9C"])
+    }
+
+    func testClosedRunwayIsNotActive() {
+        // A closed runway is named but not in use; only the keyworded runway stays active.
+        let r = ATISRunwayParser.parse("LDG AND DEPG RWY 13. RWY 31 CLSD.", kind: .combined)
+        XCTAssertEqual(r.arrivals, ["13"])
+        XCTAssertEqual(r.departures, ["13"])
+    }
+
+    func testKeywordedRunwayStillCountsEvenWithLaterOutage() {
+        // An explicit arrival/departure keyword is trusted; a following outage clause for a
+        // different runway is suppressed on its own, not applied to the keyworded group.
+        let r = ATISRunwayParser.parse("DEPG RWY 9C. RWY 22R LOC OTS.", kind: .combined)
+        XCTAssertEqual(r.departures, ["9C"])
+        XCTAssertTrue(r.arrivals.isEmpty)
+    }
+
     // MARK: - Whole report (multiple parts)
 
     func testActiveRunwaysAcrossSeparateArrivalAndDepartureParts() {
