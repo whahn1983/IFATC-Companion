@@ -14,7 +14,19 @@ final class LiveActivityController: ObservableObject {
 
     private var activity: Activity<CompanionActivityAttributes>?
     private var lastUpdate = Date.distantPast
-    private let minInterval: TimeInterval = 2.0
+    /// Minimum spacing between routine (non-forced) pushes. Kept deliberately conservative:
+    /// ActivityKit budgets how often a *backgrounded* app may push `activity.update()`, and
+    /// a 1 Hz poll pushing every 2 s blew through it — iOS then dropped the updates and the
+    /// card starved to its stale state ("Reconnecting…") even while the app was alive. Pushing
+    /// routine telemetry every few seconds stays inside the budget so updates keep landing;
+    /// meaningful changes (phase, controller, hand-off) still `force` through immediately.
+    private let minInterval: TimeInterval = 5.0
+
+    /// When the last update was pushed to ActivityKit (start or update). The app's telemetry
+    /// watchdog reads this to notice when routine pushes have gone quiet — a poll stall, or
+    /// iOS throttling background pushes — and force a heartbeat before the card reaches the
+    /// stale window.
+    var lastPushAt: Date { lastUpdate }
 
     /// How long after the last push before iOS marks the activity stale. Once passed,
     /// `context.isStale` flips true and the widget shows a "Reconnecting…" state rather

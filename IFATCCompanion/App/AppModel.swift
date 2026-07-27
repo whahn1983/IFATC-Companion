@@ -1111,6 +1111,34 @@ final class AppModel: ObservableObject {
         liveActivity.update(buildLiveActivityState(), force: force)
     }
 
+    /// After no push has reached ActivityKit for this long, the watchdog force-pushes a
+    /// heartbeat so the live notification never drifts into its stale window while the app is
+    /// still running. Comfortably shorter than the controller's `staleWindow` (~60 s) so a
+    /// heartbeat always lands with margin to spare, yet long enough that it stays dormant
+    /// while the routine telemetry pushes are flowing normally (no extra background-push
+    /// budget spent when it isn't needed).
+    private let liveActivityHeartbeatSilence: TimeInterval = 15
+
+    /// Whether the live notification has gone quiet long enough to warrant a heartbeat push.
+    /// Pure (time-only) so it can be unit-tested with injected clocks.
+    func liveActivityHeartbeatDue(now: Date, lastPush: Date) -> Bool {
+        now.timeIntervalSince(lastPush) >= liveActivityHeartbeatSilence
+    }
+
+    /// Keep the live flight notification fresh while the app runs in the background. Routine
+    /// pushes come from the telemetry poll, but they stop the moment the poll stalls — and
+    /// iOS also throttles a backgrounded app that pushes `activity.update()` too often, so
+    /// even a healthy poll can have its updates dropped. Either way, if nothing lands for
+    /// `staleWindow` the card sticks on "Reconnecting…" though the app is alive. This
+    /// heartbeat — driven by the watchdog task, independent of the poll — force-pushes the
+    /// current state once pushes have gone quiet, so a fresh update always lands in time. It
+    /// stays dormant while routine pushes are flowing, so it spends no extra push budget then.
+    private func sendLiveActivityHeartbeatIfNeeded(now: Date) {
+        guard settings.liveActivityEnabled, liveActivity.isActive else { return }
+        guard liveActivityHeartbeatDue(now: now, lastPush: liveActivity.lastPushAt) else { return }
+        refreshLiveActivity(force: true)
+    }
+
     // MARK: - Telemetry-stall watchdog
 
     /// When the last usable telemetry snapshot arrived. Advanced on every `handle(state:)`
@@ -1132,10 +1160,11 @@ final class AppModel: ObservableObject {
     /// seconds to re-establish telemetry isn't treated as a fresh stall.
     private let reconnectCooldown: TimeInterval = 20
 
-    /// The watchdog is only useful in live mode while the background-audio anchor keeps the
-    /// app alive (the same condition under which the Live Activity keeps updating). The mock
-    /// feed never stalls, and without the anchor the app is suspended in the background so no
-    /// timer would fire anyway.
+    /// The watchdog drives two things while the background-audio anchor keeps the app alive
+    /// (the same condition under which the Live Activity keeps updating): the telemetry-stall
+    /// reconnect, and the Live Activity heartbeat that keeps the notification from starving to
+    /// its stale state. It's only useful in live mode — the mock feed never stalls, and without
+    /// the anchor the app is suspended in the background so no timer would fire anyway.
     private func updateTelemetryWatchdogRunState() {
         if !settings.mockMode && shouldRunAmbientChatter {
             armTelemetryWatchdog()
@@ -1155,6 +1184,9 @@ final class AppModel: ObservableObject {
                 try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
                 guard let self, !Task.isCancelled else { return }
                 self.checkTelemetryStall()
+                // Keep the live notification fresh even when the poll (and its pushes) has
+                // stalled, so the card doesn't stick on "Reconnecting…" while the app runs.
+                self.sendLiveActivityHeartbeatIfNeeded(now: Date())
             }
         }
     }
