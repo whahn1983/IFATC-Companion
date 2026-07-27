@@ -169,9 +169,13 @@ final class AirportSurfaceCoordinator: ObservableObject {
     private var mockAlong = 0.0
 
     // Workflow tuning (meters unless noted).
-    private let detectAheadMeters = 250.0
-    private let approachMeters = 130.0
-    private let holdIssueMeters = 90.0
+    private let detectAheadMeters = 350.0
+    private let approachMeters = 300.0
+    // How far back from the hold point the crossing clearance is issued. Tripled from the
+    // original 90 m so a pilot taxiing at ~25 kt gets "cross runway …" well before the
+    // threshold and has time to read it back before reaching the runway — the same lead-time
+    // reasoning as the Ground→Tower monitor hand-off (`OSMSurface.monitorTowerLeadMeters`).
+    private let holdIssueMeters = 270.0
     private let atHoldMeters = 20.0
     private let corridorEnterMeters = 30.0
     private let vacateMarginMeters = 42.0
@@ -997,12 +1001,17 @@ final class AirportSurfaceCoordinator: ObservableObject {
             return
         }
 
-        // Not authorized — unauthorized-entry safety net (live; mock never trips it). Once a
-        // crossing clearance has been issued (awaiting the pilot's read-back), the aircraft
-        // moving up to and across the runway is expected, so the warning is suppressed — it
-        // fires only when no crossing clearance is outstanding for this crossing.
-        if dCross <= corridorEnterMeters && ac.groundSpeedKnots > 1 && headingTowardCrossing(ac: ac, crossing: c)
-            && !issuedClearanceFor.contains(c.index) {
+        // Not authorized — unauthorized-entry safety net (live; mock never trips it). This
+        // applies **only** in the manual mode (automatic crossing calls off), where the pilot
+        // is expected to hold short and Request Crossing: entering the corridor without a
+        // clearance then warrants a warning. With automatic calls on the companion ALWAYS
+        // clears the crossing (a generous distance back), so it never holds or stops the
+        // aircraft short of a runway crossing — the runway may well be clear for the pilot.
+        // Once a crossing clearance has been issued (awaiting the pilot's read-back), the
+        // aircraft moving up to and across the runway is expected, so the warning is also
+        // suppressed once a clearance is outstanding for this crossing.
+        if !autoCrossingCalls && dCross <= corridorEnterMeters && ac.groundSpeedKnots > 1
+            && headingTowardCrossing(ac: ac, crossing: c) && !issuedClearanceFor.contains(c.index) {
             unauthorizedTicks += 1
             if unauthorizedTicks >= 2 {
                 logUnauthorized(c: c, along: along, ac: ac, dHold: dHold)
@@ -1027,20 +1036,25 @@ final class AirportSurfaceCoordinator: ObservableObject {
         }
 
         let lowConfidence = c.confidence == .low || routeConfidence == .low || routeConfidence == .unavailable
-        let autoAllowed = autoCrossingCalls && routeConfidence == .high && c.confidence != .low
+        // ALWAYS clear to cross when automatic crossing calls are on — regardless of OSM
+        // confidence. The companion never holds the pilot short or stops them at a crossing
+        // (it could be completely clear for them); it just issues the crossing clearance
+        // automatically a generous distance back so a slow taxi has time to read it back
+        // before the threshold. Turning automatic crossing calls off (Settings) restores the
+        // conservative manual Request-Crossing path below.
+        let autoAllowed = autoCrossingCalls
 
         if autoAllowed && !pilotHeldFor.contains(c.index) {
-            // High-confidence crossing: Ground proactively issues the crossing clearance a
-            // short distance before the runway threshold — no redundant hold-short call. The
-            // taxi clearance already held the pilot short of this first crossing; the pilot
-            // still reads the crossing clearance back before it is authorized, and the
-            // aircraft holds at the mapped hold point until it is.
+            // Ground proactively issues the crossing clearance a generous distance before the
+            // runway threshold — no redundant hold-short call, and never a stop. The taxi
+            // clearance already named the first crossing as the clearance limit; the pilot
+            // still reads the crossing clearance back before it is authorized.
             if dHold <= holdIssueMeters, !issuedClearanceFor.contains(c.index) {
                 issueCrossingClearance(c)
             }
         } else {
-            // Medium/low confidence, automatic calls off, or the pilot asked to hold: issue an
-            // explicit hold-short and wait for the pilot to Request Crossing before clearing.
+            // Automatic calls off, or the pilot asked to hold: issue an explicit hold-short
+            // and wait for the pilot to Request Crossing before clearing.
             if dHold <= holdIssueMeters, !issuedHoldShortFor.contains(c.index) {
                 issuedHoldShortFor.insert(c.index)
                 emit(phraseology.holdShort(cs: cs(), runwayIdent: c.runwayIdent))

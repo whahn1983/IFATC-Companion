@@ -104,9 +104,11 @@ enum OSMSurface {
     /// (hold-short) line at the runway itself. So the trigger point cannot be read from
     /// OSM; it is derived from the calculated taxi route instead — the hand-off fires
     /// once the aircraft is within this distance of the route's end (the runway
-    /// hold-short). A few hundred meters keeps it "well before" the hold-short on a
-    /// normal-length taxi while still being on the final leg to the runway.
-    static let monitorTowerLeadMeters = 200.0
+    /// hold-short). A generous lead keeps it "well before" the hold-short on a
+    /// normal-length taxi while still being on the final leg to the runway — far enough
+    /// back that a pilot taxiing at ~25 kt has time to read the hand-off back before
+    /// reaching the runway.
+    static let monitorTowerLeadMeters = 600.0
 
     // MARK: - Cache / refresh policy
 

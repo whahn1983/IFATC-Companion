@@ -205,8 +205,9 @@ final class AppModel: ObservableObject {
             case .tower:
                 // After a "monitor Tower" hand-off no check-in is required, but offer it —
                 // checking in gets a "number one for departure" acknowledgement — alongside
-                // the takeoff request. Otherwise the usual report-ready / takeoff pair.
-                return monitoringTower ? [.checkIn, .takeoff] : [.ready, .takeoff]
+                // the report-ready ("line up and wait") and takeoff requests. Otherwise the
+                // usual report-ready / takeoff pair.
+                return monitoringTower ? [.ready, .checkIn, .takeoff] : [.ready, .takeoff]
             default:
                 return [.clearance]
             }
