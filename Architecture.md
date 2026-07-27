@@ -162,9 +162,16 @@ Full detail in [`docs/BackgroundChatter.md`](docs/BackgroundChatter.md) and
   call. Its **Read Back / Check In** buttons are `LiveActivityIntent`s that run in the app
   process and call the same `AppModel` actions as the on-screen buttons. Updates come from
   the app while it runs (no push server — consistent with the local-only design), which is
-  why the notification requires background chatter. The rendering lives in a separate
-  WidgetKit extension target (`IFATCCompanionWidgets/`) added in Xcode per
-  `docs/LiveActivitySetup.md`.
+  why the notification requires background chatter. **Freshness:** each push stamps a
+  `staleDate` ~60 s out, and iOS flips `context.isStale` (rendered as "Reconnecting…") once
+  that elapses with no new push. Because ActivityKit **budgets how often a backgrounded app
+  may push**, routine telemetry pushes are spaced (`minInterval` 5 s) rather than fired on
+  every 1 Hz poll tick, and the telemetry-stall **watchdog** carries a *Live Activity
+  heartbeat* (`AppModel.sendLiveActivityHeartbeatIfNeeded`) that force-pushes the current
+  state whenever pushes have gone quiet (poll stalled, or a reconnect in flight) — so a fresh
+  update always lands inside the stale window while the app is alive, instead of the card
+  starving to "Reconnecting…". The rendering lives in a separate WidgetKit extension target
+  (`IFATCCompanionWidgets/`) added in Xcode per `docs/LiveActivitySetup.md`.
 
 ## Settings
 
