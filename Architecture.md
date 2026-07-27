@@ -159,22 +159,22 @@ Full detail in [`docs/BackgroundChatter.md`](docs/BackgroundChatter.md) and
   CompanionActionCenter** — the ActivityKit live flight notification (Lock Screen + Dynamic
   Island): phase, tuned controller, altitude/heading/speed, callsign, route, next
   controller and a weather flag, updated (throttled) from the telemetry loop and every new
-  call. Its **Read Back / Check In** buttons are `LiveActivityIntent`s that run in the app
-  process and call the same `AppModel` actions as the on-screen buttons. Updates come from
-  the app while it runs (no push server — consistent with the local-only design), which is
-  why the notification requires background chatter. **Freshness:** each push stamps a
-  `staleDate` ~60 s out, and iOS flips `context.isStale` (rendered as "Reconnecting…") once
-  that elapses with no new push. ActivityKit **budgets how often a backgrounded app may
-  push**, and exhausting it makes iOS stop delivering updates entirely (the card freezes on
-  its last numbers, then goes stale) — so three things keep it fed: the app declares
-  `NSSupportsLiveActivitiesFrequentUpdates` (Info.plist) to raise that budget for this
-  flight-tracking activity; routine telemetry pushes are spaced (`minInterval` 5 s) rather
-  than fired on every 1 Hz poll tick; and the telemetry-stall **watchdog** carries a *Live
-  Activity heartbeat* (`AppModel.sendLiveActivityHeartbeatIfNeeded`) that force-pushes the
-  current state whenever pushes have gone quiet (poll stalled, or a reconnect in flight), so a
-  fresh update lands inside the stale window while the app is alive. The rendering lives in a
-  separate WidgetKit extension target (`IFATCCompanionWidgets/`) added in Xcode per
-  `docs/LiveActivitySetup.md`.
+  call. Its **Read Back / Check In / Refresh** buttons are `LiveActivityIntent`s that run in
+  the app process and call `AppModel` actions. Updates come from the app while it runs (no
+  push server — consistent with the local-only design), which is why the notification requires
+  background chatter. **Background throttling is the governing constraint:** iOS budgets how
+  often a *backgrounded* app may push a Live Activity, and once that budget is spent it stops
+  delivering the app's updates entirely — so the card freezes on its last numbers even though
+  the app stays fully connected and polling (confirmed in Diagnostics: continuous `[STATE]`
+  reads, zero reconnects, while backgrounded). This is an OS limit no standalone app can lift
+  (only APNs push could, which the local-only design rules out). The app therefore does **not**
+  set a `staleDate` — a push-timing "stale" flag mislabelled a healthy link "Reconnecting…" —
+  and instead gives the user a **Refresh** button (`RefreshIntent`): a Live Activity button
+  runs in-process from a user tap, so its forced push is delivered immediately, pulling the
+  current (poll-fresh) telemetry to the card on demand. `NSSupportsLiveActivitiesFrequentUpdates`
+  (Info.plist) raises the routine-push budget as far as a local app can, and routine pushes are
+  spaced (`minInterval` 5 s). The rendering lives in a separate WidgetKit extension target
+  (`IFATCCompanionWidgets/`) added in Xcode per `docs/LiveActivitySetup.md`.
 
 ## Settings
 
