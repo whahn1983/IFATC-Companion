@@ -204,6 +204,17 @@ silently recalculate — it offers **Recalculate**, **Continue Original Route**,
 New Taxi Instructions**. Automatic recalculation happens only when enabled and route confidence
 remains acceptable.
 
+Whenever a route is recalculated — the pilot tapping **Recalculate** / **Request New Taxi
+Instructions** on the map, or an automatic off‑route recalculation — and it resolves to a
+**materially different route**, Ground issues a **fresh taxi clearance with its own read‑back**
+(never a silent swap): the new runway/gate, taxiway sequence, and hold‑short are read out and
+re‑armed for the pilot's acknowledgement, exactly like the initial clearance. A recalculation
+that reproduces the **same** instruction (same taxiway sequence, destination, and hold‑short)
+stays silent, so recalculating never repeats an identical clearance. The comparison is on the
+spoken instruction, so a route whose geometry shifts slightly but whose taxiways/hold‑short are
+unchanged is not re‑issued. An automatic recalculation therefore keeps the ATC exchange honest:
+it re‑plans from the current position and, when that changes the instruction, tells the pilot.
+
 ## Manual overrides
 
 The pilot can override the departure/arrival runway, gates, runway entry, automatic crossing
