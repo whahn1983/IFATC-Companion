@@ -43,15 +43,18 @@ struct CompanionLiveActivityWidget: Widget {
                     }
                 }
             } compactLeading: {
-                // The icon conveys the controller; pair it with a short status so the
-                // pill always shows something relevant (never a bare "0k" at the gate).
-                // A stalled feed greys the pill so it doesn't read as live.
-                Image(systemName: state.facilitySymbol).foregroundStyle(isStale ? .gray : .cyan)
+                // The app icon, not the controller glyph: the tuned controller changes as the
+                // flight is handed off, so that icon would go stale between the throttled
+                // background pushes. The app icon is fixed, so the pill always reads correctly.
+                CompanionGlyph()
             } compactTrailing: {
-                Text(compactStatus(state)).font(.caption2).monospacedDigit()
-                    .foregroundStyle(isStale ? .gray : .white)
+                // Show the callsign rather than altitude. Altitude freezes between pushes (iOS
+                // throttles a backgrounded app's Live Activity updates), so a frozen number
+                // reads as live when it isn't; the callsign never changes, so it's always right.
+                Text(state.callsign).font(.caption2).monospacedDigit()
+                    .foregroundStyle(.white)
             } minimal: {
-                Image(systemName: state.facilitySymbol).foregroundStyle(isStale ? .gray : .cyan)
+                CompanionGlyph()
             }
             .keylineTint(.cyan)
         }
@@ -204,20 +207,14 @@ private struct ActionButtons: View {
     }
 }
 
-private func altitudeShort(_ feet: Int) -> String {
-    feet >= 18_000 ? "FL\(feet / 100)" : "\(feet / 1_000)k"
-}
-
-/// The single most relevant datum for the tiny compact Dynamic Island: the altitude once
-/// airborne, otherwise a short flight-phase word (so it reads e.g. "Taxi"/"Gate" at the
-/// gate instead of a meaningless "0k").
-private func compactStatus(_ state: CompanionActivityAttributes.ContentState) -> String {
-    if state.altitude >= 1_000 { return altitudeShort(state.altitude) }
-    switch state.phase {
-    case "Preflight", "Parked": return "Gate"
-    case "Taxi Out", "Taxi In": return "Taxi"
-    case "Takeoff": return "Dep"
-    case "Initial Climb": return "Climb"
-    default: return state.phase   // Climb, Cruise, Descent, Approach, Landing already fit
+/// The app icon, sized and rounded for the compact/minimal Dynamic Island. Uses the widget
+/// target's bundled `CompanionIcon` asset (a copy of the app icon) — a fixed mark that stays
+/// correct between the throttled background pushes, unlike the controller glyph it replaced.
+private struct CompanionGlyph: View {
+    var body: some View {
+        Image("CompanionIcon")
+            .resizable()
+            .scaledToFit()
+            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
     }
 }
