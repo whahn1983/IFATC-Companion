@@ -70,8 +70,12 @@ final class RunwayCrossingWorkflowTests: XCTestCase {
         XCTAssertFalse(coord.reachedDestination, "held short of the crossing without authorization")
     }
 
-    func testEarlyRunwayEntryProducesWarning() {
+    func testEarlyRunwayEntryProducesWarningInManualMode() {
         let (coord, messages) = makeCoordinator()
+        // The unauthorized-entry safety net applies only in the manual Request-Crossing mode
+        // (automatic calls off). With automatic calls on the companion always clears the
+        // crossing and never warns/stops the aircraft.
+        coord.autoCrossingCalls = false
         coord.beginMockTaxiForTesting(kind: .departure, reference: ref, runway: "36", gate: "A1")
         guard let route = coord.routeForTesting, let crossing = route.crossings.first else {
             return XCTFail("expected a crossing")
@@ -89,8 +93,8 @@ final class RunwayCrossingWorkflowTests: XCTestCase {
         }, "an early runway entry must produce a simulated hold/stop warning")
     }
 
-    func testLowConfidenceDisablesAutomaticCrossingClearance() {
-        let (coord, _) = makeCoordinator()
+    func testLowConfidenceStillAutoClearsCrossing() {
+        let (coord, messages) = makeCoordinator()
         // A stripped, unnamed, hold-less surface → low crossing confidence.
         var m = MockAirportSurface.model(icao: "KLOW", reference: ref, primaryRunwayIdent: "36", gate: "A1")
         m.taxiways = m.taxiways.map { var t = $0; t.name = ""; return t }
@@ -99,15 +103,37 @@ final class RunwayCrossingWorkflowTests: XCTestCase {
         coord.installSurfaceForTesting(m, kind: .departure, runway: "36", gate: "A1")
         guard coord.routeForTesting?.crossings.first != nil else { return XCTFail("expected a crossing") }
 
-        // Drive to the hold: no automatic crossing clearance should be issued.
-        for _ in 0..<300 { coord.mockTickForTesting() }
-        XCTAssertFalse(coord.awaitingCrossingReadback,
-                       "low-confidence crossings must not auto-issue a detailed clearance")
+        // With automatic crossing calls on, the crossing is ALWAYS cleared automatically —
+        // regardless of confidence. It never holds the pilot short waiting on Request Crossing.
+        tick(coord, until: { coord.awaitingCrossingReadback })
+        XCTAssertTrue(coord.awaitingCrossingReadback,
+                      "crossings auto-clear regardless of OSM confidence when automatic calls are on")
+        let text = messages().map { $0.displayText.lowercased() }
+        XCTAssertTrue(text.contains { $0.contains("cross runway") }, "a crossing clearance is issued")
+        XCTAssertFalse(text.contains { $0.contains("hold short") },
+                       "a low-confidence crossing must not be held short when automatic calls are on")
+    }
 
-        // The pilot must Request Crossing; then the clearance is issued.
-        coord.requestCrossing()
-        for _ in 0..<10 { coord.mockTickForTesting() }
-        XCTAssertTrue(coord.awaitingCrossingReadback, "Request Crossing yields the clearance")
+    func testAutoModeNeverStopsOrHoldsAtCrossing() {
+        // The "always clear to cross, never stop the user" behavior: even an aircraft driving
+        // into the corridor must never draw a hold-position / stop warning while automatic
+        // crossing calls are on.
+        let (coord, messages) = makeCoordinator()
+        coord.beginMockTaxiForTesting(kind: .departure, reference: ref, runway: "36", gate: "A1")
+        guard let route = coord.routeForTesting, let crossing = route.crossings.first else {
+            return XCTFail("expected a crossing")
+        }
+        let line = route.clGeometry
+        let approach = SurfaceGeometry.pointAlong(line, meters: max(0, crossing.alongMeters - 10)) ?? crossing.point.clLocation
+        let heading = Geo.bearing(from: approach, to: crossing.point.clLocation)
+        coord.feedForTesting(coordinate: approach, heading: heading, groundSpeed: 15)
+        coord.feedForTesting(coordinate: approach, heading: heading, groundSpeed: 15)
+        XCTAssertNotEqual(coord.crossingState, .unauthorizedCrossingDetected,
+                          "automatic mode never flags an unauthorized crossing")
+        XCTAssertFalse(messages().contains {
+            let t = $0.displayText.lowercased()
+            return t.contains("hold position") || t.contains("stop immediately")
+        }, "automatic mode never issues a hold/stop warning at a crossing")
     }
 
     func testRequestCrossingIssuesClearanceBeforeSettlingAtHold() {

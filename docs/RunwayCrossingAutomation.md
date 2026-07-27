@@ -19,11 +19,12 @@ crossed → runway vacated → taxi resumed`
 
 with two side states: `unauthorized crossing detected` and `low‑confidence crossing data`.
 
-The initial Ground taxi clearance already holds the pilot short of the **first** runway
-crossing in the route ("taxi to runway 36 via A, C, hold short runway 9-27"), so a
-high‑confidence crossing is then cleared without repeating the hold‑short. Hold‑short and
-crossing instructions name **both directions** of the physical runway ("hold short runway
-9-27", spoken "hold short runway niner two seven").
+The initial Ground taxi clearance names the **first** runway crossing in the route as the
+clearance limit ("taxi to runway 36 via A, C, hold short runway 9-27"). The crossing is then
+cleared **automatically**, a generous distance before the runway, without repeating the
+hold‑short — so the pilot is never actually stopped there (the runway may well be clear for
+them). Hold‑short and crossing instructions name **both directions** of the physical runway
+("hold short runway 9-27", spoken "hold short runway niner two seven").
 
 ## Per‑crossing sequence
 
@@ -32,9 +33,11 @@ For each planned crossing the coordinator:
 1. identifies the mapped (or inferred) hold‑short location on the route;
 2. monitors aircraft distance, heading, speed, and route progress each tick;
 3. prepares the crossing early enough for the pilot to respond;
-4. issues a **separate** Ground runway‑crossing clearance a short distance before the runway
-   threshold (high confidence, automatically) — or, at medium/low confidence or with automatic
-   calls off, a **hold‑short** instruction the pilot answers with **Request Crossing** first;
+4. issues a **separate** Ground runway‑crossing clearance automatically, a **generous distance**
+   before the runway threshold (far enough back that a ~25 kt taxi has time to read it back
+   before the threshold) — **regardless of data confidence**; only when the *Automatic
+   runway‑crossing calls* override is off does it instead give a **hold‑short** the pilot
+   answers with **Request Crossing** first;
 5. requires the pilot to tap **Read Back** — the crossing is **not** authorized until the
    read‑back is complete (the read‑back is added to the transcript);
 6. tracks the aircraft entering and leaving the runway corridor;
@@ -45,16 +48,16 @@ For each planned crossing the coordinator:
 The crossing clearance includes the runway identifier, the taxiway/intersection name when known,
 and a continuation where appropriate; the read‑back must contain the runway identifier.
 
-## Confidence gating
+## Automatic clearance vs. manual
 
-- **High confidence:** fully automatic — Ground issues the crossing clearance as the aircraft
-  nears the threshold (no redundant hold‑short), then read‑back → authorized.
-- **Medium confidence:** Ground holds the pilot short and the pilot must **Request Crossing**
-  (extra confirmation) before the clearance is issued.
-- **Low / Unavailable confidence:** **no** automatic detailed crossing clearance — the pilot
-  must Request Crossing, and conservative hold‑short language is used.
-- The **Automatic runway‑crossing calls** override (Settings → Data Sources) forces manual
-  Request Crossing for every crossing when off.
+- **Automatic runway‑crossing calls on (default):** the crossing is **always** cleared
+  automatically, **regardless of OpenStreetMap data confidence**. Ground issues the crossing
+  clearance a generous distance before the threshold (no redundant hold‑short, never a stop),
+  then read‑back → authorized. The companion never holds the aircraft short or stops it at a
+  crossing — the runway may well be clear for the pilot.
+- **Automatic runway‑crossing calls off** (Settings → Data Sources): the conservative manual
+  path — Ground holds the pilot short and the pilot must **Request Crossing** before the
+  clearance is issued (low‑confidence data uses cautious hold‑short language).
 - **Request Crossing** issues the clearance immediately when tapped — it does not wait on the
   aircraft settling exactly at the mapped hold point (the OSM hold point rarely lines up with the
   simulator scenery), and **Hold Position** suppresses the automatic clearance until the pilot
@@ -62,9 +65,11 @@ and a continuation where appropriate; the read‑back must contain the runway id
 
 ## Early / unauthorized crossing
 
-If the aircraft begins entering a runway corridor **before** a clearance was issued or the
-read‑back completed, the app issues a simulated warning — **hold position** if the aircraft has
-not substantially entered, or **stop immediately** if it is already entering. To avoid false
+**Manual mode only** (automatic runway‑crossing calls off). With automatic calls on the
+companion always clears the crossing well in advance, so it never warns or stops the aircraft.
+In manual mode, if the aircraft begins entering a runway corridor **before** a clearance was
+issued or the read‑back completed, the app issues a simulated warning — **hold position** if the
+aircraft has not substantially entered, or **stop immediately** if it is already entering. To avoid false
 alarms from position noise it requires positive movement toward the runway, a heading consistent
 with the planned crossing, meaningful corridor penetration, and **sustained** detection (a
 debounce), not a single sample. It logs the crossing state, authorization state, position,

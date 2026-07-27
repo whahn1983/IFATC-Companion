@@ -107,9 +107,15 @@ Each **dataset** and each calculated **route** is graded:
 | Level | Meaning | Behavior |
 |---|---|---|
 | **High** | connected geometry, taxiway names, clear runways, valid path to the correct runway end, reliable holds, clear crossing geometry, clean aircraft snap | full detailed route + automatic runway‑crossing workflow |
-| **Medium** | some inferred holds, minor missing names, limited apron detail, otherwise connected | show route + instructions, but **extra confirmation** required for crossings |
-| **Low** | disconnected geometry, missing names, uncertain crossings, inferred connectors, questionable aircraft compatibility, visible mismatch | show limited geometry where useful; **no automatic detailed crossing clearances** |
+| **Medium** | some inferred holds, minor missing names, limited apron detail, otherwise connected | show route + instructions; crossings still cleared automatically |
+| **Low** | disconnected geometry, missing names, uncertain crossings, inferred connectors, questionable aircraft compatibility, visible mismatch | show limited geometry where useful; crossings still cleared automatically |
 | **Unavailable** | no credible connected route | disable detailed routing; conservative fallback |
+
+Runway crossings themselves are **always** cleared automatically regardless of confidence (the
+companion never holds the pilot short or stops them at a crossing); confidence only affects the
+detail of the taxi routing and phraseology. Turning off *Automatic runway‑crossing calls*
+(Settings) switches every crossing to the manual Request‑Crossing path — see
+[RunwayCrossingAutomation.md](RunwayCrossingAutomation.md).
 
 Dataset confidence is graded by `SurfaceConfidenceEvaluator` (feature quality + graph
 connectivity). Route confidence is graded by `TaxiRouteEngine` (named fraction, aircraft snap
