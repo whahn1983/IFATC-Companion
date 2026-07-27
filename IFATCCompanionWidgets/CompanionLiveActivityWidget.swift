@@ -162,9 +162,10 @@ private struct FreshnessLine: View {
             } else {
                 HStack(spacing: 3) {
                     Image(systemName: "dot.radiowaves.left.and.right")
-                    Text("Updated")
-                    Text(asOf, style: .relative)
-                    Text("ago")
+                    // Concatenate into a single Text so the auto-updating relative time
+                    // flows inline with "ago". As a standalone HStack child, the relative
+                    // Text reserves its widest possible width and flings "ago" to the right.
+                    Text("Updated ") + Text(asOf, style: .relative) + Text(" ago")
                 }
                 .foregroundStyle(.secondary)
             }
