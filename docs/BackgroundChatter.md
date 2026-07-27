@@ -137,29 +137,35 @@ throttled (2 s) and pushed from the telemetry loop and on every new call. The bu
 `LiveActivityIntent`s that run in the app process and call the same actions as the
 on-screen buttons.
 
-### Keeping the notification fresh (staleness handling)
+### Keeping the notification fresh (the background-throttle reality)
 
 There is no push server (the app is local-only), so the notification is only as fresh as
-the last state the app pushed — which is only as fresh as the last telemetry it received.
-Two mechanisms keep it honest and current while backgrounded:
+the last state the app pushed. The governing limit is **ActivityKit's background-update
+budget**: iOS caps how often a *backgrounded* app may push a Live Activity and, once that
+budget is spent, stops delivering the app's updates entirely — so the card freezes on its
+last numbers even though the app is still fully connected and polling every second. This was
+confirmed from the Diagnostics log: while backgrounded, the Infinite Flight poll ran
+continuously (telemetry every ~18 s, zero reconnects) while the card sat frozen. It is an OS
+limit no standalone app can lift; only APNs push updates could, which the local-only design
+rules out. `NSSupportsLiveActivitiesFrequentUpdates` (Info.plist) raises the budget as far as
+a local app can, and routine pushes are spaced (`minInterval` 5 s), but neither removes the
+cap.
 
-- **Telemetry-stall watchdog (`AppModel`).** When the screen locks, Infinite Flight's
-  Connect socket can go quiet while still looking "connected" — the poll loop keeps ticking
-  but every state read comes back empty, so the notification would freeze on its last
-  numbers. While a live flight's background-audio anchor is running, a 5 s watchdog watches
-  the time since the last *usable* telemetry snapshot (`lastUsableTelemetryAt`, advanced in
-  `handle(state:)`); if it exceeds ~12 s it forces a reconnect (`connect.disconnect()` +
-  `startLive()`) — the same recovery `handleReturnToForeground()` does, applied proactively
-  rather than waiting for the user to reopen the app. A 20 s cooldown between forced
-  reconnects keeps a slow handshake from being read as a fresh stall, and the mock feed
-  (which never stalls) is excluded. The pure decision is `telemetryStallDetected(now:)`.
-- **`staleDate` + self-updating freshness line (widget).** Every push sets the activity's
-  `staleDate` to `asOf + 60 s`. If no push arrives within that window (e.g. the app is fully
-  suspended and the watchdog can't run), iOS flips `context.isStale`; the widget then dims
-  the telemetry, greys the Dynamic Island pill, and shows "Reconnecting…". While fresh it
-  shows a self-updating "Updated Xm ago" line — a relative `Text` that refreshes on the Lock
-  Screen *without* a new push — so the age of the data is always visible instead of stale
-  numbers reading as live.
+Given that, the notification does **not** try to flag its own staleness. An earlier
+`staleDate`-driven "Reconnecting…" indicator was removed: it fired whenever iOS throttled a
+background push, which happens routinely on a perfectly healthy link, so it read as a false
+failure. Instead:
+
+- The card is created with **no `staleDate`** — a connected app is never labelled
+  "Reconnecting…"; it simply shows the last values it received, with a static "Updated 9:55
+  PM" line so the user can see their age.
+- A **Refresh button** (`RefreshIntent`) lets the user pull current telemetry on demand. Like
+  the Read Back / Check In buttons it's a `LiveActivityIntent` that runs in the app's process
+  from a user tap, so its forced push is delivered immediately — the one kind of update iOS
+  does *not* throttle. The 1 Hz poll keeps `aircraftState` current, so the refreshed card
+  shows up-to-the-second data.
+
+In the foreground the card updates live as before (foreground pushes aren't budgeted).
 
 The widget UI lives in a separate extension target — see
 [LiveActivitySetup.md](LiveActivitySetup.md).
