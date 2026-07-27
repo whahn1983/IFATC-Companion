@@ -164,14 +164,17 @@ Full detail in [`docs/BackgroundChatter.md`](docs/BackgroundChatter.md) and
   the app while it runs (no push server — consistent with the local-only design), which is
   why the notification requires background chatter. **Freshness:** each push stamps a
   `staleDate` ~60 s out, and iOS flips `context.isStale` (rendered as "Reconnecting…") once
-  that elapses with no new push. Because ActivityKit **budgets how often a backgrounded app
-  may push**, routine telemetry pushes are spaced (`minInterval` 5 s) rather than fired on
-  every 1 Hz poll tick, and the telemetry-stall **watchdog** carries a *Live Activity
-  heartbeat* (`AppModel.sendLiveActivityHeartbeatIfNeeded`) that force-pushes the current
-  state whenever pushes have gone quiet (poll stalled, or a reconnect in flight) — so a fresh
-  update always lands inside the stale window while the app is alive, instead of the card
-  starving to "Reconnecting…". The rendering lives in a separate WidgetKit extension target
-  (`IFATCCompanionWidgets/`) added in Xcode per `docs/LiveActivitySetup.md`.
+  that elapses with no new push. ActivityKit **budgets how often a backgrounded app may
+  push**, and exhausting it makes iOS stop delivering updates entirely (the card freezes on
+  its last numbers, then goes stale) — so three things keep it fed: the app declares
+  `NSSupportsLiveActivitiesFrequentUpdates` (Info.plist) to raise that budget for this
+  flight-tracking activity; routine telemetry pushes are spaced (`minInterval` 5 s) rather
+  than fired on every 1 Hz poll tick; and the telemetry-stall **watchdog** carries a *Live
+  Activity heartbeat* (`AppModel.sendLiveActivityHeartbeatIfNeeded`) that force-pushes the
+  current state whenever pushes have gone quiet (poll stalled, or a reconnect in flight), so a
+  fresh update lands inside the stale window while the app is alive. The rendering lives in a
+  separate WidgetKit extension target (`IFATCCompanionWidgets/`) added in Xcode per
+  `docs/LiveActivitySetup.md`.
 
 ## Settings
 
