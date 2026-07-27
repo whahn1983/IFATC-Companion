@@ -36,6 +36,8 @@
 	<string>IFATC Companion recognizes your spoken readbacks and requests on-device to drive the ATC conversation. Speech is processed locally and is not stored or transmitted.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
+	<key>NSSupportsLiveActivitiesFrequentUpdates</key>
+	<true/>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
