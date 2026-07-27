@@ -17,6 +17,10 @@ final class CompanionActionCenter {
     enum Action {
         case readBack
         case checkIn
+        /// Pull the latest telemetry to the notification now (the Refresh button). Carries no
+        /// ATC side effect — the app just re-pushes its current state, which lands immediately
+        /// because the button runs in-process from a user tap.
+        case refresh
     }
 
     /// Installed by the app; invoked when a Live Activity button is tapped.

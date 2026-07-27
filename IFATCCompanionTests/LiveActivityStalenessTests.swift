@@ -79,35 +79,6 @@ final class LiveActivityStalenessTests: XCTestCase {
                       "once the cooldown has elapsed the failed link is retried")
     }
 
-    // MARK: - Live Activity heartbeat
-
-    /// While routine pushes are flowing (a push landed a few seconds ago) the heartbeat stays
-    /// dormant, so it spends no extra background-push budget.
-    func testHeartbeatDormantWhilePushesFlow() {
-        let model = makeLiveModel()
-        XCTAssertFalse(model.liveActivityHeartbeatDue(now: base.addingTimeInterval(5), lastPush: base),
-                       "a push 5 s ago is recent — no heartbeat needed")
-    }
-
-    /// Once pushes have gone quiet past the silence window (the poll stalled, or iOS throttled
-    /// the background pushes) the heartbeat is due, so a fresh update lands before the card
-    /// reaches its stale window and sticks on "Reconnecting…".
-    func testHeartbeatDueAfterSilence() {
-        let model = makeLiveModel()
-        XCTAssertTrue(model.liveActivityHeartbeatDue(now: base.addingTimeInterval(20), lastPush: base),
-                      "20 s of push silence warrants a heartbeat")
-    }
-
-    /// The heartbeat must fire with comfortable margin before the notification's ~60 s stale
-    /// window, so a starving card is always refreshed while the app is alive.
-    func testHeartbeatSilenceComfortablyUnderStaleWindow() {
-        let model = makeLiveModel()
-        XCTAssertFalse(model.liveActivityHeartbeatDue(now: base.addingTimeInterval(50), lastPush: base.addingTimeInterval(45)),
-                       "a push 5 s ago is fresh regardless of absolute time")
-        XCTAssertTrue(model.liveActivityHeartbeatDue(now: base.addingTimeInterval(45), lastPush: base),
-                      "45 s of silence is well past the heartbeat threshold and under the 60 s stale window")
-    }
-
     // MARK: - Only real telemetry advances the clock
 
     /// A usable snapshot advances the last-usable-telemetry clock; an empty reconnect-handshake

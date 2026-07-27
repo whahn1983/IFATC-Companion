@@ -39,7 +39,7 @@ struct CompanionLiveActivityWidget: Widget {
                             Label(alert, systemImage: "cloud.bolt.rain")
                                 .font(.caption2).foregroundStyle(.orange)
                         }
-                        BottomBar(state: state, isStale: isStale)
+                        BottomBar(state: state)
                     }
                 }
             } compactLeading: {
@@ -101,7 +101,7 @@ private struct LockScreenLiveActivityView: View {
                     .font(.caption2).foregroundStyle(.orange)
             }
 
-            BottomBar(state: state, isStale: isStale)
+            BottomBar(state: state)
         }
         .padding()
     }
@@ -130,51 +130,45 @@ private struct TelemetryRow: View {
     }
 }
 
-/// The bottom row of the flight notification: action buttons on the left, the freshness
-/// indicator tucked into the bottom-right corner. Sharing one row keeps the freshness text
-/// from claiming its own line and pushing the buttons past the notification's height.
+/// The bottom row of the flight notification: ATC action buttons on the left; on the right, a
+/// Refresh button stacked above the last-updated time. Refresh is how the user pulls current
+/// telemetry to the card on demand — iOS throttles the app's routine background pushes, so the
+/// numbers freeze while backgrounded even though the app stays connected, and a user tap is the
+/// one push iOS delivers immediately.
 private struct BottomBar: View {
     let state: CompanionActivityAttributes.ContentState
-    let isStale: Bool
 
     var body: some View {
         HStack(alignment: .bottom) {
             ActionButtons(state: state)
             Spacer(minLength: 8)
-            FreshnessLine(asOf: state.asOf, isStale: isStale)
-                .fixedSize()
+            VStack(alignment: .trailing, spacing: 3) {
+                Button(intent: RefreshIntent()) {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+                .tint(.cyan)
+                .font(.caption2)
+                .buttonStyle(.bordered)
+                FreshnessLine(asOf: state.asOf)
+            }
+            .fixedSize()
         }
     }
 }
 
-/// A one-line freshness indicator: the last-update clock time while live, switching to
-/// "Reconnecting…" once the feed goes stale so the user knows the numbers above are no
-/// longer current.
-///
-/// The live line deliberately shows a *static* pre-formatted time rather than an
-/// auto-updating `Text(asOf, style: .relative)`. A date-style Text can't be reconstructed
-/// from the Lock Screen's archived snapshot when the screen locks, and when that one
-/// element fails to render it takes the entire banner body down with it — every row below
-/// the header (telemetry, phase, buttons) renders blank. The stale branch was unaffected
-/// because it's a plain static Label, which is exactly what the live branch now mirrors.
-/// Freshness is still conveyed: the app pushes on every meaningful change, and the moment
-/// the feed stops flowing `isStale` flips this line to "Reconnecting…".
+/// The last-update clock time, tucked under the Refresh button. Deliberately a *static*
+/// pre-formatted time rather than an auto-updating `Text(asOf, style: .relative)`: a date-style
+/// Text can't be reconstructed from the Lock Screen's archived snapshot when the screen locks,
+/// and when that one element fails to render it takes the whole banner body down with it (every
+/// row below the header renders blank).
 private struct FreshnessLine: View {
     let asOf: Date
-    let isStale: Bool
 
     var body: some View {
-        Group {
-            if isStale {
-                Label("Reconnecting…", systemImage: "arrow.triangle.2.circlepath")
-                    .foregroundStyle(.orange)
-            } else {
-                Label("Updated \(asOf.formatted(date: .omitted, time: .shortened))",
-                      systemImage: "dot.radiowaves.left.and.right")
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .font(.system(size: 10))
+        Label("Updated \(asOf.formatted(date: .omitted, time: .shortened))",
+              systemImage: "dot.radiowaves.left.and.right")
+            .foregroundStyle(.secondary)
+            .font(.system(size: 10))
     }
 }
 
