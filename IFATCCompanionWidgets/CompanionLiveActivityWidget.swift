@@ -67,7 +67,11 @@ private struct LockScreenLiveActivityView: View {
     let isStale: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        // Keep the vertical footprint tight: the Lock Screen caps the banner height, and
+        // with every row present (route, telemetry, phase, weather alert, action bar) a
+        // roomier layout clips the BottomBar — Refresh and the "Updated" line — off the
+        // bottom. Modest row spacing plus trimmed vertical padding keeps it all on screen.
+        VStack(alignment: .leading, spacing: 5) {
             HStack {
                 Label(state.callsign, systemImage: "airplane")
                     .font(.headline).foregroundStyle(.white)
@@ -103,7 +107,8 @@ private struct LockScreenLiveActivityView: View {
 
             BottomBar(state: state)
         }
-        .padding()
+        .padding(.horizontal)
+        .padding(.vertical, 10)
     }
 }
 
