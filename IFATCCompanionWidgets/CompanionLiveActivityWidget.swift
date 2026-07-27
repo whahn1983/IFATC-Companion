@@ -39,8 +39,7 @@ struct CompanionLiveActivityWidget: Widget {
                             Label(alert, systemImage: "cloud.bolt.rain")
                                 .font(.caption2).foregroundStyle(.orange)
                         }
-                        FreshnessLine(asOf: state.asOf, isStale: isStale)
-                        ActionButtons(state: state)
+                        BottomBar(state: state, isStale: isStale)
                     }
                 }
             } compactLeading: {
@@ -102,9 +101,7 @@ private struct LockScreenLiveActivityView: View {
                     .font(.caption2).foregroundStyle(.orange)
             }
 
-            FreshnessLine(asOf: state.asOf, isStale: isStale)
-
-            ActionButtons(state: state)
+            BottomBar(state: state, isStale: isStale)
         }
         .padding()
     }
@@ -129,6 +126,23 @@ private struct TelemetryRow: View {
         VStack(alignment: .leading, spacing: 1) {
             Text(label).font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
             Text(value).font(.caption).monospacedDigit().foregroundStyle(.white)
+        }
+    }
+}
+
+/// The bottom row of the flight notification: action buttons on the left, the freshness
+/// indicator tucked into the bottom-right corner. Sharing one row keeps the freshness text
+/// from claiming its own line and pushing the buttons past the notification's height.
+private struct BottomBar: View {
+    let state: CompanionActivityAttributes.ContentState
+    let isStale: Bool
+
+    var body: some View {
+        HStack(alignment: .bottom) {
+            ActionButtons(state: state)
+            Spacer(minLength: 8)
+            FreshnessLine(asOf: state.asOf, isStale: isStale)
+                .fixedSize()
         }
     }
 }
