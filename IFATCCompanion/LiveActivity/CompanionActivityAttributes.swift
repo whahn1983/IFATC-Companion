@@ -34,12 +34,11 @@ struct CompanionActivityAttributes: ActivityAttributes {
         var canCheckIn: Bool
         /// True while the companion is deferring to a human controller.
         var standby: Bool
-        /// When this snapshot was pushed. The widget renders it as a self-updating
-        /// "Updated Xm ago" line (a relative `Text` refreshes on the Lock Screen
-        /// without a new push), and `LiveActivityController` derives the activity's
-        /// `staleDate` from it — so once telemetry stops flowing (screen off, a
-        /// stalled Infinite Flight socket) the card visibly reads "Reconnecting…"
-        /// instead of showing old numbers as if they were live.
+        /// When this snapshot was pushed, shown on the card as a static "Updated 9:55 PM"
+        /// line so the user can see how current the numbers are. Not tied to any `staleDate`
+        /// (the notification no longer flags itself "stale" from push timing — iOS throttles
+        /// background pushes on a perfectly connected app, which made that flag misfire); the
+        /// user refreshes on demand with the Refresh button.
         var asOf: Date = Date()
     }
 

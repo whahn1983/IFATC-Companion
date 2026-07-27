@@ -22,20 +22,6 @@ final class LiveActivityController: ObservableObject {
     /// meaningful changes (phase, controller, hand-off) still `force` through immediately.
     private let minInterval: TimeInterval = 5.0
 
-    /// When the last update was pushed to ActivityKit (start or update). The app's telemetry
-    /// watchdog reads this to notice when routine pushes have gone quiet — a poll stall, or
-    /// iOS throttling background pushes — and force a heartbeat before the card reaches the
-    /// stale window.
-    var lastPushAt: Date { lastUpdate }
-
-    /// How long after the last push before iOS marks the activity stale. Once passed,
-    /// `context.isStale` flips true and the widget shows a "Reconnecting…" state rather
-    /// than presenting old telemetry as current. Kept comfortably longer than the app's
-    /// telemetry-stall watchdog (~12 s) so a normal reconnect refreshes the card before
-    /// it ever reads stale, while a genuine background suspension still surfaces within a
-    /// minute.
-    private let staleWindow: TimeInterval = 60
-
     var isActive: Bool { activity != nil }
 
     /// Start the activity (or update it if one is already running).
@@ -63,14 +49,20 @@ final class LiveActivityController: ObservableObject {
         Task { await activity.update(content) }
     }
 
-    /// Wrap a `ContentState` with a fresh `staleDate` so the notification tells the user
-    /// when its data has stopped refreshing. `asOf` is the moment of this push, and the
-    /// card is considered stale `staleWindow` seconds after it.
+    /// Stamp a `ContentState` with the push time and hand it to ActivityKit with **no
+    /// `staleDate`**. A `staleDate` made iOS flip the card to "Reconnecting…" whenever the
+    /// app hadn't pushed within the window — but on iOS that window is reached routinely
+    /// even when the app is perfectly connected, because the system throttles a backgrounded
+    /// app's Live Activity pushes (a hard OS limit no standalone app can override). So the
+    /// indicator was firing on a healthy link and reading as a false failure. Without a
+    /// `staleDate` the card simply shows the last values it received; the user pulls in fresh
+    /// telemetry on demand with the notification's Refresh button (`RefreshIntent`), which —
+    /// running in-process from a user tap — is delivered immediately, unlike a background push.
     private func makeContent(for state: CompanionActivityAttributes.ContentState)
         -> ActivityContent<CompanionActivityAttributes.ContentState> {
         var stamped = state
         stamped.asOf = Date()
-        return ActivityContent(state: stamped, staleDate: stamped.asOf.addingTimeInterval(staleWindow))
+        return ActivityContent(state: stamped, staleDate: nil)
     }
 
     func end() {
