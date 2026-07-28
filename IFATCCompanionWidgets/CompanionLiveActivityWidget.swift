@@ -20,19 +20,26 @@ struct CompanionLiveActivityWidget: Widget {
             let state = context.state
             let isStale = context.isStale
             return DynamicIsland {
+                // The top leading/trailing regions sit hard against the expanded island's
+                // rounded top corners, which clip their text ("Cruise", the facility name).
+                // Nudge each inward from its edge and down from the top so nothing is cut.
                 DynamicIslandExpandedRegion(.leading) {
                     Label(state.facility, systemImage: state.facilitySymbol)
                         .font(.caption).foregroundStyle(.white)
+                        .padding(.leading, 6).padding(.top, 4)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
                     Text(state.phase)
                         .font(.caption).foregroundStyle(.cyan)
+                        .padding(.trailing, 6).padding(.top, 4)
                 }
                 DynamicIslandExpandedRegion(.center) {
                     Text(state.callsign)
                         .font(.headline).foregroundStyle(.white)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
+                    // Inset the right edge so the last-updated line ("Updated 9:55 PM") clears
+                    // the rounded bottom-right corner instead of being clipped.
                     VStack(spacing: 6) {
                         TelemetryRow(state: state, isStale: isStale)
                         if let alert = state.weatherAlert {
@@ -41,6 +48,7 @@ struct CompanionLiveActivityWidget: Widget {
                         }
                         BottomBar(state: state)
                     }
+                    .padding(.trailing, 8)
                 }
             } compactLeading: {
                 // The app icon, not the controller glyph: the tuned controller changes as the
