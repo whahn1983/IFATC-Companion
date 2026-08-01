@@ -643,16 +643,14 @@ final class AppModel: ObservableObject {
                                  emit: { [weak self] tx in self?.post(tx, speak: true) },
                                  callsign: { [weak self] in self?.currentCallsign()
                                      ?? PhraseologyEngine.Callsign(display: "Aircraft", spoken: "aircraft") })
-        // Hide the taxi map once Ground hands a departing aircraft to Tower.
-        $currentFacility
-            .removeDuplicates()
-            .sink { [weak self] facility in
-                guard let self else { return }
-                if facility == .tower, self.airportSurface.kind == .departure, self.airportSurface.taxiMapVisible {
-                    self.airportSurface.hideTaxiMap()
-                }
-            }
-            .store(in: &cancellables)
+        // The departure taxi map is deliberately NOT hidden when the radio tunes to Tower.
+        // It stays up through the Ground→Tower "monitor" hand-off and the final roll to the
+        // runway so (a) the pilot can still see the route to the hold-short, and (b) the
+        // surface keeps tracking the aircraft — the automatic "line up and wait" cue
+        // (`approachingRunwayLineup`, latched ~270 m out) depends on that continued tracking,
+        // which `hideTaxiMap` would stop (it clears the route and resets the cue). The map is
+        // retired instead when the pilot reads back the line-up-and-wait or the takeoff
+        // clearance (`retireDepartureTaxiMapAfterReadback`), or as a backstop once airborne.
         // Pre-load the arrival surface as the aircraft rolls out; hide the map once parked.
         // The taxi-in clearance itself (and the map reveal) is driven by
         // `issueArrivalTaxiClearance` when Ground gives the taxi-to-gate.
@@ -1621,7 +1619,15 @@ final class AppModel: ObservableObject {
                                   onGround: state.onGround,
                                   groundSpeed: state.groundSpeed)
 
-        if !phase.isGround { hasDeparted = true }
+        if !phase.isGround {
+            hasDeparted = true
+            // Backstop: if the departure taxi map is somehow still up once the aircraft is
+            // airborne (the pilot never read back the line-up-and-wait / takeoff clearance
+            // that normally retires it), retire it now — it has no purpose in the air.
+            if airportSurface.kind == .departure, airportSurface.taxiMapVisible {
+                airportSurface.hideTaxiMap()
+            }
+        }
 
         // Capture the departure field elevation from on-ground telemetry (ground ≈
         // MSL − AGL) before the aircraft departs, so initial-climb altitudes can be
@@ -2301,12 +2307,14 @@ final class AppModel: ObservableObject {
         gateMonitored = false
         awaitingGateArrival = true
         atcState = .groundArrival
-        // Remember where the gate is (from the taxi map) before the map is hidden and its
-        // geometry cleared, so the block-in only fires once the aircraft is actually parked
-        // at the gate — a parking brake set out on a taxiway must not end the flight.
+        // Remember where the gate is (from the taxi map), so the block-in only fires once the
+        // aircraft is actually parked at the gate — a parking brake set out on a taxiway must
+        // not end the flight.
         arrivalGatePosition = airportSurface.arrivalGateCoordinate
-        // The ramp/gate phase has taken over from Ground — hide the taxi map.
-        airportSurface.hideTaxiMap()
+        // The taxi map is deliberately kept visible after the Ramp-frequency switch so the
+        // pilot can still see the route in to the gate. It is retired at the detected end of
+        // flight instead — the `$atcState` sink hides it when the aircraft reaches `.parked`
+        // (completeGateArrival, once actually stopped at the gate with the brake set).
         // In mock mode advance the scripted aircraft to the gate so the monitored
         // block-in plays out (the brake is set in the parked mock state).
         if settings.mockMode { mock.setPhase(.parked) }
@@ -3196,11 +3204,28 @@ final class AppModel: ObservableObject {
             }
             // Reading back the Ground taxi clearance reveals the temporary taxi map.
             if airportSurface.awaitingTaxiReadback { airportSurface.taxiReadBackComplete() }
+            retireDepartureTaxiMapAfterReadback()
             return
         }
         let c = buildContext(for: atcState)
         postPilot(pilotEngine.readback(for: atcState, context: c))
         if airportSurface.awaitingTaxiReadback { airportSurface.taxiReadBackComplete() }
+        retireDepartureTaxiMapAfterReadback()
+    }
+
+    /// Retire the departure taxi map once the pilot reads back the line-up-and-wait or the
+    /// takeoff clearance — whichever comes first. The map is kept visible through the
+    /// Ground→Tower "monitor" hand-off and the final roll to the runway so the pilot can see
+    /// the route to the hold-short; reading back either of these calls means the aircraft is
+    /// at (or rolling onto) the runway, so the map has served its purpose. No-op for anything
+    /// else (arrival maps, or a read-back of an earlier departure call such as the taxi
+    /// clearance or the "monitor Tower" hand-off), so the surface keeps tracking up to the
+    /// line-up cue until then.
+    private func retireDepartureTaxiMapAfterReadback() {
+        guard airportSurface.kind == .departure, airportSurface.taxiMapVisible,
+              stateMachine.current == .lineUpWait || stateMachine.current == .towerDeparture
+        else { return }
+        airportSurface.hideTaxiMap()
     }
 
     func wilco() {
@@ -3601,8 +3626,9 @@ final class AppModel: ObservableObject {
     /// and the pilot drives every controller change from there with the frequency
     /// buttons.
     func reportReadyForDeparture() {
-        // Ground has handed the aircraft to Tower — hide the departure taxi map.
-        airportSurface.hideTaxiMap()
+        // The taxi map stays up as Tower issues "line up and wait" so the pilot can still see
+        // the route to the runway; it is retired when they read the line-up-and-wait back
+        // (retireDepartureTaxiMapAfterReadback), matching the automatic monitor-Tower flow.
         groundFlow(pilotEngine.readyForDeparture(context: buildContext(for: .lineUpWait)), to: .lineUpWait)
     }
 

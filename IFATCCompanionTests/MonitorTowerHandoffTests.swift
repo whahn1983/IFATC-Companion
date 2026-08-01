@@ -314,4 +314,67 @@ final class MonitorTowerHandoffTests: XCTestCase {
             $0.displayText.lowercased().contains("line up and wait")
         }, "no line-up-and-wait when the aircraft is already lined up on the runway")
     }
+
+    /// Regression: the departure taxi map (and its surface tracking) must survive the
+    /// monitor-Tower hand-off. After Ground hands the pilot to Tower to *monitor* and the
+    /// pilot reads it back — which auto-tunes the radio to Tower — the map must NOT be torn
+    /// down. The automatic "line up and wait" cue (`approachingRunwayLineup`) is reached only
+    /// by the surface continuing to track the aircraft up to the runway; tearing the map down
+    /// on the Tower tune (the previous behavior) stopped that tracking, so the call never
+    /// fired. Reading the line-up-and-wait back then retires the map.
+    func testMonitorTowerReadbackKeepsMapLiveSoLineUpAndWaitStillFires() {
+        let model = makeLiveModelRunway36()
+        model.requestClearance();   model.readBack()
+        model.requestPushback();    model.readBack()
+        model.requestEngineStart(); model.readBack()
+        model.requestTaxi();        model.readBack()
+        model.requestTaxi();        model.readBack()
+
+        // Seed a synthetic departure surface (the live surface can't be fetched offline) and
+        // drive it up to the monitor-Tower cue (the longer lead, so it latches first).
+        model.airportSurface.beginMockTaxiForTesting(kind: .departure, reference: ref,
+                                                     runway: "36", gate: "C12")
+        XCTAssertTrue(model.airportSurface.taxiMapVisible, "departure taxi map is up")
+        var n = 0
+        while !model.airportSurface.approachingRunwayHandoff && n < 5000 {
+            model.airportSurface.mockTickForTesting()
+            if model.airportSurface.awaitingCrossingReadback { model.airportSurface.crossingReadbackReceived() }
+            n += 1
+        }
+        XCTAssertTrue(model.airportSurface.approachingRunwayHandoff)
+
+        // A telemetry tick → Ground hands the pilot to Tower to monitor.
+        model.ingestStateForTesting(holdingShortState())
+        XCTAssertTrue(model.transcript.contains {
+            $0.facility == .ground && $0.displayText.lowercased().contains("monitor tower on")
+        }, "Ground hands the pilot to Tower to monitor")
+
+        // The pilot reads the monitor call back — auto-tune switches the radio to Tower. The
+        // taxi map must STAY visible (this is the tune-to-Tower step the earlier test skips,
+        // and exactly where the map used to be torn down, killing the line-up cue).
+        model.readBack()
+        XCTAssertEqual(model.currentFacility, .tower, "reading back the monitor call tunes to Tower")
+        XCTAssertTrue(model.airportSurface.taxiMapVisible,
+                      "the taxi map stays visible after tuning Tower to monitor")
+
+        // Continue the surface drive to the line-up cue; the next telemetry tick issues the
+        // automatic line-up-and-wait even though the radio is already on Tower.
+        n = 0
+        while !model.airportSurface.approachingRunwayLineup && n < 5000 {
+            model.airportSurface.mockTickForTesting()
+            if model.airportSurface.awaitingCrossingReadback { model.airportSurface.crossingReadbackReceived() }
+            n += 1
+        }
+        XCTAssertTrue(model.airportSurface.approachingRunwayLineup, "surface drive reached the line-up cue")
+
+        model.ingestStateForTesting(holdingShortState())
+        XCTAssertTrue(model.transcript.contains {
+            $0.facility == .tower && $0.displayText.lowercased().contains("line up and wait")
+        }, "Tower automatically issues line up and wait after the monitor hand-off, on Tower")
+
+        // Reading the line-up-and-wait back retires the map — the aircraft is at the runway.
+        model.readBack()
+        XCTAssertFalse(model.airportSurface.taxiMapVisible,
+                       "the taxi map is retired once the pilot reads back the line-up-and-wait")
+    }
 }

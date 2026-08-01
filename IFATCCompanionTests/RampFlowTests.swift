@@ -79,6 +79,41 @@ final class RampFlowTests: XCTestCase {
         XCTAssertTrue(has(model, "Flight complete"), "parked at the gate should complete the flight")
     }
 
+    /// The arrival taxi map stays visible after the Ramp-frequency switch — so the pilot can
+    /// still see the route in to the gate — and is retired only at the detected end of flight
+    /// (parked at the gate). Previously it was hidden the moment the pilot contacted Ramp.
+    func testArrivalTaxiMapStaysVisibleUntilParked() {
+        let model = makeModel(mock: false)
+        let ref = CLLocationCoordinate2D(latitude: 44.88, longitude: -93.22)
+
+        // Drive into an arrival ground state, then reveal a synthetic arrival taxi map.
+        flyToArrivalGround(model)
+        XCTAssertTrue(model.isArrivalRamp)
+        model.airportSurface.beginMockTaxiForTesting(kind: .arrival, reference: ref,
+                                                     runway: "30", gate: "B44")
+        XCTAssertTrue(model.airportSurface.taxiMapVisible, "arrival taxi map is up")
+
+        // Contacting Ramp routes to the gate — the map must STAY visible (the regression:
+        // it used to be hidden right here).
+        model.contactRamp()
+        XCTAssertTrue(has(model, "proceed to"), "arrival Ramp routes to the gate")
+        XCTAssertTrue(model.airportSurface.taxiMapVisible,
+                      "the arrival taxi map stays visible after the Ramp-frequency switch")
+
+        // Still visible while rolling in to the gate.
+        var slowing = model.mock.state(for: .taxiIn)
+        slowing.groundSpeed = 3
+        model.ingestStateForTesting(slowing)
+        XCTAssertTrue(model.airportSurface.taxiMapVisible, "still visible while rolling in to the gate")
+
+        // Parked at the gate with the brake set → flight complete, and the map is retired at
+        // the detected end of flight.
+        model.ingestStateForTesting(model.mock.state(for: .parked))
+        XCTAssertTrue(has(model, "Flight complete"), "parked at the gate completes the flight")
+        XCTAssertFalse(model.airportSurface.taxiMapVisible,
+                       "the arrival taxi map is retired once the flight is complete at the gate")
+    }
+
     /// The flight only ends when the pilot is stopped with the parking brake set **and**
     /// tuned to the Ramp frequency — the map-independent gate. When the taxi map also
     /// resolved the gate position, the aircraft must additionally be near it; with no known

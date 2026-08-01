@@ -3,8 +3,9 @@ import CoreLocation
 @testable import IFATCCompanion
 
 /// UI / state: the taxi map appears after the Ground taxi read-back, stays visible
-/// through the crossing and holding short, hides on the Ground→Tower hand-off, reappears
-/// for arrival, and Mock Mode completes the full flow.
+/// through the crossing and holding short AND through the Ground→Tower hand-off (so the
+/// pilot can still see the route to the runway), is retired when the pilot reads back the
+/// line-up-and-wait, reappears for arrival, and Mock Mode completes the full flow.
 @MainActor
 final class TaxiMapStateTests: XCTestCase {
 
@@ -24,7 +25,7 @@ final class TaxiMapStateTests: XCTestCase {
         return model
     }
 
-    func testTaxiMapAppearsAfterGroundTaxiReadbackAndHidesOnTowerHandoff() {
+    func testTaxiMapStaysVisibleThroughTowerHandoffUntilLineUpReadback() {
         let model = makeModel()
         model.requestClearance();   model.readBack()
         model.requestPushback();    model.readBack()
@@ -37,8 +38,19 @@ final class TaxiMapStateTests: XCTestCase {
         model.readBack()                               // read back the taxi clearance
         XCTAssertTrue(model.airportSurface.taxiMapVisible, "taxi map appears after Ground taxi read-back")
 
+        // Reporting ready hands the aircraft to Tower for the line-up-and-wait, but the map
+        // stays up so the pilot can still see the route to the runway.
         model.reportReadyForDeparture()
-        XCTAssertFalse(model.airportSurface.taxiMapVisible, "taxi map hides on the Ground→Tower hand-off")
+        XCTAssertTrue(model.transcript.contains {
+            $0.sender == .atc && $0.displayText.lowercased().contains("line up and wait")
+        }, "Tower issues the line-up-and-wait")
+        XCTAssertTrue(model.airportSurface.taxiMapVisible,
+                      "the taxi map stays visible through the Ground→Tower hand-off")
+
+        // Reading the line-up-and-wait back retires the map — the aircraft is at the runway.
+        model.readBack()
+        XCTAssertFalse(model.airportSurface.taxiMapVisible,
+                       "the taxi map is retired once the pilot reads back the line-up-and-wait")
     }
 
     func testTaxiMapStaysVisibleThroughCrossingAndHoldingShort() {

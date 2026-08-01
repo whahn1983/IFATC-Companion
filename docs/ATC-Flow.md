@@ -123,7 +123,13 @@ isn't already on the runway. The takeoff clearance still fires automatically onc
 aircraft is lined up (step 7). If the pilot *does* check in on Tower — typically well
 before the runway — Tower replies **only** with "you're number one for departure"
 (`numberOneForTakeoff`) and **does not** issue a takeoff clearance; the clearance still
-comes only once the aircraft is lined up. The trigger point for the monitor-Tower hand-off
+comes only once the aircraft is lined up. **The taxi map is kept visible through the
+monitor-Tower hand-off and the final roll to the runway** — so the pilot can still see the
+route to the hold-short *and*, crucially, so the surface keeps tracking the aircraft up to
+the `approachingRunwayLineup` cue the automatic line-up-and-wait depends on. It is retired
+when the pilot **reads back the line-up-and-wait (or the takeoff clearance)**, whichever
+comes first (`retireDepartureTaxiMapAfterReadback`), with an airborne backstop; it is *not*
+torn down the moment the radio tunes to Tower. The trigger point for the monitor-Tower hand-off
 is **derived from the
 taxi route**, not read from the map data: OpenStreetMap has no distinct feature for the
 monitor-tower line/sign — the only runway-proximity marking it maps is the
@@ -175,8 +181,11 @@ destination surface loads.
 On arrival the simulated **Ramp** taxi-in is staged so the calls never all fire at
 once: *"proceed to gate B44 via the ramp"* when you contact Ramp, then *"monitor
 ramp to the gate"* as the aircraft slows to a stop, then the *"Flight complete"*
-block-in once it is actually parked. The flight ends **only when the aircraft is
-stopped with the parking brake set AND tuned to the Ramp frequency** — the
+block-in once it is actually parked. **The arrival taxi map is kept visible after the
+Ramp-frequency switch** — so the pilot can still see the route in to the gate — and is
+retired only at the detected **end of flight** (the `.parked` transition once actually
+stopped at the gate), not the moment Ramp is contacted. The flight ends **only when the
+aircraft is stopped with the parking brake set AND tuned to the Ramp frequency** — the
 Ramp-frequency requirement is the map-independent gate, so a parking brake set out on
 a taxiway (before contacting Ramp) never ends the flight, with or without accurate
 taxi-map data. When the taxi map also resolved the gate position, the aircraft must
