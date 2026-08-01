@@ -417,6 +417,9 @@ enum ATISPhraseology {
         // weather pass leaves a lone VA alone (see decodeWeather) so it reads here.
         ("VIS", "visual"), ("VA", "visual approach"),
         ("VCTR", "vector"), ("VCTRS", "vectors"), ("PROG", "progress"),
+        // Approach-intercept wording: "EXP 2 INTCP THE ILS Y RY 10R FNA CRS" reads
+        // "…intercept the ILS Yankee runway one zero right final course".
+        ("INTCP", "intercept"), ("FNA", "final"), ("CRS", "course"),
         ("INTL", "international"), ("INTXN", "intersection"), ("INTX", "intersection"), ("APRN", "apron"),
         ("CLSD", "closed"), ("CTC", "contact"), ("FREQ", "frequency"), ("FREQS", "frequencies"),
         ("INFO", "information"), ("ADVS", "advise"), ("ADVZ", "advise"), ("ADZ", "advise"),
@@ -427,6 +430,7 @@ enum ATISPhraseology {
         // an assigned altitude ("read back HS and ALT"); "ALSTG" is the altimeter setting.
         ("ALSTG", "altimeter"), ("ALT", "altitude"),
         ("MAINT", "maintenance"), ("HDG", "heading"), ("HDGS", "headings"),
+        ("DRCTN", "direction"), ("ATTN", "attention"),
         ("BRKG", "braking"), ("BA", "braking action"), ("SFC", "surface"),
         // Runway condition-code reports read "RWY 22L, COND CODE, 5 5 5 AT 1630Z". The
         // observed altimeter/visibility are coded groups, so a bare "COND" in the body is
