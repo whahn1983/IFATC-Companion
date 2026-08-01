@@ -384,6 +384,65 @@ final class ATISPhraseologyTests: XCTestCase {
         XCTAssertTrue(s.contains("advise you have information uniform"), s)
     }
 
+    func testFullOHareInfoGBroadcastDecodes() {
+        // A second Chicago O'Hare D-ATIS (INFO G) exercising the simultaneous-approach and
+        // parallel-departure wording: expect-to-intercept the ILS final course, "ATTN
+        // PILOTS", read-back direction of turns, the field-condition block, and the long
+        // ILS-component / PAPI outage list.
+        let raw = "ORD ATIS INFO G 0051Z. 13010G19KT 10SM FEW030 OVC050 23/15 A2983 "
+            + "(TWO NINER EIGHT THREE) RMK AO2 SLP097 T02280150. ARR EXP VECTORS ILS RWY 9L "
+            + "APCH, ILS RWY 10C APCH, VISUAL APCH RWY 10R. PILOTS EXP 2 INTCP THE ILS Y RY "
+            + "10R FNA CRS. SIMUL APCHS IN USE. DEPS EXP RWYS 9C FROM FF 9200 FT AVL, 10L FROM "
+            + "DD 10093 FT AVBL. ATTN PILOTS. SIMUL PARL DEPS IN USE. EXP TO INITIALLY FLY RWY "
+            + "HDG ON DEP. PILOTS MUST READ BACK DRCTN OF TURNS BY ATC. RWY 4L, 22R CLSD. RWY "
+            + "28L GS OTS, RWY 9L IM OTS, RWY 9C IM OTS, RWY 27R PAPI OTS. RWY 10C, COND CODE, "
+            + "3, 3, 3. SLIPPERY WHEN WET, AT, 0141Z, ALL RWYS, COND CODE, 5, 5, 5 AT 0140Z. "
+            + "PILOTS USE CTN FOR BIRD ACTIVITY IN THE VICINITY OF THE ARPT. HAZD WX INFO FOR "
+            + "ORD AREA AVBL ON FSS. USE CTN FOR PERSONNEL AND EQUIP AT NUMEROUS SITES ON THE "
+            + "FIELD. READBACK ALL RWY HOLD SHORT INSTRUCTIONS. WHEN READY TO TAXI CONTACT GND "
+            + "METERING ON FREQ 121.67. ...ADVS YOU HAVE INFO G."
+        let s = ATISPhraseology.spokenText(raw).lowercased()
+        XCTAssertTrue(s.contains("information golf"), s)
+        XCTAssertTrue(s.contains("zero zero five one zulu"), s)
+        XCTAssertTrue(s.contains("wind one three zero at one zero gusts one niner"), s)
+        XCTAssertTrue(s.contains("visibility one zero"), s)
+        XCTAssertTrue(s.contains("few clouds at three thousand"), s)
+        XCTAssertTrue(s.contains("five thousand overcast"), s)
+        XCTAssertTrue(s.contains("temperature two three, dewpoint one five"), s)
+        XCTAssertTrue(s.contains("altimeter two niner eight three"), s)
+        // The coded remarks group is dropped, not spoken.
+        XCTAssertFalse(s.contains("slp"), s)
+        XCTAssertFalse(s.contains("a o 2"), s)
+        // Arrival / approach wording.
+        XCTAssertTrue(s.contains("i l s runway niner left approach"), s)
+        XCTAssertTrue(s.contains("i l s runway one zero center approach"), s)
+        XCTAssertTrue(s.contains("visual approach runway one zero right"), s)
+        // Expect-to-intercept the ILS Yankee final course (the newly-added INTCP/FNA/CRS).
+        XCTAssertTrue(s.contains("intercept the i l s yankee runway one zero right final course"), s)
+        XCTAssertTrue(s.contains("simultaneous approaches in use"), s)
+        // Departure / metering wording.
+        XCTAssertTrue(s.contains("departures expect runways niner center"), s)
+        XCTAssertTrue(s.contains("attention pilots"), s)            // ATTN
+        XCTAssertTrue(s.contains("simultaneous parallel departures in use"), s)
+        XCTAssertTrue(s.contains("initially fly runway heading on departure"), s)
+        XCTAssertTrue(s.contains("read back direction of turns by a t c"), s)   // DRCTN
+        // Closures and component outages.
+        XCTAssertTrue(s.contains("runway four left, two two right closed"), s)
+        XCTAssertTrue(s.contains("glideslope out of service"), s)
+        XCTAssertTrue(s.contains("inner marker out of service"), s)
+        // Field-condition block reads as full words + digit-by-digit codes.
+        XCTAssertTrue(s.contains("condition code"), s)
+        XCTAssertTrue(s.contains("slippery when wet"), s)
+        XCTAssertFalse(s.contains("cond code"), s)
+        // Advisory tail.
+        XCTAssertTrue(s.contains("use caution for bird activity"), s)
+        XCTAssertTrue(s.contains("available on flight service station"), s)
+        XCTAssertTrue(s.contains("use caution for personnel and equipment"), s)
+        XCTAssertTrue(s.contains("read back all runway hold short instructions"), s)
+        XCTAssertTrue(s.contains("contact ground metering on frequency one two one point six seven"), s)
+        XCTAssertTrue(s.contains("advise you have information golf"), s)
+    }
+
     // Convenience: spoken text for a bare coded fragment, trimmed and case-folded so the
     // assertions read cleanly.
     private func spoken(_ raw: String) -> String {
