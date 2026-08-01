@@ -85,6 +85,12 @@ final class AirportSurfaceCoordinator: ObservableObject {
     /// OSM has no explicit "monitor tower" line, so this is derived from the route, not a
     /// mapped feature (see `OSMSurface.monitorTowerLeadMeters`).
     @Published private(set) var approachingRunwayHandoff = false
+    /// Latches true once a **departure** taxi comes within `holdIssueMeters` of the runway
+    /// hold-short — the same lead distance at which the automatic runway-*crossing* clearance
+    /// is issued. This is the cue for Tower to issue "line up and wait" while the aircraft is
+    /// still rolling up to the runway (so it can make a rolling line-up rather than stopping
+    /// short first). One-shot per taxi; `AppModel` consumes it.
+    @Published private(set) var approachingRunwayLineup = false
     @Published private(set) var lastError: String?
     @Published private(set) var awaitingCrossingReadback = false
     @Published private(set) var awaitingTaxiReadback = false
@@ -567,6 +573,7 @@ final class AirportSurfaceCoordinator: ObservableObject {
         offRoute = false
         reachedDestination = false
         approachingRunwayHandoff = false
+        approachingRunwayLineup = false
         crossingState = .noCrossingPending
         activeCrossing = nil
         awaitingCrossingReadback = false
@@ -814,6 +821,7 @@ final class AirportSurfaceCoordinator: ObservableObject {
         offRoute = false
         reachedDestination = false
         approachingRunwayHandoff = false
+        approachingRunwayLineup = false
         status = .idle
     }
 
@@ -982,6 +990,14 @@ final class AirportSurfaceCoordinator: ObservableObject {
         if kind == .departure, !approachingRunwayHandoff,
            prog.alongMeters > 15, prog.remainingMeters <= OSMSurface.monitorTowerLeadMeters {
             approachingRunwayHandoff = true
+        }
+
+        // Nearing the runway hold-short — at the same lead distance the automatic
+        // runway-crossing clearance uses — cue Tower to issue "line up and wait" while the
+        // aircraft is still rolling up, so it can make a rolling line-up. One-shot.
+        if kind == .departure, !approachingRunwayLineup,
+           prog.alongMeters > 15, prog.remainingMeters <= holdIssueMeters {
+            approachingRunwayLineup = true
         }
 
         runCrossingWorkflow(route: route, aircraft: ac, progress: prog)
