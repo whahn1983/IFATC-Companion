@@ -1,21 +1,24 @@
 import Foundation
 import StoreKit
 
-/// Thin wrapper over StoreKit 2 for the Live Connected Mode subscription.
+/// Thin wrapper over StoreKit 2 for the Live Connected Mode products.
 ///
-/// Loads the products, runs a purchase, and reports whether an active
-/// subscription is currently entitled. All access decisions are made from
-/// StoreKit's signed `Transaction` data — there is no backend and no local
-/// override in production builds.
+/// Loads the products, runs a purchase, and reports whether Live access is
+/// currently entitled — via either an active subscription (monthly / annual) or
+/// the one-time lifetime purchase. All access decisions are made from StoreKit's
+/// signed `Transaction` data — there is no backend and no local override in
+/// production builds.
 struct StoreKitService {
 
-    /// The two products that unlock Live Connected Mode.
+    /// The products that unlock Live Connected Mode.
     let productIDs: [String]
 
     /// Monthly product identifier, for convenience at call sites.
     var monthly: String { SubscriptionProduct.monthly.rawValue }
     /// Annual product identifier, for convenience at call sites.
     var annual: String { SubscriptionProduct.annual.rawValue }
+    /// Lifetime (one-time purchase) product identifier, for convenience.
+    var lifetime: String { SubscriptionProduct.lifetime.rawValue }
 
     init(productIDs: [String] = SubscriptionProduct.allProductIDs) {
         self.productIDs = productIDs
@@ -29,8 +32,8 @@ struct StoreKitService {
 
     // MARK: - Products
 
-    /// Fetch the subscription products from the App Store. Sorted so the monthly
-    /// option appears before the annual option.
+    /// Fetch the Live Connected products from the App Store, ordered monthly,
+    /// annual, then lifetime to match `SubscriptionProduct.allProductIDs`.
     func loadProducts() async throws -> [Product] {
         let products = try await Product.products(for: productIDs)
         return products.sorted { lhs, rhs in
@@ -59,11 +62,13 @@ struct StoreKitService {
 
     // MARK: - Entitlement
 
-    /// Whether StoreKit's current entitlements include an active Live Connected
-    /// subscription (monthly or annual). Revoked or expired transactions are not
-    /// reported by `currentEntitlements`, so their absence locks the app to Mock
-    /// Mode automatically.
-    func hasActiveLiveSubscription() async -> Bool {
+    /// Whether StoreKit's current entitlements include Live Connected access —
+    /// an active monthly or annual subscription, or the one-time lifetime
+    /// purchase. Revoked or expired transactions are not reported by
+    /// `currentEntitlements`, so their absence locks the app to Mock Mode
+    /// automatically. The non-consumable lifetime purchase stays here for good
+    /// once bought (unless refunded), so it keeps Live access permanently.
+    func hasActiveLiveEntitlement() async -> Bool {
         for await result in Transaction.currentEntitlements {
             guard case .verified(let transaction) = result else { continue }
             if productIDs.contains(transaction.productID),

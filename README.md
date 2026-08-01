@@ -78,10 +78,10 @@ Once connected, IFATC Companion reads your live aircraft state and flight plan a
 
 ## Subscription
 
-- **Mock Mode is free** and never requires a subscription — you can explore the full experience offline.
-- **Live Connected Mode** — connecting to your live Infinite Flight session — is unlocked with a subscription:
-  - **Monthly** or **Annual** options, with pricing shown in your local currency in the app.
-  - Manage or cancel anytime in your Apple Account settings.
+- **Mock Mode is free** and never requires a purchase — you can explore the full experience offline.
+- **Live Connected Mode** — connecting to your live Infinite Flight session — is unlocked with any one of:
+  - **Monthly** or **Annual** subscriptions, with pricing shown in your local currency in the app. Manage or cancel anytime in your Apple Account settings.
+  - **Lifetime** — a one-time purchase that unlocks all Live features permanently, with no renewals.
 
 Live Connected Mode requires Infinite Flight, which is sold separately.
 
