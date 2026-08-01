@@ -577,6 +577,12 @@ final class AirportSurfaceCoordinator: ObservableObject {
     private func recomputeRoute() {
         guard let graph, let surface, kind != .none else { return }
         let engine = TaxiRouteEngine(graph: graph, model: surface)
+        // Pass the aircraft heading only while it is actually taxiing, so the route sets off in
+        // the direction of travel and never opens with a 180° pivot in place. A parked or
+        // stopped aircraft (at the gate, or held short) reports ~0 kt — its orientation isn't a
+        // taxi direction — so no heading is applied. The engine additionally ignores heading
+        // while the start is anchored at the stand.
+        let heading: Double? = (displayAircraft?.groundSpeedKnots ?? 0) > 3 ? displayAircraft?.headingDegrees : nil
         let request: TaxiRouteEngine.Request
         if kind == .departure {
             let p = departureRouteParams(surface: surface)
@@ -585,7 +591,8 @@ final class AirportSurfaceCoordinator: ObservableObject {
                             isDeparture: true,
                             assignedRunwayIdent: p.runway,
                             arrivalGateName: nil,
-                            aircraft: aircraftClass)
+                            aircraft: aircraftClass,
+                            aircraftHeadingDegrees: heading)
         } else {
             let p = arrivalRouteParams(surface: surface)
             request = .init(startCoordinate: p.start,
@@ -593,7 +600,8 @@ final class AirportSurfaceCoordinator: ObservableObject {
                             isDeparture: false,
                             assignedRunwayIdent: nil,
                             arrivalGateName: p.gate,
-                            aircraft: aircraftClass)
+                            aircraft: aircraftClass,
+                            aircraftHeadingDegrees: heading)
         }
 
         if let r = engine.route(request) {

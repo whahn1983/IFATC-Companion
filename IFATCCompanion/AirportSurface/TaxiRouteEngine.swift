@@ -8,8 +8,12 @@ import CoreLocation
 /// active-runway back-taxi / runway occupancy, disconnected jumps, inferred apron
 /// shortcuts, closed taxiways, aircraft-incompatible or unnamed low-confidence
 /// segments, and sharp turns; it prefers named, connected, high-confidence geometry,
-/// full-length runway entry, and fewer crossings. Output confidence is graded so the
-/// caller can suppress overly precise instructions when the data is weak.
+/// full-length runway entry, and fewer crossings. When the aircraft's heading is known
+/// the route also **starts in the direction the aircraft is pointing** — it won't open with
+/// a 180° pivot in place, instead setting off forward and turning around farther along if
+/// the goal is behind — and a small per-turn cost makes it prefer routes with **fewer**
+/// turns over ones that step down through many small sequential turns. Output confidence is
+/// graded so the caller can suppress overly precise instructions when the data is weak.
 struct TaxiRouteEngine {
 
     // Penalty weights (meters-equivalent) — deliberately large so geometry alone never
@@ -22,6 +26,25 @@ struct TaxiRouteEngine {
     private let widthPenalty = 3_000.0
     private let sharpTurnPenalty = 1_200.0
     private let moderateTurnPenalty = 300.0
+    /// Charged once for **every** ordinary direction change at a junction (a turn past
+    /// `minTurnDegrees` but not sharp enough for the tiers above). Distance alone doesn't
+    /// distinguish a route that "steps down" a series of small alternating turns from one
+    /// that reaches the same place with a single left and a single right; this per-turn cost
+    /// makes the router prefer the route with **fewer** turns when the distances are close.
+    private let perTurnPenalty = 150.0
+    /// Direction changes below this (degrees) read as taxiing straight through a junction /
+    /// a gentle merge, not a turn, so they carry no per-turn cost.
+    private let minTurnDegrees = 30.0
+    /// Charged when the route would **begin** by reversing against the aircraft's current
+    /// heading — a 180° pivot in place. Large (larger than a runway crossing) so the route
+    /// instead sets off the way the aircraft is pointing and turns around farther along if it
+    /// must, but finite so a genuinely unavoidable reversal (e.g. off a dead-end exit) still
+    /// routes rather than failing.
+    private let uTurnPenalty = 5_000.0
+    /// How far (degrees) an intended direction of travel must differ from the aircraft's
+    /// heading to count as reversing against it. Two ends of the edge under the aircraft are
+    /// ~180° apart, so this cleanly separates the endpoint ahead from the one behind.
+    private let reverseHeadingThreshold = 120.0
     /// A connector whose straight lead-in cuts through a building/terminal — heavily
     /// disfavored so a clear alternative to the same stand always wins.
     private let buildingCrossingPenalty = 6_000.0
@@ -60,6 +83,11 @@ struct TaxiRouteEngine {
         var arrivalGateName: String?
         var aircraft: AircraftSizeClass = .medium
         var allowIntersectionDeparture: Bool = false
+        /// The aircraft's current heading (degrees true), when it is under way on the surface.
+        /// Used to start the route in the direction the aircraft is pointing instead of pivoting
+        /// 180° in place. Ignored while parked at a stand (the parked orientation isn't the taxi
+        /// direction) and absent (`nil`) means heading isn't considered — routing is unchanged.
+        var aircraftHeadingDegrees: Double? = nil
     }
 
     // MARK: - Public entry
@@ -84,14 +112,35 @@ struct TaxiRouteEngine {
         // rather than jumping to a node a taxiway away.
         let seeds: [(node: Int, cost: Double)]
         let snapMeters: Double
+        // Start nodes whose *first* leaving edge must respect the aircraft's heading (a live
+        // node snap under way). The edge-start case bakes the heading preference into the seed
+        // costs below instead, so it contributes nothing here.
+        var headingStartNodes = Set<Int>()
         switch anchor {
-        case let .node(id, distance):
+        case let .node(id, distance, headingApplies):
             seeds = [(id, 0)]
             snapMeters = distance
-        case let .edge(edgeIndex, _, alongFromFrom, perpMeters):
+            if headingApplies, request.aircraftHeadingDegrees != nil { headingStartNodes.insert(id) }
+        case let .edge(edgeIndex, projection, alongFromFrom, perpMeters):
             let e = graph.edges[edgeIndex]
-            seeds = [(e.from, max(0, alongFromFrom)),
-                     (e.to, max(0, e.distanceMeters - alongFromFrom))]
+            let fromCost = max(0, alongFromFrom)
+            let toCost = max(0, e.distanceMeters - alongFromFrom)
+            var edgeSeeds = [(node: e.from, cost: fromCost), (node: e.to, cost: toCost)]
+            // Respect the aircraft's heading: leaving the edge toward the endpoint that lies
+            // *behind* the aircraft is a 180° pivot in place. Drop that endpoint as a seed (not
+            // merely penalize it — both endpoints are start nodes, so a penalized backward seed
+            // still reconstructs as the backward lead-in) so A* sets off toward the endpoint the
+            // aircraft is already pointing at; it reaches a goal that lies behind by taxiing
+            // forward and turning around farther along. Keep both when neither/both endpoints are
+            // clearly behind (heading roughly across the edge) so routing still succeeds. Because
+            // the two endpoints sit on one line through the projection, at most one is "behind".
+            if let hdg = request.aircraftHeadingDegrees {
+                let fromReversing = Geo.headingDifference(hdg, Geo.bearing(from: projection.clLocation, to: nodeCoord(e.from))) > reverseHeadingThreshold
+                let toReversing = Geo.headingDifference(hdg, Geo.bearing(from: projection.clLocation, to: nodeCoord(e.to))) > reverseHeadingThreshold
+                if fromReversing && !toReversing { edgeSeeds = [(node: e.to, cost: toCost)] }
+                else if toReversing && !fromReversing { edgeSeeds = [(node: e.from, cost: fromCost)] }
+            }
+            seeds = edgeSeeds
             snapMeters = perpMeters
         }
         let startNodes = Set(seeds.map { $0.node })
@@ -108,7 +157,9 @@ struct TaxiRouteEngine {
             if attempts >= maxGoalAttempts { break }
             attempts += 1
             guard let result = astar(starts: seeds, goal: goal.node,
-                                     aircraft: request.aircraft) else { continue }
+                                     aircraft: request.aircraft,
+                                     heading: request.aircraftHeadingDegrees,
+                                     headingStartNodes: headingStartNodes) else { continue }
             let lead = leadIn(for: anchor, startNode: result.startNode)
             return assemble(nodePath: result.nodes, edgePath: result.edges, request: request,
                             startNodes: startNodes, goalNode: goal.node,
@@ -123,10 +174,10 @@ struct TaxiRouteEngine {
     /// connected node, or failing that the nearest node of any kind.
     private func nodeAnchorFallback(to coord: CLLocationCoordinate2D) -> StartAnchor? {
         if let connected = nearestConnectedNode(to: coord) {
-            return .node(id: connected.node.id, distanceMeters: connected.distanceMeters)
+            return .node(id: connected.node.id, distanceMeters: connected.distanceMeters, headingApplies: true)
         }
         guard let nearest = graph.nearestNode(to: coord) else { return nil }
-        return .node(id: nearest.node.id, distanceMeters: nearest.distanceMeters)
+        return .node(id: nearest.node.id, distanceMeters: nearest.distanceMeters, headingApplies: true)
     }
 
     // MARK: - Endpoint resolution
@@ -136,7 +187,10 @@ struct TaxiRouteEngine {
     /// an `edge` start places the aircraft partway along a connected edge so the route can
     /// begin *under the aircraft* and join the network at whichever endpoint routes best.
     private enum StartAnchor {
-        case node(id: Int, distanceMeters: Double)
+        /// `headingApplies` is true when the node is the aircraft's live position under way (so
+        /// the first edge should respect its heading) and false when it's the parked stand
+        /// (whose orientation isn't the taxi direction).
+        case node(id: Int, distanceMeters: Double, headingApplies: Bool)
         /// `projection` is the point on `edgeIndex` nearest the aircraft; `alongFromFrom` is
         /// the along-edge distance (m) from `edge.from` to it; `perpMeters` is the aircraft's
         /// perpendicular offset from the edge.
@@ -151,7 +205,9 @@ struct TaxiRouteEngine {
             // Anchor at the stand only while the aircraft is still parked there. After
             // pushback it has moved off the gate, so fall through to snap the route to
             // its real position instead of drawing a leg it has already taxied past.
-            if d <= gateAnchorMeters { return .node(id: node.id, distanceMeters: d) }
+            // Heading doesn't apply at the stand — the parked orientation isn't the direction
+            // the aircraft will taxi once pushed back.
+            if d <= gateAnchorMeters { return .node(id: node.id, distanceMeters: d, headingApplies: false) }
         }
         // Snap onto the nearest connected *edge* and begin the route at the aircraft's
         // projected position along it, rather than jumping to the nearest node. This is what
@@ -178,10 +234,10 @@ struct TaxiRouteEngine {
         // those strands the whole route (A* reaches nothing). Prefer the nearest connected
         // node; fall back to the nearest node only when the graph has no connected nodes at all.
         if let connected = nearestConnectedNode(to: req.startCoordinate) {
-            return .node(id: connected.node.id, distanceMeters: connected.distanceMeters)
+            return .node(id: connected.node.id, distanceMeters: connected.distanceMeters, headingApplies: true)
         }
         guard let nearest = graph.nearestNode(to: req.startCoordinate) else { return nil }
-        return .node(id: nearest.node.id, distanceMeters: nearest.distanceMeters)
+        return .node(id: nearest.node.id, distanceMeters: nearest.distanceMeters, headingApplies: true)
     }
 
     /// Nearest node with at least one incident edge — i.e. one the router can actually leave.
@@ -386,7 +442,8 @@ struct TaxiRouteEngine {
     /// to `goal` and the entry node it actually left from, so the caller can prepend the matching
     /// lead-in.
     private func astar(starts: [(node: Int, cost: Double)], goal: Int,
-                       aircraft: AircraftSizeClass) -> (nodes: [Int], edges: [Int], startNode: Int)? {
+                       aircraft: AircraftSizeClass, heading: Double?,
+                       headingStartNodes: Set<Int>) -> (nodes: [Int], edges: [Int], startNode: Int)? {
         var gScore: [Int: Double] = [:]
         var cameFrom: [Int: (node: Int, edge: Int)] = [:]
         var arrivedBy: [Int: Int] = [:]
@@ -412,7 +469,8 @@ struct TaxiRouteEngine {
                 else if e.to == u && !e.oneway { v = e.from }
                 else { continue }
                 if closed.contains(v) { continue }
-                let cost = edgeCost(e, at: u, incomingEdge: incoming, startNodes: startNodes, goal: goal, aircraft: aircraft)
+                let cost = edgeCost(e, at: u, incomingEdge: incoming, startNodes: startNodes, goal: goal,
+                                    aircraft: aircraft, heading: heading, headingStartNodes: headingStartNodes)
                 if !cost.isFinite { continue }   // prohibited
                 let tentative = gu + cost
                 if tentative < (gScore[v] ?? .infinity) {
@@ -443,7 +501,8 @@ struct TaxiRouteEngine {
     }
 
     private func edgeCost(_ e: SurfaceEdge, at u: Int, incomingEdge: Int?,
-                          startNodes: Set<Int>, goal: Int, aircraft: AircraftSizeClass) -> Double {
+                          startNodes: Set<Int>, goal: Int, aircraft: AircraftSizeClass,
+                          heading: Double?, headingStartNodes: Set<Int>) -> Double {
         if e.closed { return .infinity }
         // Never taxi onto a runway surface lengthwise (entry / back-taxi / occupancy).
         // A crossing edge is allowed (heavily penalized); a runway-entry edge is not.
@@ -460,7 +519,16 @@ struct TaxiRouteEngine {
         if let w = e.widthMeters, w > 0, w < aircraft.minComfortableTaxiwayWidthMeters { cost += widthPenalty }
         if e.isTaxilane && !aircraft.acceptsTaxilanes { cost += widthPenalty }
         if e.confidence < 0.4 { cost += lowConfidencePenalty }
-        if let inc = incomingEdge { cost += turnPenalty(incoming: inc, outgoing: e, at: u) }
+        if let inc = incomingEdge {
+            cost += turnPenalty(incoming: inc, outgoing: e, at: u)
+        } else if let hdg = heading, headingStartNodes.contains(u) {
+            // The very first edge off the aircraft's live position: discourage leaving in a
+            // direction that reverses its heading, so the route sets off the way the aircraft
+            // is pointing rather than making it spin around where it sits.
+            let other = (e.from == u) ? e.to : e.from
+            let outBearing = Geo.bearing(from: nodeCoord(u), to: nodeCoord(other))
+            if Geo.headingDifference(hdg, outBearing) > reverseHeadingThreshold { cost += uTurnPenalty }
+        }
         return cost
     }
 
@@ -476,6 +544,10 @@ struct TaxiRouteEngine {
         let turn = Geo.headingDifference(inB, outB)
         if turn > 120 { return sharpTurnPenalty }
         if turn > 95 { return moderateTurnPenalty }
+        // Every ordinary turn costs a little, so a route that reaches the destination with
+        // fewer turns (one left, one right) beats one that steps down through many small
+        // sequential turns of otherwise-similar length.
+        if turn > minTurnDegrees { return perTurnPenalty }
         return 0
     }
 
