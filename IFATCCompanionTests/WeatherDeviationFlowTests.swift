@@ -1320,6 +1320,59 @@ final class WeatherDeviationFlowTests: XCTestCase {
                        "the armed rejoin turn is preserved when continuing")
     }
 
+    /// Regression: a second re-vector — a fresh deviation off the aircraft's current
+    /// position while already flying a first deviation — must run all the way to the filed
+    /// route, not end mid-air on the first deviation it replaces. Freezing the new line
+    /// erases the first one, so if the new line merely rejoined the (now-gone) first
+    /// deviation partway, its rejoin would sit off the flight path and the aircraft would
+    /// "resume own navigation" in the middle of nowhere. Every deviation ends on the route.
+    func testReVectorWhileCommittedEndsOnFiledRoute() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)
+
+        model.requestVectorAroundWeather()
+        XCTAssertEqual(model.weatherDeviationState, .vectoringAroundWeather)
+        guard let firstPath = model.weatherDeviation.committedDeviationPath, firstPath.count >= 3 else {
+            return XCTFail("expected a committed mint line after the first vector")
+        }
+        let firstEnd = firstPath.last!.coordinate
+
+        // The filed route is (very nearly) the straight KIAH→KMSP line, so cross-track
+        // distance from that line tells whether a point lies on the flight path.
+        guard let routeStart = model.flightPlan.waypoints.first?.coordinate,
+              let routeEnd = model.flightPlan.waypoints.last?.coordinate else {
+            return XCTFail("mock route should have located waypoints")
+        }
+        func crossTrackNM(_ p: CLLocationCoordinate2D) -> Double {
+            abs(Geo.crossTrackDistanceNM(point: p, pathStart: routeStart, pathEnd: routeEnd))
+        }
+        XCTAssertLessThan(crossTrackNM(firstEnd), 6,
+                          "the first deviation already rejoins the filed route")
+
+        // New heavy weather straddles the committed mint line near its start (well off the
+        // filed route, out on the deviation), so the fresh re-vector must round it and —
+        // before the fix — would rejoin the committed line, now erased, far short of the route.
+        let earlyOnLine = firstPath[1].coordinate
+        model.radarOverlay.mockCells = [RadarCell(polygon: box(around: earlyOnLine, half: 0.3), intensity: .heavy)]
+        model.recomputeWeatherHazards()
+
+        model.requestVectorAroundWeather()
+        XCTAssertEqual(model.weatherDeviationState, .vectoringAroundWeather)
+        guard let newPath = model.weatherDeviation.committedDeviationPath, newPath.count >= 2,
+              let newEnd = newPath.last?.coordinate else {
+            return XCTFail("the re-vector re-freezes a committed mint line")
+        }
+
+        // The new deviation ends on the filed route — carried down the rest of the first
+        // deviation to its rejoin — not mid-air on the erased first line.
+        XCTAssertLessThan(crossTrackNM(newEnd), 6,
+                          "every deviation must end on the flight path, not on the erased first deviation")
+        XCTAssertEqual(newEnd.latitude, firstEnd.latitude, accuracy: 0.05,
+                       "the second deviation carries all the way to the first deviation's rejoin on the route")
+        XCTAssertEqual(newEnd.longitude, firstEnd.longitude, accuracy: 0.05,
+                       "the second deviation carries all the way to the first deviation's rejoin on the route")
+    }
+
     // MARK: - Existing weather features still work
 
     func testExistingWeatherStillLoadsInMock() async {
