@@ -310,6 +310,78 @@ final class WeatherDeviationFlowTests: XCTestCase {
                        "no automatic turn before the apex")
     }
 
+    // MARK: - Returning from the background must not queue up turns on a jumped fix
+
+    /// Regression: the app keeps polling while backgrounded (audio mode), but the Connect
+    /// socket freezes, so the first fix after returning jumps to the live position. The
+    /// vectoring flow must NOT then replay every turn the aircraft flew during the gap as
+    /// its own "fly heading …" call — the reported queue of near-identical vector calls.
+    /// On the jumped tick it re-syncs the armed turn to the current position and issues
+    /// nothing; the flow then completes normally on the following continuous ticks.
+    func testBackgroundResyncCollapsesTheCatchUpTurnQueue() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)
+        model.requestVectorAroundWeather()
+        XCTAssertEqual(model.weatherDeviationState, .vectoringAroundWeather)
+        guard let line = model.weatherDeviationLine, line.count >= 3, let rejoin = line.last else {
+            return XCTFail("expected a committed mint line with at least one turn")
+        }
+        XCTAssertNotNil(model.weatherDeviation.pendingTurnIndex, "issuing the vector arms the first turn")
+
+        func flyHeadingCalls() -> Int {
+            model.transcript.filter { $0.sender == .atc && $0.displayText.contains("fly heading") }.count
+        }
+        let callsBefore = flyHeadingCalls()
+
+        // Return from the background: the first fresh fix has jumped past every interior turn.
+        model.markTelemetryResyncPendingForTesting()
+        var jumped = model.mock.state(for: .cruise)
+        jumped.latitude = rejoin.latitude
+        jumped.longitude = rejoin.longitude
+        model.ingestStateForTesting(jumped)
+
+        // The jumped tick issues nothing and clears the armed turn — no retroactive replay.
+        XCTAssertEqual(flyHeadingCalls(), callsBefore,
+                       "a jumped fix must not replay the passed turns as a queue of vector calls")
+        XCTAssertNil(model.weatherDeviation.pendingTurnIndex,
+                     "past every interior turn, the armed turn is cleared rather than fired retroactively")
+
+        // The following continuous tick completes the flow normally — resume own navigation,
+        // never a burst of the passed "fly heading" turns.
+        model.ingestStateForTesting(jumped)
+        XCTAssertEqual(flyHeadingCalls(), callsBefore,
+                       "no vector turns are replayed on the continuous catch-up tick either")
+        XCTAssertTrue(atcContains(model, "resume own navigation"),
+                      "reaching the rejoin end resumes own navigation on the continuous tick")
+        XCTAssertEqual(model.weatherDeviationState, .none, "the deviation ends cleanly, with no queued turns")
+    }
+
+    /// Regression: an issued-but-unanswered advisory must survive returning from the
+    /// background. While away, the frozen socket / a confirm-clear window that elapsed on
+    /// wall-clock could otherwise read the route momentarily clear and tear the lifecycle
+    /// down — so the response card was gone on return and the pilot had to re-tap the
+    /// banner to get the deviation buttons back. A resync tick holds the conflict and
+    /// keeps the card up.
+    func testBackgroundResyncKeepsUnansweredAdvisoryCardUp() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)
+        XCTAssertEqual(model.weatherDeviationState, .awaitingPilotIntentions)
+        XCTAssertTrue(model.weatherDeviationCardVisible, "the advisory shows the response card")
+
+        // The worst case on return: the confirm-clear window has elapsed and the locked
+        // deviation momentarily selects clear (no active conflict is detected this tick).
+        model.expireWeatherClearWindowForTesting()
+        model.lockedDeviations = []
+        model.markTelemetryResyncPendingForTesting()
+        model.ingestStateForTesting(model.mock.state(for: .cruise))
+
+        XCTAssertEqual(model.weatherDeviationState, .awaitingPilotIntentions,
+                       "a resync tick must not tear down an unanswered advisory")
+        XCTAssertTrue(model.weatherDeviationCardVisible,
+                      "the weather-deviation response card is still shown after returning from the background")
+        XCTAssertNotNil(model.activeWeatherConflict, "the conflict is held through the discontinuity")
+    }
+
     /// Flying the mint line all the way to its end (the flight-plan intercept) without
     /// reporting clear of weather auto-resumes own navigation and ends the deviation.
     func testAutoResumesOwnNavigationNearRouteIntercept() async {
