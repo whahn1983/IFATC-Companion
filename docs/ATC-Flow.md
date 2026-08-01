@@ -31,10 +31,12 @@ mode and Mock Mode.
 - Approaching the departure runway on the taxi, **Ground automatically hands the
   pilot to Tower to *monitor*** ("monitor Tower on …") — no check-in required (see
   step 5).
-- Reaching the runway hold-short while monitoring Tower, **Tower automatically
-  issues "line up and wait"** ("runway *XX*, line up and wait") — no "ready" report
-  or check-in required. Skipped only when the aircraft taxis straight onto the
-  runway (already lined up), in which case the takeoff is cleared directly.
+- Nearing the runway while monitoring Tower — at the **same lead distance the
+  automatic runway-crossing clearance uses** — **Tower automatically issues "line up
+  and wait"** ("runway *XX*, line up and wait") so the aircraft can make a **rolling
+  line-up** rather than stopping short first. No "ready" report or check-in required.
+  Skipped only when the aircraft is already on the runway (taxied straight on), in
+  which case the takeoff is cleared directly.
 - The **takeoff clearance is issued automatically once the aircraft is lined up**
   on the assigned runway (`RunwayLineupDetector`: on the ground, low speed,
   heading aligned with the runway) — Tower does not wait for a prompt.
@@ -83,7 +85,7 @@ flight from the gate; your settings and flight plan are kept.
 | 3 | At gate | **Ground** | "Start up approved." (often pilot's discretion) | `startupApproved` | n/a in IF (courtesy) |
 | 4 | Taxi out | **Ground** | "Taxi to runway *XX* via *taxiways*, hold short *…*. Contact Tower when ready." | `taxiToRunway` | IF taxi/hold-short |
 | 5 | Approaching rwy | **Ground → Tower** | "Monitor Tower on *freq*." | `monitorTower(cs:frequency:)` | IF hand-off |
-| 6 | Monitoring / holding short | **Tower** | On reaching the runway hold-short, "runway *XX*, line up and wait" (`lineUpAndWait`) is issued automatically. (Optional check-in *before* the hold-short → "you're number one for departure" (`numberOneForTakeoff`, **no** takeoff clearance); the report-ready button reaches the same line-up-and-wait.) | `lineUpAndWait` / `numberOneForTakeoff` | IF LUAW |
+| 6 | Nearing the runway | **Tower** | Approaching the runway (crossing-clearance lead distance), "runway *XX*, line up and wait" (`lineUpAndWait`) is issued automatically, so the aircraft can roll straight on. (Optional earlier check-in → "you're number one for departure" (`numberOneForTakeoff`, **no** takeoff clearance); the report-ready button reaches the same line-up-and-wait.) | `lineUpAndWait` / `numberOneForTakeoff` | IF LUAW |
 | 7 | Lined up | **Tower** | "Wind *…*, runway *XX*, cleared for takeoff, fly heading *XXX* / runway heading, climb and maintain *initial alt*." | `clearedForTakeoff(departureHeading:…)` | IF takeoff clearance (+ real-world departure instructions) |
 
 The takeoff clearance fires automatically once the aircraft is on the runway —
@@ -111,10 +113,12 @@ heading" whenever it lands within 10° of the runway heading.
 Ground **automatically** hands it to Tower to *monitor* — "monitor Tower on *freq*" —
 mirroring the real-world red "MONITOR TOWER ON …" sign by the yellow checkered line
 short of the runway. Reading it back (which auto-tunes to Tower when *Auto-tune on
-hand-off* is on) is "monitor Tower on *freq*"; **no check-in is required**. Once the
-aircraft then **reaches the runway hold-short** (the surface coordinator flags
-`reachedDestination`), Tower **automatically issues "runway *XX*, line up and wait"**
-(`autoAdvanceMonitoringTower` → `.lineUpWait`) — live mode only, and only if the aircraft
+hand-off* is on) is "monitor Tower on *freq*"; **no check-in is required**. As the
+aircraft then **nears the runway** — at the **same lead distance the automatic
+runway-crossing clearance uses** (`holdIssueMeters`, surfaced as the coordinator's
+`approachingRunwayLineup`) — Tower **automatically issues "runway *XX*, line up and wait"**
+(`autoAdvanceMonitoringTower` → `.lineUpWait`), so the aircraft can make a **rolling
+line-up** rather than stopping short first — live mode only, and only if the aircraft
 isn't already on the runway. The takeoff clearance still fires automatically once the
 aircraft is lined up (step 7). If the pilot *does* check in on Tower — typically well
 before the runway — Tower replies **only** with "you're number one for departure"

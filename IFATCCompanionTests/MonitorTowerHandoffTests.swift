@@ -209,8 +209,10 @@ final class MonitorTowerHandoffTests: XCTestCase {
     }
 
     /// After the Ground→Tower "monitor" hand-off, Tower automatically issues
-    /// "line up and wait" once the aircraft reaches the runway hold-short — no pilot
-    /// "ready" report or check-in required — then clears the takeoff once it is lined up.
+    /// "line up and wait" as the aircraft *nears* the runway (the same lead distance the
+    /// automatic runway-crossing clearance uses, so it can make a rolling line-up) — no
+    /// pilot "ready" report or check-in required — then clears the takeoff once it is
+    /// lined up.
     func testMonitoringTowerAutomaticallyIssuesLineUpAndWaitThenTakeoff() {
         let model = makeLiveModelRunway36()
 
@@ -222,7 +224,8 @@ final class MonitorTowerHandoffTests: XCTestCase {
         model.requestTaxi();        model.readBack()   // Ground taxi clearance
 
         // Seed a synthetic departure surface on the model's coordinator and drive it up to
-        // the approaching-runway cue (the live surface can't be fetched offline).
+        // the monitor-Tower cue (the live surface can't be fetched offline). This is a
+        // longer lead than the line-up cue, so it latches first.
         model.airportSurface.beginMockTaxiForTesting(kind: .departure, reference: ref,
                                                      runway: "36", gate: "C12")
         var n = 0
@@ -232,10 +235,12 @@ final class MonitorTowerHandoffTests: XCTestCase {
             n += 1
         }
         XCTAssertTrue(model.airportSurface.approachingRunwayHandoff,
-                      "surface drive reached the approaching-runway cue")
+                      "surface drive reached the monitor-Tower cue")
+        XCTAssertFalse(model.airportSurface.approachingRunwayLineup,
+                       "the closer line-up cue has not latched yet at the monitor-Tower distance")
 
-        // A telemetry tick approaching the runway → Ground hands the pilot to Tower to
-        // monitor, but NOT yet "line up and wait" (the hold-short isn't reached).
+        // A telemetry tick at the monitor-Tower distance → Ground hands the pilot to Tower
+        // to monitor, but NOT yet "line up and wait" (the line-up lead isn't reached).
         model.ingestStateForTesting(holdingShortState())
         XCTAssertTrue(model.transcript.contains {
             $0.sender == .atc && $0.facility == .ground &&
@@ -243,23 +248,24 @@ final class MonitorTowerHandoffTests: XCTestCase {
         }, "Ground hands the pilot to Tower to monitor approaching the runway")
         XCTAssertFalse(model.transcript.contains {
             $0.displayText.lowercased().contains("line up and wait")
-        }, "no line-up-and-wait before the aircraft reaches the runway hold-short")
+        }, "no line-up-and-wait until the aircraft nears the runway (line-up lead distance)")
 
-        // Continue the surface drive to the runway hold-short.
+        // Continue the surface drive to the line-up cue (the crossing-clearance lead distance).
         n = 0
-        while !model.airportSurface.reachedDestination && n < 5000 {
+        while !model.airportSurface.approachingRunwayLineup && n < 5000 {
             model.airportSurface.mockTickForTesting()
             if model.airportSurface.awaitingCrossingReadback { model.airportSurface.crossingReadbackReceived() }
             n += 1
         }
-        XCTAssertTrue(model.airportSurface.reachedDestination, "surface drive reached the runway hold-short")
+        XCTAssertTrue(model.airportSurface.approachingRunwayLineup, "surface drive reached the line-up cue")
 
-        // Next telemetry tick, holding short → Tower automatically issues "line up and wait".
+        // Next telemetry tick, nearing the runway → Tower automatically issues "line up and
+        // wait" (before the aircraft has stopped, so it can roll straight onto the runway).
         model.ingestStateForTesting(holdingShortState())
         XCTAssertTrue(model.transcript.contains {
             $0.sender == .atc && $0.facility == .tower &&
             $0.displayText.lowercased().contains("line up and wait")
-        }, "Tower automatically issues line up and wait at the runway hold-short")
+        }, "Tower automatically issues line up and wait as the aircraft nears the runway")
         XCTAssertFalse(model.transcript.contains {
             $0.displayText.lowercased().contains("cleared for takeoff")
         }, "the takeoff is not cleared until the aircraft is lined up")
@@ -285,14 +291,14 @@ final class MonitorTowerHandoffTests: XCTestCase {
         model.airportSurface.beginMockTaxiForTesting(kind: .departure, reference: ref,
                                                      runway: "36", gate: "C12")
         var n = 0
-        while !model.airportSurface.reachedDestination && n < 5000 {
+        while !model.airportSurface.approachingRunwayLineup && n < 5000 {
             model.airportSurface.mockTickForTesting()
             if model.airportSurface.awaitingCrossingReadback { model.airportSurface.crossingReadbackReceived() }
             n += 1
         }
-        XCTAssertTrue(model.airportSurface.reachedDestination)
+        XCTAssertTrue(model.airportSurface.approachingRunwayLineup)
 
-        // The aircraft is already rolling down runway 36 when it reaches the hold-short —
+        // The aircraft is already rolling down runway 36 as it nears the runway —
         // Ground hands to Tower to monitor and the takeoff clearance fires, but the
         // line-up-and-wait is skipped (the aircraft is already on the runway).
         model.ingestStateForTesting(linedUpRollingState())
