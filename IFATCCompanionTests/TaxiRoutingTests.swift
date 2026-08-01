@@ -466,4 +466,122 @@ final class TaxiRoutingTests: XCTestCase {
         XCTAssertNotNil(route, "the arrival must reach the edge-attached stand, not fall short of it")
         XCTAssertEqual(route?.arrivalGate, "B20", "the route ends at the entered gate")
     }
+
+    // MARK: - Heading-aware start (no 180° U-turn in place)
+
+    /// A single straight east–west taxiway with a gate at its west end, so an aircraft sitting
+    /// mid-taxiway has the gate *behind* it. Used to prove the route sets off in the aircraft's
+    /// heading and turns around later, rather than pivoting 180° where it sits.
+    private func straightTaxiwaySurface() -> AirportSurfaceModel {
+        func p(_ dLat: Double, _ dLon: Double) -> GeoCoordinate {
+            GeoCoordinate(latitude: ref.latitude + dLat, longitude: ref.longitude + dLon)
+        }
+        // Taxiway T runs west (W) → east (E) through the reference longitude.
+        let twyT = SurfaceTaxiway(osmID: "way/t", tags: ["aeroway": "taxiway", "ref": "T"], isTaxilane: false,
+                                  name: "T", geometry: [p(0, -0.003), p(0, 0.003)],
+                                  oneway: false, access: nil, widthMeters: nil)
+        // Gate just south of the west end, so it attaches to the W node.
+        let gate = SurfaceParking(osmID: "node/g", tags: ["aeroway": "gate", "ref": "G"], kind: .gate,
+                                  name: "G", coordinate: p(-0.0002, -0.003))
+        // A runway placed well clear so the model has usable geometry and nothing snaps near T.
+        let runway = SurfaceRunway(osmID: "way/r", tags: ["aeroway": "runway", "ref": "18/36"],
+                                   idents: ["18", "36"], centerline: [p(0.02, 0.02), p(0.03, 0.02)],
+                                   widthMeters: 45, widthInferred: false)
+        let bbox = OSMBoundingBox(center: ref, halfSpanDegrees: 0.05)
+        return AirportSurfaceModel(icao: "KHDG", reference: GeoCoordinate(ref), runways: [runway],
+                                   runwayEnds: [], taxiways: [twyT], holdingPositions: [],
+                                   parkingPositions: [gate], aprons: [],
+                                   source: SurfaceProvenance(endpoint: "t", fetchDate: Date(), boundingBox: bbox, rawElementCount: 3),
+                                   confidence: .medium)
+    }
+
+    func testRouteStartsInAircraftHeadingInsteadOfPivotingInPlace() throws {
+        let m = straightTaxiwaySurface()
+        let g = SurfaceGraphBuilder.build(from: m)
+        let engine = TaxiRouteEngine(graph: g, model: m)
+        // Aircraft sits mid-taxiway (over the reference) heading due EAST; the gate is behind it
+        // at the west end.
+        let mid = CLLocationCoordinate2D(latitude: ref.latitude, longitude: ref.longitude)
+
+        // With a known east heading the route must set off east — its first step increases
+        // longitude — taxiing forward and turning around farther along rather than reversing
+        // in place onto the gate directly behind it.
+        let withHeading = try XCTUnwrap(engine.route(.init(startCoordinate: mid, startGateName: nil,
+                                                           isDeparture: false, assignedRunwayIdent: nil,
+                                                           arrivalGateName: "G", aircraft: .medium,
+                                                           aircraftHeadingDegrees: 90)))
+        XCTAssertEqual(withHeading.arrivalGate, "G", "still routes to the entered gate")
+        let geo = withHeading.geometry
+        XCTAssertGreaterThanOrEqual(geo.count, 2)
+        XCTAssertLessThan(SurfaceGeometry.distanceMeters(geo[0].clLocation, mid), 20,
+                          "the route begins under the aircraft, not at a distant node")
+        XCTAssertGreaterThan(geo[1].longitude, geo[0].longitude,
+                             "the first step is eastbound — the way the aircraft is pointing, not a 180° pivot")
+
+        // Without a heading the router is free to reverse straight onto the nearer gate behind
+        // the aircraft: its first step is westbound. This is the behavior the heading suppresses.
+        let noHeading = try XCTUnwrap(engine.route(.init(startCoordinate: mid, startGateName: nil,
+                                                        isDeparture: false, assignedRunwayIdent: nil,
+                                                        arrivalGateName: "G", aircraft: .medium)))
+        let geo2 = noHeading.geometry
+        XCTAssertGreaterThanOrEqual(geo2.count, 2)
+        XCTAssertLessThan(geo2[1].longitude, geo2[0].longitude,
+                          "with no heading the route reverses straight back to the gate (westbound)")
+    }
+
+    // MARK: - Turn minimization (prefer fewer larger turns to many small ones)
+
+    /// Two disjoint corridors from a start node S to a runway hold T: a short "staircase" that
+    /// steps down through four 90° turns, and a slightly longer "dogleg" that reaches the same
+    /// point with just two turns. The router must prefer the dogleg — trading a little distance
+    /// for far fewer turns — instead of stepping down through the many-small-turns staircase.
+    func testPrefersFewerTurnsOverSteppingStaircase() throws {
+        func p(_ dLat: Double, _ dLon: Double) -> GeoCoordinate {
+            GeoCoordinate(latitude: ref.latitude + dLat, longitude: ref.longitude + dLon)
+        }
+        func seg(_ id: String, _ pts: [GeoCoordinate]) -> SurfaceTaxiway {
+            SurfaceTaxiway(osmID: "way/\(id)", tags: ["aeroway": "taxiway", "ref": id.uppercased()],
+                           isTaxilane: false, name: id.uppercased(), geometry: pts,
+                           oneway: false, access: nil, widthMeters: nil)
+        }
+        // Shared endpoints S (start) and T (hold). Each straight leg is its own way so the bends
+        // between legs are graph junctions where turns are actually counted.
+        let s = p(0, 0), t = p(0, 0.005)
+        // Staircase (4 turns), the shorter path — small up/over/down/over steps near the S–T line.
+        let sc1 = seg("s1", [s, p(0, 0.001)])
+        let sc2 = seg("s2", [p(0, 0.001), p(0.0002, 0.001)])
+        let sc3 = seg("s3", [p(0.0002, 0.001), p(0.0002, 0.004)])
+        let sc4 = seg("s4", [p(0.0002, 0.004), p(0, 0.004)])
+        let sc5 = seg("s5", [p(0, 0.004), t])
+        // Dogleg (2 turns), a little longer — one leg north, one long leg east, one leg south to T.
+        let dg1 = seg("d1", [s, p(0.001, 0)])
+        let dg2 = seg("d2", [p(0.001, 0), p(0.001, 0.005)])
+        let dg3 = seg("d3", [p(0.001, 0.005), t])
+        // A runway just east of T so T becomes its "09" hold-short (the routing goal). Its
+        // centerline stays clear of every taxiway, so no leg is a crossing.
+        let runway = SurfaceRunway(osmID: "way/r", tags: ["aeroway": "runway", "ref": "09/27"],
+                                   idents: ["09", "27"],
+                                   centerline: [p(0.0001, 0.0052), p(0.0001, 0.0110)],
+                                   widthMeters: 45, widthInferred: false)
+        let ends = OSMSurfaceNormalizer.makeRunwayEnds(for: [runway])
+        let bbox = OSMBoundingBox(center: ref, halfSpanDegrees: 0.05)
+        let m = AirportSurfaceModel(icao: "KTRN", reference: GeoCoordinate(ref), runways: [runway],
+                                    runwayEnds: ends, taxiways: [sc1, sc2, sc3, sc4, sc5, dg1, dg2, dg3],
+                                    holdingPositions: [], parkingPositions: [], aprons: [],
+                                    source: SurfaceProvenance(endpoint: "t", fetchDate: Date(), boundingBox: bbox, rawElementCount: 9),
+                                    confidence: .medium)
+        let g = SurfaceGraphBuilder.build(from: m)
+        let engine = TaxiRouteEngine(graph: g, model: m)
+        let route = try XCTUnwrap(engine.route(.init(startCoordinate: s.clLocation, startGateName: nil,
+                                                     isDeparture: true, assignedRunwayIdent: "09",
+                                                     arrivalGateName: nil, aircraft: .medium)),
+                                  "a departure to runway 09 must route")
+        XCTAssertEqual(route.holdShortRunway, "09")
+        // The dogleg swings north to latitude +0.001; the staircase never exceeds +0.0002. A
+        // route whose geometry reaches that far north took the two-turn dogleg — even though the
+        // four-turn staircase is the shorter path.
+        let maxLat = route.geometry.map { $0.latitude }.max() ?? ref.latitude
+        XCTAssertGreaterThan(maxLat, ref.latitude + 0.0005,
+                             "router takes the two-turn dogleg, not the shorter four-turn staircase")
+    }
 }

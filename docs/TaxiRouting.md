@@ -58,7 +58,31 @@ Routing is **never** chosen on distance alone. It strongly penalizes or prohibit
 - entry at the wrong runway end.
 
 It prefers named taxiways, connected geometry, full‑length runway entry, fewer runway crossings,
-realistic turn geometry, high‑confidence features, and aircraft‑compatible paths.
+realistic turn geometry, high‑confidence features, and aircraft‑compatible paths. It also
+**starts in the aircraft's direction of travel** and **keeps the number of turns down** — see
+below.
+
+### Aircraft heading (no 180° U‑turn in place)
+
+When the aircraft is under way (taxiing, not parked or stopped), its heading is fed to the
+router so the route **sets off in the direction the aircraft is already pointing** rather than
+opening with a 180° pivot where it sits. If the destination lies behind the aircraft the route
+still reaches it — by taxiing forward and **turning around farther along** (at a junction / via a
+parallel taxiway), exactly as a real aircraft would, instead of reversing on the spot. Concretely,
+the endpoint of the taxiway under the aircraft that lies *behind* it is dropped as a starting
+point, so A\* leaves toward the endpoint ahead; a genuinely unavoidable reversal (e.g. off a
+dead‑end exit) still routes, just at a high cost. The heading is **ignored while parked at a
+stand** — the parked orientation isn't the taxi direction — and when it is unknown, routing is
+unchanged.
+
+### Fewer, larger turns (not a stepped staircase)
+
+Distance alone doesn't distinguish a route that "steps down" through a series of small
+alternating turns (left, right, left, right …) from one that reaches the same place with a single
+left and a single right. Every ordinary turn at a junction therefore carries a small cost, so the
+router **prefers the route with fewer turns** when the distances are close — trading a little
+extra taxi distance for a materially simpler, easier‑to‑fly route. Sharp (>120°) and hard (>95°)
+turns keep their larger existing penalties on top.
 
 ### Building geometry (gate lead‑ins)
 
