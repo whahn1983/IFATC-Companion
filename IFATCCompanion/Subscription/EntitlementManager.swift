@@ -28,7 +28,7 @@ final class EntitlementManager: ObservableObject {
     @Published private(set) var isLoading = false
     /// Short status line: "Live Connected Mode Active" or "Mock Mode Only".
     @Published private(set) var statusText = "Mock Mode Only"
-    /// The loaded subscription products, monthly first.
+    /// The loaded Live Connected products, ordered monthly, annual, then lifetime.
     @Published private(set) var products: [Product] = []
     /// Set when products cannot be loaded, for a clean error message in the UI.
     @Published private(set) var productLoadError: String?
@@ -67,6 +67,11 @@ final class EntitlementManager: ObservableObject {
         products.first { $0.id == SubscriptionProduct.annual.rawValue }
     }
 
+    /// The lifetime (one-time purchase) product, if loaded.
+    var lifetimeProduct: Product? {
+        products.first { $0.id == SubscriptionProduct.lifetime.rawValue }
+    }
+
     // MARK: - Lifecycle
 
     /// Begin listening for StoreKit transaction updates (renewals, purchases on
@@ -103,7 +108,7 @@ final class EntitlementManager: ObservableObject {
 
     /// Re-evaluate `hasLiveAccess` from StoreKit's current entitlements only.
     func refreshEntitlement() async {
-        let active = await store.hasActiveLiveSubscription()
+        let active = await store.hasActiveLiveEntitlement()
         #if DEBUG
         let entitled = active || Self.debugForceEntitlement
         #else
@@ -115,8 +120,9 @@ final class EntitlementManager: ObservableObject {
 
     // MARK: - Purchase / restore
 
-    /// Purchase a subscription product. On success Live Connected Mode unlocks
-    /// immediately; on cancel or failure the app stays in Mock Mode.
+    /// Purchase a Live Connected product (a subscription or the one-time lifetime
+    /// purchase). On success Live Connected Mode unlocks immediately; on cancel or
+    /// failure the app stays in Mock Mode.
     func purchase(_ product: Product) async {
         purchasePhase = .purchasing
         do {

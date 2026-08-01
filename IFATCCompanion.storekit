@@ -14,7 +14,21 @@
 
   ],
   "products" : [
-
+    {
+      "displayPrice" : "79.99",
+      "familyShareable" : false,
+      "internalID" : "21490021",
+      "localizations" : [
+        {
+          "description" : "Unlock Live Connected Mode forever with a single one-time purchase — no subscription. Use IFATC Companion on iPhone while flying Infinite Flight on iPad.",
+          "displayName" : "Live Connected Lifetime",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "com.h3consultingpartners.ifatccompanion.live.lifetime",
+      "referenceName" : "Live Connected Lifetime",
+      "type" : "NonConsumable"
+    }
   ],
   "settings" : {
     "_applicationInternalID" : "",

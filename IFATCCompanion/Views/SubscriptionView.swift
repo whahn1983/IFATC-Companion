@@ -2,8 +2,9 @@ import SwiftUI
 import StoreKit
 
 /// The subscription screen that unlocks Live Connected Mode. Shows the monthly
-/// and annual options with StoreKit-localized pricing, the required renewal
-/// disclosure, restore / manage actions, and the Terms / Privacy links.
+/// and annual subscriptions plus the one-time lifetime purchase with
+/// StoreKit-localized pricing, the required renewal disclosure, restore / manage
+/// actions, and the Terms / Privacy links.
 struct SubscriptionView: View {
     @EnvironmentObject var entitlements: EntitlementManager
     @Environment(\.openURL) private var openURL
@@ -94,6 +95,7 @@ struct SubscriptionView: View {
         VStack(spacing: 12) {
             productCard(for: .monthly)
             productCard(for: .annual)
+            productCard(for: .lifetime)
         }
     }
 
@@ -107,7 +109,7 @@ struct SubscriptionView: View {
                         HStack(spacing: 8) {
                             Text(product?.displayName ?? plan.fallbackDisplayName)
                                 .font(.headline)
-                            if plan == .annual { bestValueBadge }
+                            badge(for: plan)
                         }
                         Text(plan.durationText)
                             .font(.caption)
@@ -122,19 +124,31 @@ struct SubscriptionView: View {
         }
     }
 
-    private var bestValueBadge: some View {
-        Text("Best value")
+    /// A short highlight tag shown next to a plan's name. Annual is flagged as
+    /// the best recurring value; Lifetime as a one-time, no-renewals purchase.
+    @ViewBuilder
+    private func badge(for plan: SubscriptionProduct) -> some View {
+        switch plan {
+        case .annual:   tagBadge("Best value", tint: .green)
+        case .lifetime: tagBadge("Pay once", tint: .accentColor)
+        case .monthly:  EmptyView()
+        }
+    }
+
+    private func tagBadge(_ text: String, tint: Color) -> some View {
+        Text(text)
             .font(.caption2.weight(.bold))
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
-            .background(Capsule().fill(Color.green.opacity(0.22)))
-            .overlay(Capsule().stroke(Color.green.opacity(0.6), lineWidth: 1))
-            .foregroundStyle(Color.green)
+            .background(Capsule().fill(tint.opacity(0.22)))
+            .overlay(Capsule().stroke(tint.opacity(0.6), lineWidth: 1))
+            .foregroundStyle(tint)
     }
 
     @ViewBuilder
     private func purchaseButton(for plan: SubscriptionProduct, product: Product?) -> some View {
         let isPurchasing = entitlements.purchasePhase == .purchasing
+        let price = product?.displayPrice ?? plan.fallbackPrice
         Button {
             guard let product else { return }
             Task { await entitlements.purchase(product) }
@@ -144,7 +158,7 @@ struct SubscriptionView: View {
                 if isPurchasing {
                     ProgressView().tint(.white)
                 } else {
-                    Text(entitlements.hasLiveAccess ? "Subscribed" : "Subscribe — \(product?.displayPrice ?? plan.fallbackPrice)")
+                    Text(purchaseButtonTitle(for: plan, price: price))
                         .font(.headline)
                 }
                 Spacer()
@@ -156,10 +170,21 @@ struct SubscriptionView: View {
         .disabled(product == nil || isPurchasing || entitlements.hasLiveAccess)
     }
 
+    /// The call-to-action text for a plan's purchase button. Uses "Subscribe"
+    /// for the auto-renewing plans and "Buy" for the one-time lifetime purchase,
+    /// and reflects the owned state once Live access is unlocked.
+    private func purchaseButtonTitle(for plan: SubscriptionProduct, price: String) -> String {
+        if entitlements.hasLiveAccess {
+            return plan.isSubscription ? "Subscribed" : "Purchased"
+        }
+        return plan.isSubscription ? "Subscribe — \(price)" : "Buy — \(price)"
+    }
+
     private func product(for plan: SubscriptionProduct) -> Product? {
         switch plan {
-        case .monthly: return entitlements.monthlyProduct
-        case .annual:  return entitlements.annualProduct
+        case .monthly:  return entitlements.monthlyProduct
+        case .annual:   return entitlements.annualProduct
+        case .lifetime: return entitlements.lifetimeProduct
         }
     }
 
@@ -239,8 +264,9 @@ struct SubscriptionView: View {
 
     private var disclosureSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Payment will be charged to your Apple Account at confirmation of purchase. Subscription automatically renews unless auto-renew is turned off at least 24 hours before the end of the current period. Your account will be charged for renewal within 24 hours prior to the end of the current period. You can manage or cancel your subscription in your Apple Account settings after purchase.")
-            Text("Mock Mode is free and does not require a subscription.")
+            Text("Monthly and Annual are auto-renewing subscriptions. Payment will be charged to your Apple Account at confirmation of purchase. Subscriptions automatically renew unless auto-renew is turned off at least 24 hours before the end of the current period. Your account will be charged for renewal within 24 hours prior to the end of the current period. You can manage or cancel your subscription in your Apple Account settings after purchase.")
+            Text("Lifetime is a one-time purchase that unlocks Live Connected Mode permanently — it does not auto-renew.")
+            Text("Mock Mode is free and does not require a purchase.")
         }
         .font(.caption)
         .foregroundStyle(.secondary)
