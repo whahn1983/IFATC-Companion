@@ -19,6 +19,9 @@ struct IFATCCompanionApp: App {
                 .environmentObject(model.entitlements)
                 .preferredColorScheme(.dark)
                 .tint(Color("AccentColor"))
+                // Presents the system App Store rating prompt when `model.review`
+                // signals an eligible moment (before the first call / after a clear).
+                .reviewPrompt(model.review)
                 .onAppear {
                     model.onAppear()
                     #if canImport(UIKit)

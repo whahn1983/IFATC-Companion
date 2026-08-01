@@ -60,6 +60,11 @@ final class AppModel: ObservableObject {
     /// only while `entitlements.hasLiveAccess` is true; otherwise the app is
     /// locked to Mock Mode.
     let entitlements: EntitlementManager
+    /// Decides when to ask for an App Store rating. Only ever prompts at the two
+    /// calm moments the product allows — before the first ATC call of a session, or
+    /// after a completed flight — never mid-flight, and self-limits the frequency on
+    /// top of StoreKit's own three-per-year cap.
+    let review = ReviewRequestManager()
 
     private let weatherService: AviationWeatherService
     /// Fetches real-world FAA D-ATIS (datis.clowd.io). Independent of the weather
@@ -483,6 +488,12 @@ final class AppModel: ObservableObject {
     /// buttons; the only controller call issued automatically on the ground is the
     /// takeoff clearance, once the aircraft is lined up on the runway.
     private var hasDeparted = false
+
+    /// True once the app has auto-started its first feed at launch. The "before the
+    /// first call" rating prompt is suppressed for that initial cold-launch start —
+    /// Apple: never ask right when the app opens — and is only considered when the
+    /// pilot starts a *subsequent* fresh session (reconnect, mode switch, next flight).
+    private var didAutostartInitialFeed = false
 
     /// Guards the one-time arrival courtesy call at the gate.
     private var arrivalAnnounced = false
@@ -917,6 +928,10 @@ final class AppModel: ObservableObject {
         } else {
             startLive()
         }
+        // From here on, a fresh session start is pilot-initiated (reconnect, mode
+        // switch, next flight) rather than the cold-launch auto-start, so the
+        // "before the first call" rating prompt may be considered.
+        didAutostartInitialFeed = true
 
         // Bring up StoreKit: listen for transaction updates, then load products
         // and re-evaluate entitlements. The observer below enforces the lock.
@@ -1275,6 +1290,10 @@ final class AppModel: ObservableObject {
         diagnostics.log(.app, "Mock simulator feed started.")
         Task { await refreshWeather() }
         armWeatherRefreshTimer()
+        // Fresh session, connected and idle before the first ATC call — one of the two
+        // calm windows in which a rating prompt is allowed. Skipped on the cold-launch
+        // auto-start (Apple: never ask right at launch). Self-limited by `review`.
+        if didAutostartInitialFeed { review.requestReviewIfAppropriate(.beforeFirstCall) }
     }
 
     func stopMock() {
@@ -1322,6 +1341,12 @@ final class AppModel: ObservableObject {
             departureInfoAppended = false
             arrivalInfoAppended = false
             updateATISDiagnostics()
+            // Genuinely fresh flight (nothing to restore), connected and idle before
+            // the first ATC call — a calm window in which a rating prompt is allowed.
+            // A restored/mid-flight session skips this branch, so it never fires in
+            // flight; the cold-launch auto-start is skipped too (Apple: never ask right
+            // at launch). Self-limited by `review`.
+            if didAutostartInitialFeed { review.requestReviewIfAppropriate(.beforeFirstCall) }
         }
         // Reflect the new/restored flight in the chatter: stopped for a fresh flight (awaiting
         // the first ATC call), resumed when a mid-flight session was restored.
@@ -2399,6 +2424,12 @@ final class AppModel: ObservableObject {
         let display = "\(c.callsign.display) parked\(c.gate.isEmpty ? "" : " at \(c.gate)"). Flight complete."
         let spoken = "\(c.callsign.spoken) parked. Flight complete."
         post(ATCTransmission(sender: .system, facility: .ramp, displayText: display, spokenText: spoken), speak: false)
+        // The flight is over (arrived and parked) — a calm, positive moment. Count it
+        // toward the engagement gate and ask for an App Store rating if appropriate.
+        // `announceArrival` fires exactly once per completed flight (guarded by
+        // `arrivalAnnounced`), so this neither double-counts nor prompts mid-flight.
+        review.recordFlightCompleted()
+        review.requestReviewIfAppropriate(.afterFlightComplete)
     }
 
     // MARK: - Live flight plan
