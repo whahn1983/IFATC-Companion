@@ -5174,10 +5174,10 @@ final class AppModel: ObservableObject {
             }
             // New weather sits on the committed line — recompute it from here and
             // re-vector, treating the reroute (plus the filed route past it) as the route.
-            if let fresh = detectConflictAlong(route: revectorRouteAhead(from: pos)) {
-                activeWeatherConflict = fresh
-                lastConflictSeenAt = Date()
-            }
+            // `recomputeConflictFrom` also carries the fresh line down the rest of the
+            // committed deviation to the filed route, so this second deviation ends on the
+            // flight path rather than mid-air on the first deviation it just replaced.
+            recomputeConflictFrom(pos)
             let cs = callsignNow()
             let side = activeWeatherConflict?.recommendedDirection ?? .right
             applyDeviationResult(deviationEngine.requestVectors(
@@ -5629,10 +5629,90 @@ final class AppModel: ObservableObject {
     /// "weather still ahead — re-vector" from "clear now — settle".
     @discardableResult
     private func recomputeConflictFrom(_ pos: CLLocationCoordinate2D) -> Bool {
-        guard let fresh = detectConflictAlong(route: revectorRouteAhead(from: pos)) else { return false }
+        guard var fresh = detectConflictAlong(route: revectorRouteAhead(from: pos)) else { return false }
+        // The fresh line was solved against the committed deviation the aircraft is already
+        // flying (plus the filed route beyond it). When it rejoins that committed line rather
+        // than the filed route past it, carry it on down the rest of the committed line to the
+        // flight path — otherwise, once this fresh line replaces the committed one, its rejoin
+        // would sit mid-air on the now-erased deviation and the aircraft would resume own
+        // navigation short of the route. Every deviation must end on the flight path.
+        let tail = committedTailAhead(from: pos)
+        if tail.count >= 2 {
+            fresh = deviationExtendedToFlightPath(fresh, committedTail: tail)
+        }
         activeWeatherConflict = fresh
         lastConflictSeenAt = Date()
         return true
+    }
+
+    /// When a re-vector's fresh line rejoins the committed deviation the aircraft is already
+    /// flying (the first deviation) rather than the filed route beyond it, splice the
+    /// remainder of that committed line on so the new deviation still runs all the way to the
+    /// flight-plan intercept.
+    ///
+    /// A re-vector solves the fresh line against the committed tail plus the filed route past
+    /// it (`revectorRouteAhead`), and the detector ends the drawn line at the **first** place it
+    /// re-crosses that polyline — which, for a small new cell, is back on the committed tail,
+    /// well short of the route. Because freezing the fresh line **replaces** the committed one,
+    /// its rejoin would then sit mid-air on the now-erased first deviation, and the aircraft
+    /// would "resume own navigation" in the middle of nowhere. Appending the committed tail from
+    /// that rejoin onward carries the new line down the old one to where it meets the filed
+    /// route, so every deviation still ends on the flight path.
+    private func deviationExtendedToFlightPath(_ conflict: RouteWeatherConflict,
+                                               committedTail tail: [CLLocationCoordinate2D]) -> RouteWeatherConflict {
+        var conflict = conflict
+        let path = conflict.deviationPath.filter { $0.isValid }
+        let tailPts = tail.filter { $0.isValid }
+        guard path.count >= 2, tailPts.count >= 2,
+              let end = path.last, let rejoin = tailPts.last, rejoin.isValid else { return conflict }
+
+        // How close the fresh line's end must sit to the committed line to count as "on it",
+        // and how much of that line must still remain past it to be worth splicing. A genuine
+        // rejoin lands exactly on the committed line (the detector ends it at the intersection
+        // point), so the tolerance only absorbs planar/great-circle rounding.
+        let onLineTolNM = 5.0
+        let minRemainderNM = 1.0
+
+        // Locate the fresh line's end on the committed tail: nearest segment, its projection,
+        // and the along-tail distance to that projection.
+        var bestSeg = -1
+        var bestDist = Double.greatestFiniteMagnitude
+        var bestProj = end
+        var alongToProj = 0.0
+        var cumulative = 0.0
+        for i in 0..<(tailPts.count - 1) {
+            let proj = closestPointOnSegmentNM(end, tailPts[i], tailPts[i + 1])
+            let d = Geo.distanceNM(from: end, to: proj)
+            if d < bestDist {
+                bestDist = d
+                bestSeg = i
+                bestProj = proj
+                alongToProj = cumulative + Geo.distanceNM(from: tailPts[i], to: proj)
+            }
+            cumulative += Geo.distanceNM(from: tailPts[i], to: tailPts[i + 1])
+        }
+        // Only splice when the fresh line genuinely ends **on** the committed tail with a
+        // meaningful remainder still to fly. If its end already sits on the filed route beyond
+        // the old line (projection at/near the old line's end), it ends on the flight path
+        // already — leave it alone.
+        guard bestSeg >= 0, bestDist <= onLineTolNM,
+              cumulative - alongToProj > minRemainderNM else { return conflict }
+
+        // Carry the fresh line down the committed tail to its rejoin on the filed route,
+        // collapsing any zero-length seam so no leg has an undefined bearing.
+        var extended = Array(path.dropLast())
+        for point in [bestProj] + Array(tailPts[(bestSeg + 1)...]) {
+            if let prev = extended.last, Geo.distanceNM(from: prev, to: point) < 0.05 { continue }
+            extended.append(point)
+        }
+        guard extended.count >= 2 else { return conflict }
+        conflict.deviationPath = extended
+        // The true rejoin is now the committed line's end on the filed route — retag the rejoin
+        // fix so the map marker, the final turn and the auto-resume all key off the flight path,
+        // not the mid-air point where the new detour met the old line.
+        let rejoinName = weatherDeviation.rejoinFix ?? conflict.rejoinFix?.name ?? ""
+        conflict.rejoinFix = Waypoint(name: rejoinName, latitude: rejoin.latitude, longitude: rejoin.longitude)
+        return conflict
     }
 
     /// Issue a single ATC vector onto the freshly-recomputed reroute from the current

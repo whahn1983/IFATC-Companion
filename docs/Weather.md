@@ -662,6 +662,15 @@ a fresh heading, mint line and rejoin turn are computed against the new weather 
 rejoin the line the aircraft was already following, rather than the original filed
 course.
 
+Because freezing the fresh line **replaces** the committed one, the detector's
+"end at the first route intercept" would otherwise leave the new (second) deviation
+rejoining the *old* line partway — a rejoin that then sits mid-air on the deviation
+just erased, so the aircraft would resume own navigation short of the route. To keep
+the invariant that **every deviation ends on the flight path**,
+`deviationExtendedToFlightPath` splices the remainder of the committed line (from where
+the fresh line rejoined it, down to its rejoin on the filed route) onto the new path, so
+the second deviation carries all the way to the flight-plan intercept.
+
 The deviation flow runs during the airborne enroute/climb/arrival phases and works
 with whichever radar controller is tuned (Departure, Center, or Approach).
 It preserves altitude restrictions on a STAR,
