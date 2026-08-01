@@ -1409,6 +1409,24 @@ final class AppModel: ObservableObject {
     /// resampling) so we don't fetch from public weather services while backgrounded.
     private var appActive = true
 
+    /// Position and wall-clock of the last processed live fix. Together they detect a
+    /// telemetry *discontinuity* — a fix that jumped farther than the elapsed time can
+    /// account for. The Connect socket freezes while the app is backgrounded (audio
+    /// keeps the poll loop alive, but Infinite Flight stops feeding it), so the first
+    /// fresh fix on return snaps forward to the live position. `AircraftState.lastUpdate`
+    /// can't see this — it's stamped at read time, so a frozen fix always looks current.
+    private var lastTelemetryCoordinate: CLLocationCoordinate2D?
+    private var lastTelemetryAt: Date?
+    /// Set when the app returns to the foreground and forces a reconnect, so the first
+    /// fresh fix after the gap is always treated as a resync (the socket was frozen while
+    /// away). Consumed by `detectTelemetryDiscontinuity`.
+    private var telemetryResyncPending = false
+    /// True only for the current `recomputeWeatherHazards` pass when it is running on a
+    /// jumped (post-background / post-stall) fix, so position-driven weather decisions —
+    /// issuing turns, auto-advisories, tearing down the lifecycle — stand down for that
+    /// tick rather than acting on a discontinuous position.
+    private var telemetryDiscontinuity = false
+
     /// Watches the network path so the "Reduce cellular data" setting can suppress the
     /// megabyte-scale OPERA composite downloads on a cellular / expensive connection.
     /// Dormant while OPERA is disabled (no megabyte downloads to throttle), but kept
@@ -1431,9 +1449,46 @@ final class AppModel: ObservableObject {
         guard started, wasBackgrounded else { return }
         wasBackgrounded = false
         guard !settings.mockMode else { return }
+        // The socket was (likely) frozen while away, so the first fix after the reconnect
+        // has jumped to the live position. Mark a resync so the ATC/weather flow doesn't
+        // treat that jump as continuous flight and replay the turns flown during the gap.
+        telemetryResyncPending = true
         diagnostics.log(.app, "Returned to foreground — forcing an Infinite Flight reconnect.")
         connect.disconnect()
         startLive()
+    }
+
+    /// Whether the current live fix is discontinuous with the previous one — either the
+    /// first fix after a forced foreground reconnect, or (live mode) a jump too large for
+    /// the elapsed time to be continuous flight. Updates the last-fix trackers as a side
+    /// effect, so it must be called once per usable telemetry tick.
+    private func detectTelemetryDiscontinuity(for state: AircraftState) -> Bool {
+        let now = state.coordinate
+        defer {
+            if let now, now.isValid { lastTelemetryCoordinate = now }
+            lastTelemetryAt = Date()
+        }
+        // The definitive signal: the app just returned from the background and forced a
+        // reconnect, so this first fresh fix has snapped to the live position.
+        if telemetryResyncPending {
+            telemetryResyncPending = false
+            return true
+        }
+        // Belt-and-suspenders for a mid-session live stall (the Connect socket can freeze
+        // without a full background cycle): a fix that moved farther than the elapsed time
+        // could plausibly carry it is a frozen fix snapping forward, not real flight. Gated
+        // to live mode so the mock tests, which teleport the aircraft between fixes on
+        // purpose, are unaffected.
+        guard !settings.mockMode,
+              let prev = lastTelemetryCoordinate, prev.isValid,
+              let prevAt = lastTelemetryAt, let now, now.isValid else { return false }
+        let elapsed = Date().timeIntervalSince(prevAt)
+        guard elapsed > 0 else { return false }
+        // Plausible-travel bound: groundspeed × elapsed, tripled for slack (wind, a burst
+        // of catch-up ticks) plus a floor so a near-stationary fix tolerates GPS jitter.
+        let gsKnots = max(state.groundSpeed ?? 0, 0)
+        let maxNM = max(2.0, (gsKnots / 3600.0) * elapsed * 3.0 + 1.0)
+        return Geo.distanceNM(from: prev, to: now) > maxNM
     }
 
     /// Start watching the network path so `isExpensiveNetwork` reflects a cellular /
@@ -1508,6 +1563,11 @@ final class AppModel: ObservableObject {
     func weatherRejoinCapForTesting() -> CLLocationCoordinate2D? {
         weatherRejoinCap()
     }
+
+    /// Test hook: arm the telemetry resync the way returning from the background does, so
+    /// the next ingested fix is treated as a post-gap jump — exercising the discontinuity
+    /// handling (turn-burst collapse, lifecycle preservation) without a live socket.
+    func markTelemetryResyncPendingForTesting() { telemetryResyncPending = true }
     #endif
 
     private func handle(state: AircraftState) {
@@ -1529,6 +1589,12 @@ final class AppModel: ObservableObject {
             return
         }
 
+        // Detect a telemetry discontinuity — the first fresh fix after returning from the
+        // background (the Connect socket freezes while away), or a mid-session live stall
+        // that snaps the position forward. Position-based weather decisions must not treat
+        // a jumped fix as continuous flight (see recomputeWeatherHazards).
+        let telemetryJumped = detectTelemetryDiscontinuity(for: state)
+
         let result = phaseDetector.detect(state: state, plan: flightPlan,
                                           airports: airports, previous: phase)
         phase = result.phase
@@ -1537,7 +1603,7 @@ final class AppModel: ObservableObject {
         // Re-evaluate route-weather conflicts / radar coverage as the aircraft
         // moves. Pure and cheap; never advances the ATC state machine, so it can't
         // interfere with the gate-to-gate flow or the readback gate.
-        recomputeWeatherHazards()
+        recomputeWeatherHazards(telemetryJumped: telemetryJumped)
         // Keep the sampled precipitation current as the aircraft flies (throttled),
         // so the deviation line tracks the weather ahead instead of going stale and
         // dropping between manual refreshes.
@@ -3881,6 +3947,9 @@ final class AppModel: ObservableObject {
         lastPrecipSampleAt = nil
         lastPrecipSamplePos = nil
         livePrecipCellsReady = false
+        lastTelemetryCoordinate = nil
+        lastTelemetryAt = nil
+        telemetryResyncPending = false
     }
 
     /// The precipitation overlay image URL for the map's visible region, or nil when
@@ -3893,7 +3962,12 @@ final class AppModel: ObservableObject {
     /// Rebuild the precipitation overlay descriptive state, the normalized hazard
     /// list, and the active route-weather conflict. Selects a provider in
     /// NOAA → OPERA → NASA order. Pure/cheap; safe to call every tick.
-    func recomputeWeatherHazards() {
+    func recomputeWeatherHazards(telemetryJumped: Bool = false) {
+        // Scope the discontinuity to this pass so the helpers below (conflict hysteresis,
+        // turn issuers) can see it without threading it through every call. Only the live
+        // telemetry path passes `true`; the manual refresh / route-change callers don't.
+        telemetryDiscontinuity = telemetryJumped
+        defer { telemetryDiscontinuity = false }
         let positions = [aircraftState.coordinate,
                          resolvedDepartureCoordinate(),
                          resolvedDestinationCoordinate()].compactMap { $0 }
@@ -3943,7 +4017,10 @@ final class AppModel: ObservableObject {
         // not-yet-committed deviation lifecycle so a new conflict prompts afresh.
         // A turbulence / icing ride advisory (no precip conflict) keeps its lifecycle,
         // so it isn't torn down on every telemetry tick while it's still along route.
-        if conflict == nil, activeRideSigmet == nil {
+        // Never tear it down on a discontinuity tick: a jumped/stale fix that momentarily
+        // reads the route clear must not wipe an issued-but-unanswered advisory — that is
+        // what left the response card gone after returning from the background.
+        if conflict == nil, activeRideSigmet == nil, !telemetryDiscontinuity {
             weatherHandled = false
             mockWeatherAdvisoryIssued = false
             switch weatherDeviation.state {
@@ -3956,19 +4033,30 @@ final class AppModel: ObservableObject {
 
         // Mock Mode auto-issues the advisory once so the offline demo plays out.
         maybeAutoIssueMockAdvisory(conflict: conflict)
-        // Safety net (all modes): if the pilot ignored the banner and is now within
-        // `deviationAutoCallNM` of the upcoming locked deviation's turn-out, ATC auto-issues
-        // the advisory so a drawn-ahead deviation isn't silently flown past.
-        maybeAutoIssueAdvisoryNearTurn()
-        // Drive the deviation turns off the aircraft's progress, most-imminent first:
-        //   1. a held beginning turn fires once the aircraft reaches the mint line's
-        //      turn-out (a deviation approved while drawn ahead — "expect the turn …");
-        //   2. else, while vectoring, the interior turns fire at each deviation vertex;
-        //   3. else, reaching the rejoin end without a clear-of-weather auto-resumes.
-        // At most one fires per tick, so they never race.
-        if !maybeIssueDeviationStartTurn() {
-            if !maybeIssueWeatherRejoinTurn() {
-                maybeAutoResumeAtRouteIntercept()
+        if telemetryDiscontinuity {
+            // The fix just jumped (returned from the background on a frozen socket, or a
+            // stale fix snapping to the live position). Re-derive the in-progress deviation
+            // from the aircraft's current position instead of replaying the turns it
+            // "passed" during the gap as a queue of near-identical vector calls — and don't
+            // auto-issue an advisory off a jumped position (it would fire too early). If the
+            // jump carried the aircraft past the entry turn, the reroute is recomputed from
+            // where it actually is so it doesn't fly straight through the weather.
+            resyncWeatherDeviation()
+        } else {
+            // Safety net (all modes): if the pilot ignored the banner and is now within
+            // `deviationAutoCallNM` of the upcoming locked deviation's turn-out, ATC auto-issues
+            // the advisory so a drawn-ahead deviation isn't silently flown past.
+            maybeAutoIssueAdvisoryNearTurn()
+            // Drive the deviation turns off the aircraft's progress, most-imminent first:
+            //   1. a held beginning turn fires once the aircraft reaches the mint line's
+            //      turn-out (a deviation approved while drawn ahead — "expect the turn …");
+            //   2. else, while vectoring, the interior turns fire at each deviation vertex;
+            //   3. else, reaching the rejoin end without a clear-of-weather auto-resumes.
+            // At most one fires per tick, so they never race.
+            if !maybeIssueDeviationStartTurn() {
+                if !maybeIssueWeatherRejoinTurn() {
+                    maybeAutoResumeAtRouteIntercept()
+                }
             }
         }
         // Faint lines for every locked deviation except the one currently drawn solid
@@ -4000,6 +4088,11 @@ final class AppModel: ObservableObject {
         // A committed deviation keeps its conflict/mint line regardless of a momentary
         // clear — the pilot is following the approved reroute.
         if weatherDeviation.state.isCommittedDeviation { return held }
+        // A discontinuity tick (a jumped/stale fix after a background gap) isn't a
+        // trustworthy "clear" reading — hold the last shown conflict rather than letting
+        // it, or a confirm-clear window that elapsed on wall-clock while backgrounded,
+        // drop a storm that's really still ahead.
+        if telemetryDiscontinuity { return held }
         // Otherwise hold the last shown conflict until the clear is confirmed.
         if let since = lastConflictSeenAt, Date().timeIntervalSince(since) < weatherClearConfirmWindow {
             return held
@@ -5441,6 +5534,120 @@ final class AppModel: ObservableObject {
         // Need at least one interior turn vertex: [start, v1, …, rejoin].
         guard path.count >= 3, path.allSatisfy({ $0.isValid }) else { return }
         armRejoinTurn(at: 1, path: path)
+    }
+
+    /// Re-derive an in-progress weather deviation from the aircraft's *current* position
+    /// after a telemetry discontinuity (returning from the background on a frozen Connect
+    /// socket, where the first fresh fix has jumped ahead of where the frozen maneuver
+    /// assumes the aircraft is). Rather than replay the turns flown during the gap or fire
+    /// a stale entry turn late, decide from where the aircraft actually is:
+    ///
+    ///  • **Vectoring** — if the aircraft is at/past the reroute's end, drop the armed turn
+    ///    (the intercept auto-resume ends it next tick); if the committed reroute ahead is
+    ///    still clear and it's on the line, re-arm the nearest upcoming turn (no new call);
+    ///    if the jump carried it off/through the line with weather still on the path from
+    ///    here, recompute a fresh reroute from the current position and re-vector.
+    ///  • **Deviation approved (turn held ahead)** — the held beginning turn is pinned to a
+    ///    fixed turn-out the jump may have put behind the aircraft. Recompute from the
+    ///    current position: if a fresh turn-out still sits ahead, re-hold there; if the
+    ///    aircraft is now at/past it, vector onto the reroute now so it doesn't fly straight
+    ///    through the weather on the stale entry heading.
+    ///
+    /// At most one ATC call is issued (the single re-vector), never a queue.
+    private func resyncWeatherDeviation() {
+        guard weatherFlowAllowed, !establishedOnFinal,
+              let pos = aircraftState.coordinate, pos.isValid else { return }
+        switch weatherDeviation.state {
+        case .vectoringAroundWeather:
+            let tail = committedTailAhead(from: pos)
+            if tail.count < 2 {
+                // At/past the reroute end — drop the armed turn; the auto-resume at the
+                // intercept (next continuous tick) ends the deviation.
+                clearPendingRejoinTurn()
+            } else if conflictDetector.committedPathStillClear([pos] + tail, hazards: weatherHazards) {
+                // Still correctly positioned to fly the remaining reroute — re-arm the
+                // nearest upcoming turn to the current position, no new call.
+                resyncWeatherRejoinTurn()
+            } else if recomputeConflictFrom(pos) {
+                // Jumped off/through the reroute with weather still on the path from here —
+                // re-vector onto a fresh line anchored to the current position.
+                issueResyncVector(from: pos)
+            } else {
+                clearPendingRejoinTurn()
+            }
+        case .deviationApproved:
+            // The held beginning turn is pinned to a fixed turn-out the jump may have put
+            // behind the aircraft — recompute from the current position.
+            guard recomputeConflictFrom(pos) else {
+                // No weather ahead of the current position any more — nothing to turn for.
+                clearDeviationStart()
+                return
+            }
+            freezeCommittedDeviationPath()
+            if deviationTurnOutAhead() != nil {
+                // A fresh turn-out still sits ahead — re-hold the beginning turn there.
+                armDeviationStart()
+            } else {
+                // At/past the turn-out — vector onto the reroute now rather than firing the
+                // stale entry heading late (which could turn into/through the weather).
+                issueResyncVector(from: pos)
+            }
+        default:
+            break
+        }
+    }
+
+    /// Re-detect the route-weather conflict from the current position (protecting the
+    /// committed reroute tail, then the filed route beyond it) and adopt it as the active
+    /// conflict. Returns whether a conflict was found, so the caller can distinguish
+    /// "weather still ahead — re-vector" from "clear now — settle".
+    @discardableResult
+    private func recomputeConflictFrom(_ pos: CLLocationCoordinate2D) -> Bool {
+        guard let fresh = detectConflictAlong(route: revectorRouteAhead(from: pos)) else { return false }
+        activeWeatherConflict = fresh
+        lastConflictSeenAt = Date()
+        return true
+    }
+
+    /// Issue a single ATC vector onto the freshly-recomputed reroute from the current
+    /// position — controller-initiated (no pilot line), since it's a resync after the
+    /// position jumped, not a pilot request. Freezes the new line and arms its turns.
+    /// `activeWeatherConflict` must already reflect the recompute (`recomputeConflictFrom`).
+    private func issueResyncVector(from pos: CLLocationCoordinate2D) {
+        let side = activeWeatherConflict?.recommendedDirection ?? .right
+        applyDeviationResult(deviationEngine.beginDeviationTurn(
+            cs: callsignNow(), heading: weatherDeviationHeading(direction: side),
+            maintainAltitude: weatherMaintainAltitude(), context: weatherDeviation,
+            facility: weatherFacility))
+        freezeCommittedDeviationPath()
+        captureWeatherRejoinTurn()
+    }
+
+    /// Re-arm the nearest not-yet-reached interior turn on the committed vectoring line to
+    /// the aircraft's current position (or clear the armed turn if it is past them all), so
+    /// a small drift after a resync picks up at the right turn without replaying passed
+    /// ones. No ATC call — the genuinely-next turn fires normally as the aircraft reaches
+    /// it. Used by `resyncWeatherDeviation` when the committed reroute ahead is still clear.
+    private func resyncWeatherRejoinTurn() {
+        guard weatherDeviation.state == .vectoringAroundWeather,
+              let pos = aircraftState.coordinate, pos.isValid else { return }
+        let path = committedMintLineCoordinates()
+        guard path.count >= 3, path.allSatisfy({ $0.isValid }) else { return }
+        for index in 1...(path.count - 2) {
+            let apex = path[index]
+            let legBearing = Geo.bearing(from: path[index - 1], to: apex)
+            let apexToAircraft = Geo.bearing(from: apex, to: pos)
+            // Along-track distance from the vertex in the inbound-leg direction; < 0 means
+            // the aircraft has not yet reached this vertex's abeam line (still ahead of it).
+            let alongNM = Geo.distanceNM(from: pos, to: apex) * cos((apexToAircraft - legBearing) * .pi / 180)
+            if alongNM < 0 {
+                armRejoinTurn(at: index, path: path)
+                return
+            }
+        }
+        // Past every interior turn — drop the armed turn; the rejoin/auto-resume handles
+        // the tail on a subsequent continuous tick.
+        clearPendingRejoinTurn()
     }
 
     /// While vectoring around weather, once the aircraft reaches the next turn in the
