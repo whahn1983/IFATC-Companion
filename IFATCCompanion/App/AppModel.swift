@@ -1600,9 +1600,10 @@ final class AppModel: ObservableObject {
                 autoAdvanceTakeoffClearance(state: state)
             } else if monitoringTower, !settings.mockMode {
                 // Pilot is monitoring Tower (Ground already handed them off) — no "ready"
-                // report or check-in needed. The takeoff clearance still fires
-                // automatically once the aircraft is lined up on the runway.
-                autoAdvanceTakeoffClearance(state: state)
+                // report or check-in needed. As the aircraft reaches the runway
+                // hold-short, Tower issues "line up and wait"; the takeoff clearance then
+                // fires automatically once the aircraft is lined up on the runway.
+                autoAdvanceMonitoringTower(state: state)
             } else if !manualTuning, !mapped.isManualGroundFlow, isForward(mapped) {
                 // Telemetry already shows the takeoff roll (the pilot rolled without
                 // using the buttons) — advance so the flow is never stuck on ground.
@@ -1822,6 +1823,33 @@ final class AppModel: ObservableObject {
         // "contact Tower" (it advances straight from the taxi state to the clearance).
         advanceAndPost(to: .towerDeparture, context: buildContext(for: .towerDeparture),
                        announceHandoff: !monitoringTower, automatic: true)
+    }
+
+    /// While monitoring Tower before departure (Ground already handed the pilot off),
+    /// drive the automatic Tower calls from telemetry. Once the aircraft reaches the
+    /// departure-runway hold-short, Tower proactively issues "line up and wait"; the
+    /// takeoff clearance then follows automatically once the aircraft is lined up on the
+    /// runway. If the aircraft is already on the runway (it taxied straight on without
+    /// stopping short), the line-up-and-wait is skipped and the takeoff is cleared
+    /// directly. Fires only in live mode (the `monitoringTower` branch is gated on it).
+    private func autoAdvanceMonitoringTower(state: AircraftState) {
+        let runway = buildContext(for: stateMachine.current).runway
+        let onRunway = lineupDetector.isLinedUp(state: state, runway: runway)
+            || lineupDetector.isDepartingRoll(state: state, runway: runway)
+            || phase == .takeoff
+        if !onRunway, airportSurface.reachedDestination {
+            // Holding short of the departure runway — Tower issues "line up and wait".
+            // Non-gating (automatic: false): the pilot is monitoring and needn't read it
+            // back for the flow to proceed, and the takeoff clearance still fires
+            // automatically once the aircraft lines up. The hand-off is suppressed — the
+            // pilot is already on Tower (the monitor-Tower call moved them there).
+            advanceAndPost(to: .lineUpWait, context: buildContext(for: .lineUpWait),
+                           announceHandoff: false, automatic: false)
+        } else {
+            // Already on the runway (or still taxiing toward the hold-short): let the
+            // takeoff-clearance logic clear it once lined up.
+            autoAdvanceTakeoffClearance(state: state)
+        }
     }
 
     /// As the aircraft nears the departure runway, Ground hands it to Tower to *monitor*

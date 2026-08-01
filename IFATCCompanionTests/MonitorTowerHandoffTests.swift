@@ -154,4 +154,158 @@ final class MonitorTowerHandoffTests: XCTestCase {
             $0.displayText.lowercased().contains("cleared for takeoff")
         }, "checking in well before the runway must NOT issue a takeoff clearance")
     }
+
+    // MARK: - Automatic line-up-and-wait (live mode)
+
+    /// A *live*-mode model whose departure runway is pinned to "36" (heading 360°), so
+    /// the line-up detector's alignment check is deterministic in the test.
+    private func makeLiveModelRunway36() -> AppModel {
+        let model = AppModel()
+        model.settings.voiceEnabled = false
+        model.settings.mockMode = false           // live mode → automatic Tower calls active
+        var plan = FlightPlan()
+        plan.airline = "United"; plan.flightNumber = "598"
+        plan.departure = "KIAH"; plan.destination = "KMSP"
+        plan.departureGate = "C12"; plan.arrivalGate = "B44"
+        plan.departureRunway = "36"
+        plan.cruiseAltitude = 37000
+        plan.waypoints = model.mock.route.waypoints
+        model.flightPlan = plan
+        return model
+    }
+
+    /// On the ground, slow, heading 270° — perpendicular to runway 36, so the aircraft
+    /// reads as holding short (NOT lined up on the runway centerline).
+    private func holdingShortState() -> AircraftState {
+        var s = AircraftState()
+        s.onGround = true
+        s.groundSpeed = 2
+        s.heading = 270
+        s.trueHeading = 270
+        s.latitude = ref.latitude
+        s.longitude = ref.longitude
+        s.altitudeMSL = 0
+        s.altitudeAGL = 0
+        s.verticalSpeed = 0
+        return s
+    }
+
+    /// On the ground, aligned with runway 36 (heading ≈ 360°) and beginning the takeoff
+    /// roll. Ground speed 35 kt reads as `isDepartingRoll` (> 30 kt, aligned) — i.e. "on
+    /// the runway" — yet stays below the 40 kt the phase detector treats as airborne, so
+    /// the pre-departure Tower flow (not the airborne fallback) issues the clearance.
+    private func linedUpRollingState() -> AircraftState {
+        var s = AircraftState()
+        s.onGround = true
+        s.groundSpeed = 35
+        s.heading = 2
+        s.trueHeading = 2
+        s.latitude = ref.latitude
+        s.longitude = ref.longitude
+        s.altitudeMSL = 0
+        s.altitudeAGL = 0
+        s.verticalSpeed = 0
+        return s
+    }
+
+    /// After the Ground→Tower "monitor" hand-off, Tower automatically issues
+    /// "line up and wait" once the aircraft reaches the runway hold-short — no pilot
+    /// "ready" report or check-in required — then clears the takeoff once it is lined up.
+    func testMonitoringTowerAutomaticallyIssuesLineUpAndWaitThenTakeoff() {
+        let model = makeLiveModelRunway36()
+
+        // Pilot-driven ground sequence up to the ground-taxi state (live mode).
+        model.requestClearance();   model.readBack()
+        model.requestPushback();    model.readBack()
+        model.requestEngineStart(); model.readBack()
+        model.requestTaxi();        model.readBack()   // Ramp → Ground hand-off
+        model.requestTaxi();        model.readBack()   // Ground taxi clearance
+
+        // Seed a synthetic departure surface on the model's coordinator and drive it up to
+        // the approaching-runway cue (the live surface can't be fetched offline).
+        model.airportSurface.beginMockTaxiForTesting(kind: .departure, reference: ref,
+                                                     runway: "36", gate: "C12")
+        var n = 0
+        while !model.airportSurface.approachingRunwayHandoff && n < 5000 {
+            model.airportSurface.mockTickForTesting()
+            if model.airportSurface.awaitingCrossingReadback { model.airportSurface.crossingReadbackReceived() }
+            n += 1
+        }
+        XCTAssertTrue(model.airportSurface.approachingRunwayHandoff,
+                      "surface drive reached the approaching-runway cue")
+
+        // A telemetry tick approaching the runway → Ground hands the pilot to Tower to
+        // monitor, but NOT yet "line up and wait" (the hold-short isn't reached).
+        model.ingestStateForTesting(holdingShortState())
+        XCTAssertTrue(model.transcript.contains {
+            $0.sender == .atc && $0.facility == .ground &&
+            $0.displayText.lowercased().contains("monitor tower on")
+        }, "Ground hands the pilot to Tower to monitor approaching the runway")
+        XCTAssertFalse(model.transcript.contains {
+            $0.displayText.lowercased().contains("line up and wait")
+        }, "no line-up-and-wait before the aircraft reaches the runway hold-short")
+
+        // Continue the surface drive to the runway hold-short.
+        n = 0
+        while !model.airportSurface.reachedDestination && n < 5000 {
+            model.airportSurface.mockTickForTesting()
+            if model.airportSurface.awaitingCrossingReadback { model.airportSurface.crossingReadbackReceived() }
+            n += 1
+        }
+        XCTAssertTrue(model.airportSurface.reachedDestination, "surface drive reached the runway hold-short")
+
+        // Next telemetry tick, holding short → Tower automatically issues "line up and wait".
+        model.ingestStateForTesting(holdingShortState())
+        XCTAssertTrue(model.transcript.contains {
+            $0.sender == .atc && $0.facility == .tower &&
+            $0.displayText.lowercased().contains("line up and wait")
+        }, "Tower automatically issues line up and wait at the runway hold-short")
+        XCTAssertFalse(model.transcript.contains {
+            $0.displayText.lowercased().contains("cleared for takeoff")
+        }, "the takeoff is not cleared until the aircraft is lined up")
+
+        // Lined up and rolling on runway 36 → Tower clears the takeoff.
+        model.ingestStateForTesting(linedUpRollingState())
+        XCTAssertTrue(model.transcript.contains {
+            $0.sender == .atc && $0.displayText.lowercased().contains("cleared for takeoff")
+        }, "Tower clears the takeoff once the aircraft is lined up on the runway")
+    }
+
+    /// If the aircraft taxis straight onto the runway without stopping short (already
+    /// lined up when it reaches the runway), Tower skips the line-up-and-wait and clears
+    /// the takeoff directly.
+    func testMonitoringTowerSkipsLineUpAndWaitWhenAlreadyLinedUp() {
+        let model = makeLiveModelRunway36()
+        model.requestClearance();   model.readBack()
+        model.requestPushback();    model.readBack()
+        model.requestEngineStart(); model.readBack()
+        model.requestTaxi();        model.readBack()
+        model.requestTaxi();        model.readBack()
+
+        model.airportSurface.beginMockTaxiForTesting(kind: .departure, reference: ref,
+                                                     runway: "36", gate: "C12")
+        var n = 0
+        while !model.airportSurface.reachedDestination && n < 5000 {
+            model.airportSurface.mockTickForTesting()
+            if model.airportSurface.awaitingCrossingReadback { model.airportSurface.crossingReadbackReceived() }
+            n += 1
+        }
+        XCTAssertTrue(model.airportSurface.reachedDestination)
+
+        // The aircraft is already rolling down runway 36 when it reaches the hold-short —
+        // Ground hands to Tower to monitor and the takeoff clearance fires, but the
+        // line-up-and-wait is skipped (the aircraft is already on the runway).
+        model.ingestStateForTesting(linedUpRollingState())
+
+        XCTAssertTrue(model.transcript.contains {
+            $0.sender == .atc && $0.facility == .ground &&
+            $0.displayText.lowercased().contains("monitor tower on")
+        }, "Ground still hands the pilot to Tower to monitor")
+        XCTAssertTrue(model.transcript.contains {
+            $0.sender == .atc && $0.displayText.lowercased().contains("cleared for takeoff")
+        }, "Tower clears the takeoff for an aircraft that taxied straight onto the runway")
+        XCTAssertFalse(model.transcript.contains {
+            $0.displayText.lowercased().contains("line up and wait")
+        }, "no line-up-and-wait when the aircraft is already lined up on the runway")
+    }
 }
