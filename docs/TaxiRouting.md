@@ -17,7 +17,11 @@ graph (see [AirportSurfaceData.md](AirportSurfaceData.md)).
   aircraft can actually reach, so a single goal node stranded in a disconnected patch of a large
   field's graph (e.g. a far‑end runway entry not wired to the terminal taxiways) no longer fails
   the whole route. Runway‑ident matching is tolerant of leading‑zero padding, so an assigned
-  `9L` matches an OSM‑tagged `09L`;
+  `9L` matches an OSM‑tagged `09L`. A departure **never crosses its own runway**: when the only
+  hold/entry the router can reach for the assigned end is tagged on the *far* side (so the path
+  would run across the departure runway to a hold on the other side), the route is instead cut
+  back to the **near‑side hold‑short of that crossing** and holds there — that point *is* the
+  departure hold — and the departure runway is never reported as a mid‑route crossing;
 - **arrival** routing from the current aircraft position to a selected gate or parking
   position — the destination surface is warmed early (at the runway exit) so the clearance can
   route to the gate, but the route is **re‑anchored at the aircraft's position at the moment
