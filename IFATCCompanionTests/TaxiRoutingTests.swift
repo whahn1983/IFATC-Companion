@@ -49,6 +49,61 @@ final class TaxiRoutingTests: XCTestCase {
         XCTAssertEqual(route?.crossings.first?.runwayIdent, MockAirportSurface.crossingIdent(forPrimary: "36"))
     }
 
+    func testDepartureHoldsShortOfOwnRunwayInsteadOfCrossingToFarSideHold() throws {
+        // Reproduces the reported bug: the only hold/entry tagged for the assigned runway sits on
+        // the *far* side, so A* crossed the departure runway to reach it and placed the hold on
+        // the other side. A departure must never cross its own runway — it must stop at the
+        // near-side hold-short of that crossing and treat it as the departure hold.
+        func c(_ lat: Double, _ lon: Double) -> GeoCoordinate { GeoCoordinate(latitude: lat, longitude: lon) }
+
+        // Runway 09/27 east–west (09 threshold at the west end).
+        let runway = SurfaceRunway(osmID: "way/r", tags: ["aeroway": "runway", "ref": "09/27"],
+                                   idents: ["09", "27"],
+                                   centerline: [c(40.0000, -75.0050), c(40.0000, -74.9950)],
+                                   widthMeters: 45, widthInferred: false)
+        let ends = OSMSurfaceNormalizer.makeRunwayEnds(for: [runway])
+        // Taxiway X runs south → north across the runway (crossing it mid-length, ~256 m east of
+        // the 09 threshold so it is a crossing, not an entry). Its south end is where the aircraft
+        // must hold short; its north end is across the runway.
+        let twyX = SurfaceTaxiway(osmID: "way/x", tags: ["aeroway": "taxiway", "ref": "X"], isTaxilane: false,
+                                  name: "X", geometry: [c(39.9975, -75.0020), c(40.0000, -75.0020), c(40.0025, -75.0020)],
+                                  oneway: false, access: nil, widthMeters: nil)
+        // The ONLY mapped hold for 09 is on the far (north) side, at taxiway X's north end.
+        let hold = SurfaceHoldingPosition(osmID: "node/h", tags: ["aeroway": "holding_position", "ref": "09"],
+                                          coordinate: c(40.0025, -75.0020), runwayRef: "09", inferred: false)
+        // Gate just south of taxiway X's south end (attaches to the south node, no crossing).
+        let gate = SurfaceParking(osmID: "node/g", tags: ["aeroway": "gate", "ref": "G1"], kind: .gate,
+                                  name: "G1", coordinate: c(39.9970, -75.0020))
+        let bbox = OSMBoundingBox(center: ref, halfSpanDegrees: 0.05)
+        let m = AirportSurfaceModel(icao: "KXRW", reference: c(40.0, -75.0), runways: [runway],
+                                    runwayEnds: ends, taxiways: [twyX], holdingPositions: [hold],
+                                    parkingPositions: [gate], aprons: [],
+                                    source: SurfaceProvenance(endpoint: "t", fetchDate: Date(), boundingBox: bbox, rawElementCount: 4),
+                                    confidence: .medium)
+        let g = SurfaceGraphBuilder.build(from: m)
+        let engine = TaxiRouteEngine(graph: g, model: m)
+        let route = try XCTUnwrap(engine.route(.init(startCoordinate: c(39.9970, -75.0020).clLocation,
+                                                     startGateName: "G1", isDeparture: true,
+                                                     assignedRunwayIdent: "09", arrivalGateName: nil,
+                                                     aircraft: .medium)),
+                                  "a departure whose only far-side hold requires a crossing must still route")
+        XCTAssertEqual(route.holdShortRunway, "09")
+        // It never crosses its own runway, and no crossing of it is reported…
+        XCTAssertFalse(route.crossings.contains { $0.runwayIdent == "09" || $0.runwayIdent == "27" },
+                       "the departure runway is the hold, not a crossing")
+        // …and the whole route stays south of the runway centerline (never steps onto the far side).
+        for point in route.geometry {
+            XCTAssertLessThan(point.latitude, 40.0000,
+                              "the route holds short on the near side and never crosses to the far side")
+        }
+        // The route still ends near the near-side hold-short of the runway (just south of the crossing).
+        let end = route.endCoordinate.clLocation
+        XCTAssertLessThan(SurfaceGeometry.distanceMeters(end, c(40.0000, -75.0020).clLocation), 60,
+                          "the route ends holding short of the runway at the crossing point")
+        // A contiguous path survives the truncation (N nodes joined by N-1 edges).
+        XCTAssertEqual(route.edgeIDs.count, route.nodeIDs.count - 1)
+    }
+
     func testNoIllegalDisconnectedJumps() {
         let route = departureRoute()
         XCTAssertNotNil(route)
