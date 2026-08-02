@@ -26,6 +26,7 @@ struct TaxiMapSlot: View {
 /// is tappable.
 struct TaxiMapCard: View {
     @ObservedObject var surface: AirportSurfaceCoordinator
+    @EnvironmentObject var model: AppModel
     @State private var showExpanded = false
 
     var body: some View {
@@ -85,6 +86,13 @@ struct TaxiMapCard: View {
                 Label("Recalculate", systemImage: "arrow.triangle.2.circlepath")
             }
             .buttonStyle(.bordered)
+            // A quick read-back right on the map, so a taxi/crossing clearance can be
+            // acknowledged without scrolling back up to the acknowledgement grid.
+            Button { model.readBack() } label: {
+                Label("Read Back", systemImage: "checkmark.circle")
+            }
+            .buttonStyle(.bordered)
+            .tint(.green)
             Spacer(minLength: 0)
         }
         .font(.caption)
@@ -184,21 +192,36 @@ struct TaxiMapFooter: View {
 /// Full-screen expanded taxi map.
 struct ExpandedTaxiMap: View {
     @ObservedObject var surface: AirportSurfaceCoordinator
+    @EnvironmentObject var model: AppModel
     var dismiss: () -> Void
 
     var body: some View {
         NavigationStack {
-            ZStack(alignment: .bottomLeading) {
+            ZStack(alignment: .bottom) {
                 TaxiMapCanvas(surface: surface, expanded: true)
                     .ignoresSafeArea(edges: .bottom)
-                // Attribution stays visible directly on the expanded map.
-                Link(destination: OSMSurface.copyrightURL) {
-                    Text(OSMSurface.attributionText)
-                        .font(.caption2.weight(.semibold))
-                        .padding(.horizontal, 8).padding(.vertical, 4)
-                        .background(Capsule().fill(.ultraThinMaterial))
+                // Floating controls + attribution, kept legible over the map with a
+                // material scrim.
+                VStack(alignment: .leading, spacing: 10) {
+                    // Crossing / off-route response buttons (only present when relevant).
+                    TaxiMapActionsRow(surface: surface)
+                    // Recalculate and read back without leaving the expanded map.
+                    controlsRow
+                    // Attribution stays visible directly on the expanded map.
+                    Link(destination: OSMSurface.copyrightURL) {
+                        Text(OSMSurface.attributionText)
+                            .font(.caption2.weight(.semibold))
+                            .underline()
+                    }
+                    .foregroundStyle(.secondary)
                 }
                 .padding(12)
+                .background(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(.ultraThinMaterial)
+                )
+                .padding(.horizontal, 12)
+                .padding(.bottom, 8)
             }
             .navigationTitle(surface.nextInstruction.isEmpty ? "Taxi Map" : surface.nextInstruction)
             .navigationBarTitleDisplayMode(.inline)
@@ -209,11 +232,25 @@ struct ExpandedTaxiMap: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { surface.mapExpanded = false; dismiss() }
                 }
-                ToolbarItem(placement: .bottomBar) {
-                    TaxiMapActionsRow(surface: surface)
-                }
             }
         }
+    }
+
+    private var controlsRow: some View {
+        HStack(spacing: 10) {
+            Button { surface.recalculateRoute() } label: {
+                Label("Recalculate", systemImage: "arrow.triangle.2.circlepath")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            Button { model.readBack() } label: {
+                Label("Read Back", systemImage: "checkmark.circle")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .tint(.green)
+        }
+        .font(.subheadline)
     }
 }
 
