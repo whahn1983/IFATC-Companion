@@ -340,9 +340,10 @@ final class IFConnectManager: ObservableObject {
             try? await Task.sleep(nanoseconds: UInt64(self.discoveryTimeout * 1_000_000_000))
             guard !Task.isCancelled, case .discovering = self.connectionState else { return }
             self.discovery.stop()
-            let message = "No Infinite Flight found on the network. Check that Infinite Flight is running with the Connect API enabled and that both devices are on the same Wi-Fi, or enter the iPad's IP manually in Settings."
-            self.connectionState = .failed(message)
-            self.lastError = message
+            let message = "No Infinite Flight found on the network."
+            let detail = "No Infinite Flight found on the network. Check that Infinite Flight is running with the Connect API enabled and that both devices are on the same Wi-Fi, or enter the iPad's IP manually in Settings."
+            self.connectionState = .failed(message, detail: detail)
+            self.lastError = detail
             self.diagnostics?.log(.connect, "Auto-discovery timed out after \(Int(self.discoveryTimeout))s.")
         }
     }
