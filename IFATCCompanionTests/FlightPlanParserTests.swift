@@ -107,6 +107,90 @@ final class FlightPlanParserTests: XCTestCase {
         XCTAssertEqual(plan?.cruiseAltitude, 37000)
     }
 
+    /// A KIAH→KATL document in the exact shape Infinite Flight sends on device: camelCase
+    /// keys, the item array under `detailedInfo`, procedure groups tagged with the `type`
+    /// enum (Sid=0/STAR=1/Approach=2) while plain fixes also carry `type: 0`, a compound
+    /// `DPT RW15L` marker, and an approach whose transition repeats two of its own fixes.
+    /// Mirrors a reported flight where the I09R approach fixes were missing from the app.
+    private let kiahKatlJSON = """
+    {
+      "waypointName": "JNGLE",
+      "detailedInfo": {
+        "waypoints": ["KIAH", "RW15L", "DPT RW15L", "MMUGS4", "LCH", "GNDLF3", "I09R", "RW09R", "KATL"],
+        "flightPlanType": 0,
+        "flightPlanItems": [
+          { "name": "KIAH", "type": 0, "children": [], "identifier": "KIAH", "altitude": -1,
+            "location": { "Latitude": 29.9854, "Longitude": -95.3412 } },
+          { "name": "RW15L", "type": 0, "children": [], "identifier": "RW15L", "altitude": -1,
+            "location": { "Latitude": 29.9879, "Longitude": -95.3579 } },
+          { "name": "DPT RW15L", "type": 0, "children": [], "identifier": "DPT RW15L", "altitude": -1,
+            "location": { "Latitude": 29.9588, "Longitude": -95.3401 } },
+          { "name": "MMUGS4", "type": 0, "children": [
+              { "name": "TTAPS", "type": 0, "children": [], "identifier": "TTAPS", "altitude": 8500,
+                "location": { "Latitude": 29.8884, "Longitude": -95.2389 } },
+              { "name": "BOTLL", "type": 0, "children": [], "identifier": "BOTLL", "altitude": 12500,
+                "location": { "Latitude": 29.8236, "Longitude": -95.1350 } },
+              { "name": "TOC", "type": 0, "children": [], "identifier": "TOC", "altitude": 35000,
+                "location": { "Latitude": 30.1169, "Longitude": -93.3132 } }
+            ], "identifier": "MMUGS4", "altitude": -1 },
+          { "name": "LCH", "type": 0, "children": [], "identifier": "LCH", "altitude": -1,
+            "location": { "Latitude": 30.1414, "Longitude": -93.1056 } },
+          { "name": "GNDLF3", "type": 1, "children": [
+              { "name": "TOD", "type": 0, "children": [], "identifier": "TOD", "altitude": 35000,
+                "location": { "Latitude": 32.5133, "Longitude": -86.1170 } },
+              { "name": "JNGLE", "type": 0, "children": [], "identifier": "JNGLE", "altitude": 11000,
+                "location": { "Latitude": 33.2997, "Longitude": -84.8297 } },
+              { "name": "QUBIT", "type": 0, "children": [], "identifier": "QUBIT", "altitude": 8000,
+                "location": { "Latitude": 33.4525, "Longitude": -84.8297 } }
+            ], "identifier": "GNDLF3", "altitude": -1 },
+          { "name": "I09R", "type": 2, "children": [
+              { "name": "DFINS", "type": 0, "children": [], "identifier": "DFINS", "altitude": 4000,
+                "location": { "Latitude": 33.6311, "Longitude": -84.7936 } },
+              { "name": "GGUYY", "type": 0, "children": [], "identifier": "GGUYY", "altitude": 3000,
+                "location": { "Latitude": 33.6314, "Longitude": -84.7186 } },
+              { "name": "EEASY", "type": 0, "children": [], "identifier": "EEASY", "altitude": 3000,
+                "location": { "Latitude": 33.6314, "Longitude": -84.6497 } },
+              { "name": "GGUYY", "type": 0, "children": [], "identifier": "GGUYY", "altitude": 3000,
+                "location": { "Latitude": 33.6314, "Longitude": -84.7186 } },
+              { "name": "EEASY", "type": 0, "children": [], "identifier": "EEASY", "altitude": 3000,
+                "location": { "Latitude": 33.6314, "Longitude": -84.6497 } },
+              { "name": "BURNY", "type": 0, "children": [], "identifier": "BURNY", "altitude": 2400,
+                "location": { "Latitude": 33.6317, "Longitude": -84.5492 } }
+            ], "identifier": "I09R", "altitude": -1 },
+          { "name": "RW09R", "type": 0, "children": [], "identifier": "RW09R", "altitude": -1,
+            "location": { "Latitude": 33.6318, "Longitude": -84.4480 } },
+          { "name": "KATL", "type": 0, "children": [], "identifier": "KATL", "altitude": -1,
+            "location": { "Latitude": 33.6366, "Longitude": -84.4280 } }
+        ]
+      }
+    }
+    """
+
+    /// The approach group's fixes are enroute waypoints like any other — the route must
+    /// not stop at the STAR's last fix (QUBIT) with the I09R fixes dropped.
+    func testApproachGroupFixesAreKeptAsWaypoints() {
+        guard let plan = IFFlightPlanParser.parse(kiahKatlJSON) else {
+            return XCTFail("expected a parsed plan")
+        }
+        XCTAssertEqual(plan.departure, "KIAH")
+        XCTAssertEqual(plan.destination, "KATL")
+        // Repeated transition fixes collapse to one entry each; the runway/marker tokens
+        // (RW15L, DPT RW15L, TOC, TOD, RW09R) never appear.
+        XCTAssertEqual(plan.waypoints.map(\.name),
+                       ["TTAPS", "BOTLL", "LCH", "JNGLE", "QUBIT",
+                        "DFINS", "GGUYY", "EEASY", "BURNY"])
+        XCTAssertTrue(plan.waypoints.allSatisfy { $0.coordinate != nil })
+        XCTAssertEqual(plan.sid, "MMUGS4")
+        XCTAssertEqual(plan.star, "GNDLF3")
+        XCTAssertEqual(plan.approach, "I09R")
+        XCTAssertEqual(plan.approachStartFixName, "DFINS")
+        XCTAssertEqual(plan.approachInterceptAltitude, 4000)
+        XCTAssertEqual(plan.departureRunway, "15L")
+        XCTAssertEqual(plan.arrivalRunway, "09R")
+        // The TOC/TOD markers are dropped as fixes but still set the cruise level.
+        XCTAssertEqual(plan.cruiseAltitude, 35000)
+    }
+
     // MARK: - Multi-state combining (full + route + coordinates)
 
     /// When `aircraft/0/flightplan` collapses the route to a sparse summary, the
