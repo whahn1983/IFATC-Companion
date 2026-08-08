@@ -171,6 +171,15 @@ enum ATISPhraseology {
             return g[1] + " " + Phonetic.spellToken(ident, icao: icao)
         }
 
+        // Units written flush against their number ("CRANE 155FT AGL", "GUSTS TO 30KT",
+        // "WITHIN 5NM"). The abbreviation pass below is word-boundary anchored, so "155FT"
+        // can never match "\bFT\b" — the unit would survive to be voiced as "F T". Split the
+        // unit off its digits here (after the coded groups, which carry their own units, have
+        // all been decoded) so both the number and the unit read correctly.
+        s = replacingMatches(in: s, pattern: "\\b(\\d+)(FT|KTS|KT|NM)\\b") { g in
+            g[1] + " " + g[2]
+        }
+
         // Expand the common ATIS abbreviations (word-boundary, so "APPROACHES" and
         // "DEPARTURE" are never clipped by the shorter "APCH"/"DEP" entries).
         for (abbreviation, expansion) in abbreviations {
@@ -454,7 +463,8 @@ enum ATISPhraseology {
         // Surface-surveillance / equipage acronyms read on the air as spelled letters. Both the
         // hyphenated and unhyphenated feed spellings expand ("ADS-B"/"ADSB", "ASDE-X"/"ASDEX").
         ("ADS-B", "A D S B"), ("ADSB", "A D S B"), ("ASDE-X", "A S D E X"), ("ASDEX", "A S D E X"),
-        ("BTN", "between"), ("BTWN", "between"), ("FT", "feet"), ("KTS", "knots"),
+        ("BTN", "between"), ("BTWN", "between"), ("FT", "feet"), ("KTS", "knots"), ("KT", "knots"),
+        ("NM", "nautical miles"), ("AGL", "A G L"), ("MSL", "M S L"),
         ("HLDG", "holding"), ("DLA", "delay"), ("DLY", "delay"), ("DLAY", "delay"),
         ("NE", "northeast"), ("NW", "northwest"), ("SE", "southeast"), ("SW", "southwest"),
         ("CB", "cumulonimbus"), ("TCU", "towering cumulus"),

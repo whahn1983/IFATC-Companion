@@ -233,6 +233,21 @@ final class ATISPhraseologyTests: XCTestCase {
         XCTAssertTrue(s.contains("hazard"), s)
     }
 
+    // MARK: - Units written flush against their number
+
+    func testUnitGluedToNumberIsSpoken() {
+        // "155FT" gives the abbreviation pass no word boundary to anchor on, so without the
+        // split the unit survives to be voiced letter by letter ("F T") after the digits.
+        XCTAssertEqual(spoken("CRANE 155FT"), "crane one five five feet")
+        XCTAssertEqual(spoken("30KT"), "three zero knots")
+        XCTAssertEqual(spoken("5NM"), "five nautical miles")
+        // The spaced form keeps reading the same way.
+        XCTAssertEqual(spoken("CRANE 155 FT"), "crane one five five feet")
+        let s = ATISPhraseology.spokenText("CTN CRANE 155FT AGL 5NM SW OF ARPT.").lowercased()
+        XCTAssertTrue(s.contains("caution crane one five five feet a g l"), s)
+        XCTAssertTrue(s.contains("five nautical miles southwest of airport"), s)
+    }
+
     // MARK: - Instruction / advisory abbreviations
 
     func testExpandsInstructionAndAdvisoryAbbreviations() {
