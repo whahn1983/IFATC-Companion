@@ -13,10 +13,11 @@ import CoreLocation
 /// a 180° pivot in place, instead setting off forward and turning around farther along if
 /// the goal is behind — and a small per-turn cost makes it prefer routes with **fewer**
 /// turns over ones that step down through many small sequential turns. A **departure** never
-/// crosses its own runway: if reaching a hold/entry tagged on the far side would take the route
-/// across the assigned runway, the route stops at the near-side hold-short of that crossing and
-/// treats it as the departure hold. Output confidence is graded so the caller can suppress
-/// overly precise instructions when the data is weak.
+/// crosses its own runway, and never taxis the long way around it either: when every mapped
+/// hold/entry for the assigned end sits on the far side, the route instead rolls up to the
+/// nearest taxiway that crosses the runway toward the assigned end and holds short there —
+/// that crossing threshold *is* the departure hold. Output confidence is graded so the caller
+/// can suppress overly precise instructions when the data is weak.
 struct TaxiRouteEngine {
 
     // Penalty weights (meters-equivalent) — deliberately large so geometry alone never
@@ -78,6 +79,16 @@ struct TaxiRouteEngine {
     /// that would otherwise cross its own runway — as the point the route is cut back to so it
     /// stops on the near side and holds short (see `assemble`).
     private let holdShortLeadMeters = 25.0
+
+    /// How far (m) off a runway's centerline a point must sit before it is credited to one side
+    /// of that runway. Comfortably wider than a runway half-width, so a node on the pavement or
+    /// off the end of the centerline (a full-length entry at the threshold) reads as "neither
+    /// side" rather than being mistaken for the far side.
+    private let runwaySideToleranceMeters = 30.0
+
+    /// Metres per degree of latitude — used only to give the signed side-of-runway offset a
+    /// magnitude in metres so `runwaySideToleranceMeters` is meaningful.
+    private let metersPerDegree = 111_320.0
 
     /// Upper bound on how many goal candidates the router probes with A* before giving up.
     /// Each probe is cheap, but a runway whose whole area is disconnected from the taxi
@@ -161,8 +172,16 @@ struct TaxiRouteEngine {
         // entry may not be wired to the terminal taxiways — which used to fail the whole route
         // even though another node for the same runway was reachable. Bounded so a runway
         // whose entire area is disconnected still returns promptly.
+        //
+        // A goal the route already starts at is skipped as degenerate — except a hold-short at a
+        // crossing, whose route is the roll-out from that node up to the runway. Without the
+        // exception, recalculating while parked on the junction of the crossing taxiway would
+        // fall through to a far-side hold and taxi all the way around.
+        let goals = resolveGoalCandidates(request).filter {
+            $0.holdShortCrossingEdge != nil || !startNodes.contains($0.node)
+        }
         var attempts = 0
-        for goal in resolveGoalCandidates(request) where !startNodes.contains(goal.node) {
+        for goal in goals {
             if attempts >= maxGoalAttempts { break }
             attempts += 1
             guard let result = astar(starts: seeds, goal: goal.node,
@@ -174,7 +193,8 @@ struct TaxiRouteEngine {
                             startNodes: startNodes, goalNode: goal.node,
                             leadIn: lead.geometry, leadInName: lead.name,
                             leadInCrossingEdges: lead.crossingEdges,
-                            snapMeters: snapMeters, goalMeters: goal.distanceMeters)
+                            snapMeters: snapMeters, goalMeters: goal.distanceMeters,
+                            holdShortCrossingEdge: goal.holdShortCrossingEdge)
         }
         return nil
     }
@@ -323,14 +343,31 @@ struct TaxiRouteEngine {
         return (out, e.taxiwayName.isEmpty ? nil : e.taxiwayName, crossingEdges)
     }
 
+    /// Where a route is allowed to end.
+    private struct GoalCandidate {
+        /// The graph node A* routes to.
+        var node: Int
+        /// Distance (m) from the ideal hold point to `node`, for confidence grading. Zero when
+        /// the node *is* a mapped hold / entry for the assigned end.
+        var distanceMeters: Double
+        /// When set, the route does not stop at `node`: it rolls on out along this
+        /// runway-crossing edge and stops at the hold-short of the assigned runway on it. Used
+        /// when the assigned end has no mapped hold on the aircraft's side of the runway (see
+        /// `crossingHoldGoals`). The crossing edge itself is never taxied across.
+        var holdShortCrossingEdge: Int? = nil
+    }
+
     /// Goal candidates for the route, best first, so `route` can fall through to the next one
     /// when the top choice is unreachable (stranded in a disconnected graph patch). Departure:
     /// full-length runway-entry node(s) for the assigned end — nearest the threshold first —
     /// then holding positions for that end (an intersection departure), then plain taxi nodes
-    /// near the runway-end threshold as a last resort. Runway-ident matching is tolerant of
-    /// leading-zero padding, so an assigned "9L" matches OSM-tagged "09L". Arrival: the named
-    /// gate, else the nearest parking/gate to the airport reference (a single choice, as before).
-    private func resolveGoalCandidates(_ req: Request) -> [(node: Int, distanceMeters: Double)] {
+    /// near the runway-end threshold as a last resort; the whole list is then re-ordered so
+    /// candidates on the aircraft's side of the runway come first, with hold-short-at-a-crossing
+    /// goals ahead of anything stranded on the far side (see `crossingHoldGoals`).
+    /// Runway-ident matching is tolerant of leading-zero padding, so an assigned "9L" matches
+    /// OSM-tagged "09L". Arrival: the named gate, else the nearest parking/gate to the airport
+    /// reference (a single choice, as before).
+    private func resolveGoalCandidates(_ req: Request) -> [GoalCandidate] {
         if req.isDeparture {
             guard let ident = req.assignedRunwayIdent, !ident.isEmpty else { return [] }
             let key = runwayKey(ident)
@@ -386,7 +423,7 @@ struct TaxiRouteEngine {
                     add(candidate.id, candidate.distance)
                 }
             }
-            return out
+            return prioritizingAircraftSide(out, assignedEnd: assignedEnd, start: req.startCoordinate)
         } else {
             // Arrival goals, best first, so `route` can fall through to the next when the top
             // choice is stranded in a disconnected patch of the OSM graph — at a big field like
@@ -427,8 +464,96 @@ struct TaxiRouteEngine {
             for node in stands.sorted(by: { distanceToStart($0) < distanceToStart($1) }) {
                 add(node.id, 0)
             }
-            return out
+            return out.map { GoalCandidate(node: $0.node, distanceMeters: $0.distanceMeters) }
         }
+    }
+
+    /// Re-orders departure goals so the aircraft never taxis the length of the field and around
+    /// a runway end to reach a hold tagged on the *far* side. Candidates on the aircraft's side
+    /// of the runway keep their existing priority and come first; then — when the far side holds
+    /// anything at all — hold-short goals at the taxiways that cross the runway toward the
+    /// assigned end; then the far-side candidates, still available if nothing nearer routes.
+    ///
+    /// Left unchanged when the runway end is unknown, when the aircraft sits essentially on the
+    /// runway centerline (its side can't be told), or when no candidate is on the far side.
+    private func prioritizingAircraftSide(_ candidates: [(node: Int, distanceMeters: Double)],
+                                          assignedEnd: SurfaceRunwayEnd?,
+                                          start: CLLocationCoordinate2D) -> [GoalCandidate] {
+        func plain(_ list: [(node: Int, distanceMeters: Double)]) -> [GoalCandidate] {
+            list.map { GoalCandidate(node: $0.node, distanceMeters: $0.distanceMeters) }
+        }
+        guard let assignedEnd else { return plain(candidates) }
+        let startOffset = signedOffsetFromRunway(start, end: assignedEnd)
+        guard abs(startOffset) > runwaySideToleranceMeters else { return plain(candidates) }
+        let side: Double = startOffset > 0 ? 1 : -1
+
+        func isFarSide(_ nodeID: Int) -> Bool {
+            guard graph.nodes.indices.contains(nodeID) else { return false }
+            return signedOffsetFromRunway(nodeCoord(nodeID), end: assignedEnd) * side < -runwaySideToleranceMeters
+        }
+        let farSide = candidates.filter { isFarSide($0.node) }
+        guard !farSide.isEmpty else { return plain(candidates) }
+        let nearSide = candidates.filter { !isFarSide($0.node) }
+        // A crossing whose near endpoint is already a candidate adds nothing — that node is
+        // tried first anyway — so it is dropped rather than probed twice.
+        let nearSideNodes = Set(nearSide.map { $0.node })
+        let crossingGoals = crossingHoldGoals(assignedEnd: assignedEnd, side: side)
+            .filter { !nearSideNodes.contains($0.node) }
+        return plain(nearSide) + crossingGoals + plain(farSide)
+    }
+
+    /// Hold-short goals at the taxiways that cross the assigned runway, nearest its threshold
+    /// first — the near-side endpoint of each crossing taxiway, carrying the crossing edge so
+    /// the route can roll on out along it and stop short of the runway (see `holdShortStub`).
+    /// Only crossings on the assigned half of the runway qualify: holding short at one past
+    /// midfield would put the aircraft on the runway with too little of it left to depart from.
+    private func crossingHoldGoals(assignedEnd: SurfaceRunwayEnd, side: Double) -> [GoalCandidate] {
+        let keys = assignedRunwayKeys(for: assignedEnd.ident)
+        let threshold = assignedEnd.threshold.clLocation
+        let opposite = assignedEnd.oppositeThreshold.clLocation
+        var found: [(candidate: GoalCandidate, toThreshold: Double)] = []
+        for idx in graph.edges.indices {
+            let e = graph.edges[idx]
+            guard !e.closed, let ident = e.runwayCrossing, let crossingPoint = e.crossingPoint,
+                  keys.contains(runwayKey(ident)) else { continue }
+            let toThreshold = SurfaceGeometry.distanceMeters(crossingPoint.clLocation, threshold)
+            guard toThreshold <= SurfaceGeometry.distanceMeters(crossingPoint.clLocation, opposite) else { continue }
+            guard let nearNode = nearSideEndpoint(of: e, end: assignedEnd, side: side),
+                  holdShortStub(onEdge: idx, from: nearNode) != nil else { continue }
+            found.append((GoalCandidate(node: nearNode, distanceMeters: 0, holdShortCrossingEdge: idx), toThreshold))
+        }
+        return found.sorted { $0.toThreshold < $1.toThreshold }.map { $0.candidate }
+    }
+
+    /// The endpoint of a runway-crossing edge that lies on `side` of the runway while the other
+    /// endpoint lies across it — i.e. the node the aircraft can reach without crossing. Nil when
+    /// the edge doesn't straddle the runway cleanly (both or neither endpoint on that side), so
+    /// an ambiguous crossing never becomes a hold.
+    private func nearSideEndpoint(of edge: SurfaceEdge, end: SurfaceRunwayEnd, side: Double) -> Int? {
+        guard graph.nodes.indices.contains(edge.from), graph.nodes.indices.contains(edge.to) else { return nil }
+        let fromNear = signedOffsetFromRunway(nodeCoord(edge.from), end: end) * side > runwaySideToleranceMeters
+        let toNear = signedOffsetFromRunway(nodeCoord(edge.to), end: end) * side > runwaySideToleranceMeters
+        if fromNear && !toNear { return edge.from }
+        if toNear && !fromNear { return edge.to }
+        return nil
+    }
+
+    /// Signed perpendicular offset (m) of `p` from the runway centerline extended infinitely
+    /// through both thresholds — positive on one side, negative on the other. Only the sign
+    /// carries meaning; the magnitude exists so `runwaySideToleranceMeters` can dismiss points
+    /// that are on the pavement, or off the end of the runway, as belonging to neither side.
+    private func signedOffsetFromRunway(_ p: CLLocationCoordinate2D, end: SurfaceRunwayEnd) -> Double {
+        let a = end.threshold.clLocation, b = end.oppositeThreshold.clLocation
+        // Longitude scaled by cos(lat) so the two axes share a unit, as elsewhere in the
+        // surface layer's planar math.
+        let cosLat = max(0.2, cos(a.latitude * .pi / 180))
+        let ax = a.longitude * cosLat, ay = a.latitude
+        let bx = b.longitude * cosLat, by = b.latitude
+        let px = p.longitude * cosLat, py = p.latitude
+        let dx = bx - ax, dy = by - ay
+        let length = (dx * dx + dy * dy).squareRoot()
+        guard length > 1e-12 else { return 0 }
+        return ((dx * (py - ay) - dy * (px - ax)) / length) * metersPerDegree
     }
 
     /// Canonical comparison key for a runway ident, tolerant of leading-zero padding and case,
@@ -565,7 +690,8 @@ struct TaxiRouteEngine {
     private func assemble(nodePath: [Int], edgePath: [Int], request: Request,
                           startNodes: Set<Int>, goalNode: Int,
                           leadIn: [GeoCoordinate], leadInName: String?, leadInCrossingEdges: [Int],
-                          snapMeters: Double, goalMeters: Double) -> SurfaceTaxiRoute {
+                          snapMeters: Double, goalMeters: Double,
+                          holdShortCrossingEdge: Int? = nil) -> SurfaceTaxiRoute {
         // Oriented geometry + taxiway sequence.
         var geometry: [GeoCoordinate] = []
         var taxiSeq: [String] = []
@@ -598,6 +724,28 @@ struct TaxiRouteEngine {
                 geometry = leadIn + geometry
             }
             if let leadInName, taxiSeq.first != leadInName { taxiSeq.insert(leadInName, at: 0) }
+        }
+
+        // The assigned end has no mapped hold on this side of the runway, so rather than taxi
+        // around to one on the far side the route ends by rolling out along the taxiway that
+        // crosses the runway toward that end and stopping short of it — that crossing threshold
+        // *is* the departure hold. Only the geometry (and the taxiway's name) extends; the
+        // crossing edge is never taxied across, so it stays out of nodeIDs/edgeIDs and is not
+        // reported below as a crossing.
+        var holdShortAtCrossing = false
+        if let crossingEdge = holdShortCrossingEdge,
+           let stub = holdShortStub(onEdge: crossingEdge, from: goalNode) {
+            if geometry.isEmpty {
+                geometry = stub
+            } else if let last = geometry.last,
+                      SurfaceGeometry.distanceMeters(last.clLocation, stub[0].clLocation) < 0.5 {
+                geometry.append(contentsOf: stub.dropFirst())   // the goal node, already there
+            } else {
+                geometry.append(contentsOf: stub)
+            }
+            let name = graph.edges[crossingEdge].taxiwayName
+            if !name.isEmpty, taxiSeq.last != name { taxiSeq.append(name) }
+            holdShortAtCrossing = true
         }
 
         let fullLine = geometry.clLocations
@@ -661,17 +809,26 @@ struct TaxiRouteEngine {
         let namedFraction = routeEdges.isEmpty ? 0 :
             Double(routeEdges.filter { graph.edges[$0].hasName || graph.edges[$0].inferred }.count) / Double(routeEdges.count)
 
+        // A hold-short at a crossing was chosen *because* it belongs to the assigned runway on
+        // the assigned half, so the end is confirmed even though the node carries no ident.
         let goalCorrectEnd = request.isDeparture
-            ? (graph.node(goalNode)?.runwayRef?.uppercased() == request.assignedRunwayIdent?.uppercased())
+            ? (holdShortAtCrossing
+               || graph.node(goalNode)?.runwayRef?.uppercased() == request.assignedRunwayIdent?.uppercased())
             : true
 
-        let (confidence, score, notes) = gradeConfidence(namedFraction: namedFraction,
-                                                          snapMeters: snapMeters,
-                                                          goalMeters: goalMeters,
-                                                          midInferred: midInferred,
-                                                          crossesBuilding: crossesBuilding,
-                                                          crossings: crossings,
-                                                          goalCorrectEnd: goalCorrectEnd)
+        let graded = gradeConfidence(namedFraction: namedFraction,
+                                     snapMeters: snapMeters,
+                                     goalMeters: goalMeters,
+                                     midInferred: midInferred,
+                                     crossesBuilding: crossesBuilding,
+                                     crossings: crossings,
+                                     goalCorrectEnd: goalCorrectEnd)
+        let confidence = graded.confidence
+        let score = graded.score
+        var notes = graded.notes
+        if holdShortAtCrossing {
+            notes.append("holding short at the taxiway crossing — no mapped hold on this side of the runway")
+        }
 
         let destinationLabel: String
         if request.isDeparture {
@@ -712,6 +869,24 @@ struct TaxiRouteEngine {
         }
         if let leadInName, !leadInName.isEmpty, seq.first != leadInName { seq.insert(leadInName, at: 0) }
         return seq
+    }
+
+    /// The stretch of a runway-crossing taxiway from its near-side endpoint `node` up to the
+    /// hold-short a short distance before the runway centerline, oriented away from `node` so it
+    /// appends straight onto the routed geometry. Nil when the crossing is already within the
+    /// hold-short lead of `node` — the node itself is then the hold, and no stub is needed.
+    private func holdShortStub(onEdge edgeIndex: Int, from node: Int) -> [GeoCoordinate]? {
+        guard graph.edges.indices.contains(edgeIndex) else { return nil }
+        let edge = graph.edges[edgeIndex]
+        guard let crossingPoint = edge.crossingPoint, edge.geometry.count >= 2,
+              edge.from == node || edge.to == node else { return nil }
+        let oriented = (edge.from == node) ? edge.geometry : Array(edge.geometry.reversed())
+        guard let along = SurfaceGeometry.nearestPointOnPath(crossingPoint.clLocation, oriented.clLocations)?.alongMeters
+        else { return nil }
+        let cut = max(0, along - holdShortLeadMeters)
+        guard cut > 1 else { return nil }
+        let stub = truncatedPolyline(oriented, atMeters: cut)
+        return stub.count >= 2 ? stub : nil
     }
 
     /// Canonical idents (both ends) of the physical runway the assigned end belongs to, so a
@@ -761,7 +936,7 @@ struct TaxiRouteEngine {
 
     private func gradeConfidence(namedFraction: Double, snapMeters: Double, goalMeters: Double,
                                  midInferred: Bool, crossesBuilding: Bool, crossings: [RouteCrossing],
-                                 goalCorrectEnd: Bool) -> (SurfaceConfidence, Double, [String]) {
+                                 goalCorrectEnd: Bool) -> (confidence: SurfaceConfidence, score: Double, notes: [String]) {
         var score = 1.0
         var notes: [String] = []
         if snapMeters > 120 { score -= 0.35; notes.append("aircraft is far from the mapped surface") }

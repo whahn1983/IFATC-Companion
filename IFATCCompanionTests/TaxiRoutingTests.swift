@@ -104,6 +104,83 @@ final class TaxiRoutingTests: XCTestCase {
         XCTAssertEqual(route.edgeIDs.count, route.nodeIDs.count - 1)
     }
 
+    func testDepartureHoldsShortAtCrossingRatherThanTaxiingAroundTheRunway() throws {
+        // Reproduces the reported bug: the only mapped hold for the assigned end sits on the far
+        // side of the runway but is reachable *around* the far end, so nothing forced a crossing
+        // and the route taxied the length of the field and back — 2.5 km to reach a hold across
+        // a runway the aircraft is 300 m from. With no hold on this side, the route must instead
+        // roll up to the taxiway that crosses the runway toward the assigned end and hold short
+        // at that crossing threshold.
+        func c(_ lat: Double, _ lon: Double) -> GeoCoordinate { GeoCoordinate(latitude: lat, longitude: lon) }
+
+        // Runway 09/27 east–west (09 threshold at the west end), ~850 m long.
+        let runway = SurfaceRunway(osmID: "way/r", tags: ["aeroway": "runway", "ref": "09/27"],
+                                   idents: ["09", "27"],
+                                   centerline: [c(40.0000, -75.0050), c(40.0000, -74.9950)],
+                                   widthMeters: 45, widthInferred: false)
+        let ends = OSMSurfaceNormalizer.makeRunwayEnds(for: [runway])
+        // Two taxiways cross the runway south → north: X ~170 m from the 09 (departure) threshold,
+        // Y ~170 m from the 27 threshold — past midfield, so holding there would leave too little
+        // runway to depart from.
+        let twyX = SurfaceTaxiway(osmID: "way/x", tags: ["aeroway": "taxiway", "ref": "X"], isTaxilane: false,
+                                  name: "X", geometry: [c(39.9970, -75.0030), c(40.0030, -75.0030)],
+                                  oneway: false, access: nil, widthMeters: nil)
+        let twyY = SurfaceTaxiway(osmID: "way/y", tags: ["aeroway": "taxiway", "ref": "Y"], isTaxilane: false,
+                                  name: "Y", geometry: [c(39.9970, -74.9970), c(40.0030, -74.9970)],
+                                  oneway: false, access: nil, widthMeters: nil)
+        // Parallels either side, joined by E around the *east* (27) end — so the far-side hold is
+        // reachable without ever crossing the runway. That long way around is the bug.
+        let twyP = SurfaceTaxiway(osmID: "way/p", tags: ["aeroway": "taxiway", "ref": "P"], isTaxilane: false,
+                                  name: "P", geometry: [c(39.9970, -75.0030), c(39.9970, -74.9970), c(39.9970, -74.9930)],
+                                  oneway: false, access: nil, widthMeters: nil)
+        let twyE = SurfaceTaxiway(osmID: "way/e", tags: ["aeroway": "taxiway", "ref": "E"], isTaxilane: false,
+                                  name: "E", geometry: [c(39.9970, -74.9930), c(40.0030, -74.9930)],
+                                  oneway: false, access: nil, widthMeters: nil)
+        let twyN = SurfaceTaxiway(osmID: "way/n", tags: ["aeroway": "taxiway", "ref": "N"], isTaxilane: false,
+                                  name: "N", geometry: [c(40.0030, -74.9930), c(40.0030, -74.9970),
+                                                        c(40.0030, -75.0030), c(40.0030, -75.0046)],
+                                  oneway: false, access: nil, widthMeters: nil)
+        // The ONLY mapped hold for 09 is on the far (north) side, at the north parallel's west end.
+        let hold = SurfaceHoldingPosition(osmID: "node/h", tags: ["aeroway": "holding_position", "ref": "09"],
+                                          coordinate: c(40.0030, -75.0046), runwayRef: "09", inferred: false)
+        // Gate on the south side, just off the P/X junction.
+        let gate = SurfaceParking(osmID: "node/g", tags: ["aeroway": "gate", "ref": "G1"], kind: .gate,
+                                  name: "G1", coordinate: c(39.9965, -75.0028))
+        let bbox = OSMBoundingBox(center: ref, halfSpanDegrees: 0.05)
+        let m = AirportSurfaceModel(icao: "KXRA", reference: c(40.0, -75.0), runways: [runway],
+                                    runwayEnds: ends, taxiways: [twyX, twyY, twyP, twyE, twyN],
+                                    holdingPositions: [hold], parkingPositions: [gate], aprons: [],
+                                    source: SurfaceProvenance(endpoint: "t", fetchDate: Date(), boundingBox: bbox, rawElementCount: 8),
+                                    confidence: .medium)
+        let g = SurfaceGraphBuilder.build(from: m)
+        let engine = TaxiRouteEngine(graph: g, model: m)
+        let route = try XCTUnwrap(engine.route(.init(startCoordinate: c(39.9965, -75.0028).clLocation,
+                                                     startGateName: "G1", isDeparture: true,
+                                                     assignedRunwayIdent: "09", arrivalGateName: nil,
+                                                     aircraft: .medium)),
+                                  "a departure whose only hold is across the runway must still route")
+        XCTAssertEqual(route.holdShortRunway, "09")
+        // It stays on the aircraft's side of the runway throughout…
+        for point in route.geometry {
+            XCTAssertLessThan(point.latitude, 40.0000,
+                              "the route holds short on the near side and never crosses to the far side")
+        }
+        // …and holds short at taxiway X's crossing — the one toward the assigned (09) end, not Y
+        // past midfield, and not the far-side hold reached the long way around.
+        let end = route.endCoordinate.clLocation
+        XCTAssertLessThan(SurfaceGeometry.distanceMeters(end, c(40.0000, -75.0030).clLocation), 40,
+                          "the route ends holding short where taxiway X crosses the runway")
+        XCTAssertLessThan(route.distanceMeters, 800,
+                          "the route no longer taxis the length of the field and around the runway end")
+        XCTAssertTrue(route.taxiwaySequence.contains("X"), "the hold-short taxiway is named to the pilot")
+        XCTAssertFalse(route.taxiwaySequence.contains("E"),
+                       "the taxiways of the long way around the runway are not taxied")
+        // The departure runway is the hold, never a reported crossing.
+        XCTAssertFalse(route.crossings.contains { $0.runwayIdent == "09" || $0.runwayIdent == "27" })
+        // A contiguous path (N nodes joined by N-1 edges) — the crossing edge is not taxied.
+        XCTAssertEqual(route.edgeIDs.count, route.nodeIDs.count - 1)
+    }
+
     func testNoIllegalDisconnectedJumps() {
         let route = departureRoute()
         XCTAssertNotNil(route)

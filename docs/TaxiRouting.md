@@ -17,11 +17,8 @@ graph (see [AirportSurfaceData.md](AirportSurfaceData.md)).
   aircraft can actually reach, so a single goal node stranded in a disconnected patch of a large
   field's graph (e.g. a far‑end runway entry not wired to the terminal taxiways) no longer fails
   the whole route. Runway‑ident matching is tolerant of leading‑zero padding, so an assigned
-  `9L` matches an OSM‑tagged `09L`. A departure **never crosses its own runway**: when the only
-  hold/entry the router can reach for the assigned end is tagged on the *far* side (so the path
-  would run across the departure runway to a hold on the other side), the route is instead cut
-  back to the **near‑side hold‑short of that crossing** and holds there — that point *is* the
-  departure hold — and the departure runway is never reported as a mid‑route crossing;
+  `9L` matches an OSM‑tagged `09L`. A departure **never crosses its own runway, and never taxis
+  the long way around it** — see [Holding short on the aircraft's side](#holding-short-on-the-aircrafts-side);
 - **arrival** routing from the current aircraft position to a selected gate or parking
   position — the destination surface is warmed early (at the runway exit) so the clearance can
   route to the gate, but the route is **re‑anchored at the aircraft's position at the moment
@@ -49,6 +46,37 @@ does begin at a junction stays clean; if an edge snap reaches no goal (a stub di
 the network) it also falls back to the nearest connected node. When the still‑to‑be‑taxied
 lead‑in portion crosses a runway, that crossing (and its hold‑short) is preserved — a crossing
 already behind the aircraft is not re‑reported.
+
+### Holding short on the aircraft's side
+
+A departure hold belongs on the side of the runway the aircraft is already on. OSM often tags
+holds for only one end, or only one side, of a runway, and the router used to take whichever
+hold carried the assigned ident — which produced two bad routes:
+
+- the hold sat **across** the runway and the only path to it ran over the departure runway; or
+- the hold sat across the runway but was reachable **around** a runway end, so the route taxied
+  the length of the field and back to reach a hold a few hundred metres away across the pavement.
+
+Goal candidates are therefore split by **which side of the assigned runway's centerline** they
+lie on (relative to the aircraft's own side). Candidates on the aircraft's side keep their
+existing priority and are tried first. When something is stranded on the far side, the router
+inserts **hold‑short‑at‑a‑crossing** goals ahead of it: for each taxiway that crosses the
+assigned runway **toward the assigned end** (nearest that threshold first, never past midfield —
+holding beyond it would leave too little runway to depart from), the taxiway's near‑side node
+becomes the goal and the route then rolls on out along that taxiway and stops a short distance
+before the runway centerline. **That crossing threshold is the departure hold.** The crossing
+taxiway is named in the spoken sequence (the aircraft taxis onto it) but is never taxied across,
+so it stays out of the route's node/edge path and the departure runway is never reported as a
+mid‑route crossing. Far‑side holds remain in the list as a last resort, so a field where the
+aircraft genuinely must taxi around still routes.
+
+When the route does end up crossing its own runway anyway (nothing nearer was reachable), it is
+still cut back to the near‑side hold‑short of that crossing, and the spoken taxiway sequence
+drops the far‑side taxiways that are no longer taxied.
+
+The route is left exactly as before when the assigned runway end is unknown, when the aircraft
+sits essentially on the runway centerline (its side can't be told), or when no candidate is on
+the far side — which is the normal, well‑mapped case.
 
 ### Not shortest‑distance
 
