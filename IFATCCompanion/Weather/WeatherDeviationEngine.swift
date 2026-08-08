@@ -179,6 +179,28 @@ struct WeatherDeviationEngine {
         return Result(pilot: nil, atc: [atc], context: ctx)
     }
 
+    /// The aircraft has drifted off the reroute it was cleared to fly (wind, a late roll-in, a
+    /// wide turn), so the deviation was re-planned from where it actually is. The controller
+    /// re-vectors it onto the re-anchored line. Controller-initiated — no pilot call — and the
+    /// armed turn is cleared, since it indexed the geometry just replaced (the caller re-arms
+    /// against the new line).
+    func revectorOffPath(cs: Callsign, heading: Int, maintainAltitude: Int,
+                         context: WeatherDeviationContext, facility: ATCFacility) -> Result {
+        var ctx = context
+        let tx = phraseology.offPathVector(cs: cs, heading: heading,
+                                           maintainAltitude: maintainAltitude, facility: facility)
+        ctx.state = .vectoringAroundWeather
+        ctx.assignedHeading = heading
+        ctx.maintainAltitude = maintainAltitude
+        ctx.pendingTurnIndex = nil
+        ctx.pendingRejoinHeading = nil
+        ctx.vectorApexLatitude = nil
+        ctx.vectorApexLongitude = nil
+        ctx.vectorLegBearing = nil
+        ctx.lastATCWeatherCall = tx.displayText
+        return Result(pilot: nil, atc: [tx], context: ctx)
+    }
+
     /// Pilot requests vectors; controller assigns a heading around precipitation.
     func requestVectors(cs: Callsign, inputs: Inputs, context: WeatherDeviationContext,
                         facility: ATCFacility) -> Result {

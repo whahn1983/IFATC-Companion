@@ -406,6 +406,26 @@ final class AppModel: ObservableObject {
     /// fall before it counts as passed — a small tolerance so a line whose turn-out sits
     /// essentially abeam the aircraft isn't redrawn on projection noise.
     private let deviationEntryPassedNM: Double = 1
+    /// How far (NM, either side) the aircraft may drift off the committed mint line while
+    /// flying it before the deviation is re-planned from where the aircraft actually is. Wind,
+    /// a late roll-in, or a wide turn all push the aircraft off the drawn line; past this the
+    /// line no longer describes the reroute being flown, so it is re-anchored to the aircraft
+    /// and the controller re-vectors onto it. Comfortably wider than the ~1–2 NM a normal
+    /// anticipated turn cuts across a vertex.
+    private let deviationOffPathToleranceNM: Double = 5
+    /// Minimum interval between off-path re-plans, so a single drift can't re-vector on
+    /// consecutive ticks. A re-plan re-anchors the line to the aircraft (off-path distance
+    /// back to zero), so this only ever guards against a pathological repeat.
+    private let offPathReplanInterval: TimeInterval = 30
+    /// How long after an automatically-issued turn the aircraft is left to roll out before its
+    /// distance from the line counts as drift. A turn called at (or wide of) a vertex leaves the
+    /// aircraft off the line by design while it comes around, so judging it immediately would
+    /// re-vector one tick after the turn call.
+    private let turnComplyWindow: TimeInterval = 60
+    /// When the deviation was last re-planned for drifting off the committed line, and when the
+    /// last automatic turn was issued. Both cleared with the deviation lifecycle.
+    private var lastOffPathReplanAt: Date?
+    private var lastAutoTurnIssuedAt: Date?
     /// How far (NM) before a weather system's near edge each locked deviation is solved
     /// from. A reroute is a straight-corridor offset aimed at the storm; solved from far
     /// away (the origin, hundreds of NM back across the route's bends) it renders as a
@@ -4025,6 +4045,8 @@ final class AppModel: ObservableObject {
         weatherHandled = false
         mockWeatherAdvisoryIssued = false
         lastConflictSeenAt = nil
+        lastOffPathReplanAt = nil
+        lastAutoTurnIssuedAt = nil
         weatherDeviationPreviews = []
         lockedDeviations = []
         deviationsLocked = false
@@ -4141,12 +4163,17 @@ final class AppModel: ObservableObject {
             // Drive the deviation turns off the aircraft's progress, most-imminent first:
             //   1. a held beginning turn fires once the aircraft reaches the mint line's
             //      turn-out (a deviation approved while drawn ahead — "expect the turn …");
-            //   2. else, while vectoring, the interior turns fire at each deviation vertex;
-            //   3. else, reaching the rejoin end without a clear-of-weather auto-resumes.
+            //   2. else, while vectoring, the interior turns fire at each deviation vertex
+            //      (an armed turn wins: flying wide of a vertex is what it already handles);
+            //   3. else, having drifted off the line being flown re-plans it from where the
+            //      aircraft actually is;
+            //   4. else, reaching the rejoin end without a clear-of-weather auto-resumes.
             // At most one fires per tick, so they never race.
             if !maybeIssueDeviationStartTurn() {
                 if !maybeIssueWeatherRejoinTurn() {
-                    maybeAutoResumeAtRouteIntercept()
+                    if !maybeReplanDeviationOffPath() {
+                        maybeAutoResumeAtRouteIntercept()
+                    }
                 }
             }
         }
@@ -5676,10 +5703,131 @@ final class AppModel: ObservableObject {
             reached = false
         }
         guard reached else { return false }
+        lastAutoTurnIssuedAt = Date()   // let it roll out before drift is judged
         applyDeviationResult(deviationEngine.beginDeviationTurn(
             cs: callsignNow(), heading: heading, maintainAltitude: weatherMaintainAltitude(),
             context: weatherDeviation, facility: weatherFacility))
         // Now vectoring onto the reroute — arm the interior turns of the committed line.
+        captureWeatherRejoinTurn()
+        return true
+    }
+
+    // MARK: - Weather deviation — drifted off the line being flown
+
+    /// The perpendicular distance (NM) from the aircraft to the mint line it is flying, or nil
+    /// when the aircraft is not *on* the line — short of its start (the maneuver hasn't begun)
+    /// or past its end (the rejoin, which the auto-resume handles). Nil in both cases so a
+    /// deviation drawn ahead of the aircraft, or one already flown out, is never read as drift.
+    private func offPathDistanceNM(_ pos: CLLocationCoordinate2D,
+                                   path: [CLLocationCoordinate2D]) -> Double? {
+        let pts = path.filter { $0.isValid }
+        guard pts.count >= 2 else { return nil }
+        var bestSeg = -1
+        var bestT = 0.0
+        var bestDist = Double.greatestFiniteMagnitude
+        let latScale = 60.0
+        let lonScale = 60.0 * cos(pos.latitude * .pi / 180)
+        let px = pos.longitude * lonScale, py = pos.latitude * latScale
+        for i in 0..<(pts.count - 1) {
+            let a = pts[i], b = pts[i + 1]
+            let ax = a.longitude * lonScale, ay = a.latitude * latScale
+            let bx = b.longitude * lonScale, by = b.latitude * latScale
+            let dx = bx - ax, dy = by - ay
+            let lenSq = dx * dx + dy * dy
+            let raw = lenSq <= 0 ? 0 : ((px - ax) * dx + (py - ay) * dy) / lenSq
+            let t = max(0, min(1, raw))
+            let d = hypot(px - (ax + t * dx), py - (ay + t * dy))
+            if d < bestDist { bestDist = d; bestSeg = i; bestT = raw }
+        }
+        guard bestSeg >= 0 else { return nil }
+        if bestSeg == 0, bestT <= 0 { return nil }                     // still short of the line
+        if bestSeg == pts.count - 2, bestT >= 1 { return nil }         // past the rejoin end
+        return bestDist
+    }
+
+    /// The along-track distance (NM) of `p` from `a` measured in the direction of the leg
+    /// a→b — negative while `p` is still short of `a`.
+    private func alongLegNM(_ p: CLLocationCoordinate2D,
+                            from a: CLLocationCoordinate2D, to b: CLLocationCoordinate2D) -> Double {
+        let leg = Geo.bearing(from: a, to: b)
+        let toP = Geo.bearing(from: a, to: p)
+        return Geo.distanceNM(from: a, to: p) * cos((toP - leg) * .pi / 180)
+    }
+
+    /// Re-anchor a reroute to the aircraft's current position: drop the leading vertices the
+    /// aircraft has already flown past and begin the line at the aircraft, so the drawn line
+    /// starts where the aircraft actually is (with the first leg the intercept back onto the
+    /// reroute) rather than at a point it has drifted off. The remaining vertices — and the
+    /// rejoin on the filed route — are untouched, so the maneuver still ends on the flight path.
+    private func pathAnchoredAtAircraft(_ path: [CLLocationCoordinate2D],
+                                        from pos: CLLocationCoordinate2D) -> [CLLocationCoordinate2D] {
+        var pts = path.filter { $0.isValid }
+        guard pts.count >= 2 else { return [] }
+        // Keep at least the final leg, so a line the aircraft is past everywhere still ends
+        // on the route rather than collapsing.
+        while pts.count > 2, alongLegNM(pos, from: pts[0], to: pts[1]) > 0 { pts.removeFirst() }
+        if Geo.distanceNM(from: pos, to: pts[0]) < 1 { pts[0] = pos } else { pts.insert(pos, at: 0) }
+        return pts
+    }
+
+    /// While the aircraft is being vectored around weather, watch how far it actually is from
+    /// the mint line it was cleared to fly. Wind, a late roll-in, or a wide turn can leave it
+    /// well off the drawn line — at which point the line no longer describes the reroute being
+    /// flown, and the armed turns point at geometry the aircraft will never reach.
+    ///
+    /// Past `deviationOffPathToleranceNM` (5 NM either side) the deviation is re-planned **from
+    /// the aircraft's current position**: fresh geometry when new weather now sits on the path
+    /// from here, else the committed reroute re-anchored to the aircraft. The re-anchored line
+    /// is re-frozen (so the map draws it from the aircraft), the controller re-vectors onto it,
+    /// and the interior turns are re-armed against the new line so the upcoming turn calls
+    /// match what is drawn. The rejoin on the filed route is preserved either way.
+    ///
+    /// Returns whether it re-planned this tick, so the caller skips the other turn checks —
+    /// they would otherwise fire against the geometry just replaced.
+    @discardableResult
+    private func maybeReplanDeviationOffPath() -> Bool {
+        guard !companionStandby, weatherFlowAllowed, !establishedOnFinal,
+              weatherDeviation.state == .vectoringAroundWeather,
+              let pos = aircraftState.coordinate, pos.isValid else { return false }
+        let path = committedMintLineCoordinates()
+        guard path.count >= 2, let end = path.last, end.isValid,
+              // Nearly at the rejoin: let the aircraft finish rather than re-vectoring onto a
+              // fresh line it would fly for a mile.
+              Geo.distanceNM(from: pos, to: end) > autoResumeInterceptNM,
+              let off = offPathDistanceNM(pos, path: path),
+              off > deviationOffPathToleranceNM else { return false }
+        // Just turned: the aircraft is off the line while it rolls out — that is the armed
+        // turn working, not drift.
+        if let turned = lastAutoTurnIssuedAt,
+           Date().timeIntervalSince(turned) < turnComplyWindow { return false }
+        if let last = lastOffPathReplanAt,
+           Date().timeIntervalSince(last) < offPathReplanInterval { return false }
+        lastOffPathReplanAt = Date()
+
+        // Re-plan from here. `recomputeConflictFrom` protects the committed reroute ahead plus
+        // the filed route past it, so a fresh line is produced only when weather now sits on
+        // the path from this position; otherwise the reroute is still good and only needs
+        // re-anchoring to where the aircraft is.
+        var replanned = path
+        if recomputeConflictFrom(pos), let fresh = activeWeatherConflict?.deviationPath,
+           fresh.count >= 2 {
+            replanned = fresh
+        }
+        let anchored = pathAnchoredAtAircraft(replanned, from: pos)
+        guard anchored.count >= 2, let next = anchored.dropFirst().first, next.isValid else { return false }
+
+        // Keep the live conflict, the frozen line, the assigned heading and the armed turns all
+        // keyed to the same geometry.
+        if var conflict = activeWeatherConflict {
+            conflict.deviationPath = anchored
+            activeWeatherConflict = conflict
+        }
+        weatherDeviation.committedDeviationPath = anchored.map(WeatherDeviationContext.PathPoint.init)
+        applyDeviationResult(deviationEngine.revectorOffPath(
+            cs: callsignNow(),
+            heading: ApproachIntercept.normalizedHeading(Geo.bearing(from: pos, to: next)),
+            maintainAltitude: weatherMaintainAltitude(),
+            context: weatherDeviation, facility: weatherFacility))
         captureWeatherRejoinTurn()
         return true
     }
@@ -5960,6 +6108,7 @@ final class AppModel: ObservableObject {
         // The turn onto the last leg (toward the rejoin, the final point) is the final
         // turn; earlier interior vertices are intermediate turns that keep vectoring.
         let isFinalTurn = index >= path.count - 2
+        lastAutoTurnIssuedAt = Date()   // let it roll out before drift is judged
         applyDeviationResult(deviationEngine.rejoinTurn(
             cs: callsignNow(), heading: heading, rejoinFix: weatherDeviation.rejoinFix,
             finalTurn: isFinalTurn, context: weatherDeviation, facility: weatherFacility))
@@ -6008,6 +6157,8 @@ final class AppModel: ObservableObject {
         weatherHandled = false
         mockWeatherAdvisoryIssued = false
         lastConflictSeenAt = nil
+        lastOffPathReplanAt = nil
+        lastAutoTurnIssuedAt = nil
     }
 
     func requestHigherForWeather() {
@@ -6044,6 +6195,8 @@ final class AppModel: ObservableObject {
         weatherHandled = false
         mockWeatherAdvisoryIssued = false
         lastConflictSeenAt = nil
+        lastOffPathReplanAt = nil
+        lastAutoTurnIssuedAt = nil
     }
 
     /// Pilot elects to continue on course through the advisory.

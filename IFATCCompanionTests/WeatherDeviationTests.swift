@@ -1110,6 +1110,39 @@ final class WeatherDeviationTests: XCTestCase {
                       result.atc.first?.displayText ?? "")
     }
 
+    // MARK: - Drifted off the reroute being flown
+
+    /// Re-vectoring an aircraft that has drifted off the reroute states the reason, assigns a
+    /// fresh heading with the maintain altitude, and clears the armed turn — it indexed the
+    /// geometry just replaced, and the caller re-arms against the re-anchored line.
+    func testRevectorOffPathAssignsAFreshHeadingAndClearsTheArmedTurn() {
+        let engine = PhraseologyEngine(digitStyle: .individual, mode: .faa)
+        let phr = WeatherDeviationPhraseology(engine: engine)
+        let dev = WeatherDeviationEngine(phraseology: phr)
+        let cs = engine.callsign(airline: "United", flightNumber: "598", fallback: "")
+        var ctx = WeatherDeviationContext()
+        ctx.state = .vectoringAroundWeather
+        ctx.assignedHeading = 40
+        ctx.pendingTurnIndex = 2
+        ctx.pendingRejoinHeading = 60
+        ctx.vectorApexLatitude = 40
+        ctx.vectorApexLongitude = -95
+        ctx.vectorLegBearing = 35
+        let result = dev.revectorOffPath(cs: cs, heading: 75, maintainAltitude: 37000,
+                                         context: ctx, facility: .center)
+        XCTAssertEqual(result.context.state, .vectoringAroundWeather)
+        XCTAssertEqual(result.context.assignedHeading, 75)
+        XCTAssertNil(result.context.pendingTurnIndex, "the stale armed turn is cleared")
+        XCTAssertNil(result.context.vectorApexLatitude)
+        XCTAssertNil(result.pilot, "the controller initiates it — there is no pilot call")
+        let atc = result.atc.first?.displayText ?? ""
+        XCTAssertTrue(atc.contains("off the assigned deviation"), atc)
+        XCTAssertTrue(atc.contains("fly heading 075"), atc)
+        XCTAssertTrue(atc.contains("advise clear of weather"), atc)
+        XCTAssertTrue(result.atc.first?.readback?.displayText.contains("Heading 075") ?? false,
+                      "the heading and maintain altitude are read back")
+    }
+
     // MARK: - STAR handling
 
     func testStarDeviationAssignsMaintainAltitude() {

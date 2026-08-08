@@ -212,6 +212,22 @@ struct WeatherDeviationPhraseology {
         return tx
     }
 
+    /// The aircraft has drifted off the reroute it was cleared to fly, so the deviation was
+    /// re-planned from where it actually is and the controller re-vectors onto the re-anchored
+    /// line. Same assignment as `vectorApproval` — heading, maintain, advise clear of weather —
+    /// with the reason stated, the way a controller flags an aircraft off its assigned track.
+    func offPathVector(cs: Callsign, heading: Int, maintainAltitude: Int,
+                       facility: ATCFacility = .center) -> ATCTransmission {
+        var tx = center("\(cs.display), you appear to be off the assigned deviation, fly heading \(headingDisplay(heading)), vectors around precipitation, maintain \(altDisplay(maintainAltitude)), advise clear of weather.",
+                        "\(cs.spoken), you appear to be off the assigned deviation, fly heading \(Phonetic.heading(heading, icao: icao)), vectors around precipitation, maintain \(altSpoken(maintainAltitude)), advise clear of weather.",
+                        facility: facility)
+        tx.readback = ATCTransmission.Readback(
+            displayText: "Heading \(headingDisplay(heading)), maintain \(altDisplay(maintainAltitude)), \(cs.display).",
+            spokenText: "Heading \(Phonetic.heading(heading, icao: icao)), maintain \(altSpoken(maintainAltitude)), \(cs.spoken).",
+            facility: facility)
+        return tx
+    }
+
     /// A turn in the deviation path. An **intermediate** turn keeps vectoring around
     /// the precipitation (e.g. turning out onto the parallel leg of a side-hug); the
     /// **final** turn intercepts and rejoins the filed route, naming the rejoin fix
