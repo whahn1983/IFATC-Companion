@@ -39,10 +39,12 @@ enum IFFlightPlanParser {
     /// detailed JSON document with per-fix planned altitudes and nested SID/STAR/approach
     /// procedure groups. It is preferred when present. `full` (`aircraft/0/flightplan`)
     /// is the fallback: on some IF versions it is also rich JSON, but on others it
-    /// collapses a long route to a handful of summary legs. When the chosen base plan is
-    /// missing enroute fixes, the textual route (`flightplan/route`) carries every fix,
-    /// so its longer list is preferred. Coordinates (`flightplan/coordinates`) are
-    /// attached when they line up 1-for-1 with the recovered fixes.
+    /// collapses a long route to a handful of summary legs. The textual route
+    /// (`flightplan/route`) carries every fix, so whenever it names more of them than the
+    /// chosen base plan did, its longer list wins — the detailed document has been seen to
+    /// name a procedure while omitting its fixes. Those fixes are located from the parallel
+    /// `flightplan/coordinates` state, which is index-aligned with the route, and any
+    /// coordinate/altitude the base plan recovered is carried across by name.
     static func parse(fullInfo: String? = nil, full: String?, route: String?, coordinates: String?) -> FlightPlan? {
         // Prefer the detailed full_info document; fall back to the plain flightplan
         // state. full_info is the only state that carries planned altitudes and the
@@ -63,11 +65,18 @@ enum IFFlightPlanParser {
             }
         }
 
-        // Prefer the route string's fix list when it recovers more enroute fixes than
-        // the (possibly summarised) full payload did — but never trade away a richer
-        // payload that already carries per-fix coordinates (the detailed-JSON case)
-        // for a coordinate-less route string.
-        let planHasCoordinates = plan?.waypoints.contains { $0.coordinate != nil } ?? false
+        // Prefer the route state's fix list whenever it names more enroute fixes than the
+        // (possibly incomplete) full payload did.
+        //
+        // This used to be skipped entirely once the full payload carried any coordinates,
+        // on the reasoning that a located-but-shorter list beats a longer coordinate-less
+        // one. That cost real fixes: the detailed document has been observed to carry a
+        // procedure's *name* while omitting its fixes — a KIAH→KATL plan whose route state
+        // listed the I09R approach's DFINS/GGUYY/EEASY/BURNY showed a route ending at the
+        // STAR's last fix, because the detailed plan's shorter list had coordinates and so
+        // won outright. The trade-off is gone now: `parseAlignedRoute` locates the route
+        // state's fixes from the parallel coordinate state, and whatever the detailed plan
+        // did recover for the fixes they share is carried across by name.
         if let route, let routePlan = parseRouteString(route) {
             // The route string carries the departure/arrival runway tokens even when
             // the detailed payload omits them, so borrow those regardless of whether
@@ -77,15 +86,19 @@ enum IFFlightPlanParser {
                 if p.arrivalRunway.isEmpty { p.arrivalRunway = routePlan.arrivalRunway }
                 plan = p
             }
-            if !planHasCoordinates, routePlan.waypoints.count > (plan?.waypoints.count ?? 0) {
+            let located = parseAlignedRoute(route: route, coordinates: coordinates)
+            let spine = located.isEmpty ? routePlan.waypoints : located
+            if spine.count > (plan?.waypoints.count ?? 0) {
                 if var p = plan {
-                    p.waypoints = routePlan.waypoints
+                    p.waypoints = carryingKnownDetail(spine, from: p.waypoints)
                     if p.departure.isEmpty { p.departure = routePlan.departure }
                     if p.destination.isEmpty { p.destination = routePlan.destination }
                     if p.cruiseAltitude <= 0 { p.cruiseAltitude = routePlan.cruiseAltitude }
                     plan = p
                 } else {
-                    plan = routePlan
+                    var p = routePlan
+                    p.waypoints = spine
+                    plan = p
                 }
             }
         }
@@ -122,6 +135,58 @@ enum IFFlightPlanParser {
             }
         }
         return plan
+    }
+
+    /// Ordered, *located* enroute fixes recovered from the `flightplan/route` and
+    /// `flightplan/coordinates` states together.
+    ///
+    /// Infinite Flight emits those two 1-for-1: `route` is a **comma**-separated list of
+    /// every entry in the plan and `coordinates` carries one lat/lon pair per entry in the
+    /// same order. Splitting the route on whitespace (as the general route-string parser
+    /// must, since a route can arrive space-separated) breaks that alignment, because a
+    /// compound display marker such as `DPT RW15L` is a single comma-separated entry
+    /// holding one space. Splitting on commas alone preserves the 1-for-1 mapping, so
+    /// every fix the route names can be given its true position.
+    ///
+    /// Returns an empty list when the two states don't line up, so the caller falls back
+    /// to the name-only route parse rather than scattering the route across the map.
+    static func parseAlignedRoute(route: String, coordinates: String?) -> [Waypoint] {
+        let fields = route.components(separatedBy: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces).uppercased() }
+        guard fields.count > 1 else { return [] }
+        let coords = coordinates.map(parseCoordinateList) ?? []
+        guard coords.count == fields.count else { return [] }
+
+        var fixes: [Waypoint] = []
+        var seen = Set<String>()
+        for (i, field) in fields.enumerated() {
+            // The airports at either end are the endpoints, not enroute fixes.
+            if i == 0 || i == fields.count - 1, isICAO(field) { continue }
+            guard isFix(field), !isRunwayToken(field), !isPseudoWaypoint(field),
+                  altitudeFromToken(field) == nil, !seen.contains(field) else { continue }
+            seen.insert(field)
+            fixes.append(Waypoint(name: field, latitude: coords[i].lat, longitude: coords[i].lon))
+        }
+        return fixes
+    }
+
+    /// Carry the per-fix coordinate and planned altitude the detailed document recovered
+    /// onto a fix list taken from the flat route state, matching by name. Adopting the
+    /// longer list therefore never costs a fix the detail the detailed plan did have.
+    private static func carryingKnownDetail(_ spine: [Waypoint], from known: [Waypoint]) -> [Waypoint] {
+        guard !known.isEmpty else { return spine }
+        var byName: [String: Waypoint] = [:]
+        for wp in known where byName[wp.name] == nil { byName[wp.name] = wp }
+        return spine.map { wp in
+            guard let detail = byName[wp.name] else { return wp }
+            var out = wp
+            if out.coordinate == nil {
+                out.latitude = detail.latitude
+                out.longitude = detail.longitude
+            }
+            if out.altitude == nil { out.altitude = detail.altitude }
+            return out
+        }
     }
 
     /// Parse a flat list of coordinate pairs from the `flightplan/coordinates` state.
