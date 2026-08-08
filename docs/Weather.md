@@ -494,6 +494,26 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      line's turn-out. Applied only when the departure end of the route is known — not the
      aircraft-position fallback, where skipping ahead would drop weather right in front of the
      aircraft.
+   - **Never left drawn behind the aircraft — redrawn 20 NM ahead, and ATC says so.** The
+     lines are solved for the whole route and then held, so the aircraft can end up past the
+     turn-out at the start of one: the pilot ignored the banner and flew by it, or a position
+     jump carried the aircraft beyond it. The reroute is then drawn *behind* the aircraft,
+     where it can no longer be flown. So whenever the active deviation's entry point falls
+     behind the aircraft (measured along the filed route, so a missed entry counts the same as
+     one flown past), the deviations are **re-solved starting `deviationRedrawAheadNM` (20 NM)
+     in front of the aircraft** — far enough ahead to leave room to work the new turn — and the
+     controller advises the revised deviation (*"weather deviation updated, revised deviation
+     now begins 20 miles ahead"*). That call is informational: it assigns nothing, changes no
+     deviation state, and leaves the banner and the near-turn advisory to fire for the redrawn
+     line exactly as they would have. The redraw point becomes a **walk floor** so a later
+     recompute (the 5-min auto-refresh, a pull-to-refresh, a fresh radar sample) can't step
+     back behind the aircraft and re-produce the same stale line; it is cleared on a route
+     change. If nothing solves from 20 NM ahead (the weather is now abeam or behind, or the
+     route ends first) the stale line is simply dropped — including its confirm-clear hold —
+     with no call, rather than left drawn behind the aircraft.
+     A **committed** deviation is never redrawn: the pilot is already flying that frozen line,
+     whose start legitimately falls behind once the turn is made, and a held beginning turn
+     still fires as the aircraft passes abeam its turn-out.
    - **Starts at the turn-out, not the aircraft — a ~30° dogleg out and back.** A reroute
      drawn far ahead must not drift shallowly from the aircraft across the whole distance
      to the weather. The chosen path is reshaped so it **begins at the turn-out point** —
@@ -605,6 +625,28 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      `committedDeviationPath`), so the second turn back down to the flight path is called
      just like the first. The turn fires when the aircraft is near the vertex or has
      passed abeam it along the leg into it, so flying wide of it still triggers it.
+   - **Drift off the line being flown → re-planned from the aircraft.** Wind, a late roll-in
+     or a wide turn can leave the aircraft well off the mint line it was cleared to fly — at
+     which point the drawn line no longer describes the reroute being flown and the armed
+     turns point at geometry the aircraft will never reach. So while vectoring, the
+     perpendicular distance from the aircraft to the committed line is watched, and past
+     `deviationOffPathToleranceNM` (**5 NM either side**) the deviation is re-planned **from the
+     aircraft's current position**: fresh geometry when new precipitation now sits on the path
+     from here (`recomputeConflictFrom`, which also carries the line down to the filed route),
+     else the committed reroute itself — in both cases **re-anchored to the aircraft**
+     (`pathAnchoredAtAircraft` drops the vertices already flown past and starts the line at the
+     aircraft, so its first leg is the intercept back onto the reroute). The re-anchored line is
+     re-frozen, the controller re-vectors onto it (*"you appear to be off the assigned
+     deviation, fly heading …, vectors around precipitation, maintain …, advise clear of
+     weather"*), and the interior turns are re-armed against the new line so the upcoming turn
+     calls match what is drawn. The rejoin on the filed route is preserved either way.
+     Three things keep it from firing when nothing is wrong: the aircraft must actually be
+     **on** the line (a reroute still drawn ahead of it, or one already flown out past the
+     rejoin, is not drift); an **armed turn wins**, since flying wide of a vertex is what the
+     abeam turn logic already handles; and a turn just issued gets a `turnComplyWindow` (60 s)
+     to roll out before its distance from the line counts as drift. A re-plan also holds off
+     within `autoResumeInterceptNM` of the rejoin — the maneuver is essentially over — and is
+     rate-limited by `offPathReplanInterval`.
    - **Auto-resume at the intercept.** If the pilot never reports clear of weather, the
      controller automatically issues *"resume own navigation"* and ends the deviation
      once the aircraft reaches within 15 NM of that intercept (measured on the final leg,

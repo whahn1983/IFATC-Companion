@@ -78,6 +78,19 @@ struct WeatherDeviationEngine {
         return Result(pilot: nil, atc: [tx], context: ctx)
     }
 
+    /// The recommended reroute's entry point fell behind the aircraft — it was flown past or
+    /// missed — so the deviation was redrawn ahead of the aircraft. The controller advises the
+    /// revised deviation and how far ahead it now begins. Purely informational: the deviation
+    /// lifecycle is untouched, so a pending pilot decision (and the advisory still to come as
+    /// the new turn closes) stands exactly as it was.
+    func advisePathRedrawn(cs: Callsign, distanceNM: Int, context: WeatherDeviationContext,
+                           facility: ATCFacility) -> Result {
+        var ctx = context
+        let tx = phraseology.deviationRedrawnAhead(cs: cs, distanceNM: distanceNM, facility: facility)
+        ctx.lastATCWeatherCall = tx.displayText
+        return Result(pilot: nil, atc: [tx], context: ctx)
+    }
+
     // MARK: - Deviation request → approval
 
     /// Pilot requests a left/right deviation; controller approves (with a rejoin
@@ -164,6 +177,28 @@ struct WeatherDeviationEngine {
         ctx.deviationStartLegBearing = nil
         ctx.lastATCWeatherCall = atc.displayText
         return Result(pilot: nil, atc: [atc], context: ctx)
+    }
+
+    /// The aircraft has drifted off the reroute it was cleared to fly (wind, a late roll-in, a
+    /// wide turn), so the deviation was re-planned from where it actually is. The controller
+    /// re-vectors it onto the re-anchored line. Controller-initiated — no pilot call — and the
+    /// armed turn is cleared, since it indexed the geometry just replaced (the caller re-arms
+    /// against the new line).
+    func revectorOffPath(cs: Callsign, heading: Int, maintainAltitude: Int,
+                         context: WeatherDeviationContext, facility: ATCFacility) -> Result {
+        var ctx = context
+        let tx = phraseology.offPathVector(cs: cs, heading: heading,
+                                           maintainAltitude: maintainAltitude, facility: facility)
+        ctx.state = .vectoringAroundWeather
+        ctx.assignedHeading = heading
+        ctx.maintainAltitude = maintainAltitude
+        ctx.pendingTurnIndex = nil
+        ctx.pendingRejoinHeading = nil
+        ctx.vectorApexLatitude = nil
+        ctx.vectorApexLongitude = nil
+        ctx.vectorLegBearing = nil
+        ctx.lastATCWeatherCall = tx.displayText
+        return Result(pilot: nil, atc: [tx], context: ctx)
     }
 
     /// Pilot requests vectors; controller assigns a heading around precipitation.

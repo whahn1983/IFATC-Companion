@@ -1068,6 +1068,29 @@ final class WeatherDeviationTests: XCTestCase {
         XCTAssertTrue(atc.contains("expect the turn"), atc)
     }
 
+    // MARK: - Reroute redrawn ahead (entry point fell behind the aircraft)
+
+    /// The drawn reroute's entry point fell behind the aircraft, so the deviation was
+    /// redrawn ahead of it. The controller advises the revised deviation — and the call is
+    /// purely informational: the lifecycle state is untouched, so a pending pilot decision
+    /// (and the advisory still to come) stands exactly as it was.
+    func testAdvisePathRedrawnIsInformationalAndKeepsTheLifecycle() {
+        let engine = PhraseologyEngine(digitStyle: .individual, mode: .faa)
+        let phr = WeatherDeviationPhraseology(engine: engine)
+        let dev = WeatherDeviationEngine(phraseology: phr)
+        let cs = engine.callsign(airline: "United", flightNumber: "598", fallback: "")
+        var ctx = WeatherDeviationContext()
+        ctx.state = .awaitingPilotIntentions
+        let result = dev.advisePathRedrawn(cs: cs, distanceNM: 20, context: ctx, facility: .center)
+        XCTAssertEqual(result.context.state, .awaitingPilotIntentions,
+                       "advising the redraw must not move the deviation lifecycle")
+        XCTAssertNil(result.pilot, "the controller initiates it — there is no pilot call")
+        let atc = result.atc.first?.displayText ?? ""
+        XCTAssertTrue(atc.contains("weather deviation updated"), atc)
+        XCTAssertTrue(atc.contains("20 miles ahead"), atc)
+        XCTAssertNil(result.atc.first?.readback, "nothing is assigned, so there is nothing to read back")
+    }
+
     func testBeginDeviationTurnVectorsOntoTheReroute() {
         let engine = PhraseologyEngine(digitStyle: .individual, mode: .faa)
         let phr = WeatherDeviationPhraseology(engine: engine)
@@ -1085,6 +1108,39 @@ final class WeatherDeviationTests: XCTestCase {
         XCTAssertNil(result.context.deviationStartLatitude, "the held turn is consumed once issued")
         XCTAssertTrue(result.atc.first?.displayText.contains("fly heading 110") ?? false,
                       result.atc.first?.displayText ?? "")
+    }
+
+    // MARK: - Drifted off the reroute being flown
+
+    /// Re-vectoring an aircraft that has drifted off the reroute states the reason, assigns a
+    /// fresh heading with the maintain altitude, and clears the armed turn — it indexed the
+    /// geometry just replaced, and the caller re-arms against the re-anchored line.
+    func testRevectorOffPathAssignsAFreshHeadingAndClearsTheArmedTurn() {
+        let engine = PhraseologyEngine(digitStyle: .individual, mode: .faa)
+        let phr = WeatherDeviationPhraseology(engine: engine)
+        let dev = WeatherDeviationEngine(phraseology: phr)
+        let cs = engine.callsign(airline: "United", flightNumber: "598", fallback: "")
+        var ctx = WeatherDeviationContext()
+        ctx.state = .vectoringAroundWeather
+        ctx.assignedHeading = 40
+        ctx.pendingTurnIndex = 2
+        ctx.pendingRejoinHeading = 60
+        ctx.vectorApexLatitude = 40
+        ctx.vectorApexLongitude = -95
+        ctx.vectorLegBearing = 35
+        let result = dev.revectorOffPath(cs: cs, heading: 75, maintainAltitude: 37000,
+                                         context: ctx, facility: .center)
+        XCTAssertEqual(result.context.state, .vectoringAroundWeather)
+        XCTAssertEqual(result.context.assignedHeading, 75)
+        XCTAssertNil(result.context.pendingTurnIndex, "the stale armed turn is cleared")
+        XCTAssertNil(result.context.vectorApexLatitude)
+        XCTAssertNil(result.pilot, "the controller initiates it — there is no pilot call")
+        let atc = result.atc.first?.displayText ?? ""
+        XCTAssertTrue(atc.contains("off the assigned deviation"), atc)
+        XCTAssertTrue(atc.contains("fly heading 075"), atc)
+        XCTAssertTrue(atc.contains("advise clear of weather"), atc)
+        XCTAssertTrue(result.atc.first?.readback?.displayText.contains("Heading 075") ?? false,
+                      "the heading and maintain altitude are read back")
     }
 
     // MARK: - STAR handling
