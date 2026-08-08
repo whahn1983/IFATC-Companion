@@ -1566,6 +1566,13 @@ final class AppModel: ObservableObject {
     /// the next ingested fix is treated as a post-gap jump — exercising the discontinuity
     /// handling (turn-burst collapse, lifecycle preservation) without a live socket.
     func markTelemetryResyncPendingForTesting() { telemetryResyncPending = true }
+
+    /// Test hook: merge a flight plan the way a live read from Infinite Flight does, so a
+    /// test can verify a route edited mid-flight reaches the app (and that manual endpoint
+    /// overrides never pin the fix list).
+    func mergeLiveFlightPlanForTesting(_ live: FlightPlan) {
+        mergeLiveFlightPlan(live)
+    }
     #endif
 
     private func handle(state: AircraftState) {
@@ -2558,7 +2565,9 @@ final class AppModel: ObservableObject {
     }
 
     /// Merge a flight plan read from Infinite Flight into the active plan. Manual
-    /// overrides win; otherwise empty fields are filled from the live plan.
+    /// overrides win for the fields the pilot can actually type; otherwise empty fields
+    /// are filled from the live plan. The waypoint list is not one of those fields, so it
+    /// always follows Infinite Flight.
     private func mergeLiveFlightPlan(_ live: FlightPlan) {
         var plan = flightPlan
         let manual = plan.manualOverride
@@ -2579,12 +2588,40 @@ final class AppModel: ObservableObject {
         fill(&plan.sid, live.sid)
         fill(&plan.star, live.star)
         fill(&plan.approach, live.approach)
-        if (!manual || plan.waypoints.isEmpty), !live.waypoints.isEmpty {
-            plan.waypoints = live.waypoints
+        // The route itself is never a manual override — there is no field to type a fix
+        // list into, so `manualOverride` (which pins the endpoints/procedures the pilot
+        // *did* type) must not freeze it. Pinning it used to mean a route edited in
+        // Infinite Flight mid-flight — adding the approach after receiving the ATIS is
+        // the usual case — never reached the app, and "Refresh from Infinite Flight"
+        // couldn't dislodge it either. The live fix list always wins.
+        if !live.waypoints.isEmpty {
+            // A momentarily degraded read (e.g. the detailed `full_info` state missing on
+            // one poll, so only the coordinate-less route string parses) must not strip the
+            // positions off a route the app already has: carry the known coordinate for any
+            // same-named fix the live list didn't locate. A fix never moves, so this can
+            // only ever restore the right position.
+            var incoming = live.waypoints
+            if incoming.contains(where: { $0.coordinate == nil }) {
+                var known: [String: CLLocationCoordinate2D] = [:]
+                for wp in plan.waypoints {
+                    if let coord = wp.coordinate, known[wp.name] == nil { known[wp.name] = coord }
+                }
+                for i in incoming.indices where incoming[i].coordinate == nil {
+                    if let coord = known[incoming[i].name] {
+                        incoming[i].latitude = coord.latitude
+                        incoming[i].longitude = coord.longitude
+                    }
+                }
+            }
+            plan.waypoints = incoming
             // The SID's fix structure belongs to the same live parse as the waypoints,
             // so it travels with them — the initial departure heading targets the SID's
             // own first fix rather than a buffer fix filed ahead of it.
             plan.sidFixNames = live.sidFixNames
+            // So does the approach's first fix: it names an entry in the very list just
+            // adopted, and is what caps how deep a weather deviation may rejoin the route.
+            // Left unmerged it stayed empty forever and the cap never applied.
+            plan.approachStartFixName = live.approachStartFixName
         }
         // Carry the endpoint coordinates Infinite Flight reports for the fields (they
         // place the departure/destination markers on the real field even when it's
@@ -2644,6 +2681,13 @@ final class AppModel: ObservableObject {
         } else if plan.waypoints.map(\.name) != beforeWaypoints {
             lastPrecipSampleAt = nil
             livePrecipCellsReady = false
+        }
+        // Record the route the *app* ended up with whenever it changes. Paired with the
+        // "Flight plan fixes" line the reader logs for the parse, this pins down which
+        // side dropped a fix when a route in the app doesn't match the one in the sim.
+        if plan.waypoints.map(\.name) != beforeWaypoints {
+            diagnostics.log(.app, "Active route now \(plan.waypoints.count) fixes: "
+                + plan.waypoints.map(\.name).joined(separator: "→"))
         }
     }
 
