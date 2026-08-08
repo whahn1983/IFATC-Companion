@@ -2682,6 +2682,13 @@ final class AppModel: ObservableObject {
             lastPrecipSampleAt = nil
             livePrecipCellsReady = false
         }
+        // Record the route the *app* ended up with whenever it changes. Paired with the
+        // "Flight plan fixes" line the reader logs for the parse, this pins down which
+        // side dropped a fix when a route in the app doesn't match the one in the sim.
+        if plan.waypoints.map(\.name) != beforeWaypoints {
+            diagnostics.log(.app, "Active route now \(plan.waypoints.count) fixes: "
+                + plan.waypoints.map(\.name).joined(separator: "→"))
+        }
     }
 
     /// Round an altitude up to the next whole thousand feet (e.g. 8,434 → 9,000).

@@ -271,15 +271,30 @@ final class IFConnectManager: ObservableObject {
             + "cruise \(plan.cruiseAltitude > 0 ? "\(plan.cruiseAltitude) ft" : "—"), "
             + "SID \(plan.sid.isEmpty ? "—" : plan.sid), STAR \(plan.star.isEmpty ? "—" : plan.star), "
             + "APP \(plan.approach.isEmpty ? "—" : plan.approach).")
+        // The parsed fix list itself, not just its size: when a report says fixes are
+        // missing from the route, this is what separates "the parser dropped them" from
+        // "the parser has them and something downstream doesn't". A fix with no
+        // coordinate is marked, since an unlocated fix draws nothing on the map.
+        if !plan.waypoints.isEmpty {
+            let names = plan.waypoints
+                .map { $0.coordinate == nil ? "\($0.name)(no-pos)" : $0.name }
+                .joined(separator: "→")
+            diagnostics?.log(.state, "Flight plan fixes: \(names)")
+        }
         onFlightPlan?(plan)
     }
 
     /// Emit the raw flight-plan payloads to diagnostics (truncated) so the actual IF
     /// wire format can be inspected when the parsed result looks wrong.
     private func logRawFlightPlan(_ payloads: IFConnectStateReader.FlightPlanPayloads) {
+        // Keep the *tail* as well as the head: the detailed document runs to ~8 KB on a
+        // full route, and the STAR/approach groups — the part in question whenever fixes
+        // are reported missing — sit at the very end, exactly what a head-only cut drops.
         func trimmed(_ s: String) -> String {
-            let max = 2000
-            return s.count > max ? String(s.prefix(max)) + "…[\(s.count) chars]" : s
+            let max = 4000
+            guard s.count > max else { return s }
+            let half = max / 2
+            return String(s.prefix(half)) + "…[\(s.count) chars, middle elided]…" + String(s.suffix(half))
         }
         if let fullInfo = payloads.fullInfo { diagnostics?.log(.state, "Raw flightplan/full_info: \(trimmed(fullInfo))") }
         if let full = payloads.full { diagnostics?.log(.state, "Raw flightplan: \(trimmed(full))") }
