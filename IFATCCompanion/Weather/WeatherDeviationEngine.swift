@@ -78,6 +78,19 @@ struct WeatherDeviationEngine {
         return Result(pilot: nil, atc: [tx], context: ctx)
     }
 
+    /// The recommended reroute's entry point fell behind the aircraft — it was flown past or
+    /// missed — so the deviation was redrawn ahead of the aircraft. The controller advises the
+    /// revised deviation and how far ahead it now begins. Purely informational: the deviation
+    /// lifecycle is untouched, so a pending pilot decision (and the advisory still to come as
+    /// the new turn closes) stands exactly as it was.
+    func advisePathRedrawn(cs: Callsign, distanceNM: Int, context: WeatherDeviationContext,
+                           facility: ATCFacility) -> Result {
+        var ctx = context
+        let tx = phraseology.deviationRedrawnAhead(cs: cs, distanceNM: distanceNM, facility: facility)
+        ctx.lastATCWeatherCall = tx.displayText
+        return Result(pilot: nil, atc: [tx], context: ctx)
+    }
+
     // MARK: - Deviation request → approval
 
     /// Pilot requests a left/right deviation; controller approves (with a rejoin

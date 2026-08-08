@@ -85,6 +85,19 @@ struct WeatherDeviationPhraseology {
                       facility: facility)
     }
 
+    /// The suggested reroute's entry point fell behind the aircraft (flown past or missed),
+    /// so the deviation has been redrawn ahead of it. The controller advises the revised
+    /// deviation and how far ahead it now begins. No read-back — nothing is assigned; it
+    /// tells the pilot the drawn reroute moved.
+    func deviationRedrawnAhead(cs: Callsign, distanceNM: Int,
+                               facility: ATCFacility = .center) -> ATCTransmission {
+        let milesD = distancePhrase(Double(distanceNM), spoken: false)
+        let milesS = distancePhrase(Double(distanceNM), spoken: true)
+        return center("\(cs.display), weather deviation updated, revised deviation now begins \(milesD) ahead.",
+                      "\(cs.spoken), weather deviation updated, revised deviation now begins \(milesS) ahead.",
+                      facility: facility)
+    }
+
     /// Outside NOAA radar coverage with no advisory data — do not invent weather.
     func noRadarNoAdvisory(cs: Callsign, facility: ATCFacility = .center) -> ATCTransmission {
         center("\(cs.display), radar precipitation is not available for this region. No significant aviation weather advisories are available along your route at this time.",

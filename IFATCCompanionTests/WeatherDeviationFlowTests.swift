@@ -1120,6 +1120,97 @@ final class WeatherDeviationFlowTests: XCTestCase {
         XCTAssertNil(model.weatherDeviation.deviationStartLatitude, "the held turn is consumed once issued")
     }
 
+    // MARK: - Entry point behind the aircraft → redraw the mint line 20 NM ahead
+
+    /// A point `nm` NM further along the mock route (a straight lat/lon interpolation from
+    /// the departure to the destination), measured from the aircraft's current position.
+    private func routePointAhead(_ model: AppModel, _ nm: Double) -> CLLocationCoordinate2D {
+        let dest = model.mock.route.destCoord
+        guard let pos = model.aircraftState.coordinate else { return dest }
+        let f = nm / max(1, Geo.distanceNM(from: pos, to: dest))
+        return CLLocationCoordinate2D(latitude: pos.latitude + (dest.latitude - pos.latitude) * f,
+                                      longitude: pos.longitude + (dest.longitude - pos.longitude) * f)
+    }
+
+    /// The locked mint lines are solved for the whole route and then held, so a pilot who
+    /// ignores the banner can fly straight past the turn-out at the start of one — leaving
+    /// the reroute drawn *behind* the aircraft, where it can no longer be flown. Passing (or
+    /// missing) that entry point redraws the deviation ~20 NM ahead of the aircraft, and the
+    /// controller says so.
+    func testDeviationRedrawsAheadWhenTheAircraftPassesTheEntryPoint() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)
+
+        // One heavy cell well down the route: its reroute is drawn with a turn-out far
+        // enough ahead of the weather that the aircraft can be flown past it with the
+        // storm still in front.
+        let center = routePointAhead(model, 150)
+        model.radarOverlay.mockCells = [RadarCell(polygon: box(around: center, half: 0.3), intensity: .heavy)]
+        await model.refreshDeviations()
+        guard let entry = model.activeWeatherConflict?.deviationPath.first, entry.isValid else {
+            return XCTFail("expected a drawn deviation for the cell ahead")
+        }
+
+        // Fly 3 NM past the entry point without ever committing to the deviation.
+        let course = Geo.bearing(from: entry, to: model.mock.route.destCoord)
+        let past = Geo.destination(from: entry, bearingDegrees: course, distanceNM: 3)
+        var state = model.mock.state(for: .cruise)
+        state.latitude = past.latitude
+        state.longitude = past.longitude
+        model.ingestStateForTesting(state)
+
+        guard let line = model.weatherDeviationLine, let redrawn = line.first, redrawn.isValid else {
+            return XCTFail("expected the deviation to be redrawn ahead of the aircraft")
+        }
+        XCTAssertGreaterThan(Geo.distanceNM(from: past, to: redrawn), 15,
+                             "the redrawn entry point is placed ~20 NM ahead of the aircraft")
+        let toEntry = Geo.bearing(from: past, to: redrawn)
+        var off = abs(toEntry - course).truncatingRemainder(dividingBy: 360)
+        if off > 180 { off = 360 - off }
+        XCTAssertLessThan(off, 90, "the redrawn entry point lies ahead of the aircraft, not behind it")
+        XCTAssertTrue(atcContains(model, "weather deviation updated"),
+                      "ATC notifies the pilot that the deviation was redrawn ahead")
+    }
+
+    /// The redraw never touches a deviation the pilot has committed to: once the turn is
+    /// approved, the frozen line is the one being flown and its start legitimately falls
+    /// behind the aircraft as the maneuver begins.
+    func testCommittedDeviationIsNotRedrawnWhenItsStartFallsBehind() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)
+        guard let pos = model.aircraftState.coordinate else { return XCTFail("no cruise position") }
+
+        // A narrow cell ~60 NM ahead: the reroute is drawn ahead, so the request is approved
+        // with the turn held at the turn-out.
+        let course = Geo.bearing(from: model.mock.route.depCoord, to: model.mock.route.destCoord)
+        let center = Geo.destination(from: pos, bearingDegrees: course, distanceNM: 60)
+        model.radarOverlay.mockCells = [RadarCell(polygon: box(around: center, half: 0.15), intensity: .moderate)]
+        await model.refreshDeviations()
+        guard let v0 = model.activeWeatherConflict?.deviationPath.first, v0.isValid else {
+            return XCTFail("expected a drawn-ahead conflict")
+        }
+        model.requestWeatherDeviation(.right)
+        XCTAssertEqual(model.weatherDeviationState, .deviationApproved)
+
+        // Fly 10 NM past the turn-out: the held beginning turn is issued, and the committed
+        // line stays exactly where it was — it is not redrawn ahead.
+        let past = Geo.destination(from: v0, bearingDegrees: course, distanceNM: 10)
+        var state = model.mock.state(for: .cruise)
+        state.latitude = past.latitude
+        state.longitude = past.longitude
+        model.ingestStateForTesting(state)
+
+        XCTAssertEqual(model.weatherDeviationState, .vectoringAroundWeather,
+                       "passing the turn-out begins the committed deviation")
+        XCTAssertFalse(atcContains(model, "weather deviation updated"),
+                       "a committed deviation is flown, never redrawn ahead")
+        guard let committed = model.weatherDeviationLine?.first else {
+            return XCTFail("the committed mint line should still be drawn")
+        }
+        XCTAssertLessThan(Geo.distanceNM(from: committed, to: v0), 1,
+                          "the committed line still starts at the turn-out the pilot is flying from")
+    }
+
     // MARK: - Auto-call the advisory when the turn is imminent (banner ignored)
 
     /// Because the mint lines are locked and drawn ahead, a pilot who never taps the

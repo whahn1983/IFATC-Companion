@@ -494,6 +494,26 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      line's turn-out. Applied only when the departure end of the route is known — not the
      aircraft-position fallback, where skipping ahead would drop weather right in front of the
      aircraft.
+   - **Never left drawn behind the aircraft — redrawn 20 NM ahead, and ATC says so.** The
+     lines are solved for the whole route and then held, so the aircraft can end up past the
+     turn-out at the start of one: the pilot ignored the banner and flew by it, or a position
+     jump carried the aircraft beyond it. The reroute is then drawn *behind* the aircraft,
+     where it can no longer be flown. So whenever the active deviation's entry point falls
+     behind the aircraft (measured along the filed route, so a missed entry counts the same as
+     one flown past), the deviations are **re-solved starting `deviationRedrawAheadNM` (20 NM)
+     in front of the aircraft** — far enough ahead to leave room to work the new turn — and the
+     controller advises the revised deviation (*"weather deviation updated, revised deviation
+     now begins 20 miles ahead"*). That call is informational: it assigns nothing, changes no
+     deviation state, and leaves the banner and the near-turn advisory to fire for the redrawn
+     line exactly as they would have. The redraw point becomes a **walk floor** so a later
+     recompute (the 5-min auto-refresh, a pull-to-refresh, a fresh radar sample) can't step
+     back behind the aircraft and re-produce the same stale line; it is cleared on a route
+     change. If nothing solves from 20 NM ahead (the weather is now abeam or behind, or the
+     route ends first) the stale line is simply dropped — including its confirm-clear hold —
+     with no call, rather than left drawn behind the aircraft.
+     A **committed** deviation is never redrawn: the pilot is already flying that frozen line,
+     whose start legitimately falls behind once the turn is made, and a held beginning turn
+     still fires as the aircraft passes abeam its turn-out.
    - **Starts at the turn-out, not the aircraft — a ~30° dogleg out and back.** A reroute
      drawn far ahead must not drift shallowly from the aircraft across the whole distance
      to the weather. The chosen path is reshaped so it **begins at the turn-out point** —

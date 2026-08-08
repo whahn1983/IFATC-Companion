@@ -1068,6 +1068,29 @@ final class WeatherDeviationTests: XCTestCase {
         XCTAssertTrue(atc.contains("expect the turn"), atc)
     }
 
+    // MARK: - Reroute redrawn ahead (entry point fell behind the aircraft)
+
+    /// The drawn reroute's entry point fell behind the aircraft, so the deviation was
+    /// redrawn ahead of it. The controller advises the revised deviation — and the call is
+    /// purely informational: the lifecycle state is untouched, so a pending pilot decision
+    /// (and the advisory still to come) stands exactly as it was.
+    func testAdvisePathRedrawnIsInformationalAndKeepsTheLifecycle() {
+        let engine = PhraseologyEngine(digitStyle: .individual, mode: .faa)
+        let phr = WeatherDeviationPhraseology(engine: engine)
+        let dev = WeatherDeviationEngine(phraseology: phr)
+        let cs = engine.callsign(airline: "United", flightNumber: "598", fallback: "")
+        var ctx = WeatherDeviationContext()
+        ctx.state = .awaitingPilotIntentions
+        let result = dev.advisePathRedrawn(cs: cs, distanceNM: 20, context: ctx, facility: .center)
+        XCTAssertEqual(result.context.state, .awaitingPilotIntentions,
+                       "advising the redraw must not move the deviation lifecycle")
+        XCTAssertNil(result.pilot, "the controller initiates it — there is no pilot call")
+        let atc = result.atc.first?.displayText ?? ""
+        XCTAssertTrue(atc.contains("weather deviation updated"), atc)
+        XCTAssertTrue(atc.contains("20 miles ahead"), atc)
+        XCTAssertNil(result.atc.first?.readback, "nothing is assigned, so there is nothing to read back")
+    }
+
     func testBeginDeviationTurnVectorsOntoTheReroute() {
         let engine = PhraseologyEngine(digitStyle: .individual, mode: .faa)
         let phr = WeatherDeviationPhraseology(engine: engine)
