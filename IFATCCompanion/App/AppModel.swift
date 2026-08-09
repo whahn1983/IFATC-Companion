@@ -5365,8 +5365,12 @@ final class AppModel: ObservableObject {
               weatherDeviation.state == .none, !weatherHandled,
               let conflict = activeWeatherConflict, conflict.shouldPrompt,
               let turnOut = conflict.deviationPath.first, turnOut.isValid,
-              let pos = aircraftState.coordinate, pos.isValid,
-              Geo.distanceNM(from: pos, to: turnOut) <= deviationAutoCallNM,
+              let pos = aircraftState.coordinate, pos.isValid else { return }
+        // Measured as a distance *ahead*, so a turn-out the aircraft has already passed abeam
+        // — still within 15 NM as the crow flies — doesn't raise a "weather ahead" advisory
+        // for a turn that is in fact behind the aircraft.
+        let ahead = turnOutAheadNM(turnOut, from: pos)
+        guard ahead > 0, ahead <= deviationAutoCallNM,
               let situation = currentWeatherSituation() else { return }
         weatherHandled = true
         mockWeatherAdvisoryIssued = true   // the one-shot advisory has now been issued
@@ -5404,6 +5408,19 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// A drawn mint line whose turn-out the aircraft has already passed can no longer be flown
+    /// as drawn — the maneuver begins behind the aircraft. Acting on a request against it would
+    /// approve a deviation nobody can fly, so re-plan it from the current position first and let
+    /// the controller approve *that*. Leaves the drawn line alone when its turn-out is still
+    /// ahead, and when nothing solves from here (the request then works the line as before,
+    /// rather than being silently swallowed).
+    private func reanchorDeviationIfTurnOutPassed() {
+        guard let pos = aircraftState.coordinate, pos.isValid,
+              let v0 = activeWeatherConflict?.deviationPath.first, v0.isValid,
+              turnOutAheadNM(v0, from: pos) <= 0 else { return }
+        recomputeConflictFrom(pos)
+    }
+
     /// Pilot requests a left/right weather deviation; the controller approves.
     ///
     /// When the reroute is still drawn ahead — the aircraft has not yet reached the
@@ -5415,6 +5432,7 @@ final class AppModel: ObservableObject {
     func requestWeatherDeviation(_ direction: DeviationDirection) {
         guard !companionStandby, weatherFlowAllowed, !establishedOnFinal else { return }
         let cs = callsignNow()
+        reanchorDeviationIfTurnOutPassed()
         if let ahead = deviationTurnOutAhead() {
             applyDeviationResult(deviationEngine.deferDeviation(
                 cs: cs, conflict: activeWeatherConflict, direction: direction, distanceNM: ahead.distanceNM,
@@ -5477,6 +5495,7 @@ final class AppModel: ObservableObject {
         }
 
         let cs = callsignNow()
+        reanchorDeviationIfTurnOutPassed()
         let side = activeWeatherConflict?.recommendedDirection ?? .right
         // A fresh request with the reroute still drawn ahead holds the turn, exactly like
         // a lateral deviation request — continue on course, expect the turn in X miles —
@@ -5748,14 +5767,26 @@ final class AppModel: ObservableObject {
     /// The turn-out point at the start of the drawn mint line and its distance ahead
     /// (NM, rounded to 5), when it sits meaningfully ahead of the aircraft — i.e. the
     /// reroute is drawn ahead and the beginning turn should be held until the aircraft
-    /// reaches it. Nil when the aircraft is already at/through the turn-out, so the
-    /// deviation is worked immediately.
+    /// reaches it. Nil when the aircraft is already at/through/past the turn-out, so the
+    /// deviation is worked immediately instead.
+    ///
+    /// Measured as a distance **ahead** (`turnOutAheadNM`), not as a straight-line distance.
+    /// A turn-out the aircraft has already passed abeam is still some distance away as the
+    /// crow flies: read straight, the request would be held — the pilot told to expect a turn
+    /// that is in fact behind them — and the beginning turn would then never fire, because a
+    /// turn-out behind the aircraft can never satisfy the reach test. So a turn-out that is
+    /// not genuinely ahead reports nil and the turn is worked now.
+    ///
+    /// The distance is rounded to 5 NM here and **only** here: the phraseology speaks this
+    /// number as given rather than re-rounding it to tens, so the pilot hears the distance
+    /// that was actually measured.
     private func deviationTurnOutAhead() -> (start: CLLocationCoordinate2D, distanceNM: Int)? {
         guard let pos = aircraftState.coordinate, pos.isValid,
-              let v0 = activeWeatherConflict?.deviationPath.first, v0.isValid else { return nil }
-        let d = Geo.distanceNM(from: pos, to: v0)
-        guard d > deviationTurnHoldNM else { return nil }
-        return (v0, max(5, Int((d / 5).rounded()) * 5))
+              let path = activeWeatherConflict?.deviationPath, path.count >= 2,
+              let v0 = path.first, v0.isValid, path[1].isValid else { return nil }
+        let ahead = turnOutAheadNM(v0, from: pos)
+        guard ahead > deviationTurnHoldNM else { return nil }
+        return (v0, max(5, Int((ahead / 5).rounded()) * 5))
     }
 
     /// Arm the held beginning turn at the mint line's turn-out point: store the turn-out
@@ -5812,11 +5843,18 @@ final class AppModel: ObservableObject {
         } else {
             reached = false
         }
-        guard reached else { return false }
+        guard reached else {
+            // Not reached — but a turn-out the aircraft has flown past can never *become*
+            // reached, so waiting for it silently strands the approved deviation. Recover it.
+            return releaseStaleDeviationHoldIfPassed(v0, at: pos)
+        }
         // Never turn the aircraft around. The turn-out is shaped forward from the detection
         // position, so a beginning turn this far off the current track means the aircraft is no
-        // longer where the held turn assumes — issue nothing rather than reverse it.
-        guard !vectorWouldReverseAircraft(heading, at: pos) else { return false }
+        // longer where the held turn assumes — re-plan from where it actually is rather than
+        // reversing it (and rather than holding a turn that will never be issued).
+        guard !vectorWouldReverseAircraft(heading, at: pos) else {
+            return replanHeldDeviation(from: pos)
+        }
         lastAutoTurnIssuedAt = Date()   // let it roll out before drift is judged
         applyDeviationResult(deviationEngine.beginDeviationTurn(
             cs: callsignNow(), heading: heading, maintainAltitude: weatherMaintainAltitude(),
@@ -5824,6 +5862,67 @@ final class AppModel: ObservableObject {
         // Now vectoring onto the reroute — arm the interior turns of the committed line.
         captureWeatherRejoinTurn()
         return true
+    }
+
+    /// A held beginning turn is pinned to a fixed turn-out. If the aircraft passes that point
+    /// without the turn firing — a late request, a re-locked line, a fix that jumped — the hold
+    /// is dead: `maybeIssueDeviationStartTurn`'s reach test only grows more negative as the
+    /// aircraft flies away, so it would wait for the rest of the flight while the pilot, told
+    /// to "expect the turn in X miles", flies straight on through the weather.
+    ///
+    /// So once the turn-out is genuinely behind the aircraft, re-plan from where it actually
+    /// is. Returns whether a turn was issued this tick.
+    private func releaseStaleDeviationHoldIfPassed(_ turnOut: CLLocationCoordinate2D,
+                                                   at pos: CLLocationCoordinate2D) -> Bool {
+        // A margin past abeam, so a turn-out momentarily reading behind on a noisy fix while
+        // the aircraft is still closing on it doesn't tear down a perfectly good hold.
+        guard turnOutAheadNM(turnOut, from: pos) < -deviationTurnHoldNM else { return false }
+        return replanHeldDeviation(from: pos)
+    }
+
+    /// Re-plan a held-turn deviation from the aircraft's current position and pick the hold up
+    /// where it now belongs: re-held at a fresh turn-out still ahead (with the revised distance
+    /// announced, since the pilot was given the old one), or vectored onto the reroute now when
+    /// the aircraft is already at/past it. When nothing solves from here there is nothing left
+    /// to turn for, so the lifecycle is ended rather than left approved-but-unarmed.
+    /// Returns whether a turn was issued this tick.
+    @discardableResult
+    private func replanHeldDeviation(from pos: CLLocationCoordinate2D) -> Bool {
+        clearDeviationStart()
+        guard recomputeConflictFrom(pos) else {
+            endHeldDeviationWithNothingAhead()
+            return false
+        }
+        freezeCommittedDeviationPath()
+        if let ahead = deviationTurnOutAhead() {
+            armDeviationStart()
+            announceRedrawnDeviation(distanceNM: Double(ahead.distanceNM))
+            return false
+        }
+        lastAutoTurnIssuedAt = Date()
+        issueResyncVector(from: pos)
+        guard weatherDeviation.state == .vectoringAroundWeather else {
+            // The only vector available out of here would have turned the aircraft around, so
+            // `issueResyncVector` declined it. There is no flyable deviation left from this
+            // position — end the lifecycle rather than leave it approved with nothing armed.
+            endHeldDeviationWithNothingAhead()
+            return false
+        }
+        return true
+    }
+
+    /// End a held-turn deviation that has nothing left to turn for — the turn-out is gone and
+    /// no fresh line solves from here.
+    ///
+    /// This must return the lifecycle to idle, not merely drop the armed turn.
+    /// `.deviationApproved` counts as `isCommittedDeviation`, so the per-tick rollback in
+    /// `updateWeatherConflict` deliberately leaves it alone; a context left in that state with
+    /// no armed turn is a dead end — no turn can fire, and no later conflict can prompt afresh
+    /// — for the rest of the flight.
+    private func endHeldDeviationWithNothingAhead() {
+        weatherDeviation.reset()
+        weatherHandled = false
+        mockWeatherAdvisoryIssued = false
     }
 
     // MARK: - Weather deviation — drifted off the line being flown
@@ -5886,6 +5985,38 @@ final class AppModel: ObservableObject {
     private func vectorWouldReverseAircraft(_ heading: Int, at pos: CLLocationCoordinate2D) -> Bool {
         courseChangeDegrees(inbound: aircraftTrackDegrees(at: pos),
                             outbound: Double(heading)) > maxWeatherVectorTurnDegrees
+    }
+
+    /// How far ahead (NM) `coord` lies **along the aircraft's current track** — negative once
+    /// the aircraft has passed abeam it.
+    ///
+    /// This is the distance that matters for a turn the aircraft is flying toward, and it is
+    /// not the same as the straight-line distance. A turn-out the aircraft has already flown
+    /// past is still 13 NM away as the crow flies; read as a distance it looks like a turn
+    /// comfortably ahead, and holding the beginning turn for it promises a turn that can
+    /// never be issued (the reach test in `maybeIssueDeviationStartTurn` only ever grows more
+    /// negative as the aircraft flies away from it).
+    private func aheadAlongTrackNM(_ coord: CLLocationCoordinate2D,
+                                   from pos: CLLocationCoordinate2D) -> Double {
+        guard coord.isValid, pos.isValid else { return -.greatestFiniteMagnitude }
+        let track = aircraftTrackDegrees(at: pos)
+        let bearing = Geo.bearing(from: pos, to: coord)
+        return Geo.distanceNM(from: pos, to: coord) * cos((bearing - track) * .pi / 180)
+    }
+
+    /// How far ahead (NM) a deviation's turn-out lies — the distance that decides whether the
+    /// beginning turn may be *held* for it, and whether a hold on it is still live.
+    ///
+    /// Taken as the better of two measures, because either alone misreads a real case. Along
+    /// the aircraft's **track** is right when the aircraft is off course, but a route bend can
+    /// momentarily swing the instantaneous track well off a turn-out that is genuinely ahead.
+    /// Along the filed **route** is right on course — it is the same projection that orders the
+    /// locked set and tells which deviations have been flown past (`deviationEntryIsBehind`) —
+    /// but it says little once the aircraft is well off course. A turn-out is only really
+    /// behind the aircraft when it is behind by *both*.
+    private func turnOutAheadNM(_ turnOut: CLLocationCoordinate2D,
+                                from pos: CLLocationCoordinate2D) -> Double {
+        max(aheadAlongTrackNM(turnOut, from: pos), alongRouteNM(turnOut) - alongRouteNM(pos))
     }
 
     /// The along-track distance (NM) of `p` from `a` measured in the direction of the leg
@@ -6081,21 +6212,11 @@ final class AppModel: ObservableObject {
             }
         case .deviationApproved:
             // The held beginning turn is pinned to a fixed turn-out the jump may have put
-            // behind the aircraft — recompute from the current position.
-            guard recomputeConflictFrom(pos) else {
-                // No weather ahead of the current position any more — nothing to turn for.
-                clearDeviationStart()
-                return
-            }
-            freezeCommittedDeviationPath()
-            if deviationTurnOutAhead() != nil {
-                // A fresh turn-out still sits ahead — re-hold the beginning turn there.
-                armDeviationStart()
-            } else {
-                // At/past the turn-out — vector onto the reroute now rather than firing the
-                // stale entry heading late (which could turn into/through the weather).
-                issueResyncVector(from: pos)
-            }
+            // behind the aircraft — recompute from the current position, re-hold at a fresh
+            // turn-out still ahead, or vector onto the reroute now rather than firing the
+            // stale entry heading late (which could turn into/through the weather). Nothing
+            // ahead any more ends the lifecycle, so it can't sit approved-but-unarmed.
+            replanHeldDeviation(from: pos)
         default:
             break
         }

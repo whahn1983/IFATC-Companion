@@ -605,6 +605,36 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      auto-turns follow (`maybeIssueDeviationStartTurn` → `beginDeviationTurn` →
      `captureWeatherRejoinTurn`). Weather close aboard (the turn-out within
      `deviationTurnHoldNM`) is worked immediately, as before.
+   - **"Ahead" is a direction, not a straight-line distance.** A turn-out the aircraft has
+     already passed abeam is still tens of miles away as the crow flies. Read as a distance
+     it looks like a turn comfortably ahead — so the request was held, the pilot told to
+     "expect the turn in X miles", and the beginning turn pinned to a point *behind* the
+     aircraft, where the reach test can never be satisfied: the turn was never called and
+     the aircraft flew on through the weather waiting for it. So `deviationTurnOutAhead`
+     (and the near-turn auto-advisory) use `turnOutAheadNM`, which goes negative once the
+     point is behind. It takes the better of two measures — along the aircraft's **track**
+     (right when it is off course, but a route bend can momentarily swing the instantaneous
+     track off a turn-out that is genuinely ahead) and along the filed **route** (right on
+     course, the same projection `deviationEntryIsBehind` uses) — since a turn-out is only
+     really behind when it is behind by both. A request made against a line whose turn-out is
+     already behind re-plans it from the aircraft's current position first
+     (`reanchorDeviationIfTurnOutPassed`), so what the controller approves is what can be flown.
+   - **A held turn can never be waited on forever.** If the aircraft passes the armed
+     turn-out anyway — a late request, a re-locked line, a fix that jumped —
+     `releaseStaleDeviationHoldIfPassed` re-plans from the current position
+     (`replanHeldDeviation`): re-held at a fresh turn-out still ahead (with the revised
+     distance announced, since the pilot was given the old one), vectored onto the reroute
+     now when the aircraft is already at/past it, or — when nothing solves from here — the
+     lifecycle is **ended**. That last case matters: `.deviationApproved` counts as
+     `isCommittedDeviation`, so the per-tick rollback in `updateWeatherConflict` deliberately
+     skips it, and a context left approved-but-unarmed is a dead end for the rest of the
+     flight — no turn can fire, and no later conflict can prompt afresh.
+   - **Turn distances are rounded once, to fives.** Weather is described in tens (a cell's
+     distance is never that precise), but a turn the pilot is about to fly is rounded to the
+     nearest 5 NM by `deviationTurnOutAhead` and spoken as given. Rounding again to tens in
+     the phraseology inflated it: a turn-out 13 NM ahead became 15, and 15 rounds *up* to
+     "20 miles" — so the same turn the advisory had just called "10 miles" was announced as
+     20 miles ahead.
 5. **Clear of weather.** When the pilot reports clear of weather, ATC clears direct
    the rejoin fix (or *"resume own navigation"* when already near the route), or
    rejoins the STAR.

@@ -1068,6 +1068,37 @@ final class WeatherDeviationTests: XCTestCase {
         XCTAssertTrue(atc.contains("expect the turn"), atc)
     }
 
+    /// "Expect the turn in X miles" speaks the distance that was measured, rounded to fives.
+    ///
+    /// The caller already rounds the turn-out distance to the nearest 5 NM; rounding that
+    /// again to the nearest 10 in the phraseology inflated it — a turn-out 13 NM ahead became
+    /// 15, and 15 rounds *up* to "20 miles". So the same turn the advisory had just described
+    /// as "10 miles" was announced as a turn 20 miles ahead, and the pilot flew past it
+    /// waiting for a call at a distance that never came.
+    func testExpectDeviationSpeaksTheMeasuredTurnDistanceNotATensRounding() {
+        let engine = PhraseologyEngine(digitStyle: .individual, mode: .faa)
+        let phr = WeatherDeviationPhraseology(engine: engine)
+        let dev = WeatherDeviationEngine(phraseology: phr)
+        let cs = engine.callsign(airline: "United", flightNumber: "598", fallback: "")
+        let inputs = WeatherDeviationEngine.Inputs(maintainAltitude: 37000, heading: 90)
+
+        func turnPhrase(_ nm: Int) -> String {
+            dev.deferDeviation(cs: cs, conflict: nil, direction: .right, distanceNM: nm,
+                               inputs: inputs, context: WeatherDeviationContext(),
+                               facility: .center).atc.first?.displayText ?? ""
+        }
+
+        let fifteen = turnPhrase(15)
+        XCTAssertTrue(fifteen.contains("expect the turn in 15 miles"), fifteen)
+        XCTAssertFalse(fifteen.contains("20 miles"), "15 NM must not round up to 20")
+
+        let ten = turnPhrase(10)
+        XCTAssertTrue(ten.contains("expect the turn in 10 miles"), ten)
+
+        let twentyFive = turnPhrase(25)
+        XCTAssertTrue(twentyFive.contains("expect the turn in 25 miles"), twentyFive)
+    }
+
     // MARK: - Reroute redrawn ahead (entry point fell behind the aircraft)
 
     /// The drawn reroute's entry point fell behind the aircraft, so the deviation was

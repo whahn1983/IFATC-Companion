@@ -1426,6 +1426,116 @@ final class WeatherDeviationFlowTests: XCTestCase {
                                  "…but never past the rejoin cap, so the line still ends short of the field")
     }
 
+    // MARK: - The held turn must never be promised for a turn-out that is already behind
+
+    /// Requesting vectors *after* flying past the mint line's turn-out must not hold the turn.
+    ///
+    /// The turn-out is measured as a distance *ahead*, not as a straight-line distance:
+    /// a turn-out the aircraft has already passed abeam is still tens of miles away as the
+    /// crow flies, and read that way the request was held — "continue present heading, expect
+    /// the turn in X miles" — pinning the beginning turn to a point behind the aircraft. The
+    /// reach test can never be satisfied by a point behind, so that turn was never called and
+    /// the pilot flew on through the weather waiting for it.
+    func testVectorRequestPastTheTurnOutIsWorkedNowRatherThanHeldForATurnBehind() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)
+        guard let pos = model.aircraftState.coordinate else { return XCTFail("no cruise position") }
+
+        // A cell ~60 NM ahead on the filed course, so its reroute is drawn well ahead.
+        let course = Geo.bearing(from: model.mock.route.depCoord, to: model.mock.route.destCoord)
+        let center = Geo.destination(from: pos, bearingDegrees: course, distanceNM: 60)
+        model.radarOverlay.mockCells = [RadarCell(polygon: box(around: center, half: 0.15), intensity: .moderate)]
+        await model.refreshDeviations()
+        guard let v0 = model.activeWeatherConflict?.deviationPath.first else {
+            return XCTFail("expected a drawn-ahead conflict")
+        }
+
+        // Fly 15 NM *past* the turn-out along the course — far enough away that the
+        // straight-line distance still reads as a comfortable "expect the turn in 15 miles".
+        let past = Geo.destination(from: v0, bearingDegrees: course, distanceNM: 15)
+        XCTAssertGreaterThan(Geo.distanceNM(from: past, to: v0), 6,
+                             "the passed turn-out is still far enough away to look like a held turn")
+        var beyond = model.mock.state(for: .cruise)
+        beyond.latitude = past.latitude
+        beyond.longitude = past.longitude
+        beyond.track = course
+        model.ingestStateForTesting(beyond)
+
+        model.requestVectorAroundWeather()
+
+        XCTAssertNotEqual(model.weatherDeviationState, .awaitingPilotIntentions,
+                          "the request is acted on, not dropped")
+        // Either the turn was worked now, or it was re-held against a *fresh* turn-out. What
+        // must never happen is a hold pinned to the turn-out already behind the aircraft —
+        // that turn can never be issued.
+        if let armed = armedTurnOut(model) {
+            XCTAssertGreaterThan(aheadNM(armed, from: past, course: course), 0,
+                                 "a turn is only ever held for a turn-out ahead of the aircraft")
+            XCTAssertGreaterThan(Geo.distanceNM(from: armed, to: v0), 1,
+                                 "the stale turn-out behind the aircraft is not what gets armed")
+        }
+    }
+
+    /// The armed held-turn turn-out, when one is held.
+    private func armedTurnOut(_ model: AppModel) -> CLLocationCoordinate2D? {
+        guard let lat = model.weatherDeviation.deviationStartLatitude,
+              let lon = model.weatherDeviation.deviationStartLongitude else { return nil }
+        return CLLocationCoordinate2D(latitude: lat, longitude: lon)
+    }
+
+    /// How far ahead of `pos` (NM) `coord` lies along `course` — negative once it is behind.
+    private func aheadNM(_ coord: CLLocationCoordinate2D,
+                         from pos: CLLocationCoordinate2D, course: Double) -> Double {
+        let bearing = Geo.bearing(from: pos, to: coord)
+        return Geo.distanceNM(from: pos, to: coord) * cos((bearing - course) * .pi / 180)
+    }
+
+    /// A held beginning turn whose turn-out the aircraft flies past must be recovered, not
+    /// waited on forever. `maybeIssueDeviationStartTurn`'s reach test only grows more negative
+    /// as the aircraft flies away from the turn-out, so without a watchdog the lifecycle sits
+    /// in `.deviationApproved` — which counts as committed, so the per-tick rollback skips it
+    /// — with no armed turn to fire, for the rest of the flight.
+    func testHeldTurnFlownPastIsRecoveredRatherThanStrandedForever() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)
+        guard let pos = model.aircraftState.coordinate else { return XCTFail("no cruise position") }
+
+        let course = Geo.bearing(from: model.mock.route.depCoord, to: model.mock.route.destCoord)
+        let center = Geo.destination(from: pos, bearingDegrees: course, distanceNM: 60)
+        model.radarOverlay.mockCells = [RadarCell(polygon: box(around: center, half: 0.15), intensity: .moderate)]
+        await model.refreshDeviations()
+        guard let v0 = model.activeWeatherConflict?.deviationPath.first else {
+            return XCTFail("expected a drawn-ahead conflict")
+        }
+
+        // Approve with the turn held, exactly as the drawn-ahead flow does.
+        model.requestWeatherDeviation(.right)
+        XCTAssertEqual(model.weatherDeviationState, .deviationApproved)
+        XCTAssertNotNil(model.weatherDeviation.deviationStartLatitude, "the beginning turn is armed")
+
+        // Now fly well past the armed turn-out without the turn ever having fired.
+        let past = Geo.destination(from: v0, bearingDegrees: course, distanceNM: 20)
+        var beyond = model.mock.state(for: .cruise)
+        beyond.latitude = past.latitude
+        beyond.longitude = past.longitude
+        beyond.track = course
+        model.ingestStateForTesting(beyond)
+
+        // Whatever the recovery decides — re-hold ahead, vector now, or end the deviation —
+        // it must never be "still approved, still armed at the point behind us", which is a
+        // dead end: the turn can never fire, and `.deviationApproved` is exempt from the
+        // per-tick rollback, so no later conflict can prompt afresh either.
+        if let armed = armedTurnOut(model) {
+            XCTAssertGreaterThan(aheadNM(armed, from: past, course: course), 0,
+                                 "a still-held turn is re-anchored ahead, not left on the passed turn-out")
+            XCTAssertGreaterThan(Geo.distanceNM(from: armed, to: v0), 1,
+                                 "the stale hold on the passed turn-out is released")
+        } else {
+            XCTAssertNotEqual(model.weatherDeviationState, .deviationApproved,
+                              "an approved deviation with nothing armed is a dead end — it must be resolved")
+        }
+    }
+
     // MARK: - Auto-call the advisory when the turn is imminent (banner ignored)
 
     /// Because the mint lines are locked and drawn ahead, a pilot who never taps the
