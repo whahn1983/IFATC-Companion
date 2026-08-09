@@ -633,9 +633,22 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      `deviationOffPathToleranceNM` (**5 NM either side**) the deviation is re-planned **from the
      aircraft's current position**: fresh geometry when new precipitation now sits on the path
      from here (`recomputeConflictFrom`, which also carries the line down to the filed route),
-     else the committed reroute itself — in both cases **re-anchored to the aircraft**
-     (`pathAnchoredAtAircraft` drops the vertices already flown past and starts the line at the
-     aircraft, so its first leg is the intercept back onto the reroute). The re-anchored line is
+     else the committed reroute itself — in both cases **re-anchored to the aircraft and forward
+     only** (`pathAnchoredAtAircraft` keeps a vertex only when the aircraft has not already flown
+     past it *along the line* **and** it is not behind the aircraft's current track, then starts
+     the line at the aircraft, so its first leg is the intercept forward onto what remains of the
+     reroute). When **nothing** of the reroute is left ahead, no vector is issued at all and the
+     drawn line is left alone: turning the aircraft back around to pick up geometry behind it is
+     never the answer. Keeping a trailing vertex so the line "still ends on the route" is exactly
+     what produced a near-reciprocal vector (216° → 015°) once the aircraft had flown past and
+     away from the whole reroute. As a backstop, **no automatically-issued weather vector may
+     turn the aircraft more than `maxWeatherVectorTurnDegrees` (135°) off its current track** —
+     the held beginning turn, the interior turns, the post-jump resync vector and the off-path
+     re-plan all check it, since every drawn leg is already bounded to 100° off course, so a
+     vector past that bound means the geometry is behind the aircraft, not a tight turn.
+     `committedTailAhead` — the remainder of the reroute the re-plan and the Vectors button plan
+     against — uses the same forward-only rule, rather than starting at whichever vertex is
+     merely *nearest*. The re-anchored line is
      re-frozen, the controller re-vectors onto it (*"you appear to be off the assigned
      deviation, fly heading …, vectors around precipitation, maintain …, advise clear of
      weather"*), and the interior turns are re-armed against the new line so the upcoming turn
@@ -647,6 +660,20 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      to roll out before its distance from the line counts as drift. A re-plan also holds off
      within `autoResumeInterceptNM` of the rejoin — the maneuver is essentially over — and is
      rate-limited by `offPathReplanInterval`.
+   - **A gradual return to course — rejoin at a fix farther down.** The closing leg intercepts
+     the route wherever the geometry happens to put it, which can leave the aircraft turning
+     hard onto course at the rejoin (and the controller calling that sharp turn). So when the
+     final turn of a drawn line exceeds `maxRejoinTurnDegrees` (**60°**), the rejoin is moved to
+     the **next fix down the flight plan** (`deviationWithGentleRejoin`): the closing leg gets
+     longer, the intercept shallower, and the aircraft simply proceeds direct that fix — how the
+     return to course is flown for real. Fixes are tried in order and the **first gentle-enough
+     one whose closing leg still clears the weather** wins (else the shallowest clear one, else
+     the line is left as it was — reaching farther down must never take the closing leg back
+     through the system the deviation exists to avoid). The rejoin never moves past the rejoin
+     cap or into the next deviation's turn-out, and the **named rejoin fix is retagged** to
+     whatever the line now ends on, so *"rejoin course direct …"* names the fix actually being
+     flown to. Applied to every drawn deviation (`computeDeviations`) and to a re-planned one
+     (`recomputeConflictFrom`) alike.
    - **Auto-resume at the intercept.** If the pilot never reports clear of weather, the
      controller automatically issues *"resume own navigation"* and ends the deviation
      once the aircraft reaches within 15 NM of that intercept (measured on the final leg,
