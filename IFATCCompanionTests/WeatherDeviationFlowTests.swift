@@ -1346,6 +1346,86 @@ final class WeatherDeviationFlowTests: XCTestCase {
                        "an aircraft short of the turn-out is on course, not off the deviation")
     }
 
+    // MARK: - Gradual return to course (rejoin at a fix farther down)
+
+    /// A straight north-bound plan with fixes every ~60 NM, so a test can place a rejoin and
+    /// know exactly which fixes lie down-route of it.
+    private func straightPlanModel() -> AppModel {
+        let model = makeModel()
+        var plan = FlightPlan()
+        plan.departure = ""
+        plan.destination = ""
+        plan.cruiseAltitude = 37000
+        plan.waypoints = (0...10).map { i in
+            Waypoint(name: "FIX\(i)", latitude: 30.0 + Double(i), longitude: -95)
+        }
+        model.flightPlan = plan
+        model.radarOverlay.mockCells = []
+        return model
+    }
+
+    /// A closing leg that turns hard onto the route is re-aimed at the next fix down the flight
+    /// plan, so the return to course is gradual — and the rejoin fix is retagged to whatever the
+    /// line now ends on, so the "rejoin course direct …" call names the fix actually flown to.
+    func testSharpRejoinTurnIsSoftenedToTheNextFixDown() {
+        let model = straightPlanModel()
+        // A closing leg that meets the route at a hard angle: the parallel leg runs north at a
+        // 25 NM offset, then cuts straight back east onto the route — a ~90° turn onto course.
+        let parallelStart = CLLocationCoordinate2D(latitude: 32.0, longitude: -95.5)
+        let turnBack = CLLocationCoordinate2D(latitude: 33.0, longitude: -95.5)
+        let rejoin = CLLocationCoordinate2D(latitude: 33.0, longitude: -95)      // straight across
+        let steep = Geo.bearing(from: parallelStart, to: turnBack)
+        var steepTurn = abs(Geo.bearing(from: turnBack, to: rejoin) - steep).truncatingRemainder(dividingBy: 360)
+        if steepTurn > 180 { steepTurn = 360 - steepTurn }
+        XCTAssertGreaterThan(steepTurn, 60, "precondition: the closing leg turns hard onto the route")
+
+        guard let softened = model.gentleRejoinForTesting(path: [parallelStart, turnBack, rejoin]) else {
+            return XCTFail("expected the sharp rejoin to be softened to a fix farther down")
+        }
+        guard let end = softened.path.last else { return XCTFail("expected a softened path") }
+        var turn = abs(Geo.bearing(from: turnBack, to: end) - steep).truncatingRemainder(dividingBy: 360)
+        if turn > 180 { turn = 360 - turn }
+        XCTAssertLessThanOrEqual(turn, 60, "the return to course is gradual")
+        XCTAssertGreaterThan(end.latitude, rejoin.latitude,
+                             "the rejoin moved to a fix farther down the route, not back up it")
+        XCTAssertEqual(softened.fix.coordinate?.latitude, end.latitude,
+                       "the named rejoin fix is the one the line now ends on")
+        XCTAssertEqual(softened.path.count, 3, "only the rejoin point moves — the hug is untouched")
+        XCTAssertEqual(softened.path[1].latitude, turnBack.latitude)
+    }
+
+    /// A rejoin that already meets the route gradually is left exactly as it is.
+    func testGentleRejoinTurnIsLeftAlone() {
+        let model = straightPlanModel()
+        let parallelStart = CLLocationCoordinate2D(latitude: 32.0, longitude: -95.4)
+        let turnBack = CLLocationCoordinate2D(latitude: 33.0, longitude: -95.4)
+        // A long, shallow closing leg back onto the route — well under 60°.
+        let rejoin = CLLocationCoordinate2D(latitude: 34.0, longitude: -95)
+        XCTAssertNil(model.gentleRejoinForTesting(path: [parallelStart, turnBack, rejoin]),
+                     "a gradual intercept needs no softening")
+    }
+
+    /// The softened rejoin never reaches past the rejoin cap — a mint line still ends on the
+    /// flight path well short of the field.
+    func testSoftenedRejoinStaysShortOfTheRejoinCap() {
+        let model = straightPlanModel()
+        guard let cap = model.weatherRejoinCapForTesting() else {
+            return XCTFail("expected a rejoin cap for the straight plan")
+        }
+        // A hard closing turn near the end of the route: the fixes past the cap are not
+        // candidates, so the softened rejoin lands on the last one short of it.
+        let parallelStart = CLLocationCoordinate2D(latitude: 37.5, longitude: -95.5)
+        let turnBack = CLLocationCoordinate2D(latitude: 38.5, longitude: -95.5)
+        let rejoin = CLLocationCoordinate2D(latitude: 38.5, longitude: -95)
+        guard let softened = model.gentleRejoinForTesting(path: [parallelStart, turnBack, rejoin]),
+              let end = softened.path.last else {
+            return XCTFail("expected the sharp rejoin to be softened to a fix short of the cap")
+        }
+        XCTAssertGreaterThan(end.latitude, rejoin.latitude, "it moved down the route…")
+        XCTAssertLessThanOrEqual(end.latitude, cap.latitude + 0.01,
+                                 "…but never past the rejoin cap, so the line still ends short of the field")
+    }
+
     // MARK: - Auto-call the advisory when the turn is imminent (banner ignored)
 
     /// Because the mint lines are locked and drawn ahead, a pilot who never taps the

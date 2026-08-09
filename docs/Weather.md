@@ -660,6 +660,20 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      to roll out before its distance from the line counts as drift. A re-plan also holds off
      within `autoResumeInterceptNM` of the rejoin — the maneuver is essentially over — and is
      rate-limited by `offPathReplanInterval`.
+   - **A gradual return to course — rejoin at a fix farther down.** The closing leg intercepts
+     the route wherever the geometry happens to put it, which can leave the aircraft turning
+     hard onto course at the rejoin (and the controller calling that sharp turn). So when the
+     final turn of a drawn line exceeds `maxRejoinTurnDegrees` (**60°**), the rejoin is moved to
+     the **next fix down the flight plan** (`deviationWithGentleRejoin`): the closing leg gets
+     longer, the intercept shallower, and the aircraft simply proceeds direct that fix — how the
+     return to course is flown for real. Fixes are tried in order and the **first gentle-enough
+     one whose closing leg still clears the weather** wins (else the shallowest clear one, else
+     the line is left as it was — reaching farther down must never take the closing leg back
+     through the system the deviation exists to avoid). The rejoin never moves past the rejoin
+     cap or into the next deviation's turn-out, and the **named rejoin fix is retagged** to
+     whatever the line now ends on, so *"rejoin course direct …"* names the fix actually being
+     flown to. Applied to every drawn deviation (`computeDeviations`) and to a re-planned one
+     (`recomputeConflictFrom`) alike.
    - **Auto-resume at the intercept.** If the pilot never reports clear of weather, the
      controller automatically issues *"resume own navigation"* and ends the deviation
      once the aircraft reaches within 15 NM of that intercept (measured on the final leg,

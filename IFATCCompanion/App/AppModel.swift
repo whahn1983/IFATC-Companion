@@ -426,6 +426,15 @@ final class AppModel: ObservableObject {
     /// last automatic turn was issued. Both cleared with the deviation lifecycle.
     private var lastOffPathReplanAt: Date?
     private var lastAutoTurnIssuedAt: Date?
+    /// The steepest turn back onto the flight plan a drawn deviation may end with. Past this the
+    /// rejoin is moved to the next fix down the route (`deviationWithGentleRejoin`), lengthening
+    /// the closing leg so the return to course — and the turn the controller calls for it — is
+    /// gradual instead of a hard corner onto the line.
+    private let maxRejoinTurnDegrees: Double = 60
+    /// How much clear air (NM along the route) a softened rejoin leaves before the next
+    /// deviation's turn-out, so reaching farther down for a gentler intercept can never run into
+    /// the following reroute.
+    private let mergeAdjacentRejoinMarginNM: Double = 5
     /// The greatest turn (degrees off the aircraft's current track) an automatically-issued
     /// weather vector may command, and the bound on what counts as *ahead* of the aircraft when
     /// a deviation is re-planned. The detector already clamps every drawn leg to
@@ -1604,6 +1613,13 @@ final class AppModel: ObservableObject {
     /// at least the airport margin before the field (and short of the approach fix).
     func weatherRejoinCapForTesting() -> CLLocationCoordinate2D? {
         weatherRejoinCap()
+    }
+
+    /// Test hook: the gradual return to course for an explicit path — the rejoin moved to a fix
+    /// farther down the route when the final turn is too steep — so a test can drive the fix
+    /// selection directly instead of coaxing the solver into a sharp intercept.
+    func gentleRejoinForTesting(path: [CLLocationCoordinate2D]) -> (path: [CLLocationCoordinate2D], fix: Waypoint)? {
+        gentleRejoin(for: path, cap: weatherRejoinCap(), limitAlong: .greatestFiniteMagnitude)
     }
 
     /// Test hook: arm the telemetry resync the way returning from the background does, so
@@ -4390,8 +4406,18 @@ final class AppModel: ObservableObject {
         // slide a merged rejoin along is truncated at the cap, so that slide can't push a
         // rejoin past the airport margin either.
         let mergeRoute = routeTruncated(upcomingRouteCoordinates(from: origin), at: cap)
-        return conflictDetector.mergeAdjacentDeviations(
+        let merged = conflictDetector.mergeAdjacentDeviations(
             results, hazards: weatherHazards, route: mergeRoute)
+        // Finally, soften any hard turn back onto the flight plan by rejoining at a fix farther
+        // down the route — bounded by the next deviation's turn-out, so a softened rejoin can
+        // never run into the following reroute.
+        return merged.enumerated().map { index, deviation in
+            let nextTurnOutAlong = index + 1 < merged.count
+                ? merged[index + 1].deviationPath.first.map { alongRouteNM($0) - mergeAdjacentRejoinMarginNM }
+                : nil
+            return deviationWithGentleRejoin(deviation, cap: cap,
+                                             limitAlong: nextTurnOutAlong ?? .greatestFiniteMagnitude)
+        }
     }
 
     /// Re-run the whole-route deviation search now and re-lock the result. Samples fresh
@@ -4539,6 +4565,78 @@ final class AppModel: ObservableObject {
                alongRouteNM(end) <= ac - 2 { return nil }                                // already passed
             return path
         }
+    }
+
+    // MARK: - Gradual return to course (rejoin at a fix farther down)
+
+    /// Soften a hard turn back onto the flight plan.
+    ///
+    /// The closing leg intercepts the route wherever the geometry happens to put it, which can
+    /// leave the aircraft turning sharply onto course at the rejoin — and the controller calling
+    /// that sharp turn. When the final turn of the drawn line exceeds `maxRejoinTurnDegrees`
+    /// (60°), the rejoin is moved to the **next fix down the route**: the closing leg gets
+    /// longer, so the intercept — and the turn called at the last vertex — is gradual, and the
+    /// aircraft simply proceeds direct that fix, which is how the return to course is flown for
+    /// real. Fixes are tried in order; the first gentle-enough one whose closing leg stays clear
+    /// of the weather wins, else the shallowest clear one, else the line is left as it was.
+    ///
+    /// The rejoin never moves past `cap` (the airport margin / approach fix) or past
+    /// `limitAlong` (the next deviation's turn-out), and the named rejoin fix is retagged to
+    /// whatever the line now ends on, so "rejoin course direct …" names the fix actually flown to.
+    private func deviationWithGentleRejoin(_ conflict: RouteWeatherConflict,
+                                           cap: CLLocationCoordinate2D?,
+                                           limitAlong: Double) -> RouteWeatherConflict {
+        guard let softened = gentleRejoin(for: conflict.deviationPath, cap: cap,
+                                          limitAlong: limitAlong) else { return conflict }
+        var conflict = conflict
+        conflict.deviationPath = softened.path
+        conflict.rejoinFix = softened.fix
+        return conflict
+    }
+
+    /// The path/fix pair a gradual return to course would use, or nil when the final turn is
+    /// already gentle enough (or no reachable fix improves it). See `deviationWithGentleRejoin`.
+    private func gentleRejoin(for path: [CLLocationCoordinate2D], cap: CLLocationCoordinate2D?,
+                              limitAlong: Double) -> (path: [CLLocationCoordinate2D], fix: Waypoint)? {
+        let pts = path.filter { $0.isValid }
+        // A 2-point line has no turn onto its closing leg to soften.
+        guard pts.count >= 3, let rejoin = pts.last else { return nil }
+        let turnVertex = pts[pts.count - 2]
+        let inbound = Geo.bearing(from: pts[pts.count - 3], to: turnVertex)
+        func turnDegrees(to end: CLLocationCoordinate2D) -> Double {
+            courseChangeDegrees(inbound: inbound, outbound: Geo.bearing(from: turnVertex, to: end))
+        }
+        let currentTurn = turnDegrees(to: rejoin)
+        guard currentTurn > maxRejoinTurnDegrees else { return nil }
+
+        // The fixes still down-route of the current rejoin, in order, inside both bounds.
+        var capAlong = limitAlong
+        if let cap, cap.isValid { capAlong = min(capAlong, alongRouteNM(cap)) }
+        let rejoinAlong = alongRouteNM(rejoin)
+        let candidates = flightPlan.waypoints
+            .compactMap { wp -> (fix: Waypoint, along: Double, coordinate: CLLocationCoordinate2D)? in
+                guard let c = wp.coordinate, c.isValid else { return nil }
+                let along = alongRouteNM(c)
+                guard along > rejoinAlong + 1, along <= capAlong else { return nil }
+                return (wp, along, c)
+            }
+            .sorted { $0.along < $1.along }
+
+        var best: (fix: Waypoint, coordinate: CLLocationCoordinate2D, turn: Double)?
+        for candidate in candidates {
+            let softened = Array(pts.dropLast()) + [candidate.coordinate]
+            // Reaching farther down the route must not take the closing leg back through the
+            // weather the deviation exists to avoid.
+            guard conflictDetector.committedPathStillClear(softened, hazards: weatherHazards) else { continue }
+            let turn = turnDegrees(to: candidate.coordinate)
+            if turn <= maxRejoinTurnDegrees {
+                best = (candidate.fix, candidate.coordinate, turn)
+                break                        // the nearest fix that is gradual enough
+            }
+            if best == nil || turn < best!.turn { best = (candidate.fix, candidate.coordinate, turn) }
+        }
+        guard let chosen = best, chosen.turn < currentTurn else { return nil }
+        return (Array(pts.dropLast()) + [chosen.coordinate], chosen.fix)
     }
 
     /// A fingerprint of the filed route, so a new/edited flight plan discards the old
@@ -6020,6 +6118,9 @@ final class AppModel: ObservableObject {
         if tail.count >= 2 {
             fresh = deviationExtendedToFlightPath(fresh, committedTail: tail)
         }
+        // A re-planned line gets the same gradual return to course as a drawn one.
+        fresh = deviationWithGentleRejoin(fresh, cap: weatherRejoinCap(),
+                                          limitAlong: .greatestFiniteMagnitude)
         activeWeatherConflict = fresh
         lastConflictSeenAt = Date()
         return true
