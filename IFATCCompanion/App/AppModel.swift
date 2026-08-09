@@ -4548,8 +4548,9 @@ final class AppModel: ObservableObject {
         // Posted directly rather than through `applyDeviationResult`: ATC volunteering an
         // update is not the pilot engaging the advisory, so the "engaged" flag
         // (`weatherHandled`) is left exactly as it was. The lifecycle the engine returns is
-        // what decides whether the near-turn advisory still has anything to add.
-        for tx in result.atc { post(tx, speak: true) }
+        // what decides whether the near-turn advisory still has anything to add. The call is
+        // controller-initiated, so a repeat of one the pilot already acknowledged is held.
+        for tx in result.atc where !isAcknowledgedRepeat(tx) { post(tx, speak: true) }
         weatherDeviation = result.context
         updateWeatherDiagnostics(conflict: activeWeatherConflict)
     }
@@ -5300,10 +5301,32 @@ final class AppModel: ObservableObject {
             unableRequestedSide: unableSide)
     }
 
-    private func applyDeviationResult(_ result: WeatherDeviationEngine.Result) {
+    /// Whether a controller call would only repeat the last one the pilot has already
+    /// acknowledged, so there is nothing to gain by saying it again.
+    private func isAcknowledgedRepeat(_ tx: ATCTransmission) -> Bool {
+        ATCTransmission.isAcknowledgedRepeat(tx, in: transcript)
+    }
+
+    /// Post the engine's result and adopt the updated deviation context.
+    ///
+    /// `controllerInitiated` marks a call the controller makes on its own — an auto-issued
+    /// advisory, a turn fired by the aircraft's own progress, an auto-resume — with no pilot
+    /// request waiting on an answer. Those are the calls that can come out verbatim-identical
+    /// back to back, so one that would only repeat an acknowledged call is **not transmitted**.
+    /// The context is adopted either way, so the lifecycle advances exactly as if it had been
+    /// said: the pilot is already flying the instruction they read back. A reply to a pilot
+    /// request is always transmitted — a request left unanswered reads as a dropped call.
+    private func applyDeviationResult(_ result: WeatherDeviationEngine.Result,
+                                      controllerInitiated: Bool = false) {
         weatherHandled = true
         if let pilot = result.pilot { postPilot(pilot) }
-        for tx in result.atc { post(tx, speak: true) }
+        for tx in result.atc {
+            if controllerInitiated, isAcknowledgedRepeat(tx) {
+                diagnostics.log(.atc, "Held repeat of an acknowledged call: \(tx.displayText)")
+                continue
+            }
+            post(tx, speak: true)
+        }
         weatherDeviation = result.context
         updateWeatherDiagnostics(conflict: activeWeatherConflict)
     }
@@ -5349,10 +5372,10 @@ final class AppModel: ObservableObject {
               let situation = currentWeatherSituation() else { return }
         mockWeatherAdvisoryIssued = true
         weatherHandled = true
-        applyDeviationResult(deviationEngine.issueAdvisory(cs: callsignNow(),
-                                                           situation: situation,
-                                                           context: weatherDeviation,
-                                                           facility: weatherFacility))
+        applyDeviationResult(
+            deviationEngine.issueAdvisory(cs: callsignNow(), situation: situation,
+                                          context: weatherDeviation, facility: weatherFacility),
+            controllerInitiated: true)
     }
 
     /// Safety net for the locked mint lines: if the pilot never engaged the advisory (never
@@ -5378,10 +5401,10 @@ final class AppModel: ObservableObject {
               let situation = currentWeatherSituation() else { return }
         weatherHandled = true
         mockWeatherAdvisoryIssued = true   // the one-shot advisory has now been issued
-        applyDeviationResult(deviationEngine.issueAdvisory(cs: callsignNow(),
-                                                           situation: situation,
-                                                           context: weatherDeviation,
-                                                           facility: weatherFacility))
+        applyDeviationResult(
+            deviationEngine.issueAdvisory(cs: callsignNow(), situation: situation,
+                                          context: weatherDeviation, facility: weatherFacility),
+            controllerInitiated: true)
     }
 
     private func callsignNow() -> PhraseologyEngine.Callsign {
@@ -5860,9 +5883,11 @@ final class AppModel: ObservableObject {
             return replanHeldDeviation(from: pos)
         }
         lastAutoTurnIssuedAt = Date()   // let it roll out before drift is judged
-        applyDeviationResult(deviationEngine.beginDeviationTurn(
-            cs: callsignNow(), heading: heading, maintainAltitude: weatherMaintainAltitude(),
-            context: weatherDeviation, facility: weatherFacility))
+        applyDeviationResult(
+            deviationEngine.beginDeviationTurn(cs: callsignNow(), heading: heading,
+                                               maintainAltitude: weatherMaintainAltitude(),
+                                               context: weatherDeviation, facility: weatherFacility),
+            controllerInitiated: true)
         // Now vectoring onto the reroute — arm the interior turns of the committed line.
         captureWeatherRejoinTurn()
         return true
@@ -6133,11 +6158,13 @@ final class AppModel: ObservableObject {
             activeWeatherConflict = conflict
         }
         weatherDeviation.committedDeviationPath = anchored.map(WeatherDeviationContext.PathPoint.init)
-        applyDeviationResult(deviationEngine.revectorOffPath(
-            cs: callsignNow(),
-            heading: ApproachIntercept.normalizedHeading(Geo.bearing(from: pos, to: next)),
-            maintainAltitude: weatherMaintainAltitude(),
-            context: weatherDeviation, facility: weatherFacility))
+        applyDeviationResult(
+            deviationEngine.revectorOffPath(
+                cs: callsignNow(),
+                heading: ApproachIntercept.normalizedHeading(Geo.bearing(from: pos, to: next)),
+                maintainAltitude: weatherMaintainAltitude(),
+                context: weatherDeviation, facility: weatherFacility),
+            controllerInitiated: true)
         captureWeatherRejoinTurn()
         return true
     }
@@ -6335,10 +6362,11 @@ final class AppModel: ObservableObject {
             clearPendingRejoinTurn()
             return
         }
-        applyDeviationResult(deviationEngine.beginDeviationTurn(
-            cs: callsignNow(), heading: heading,
-            maintainAltitude: weatherMaintainAltitude(), context: weatherDeviation,
-            facility: weatherFacility))
+        applyDeviationResult(
+            deviationEngine.beginDeviationTurn(cs: callsignNow(), heading: heading,
+                                               maintainAltitude: weatherMaintainAltitude(),
+                                               context: weatherDeviation, facility: weatherFacility),
+            controllerInitiated: true)
         freezeCommittedDeviationPath()
         captureWeatherRejoinTurn()
     }
@@ -6423,9 +6451,12 @@ final class AppModel: ObservableObject {
         // turn; earlier interior vertices are intermediate turns that keep vectoring.
         let isFinalTurn = index >= path.count - 2
         lastAutoTurnIssuedAt = Date()   // let it roll out before drift is judged
-        applyDeviationResult(deviationEngine.rejoinTurn(
-            cs: callsignNow(), heading: heading, rejoinFix: weatherDeviation.rejoinFix,
-            finalTurn: isFinalTurn, context: weatherDeviation, facility: weatherFacility))
+        applyDeviationResult(
+            deviationEngine.rejoinTurn(cs: callsignNow(), heading: heading,
+                                       rejoinFix: weatherDeviation.rejoinFix,
+                                       finalTurn: isFinalTurn, context: weatherDeviation,
+                                       facility: weatherFacility),
+            controllerInitiated: true)
         // Arm the next interior turn if the mint line has one (a side-hug has two).
         // The engine cleared the fired turn, so this re-arms on the fresh context.
         if !isFinalTurn {
@@ -6462,8 +6493,10 @@ final class AppModel: ObservableObject {
     /// clear-of-weather call — the aircraft flew the mint line all the way to the
     /// flight-plan intercept on its own. Mirrors the clear-of-weather cleanup.
     private func autoResumeOwnNavigation() {
-        applyDeviationResult(deviationEngine.autoResumeOwnNavigation(
-            cs: callsignNow(), context: weatherDeviation, facility: weatherFacility))
+        applyDeviationResult(
+            deviationEngine.autoResumeOwnNavigation(cs: callsignNow(), context: weatherDeviation,
+                                                    facility: weatherFacility),
+            controllerInitiated: true)
         if settings.mockMode { radarOverlay.mockCells = [] }
         activeWeatherConflict = nil
         weatherDeviation.reset()

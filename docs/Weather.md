@@ -664,6 +664,19 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      `committedDeviationPath`), so the second turn back down to the flight path is called
      just like the first. The turn fires when the aircraft is near the vertex or has
      passed abeam it along the leg into it, so flying wide of it still triggers it.
+   - **Never the same call twice — "did I say this, and was it acknowledged?"** A long
+     parallel run past a multi-cell system carries several offset vertices on nearly the same
+     bearing, so consecutive turns can round to the *same heading* and the radio ends up
+     carrying *"fly heading 082, vectors around precipitation"* three times over while the
+     pilot is already flying exactly that. So any call the **controller initiates on its own**
+     — the auto-issued advisory, the held beginning turn, the interior turns, the off-path
+     re-vector, the redraw update, the auto-resume — is **held** when it would only repeat the
+     last controller call *and* the pilot has transmitted since (their acknowledgement). The
+     deviation state still advances exactly as if it had been said, so the line keeps walking
+     its turns; only the duplicate transmission is dropped (it is logged in Diagnostics). Two
+     things are never held: a call the pilot hasn't answered — re-issuing it is how an unheard
+     instruction gets through — and a **reply to a pilot request**, since a request left
+     unanswered reads as a dropped call.
    - **Drift off the line being flown → re-planned from the aircraft.** Wind, a late roll-in
      or a wide turn can leave the aircraft well off the mint line it was cleared to fly — at
      which point the drawn line no longer describes the reroute being flown and the armed

@@ -1782,6 +1782,34 @@ final class WeatherDeviationFlowTests: XCTestCase {
                        "the armed rejoin turn is preserved when continuing")
     }
 
+    /// A reply to a pilot request is never held as a duplicate. The controller's words here
+    /// are identical every time the pilot taps Vectors on a still-clear reroute, but a request
+    /// left unanswered reads as a dropped call — only calls the controller makes on its own
+    /// are held when they would repeat something the pilot already acknowledged.
+    func testRepeatedPilotRequestIsAnsweredEveryTime() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)
+        model.requestVectorAroundWeather()
+        XCTAssertEqual(model.weatherDeviationState, .vectoringAroundWeather)
+
+        // The reroute ahead is clear, so every further Vectors tap draws the same reply.
+        model.radarOverlay.mockCells = []
+        model.recomputeWeatherHazards()
+
+        model.requestVectorAroundWeather()
+        model.readBack()
+        XCTAssertEqual(continueCalls(model), 1)
+        model.requestVectorAroundWeather()
+        XCTAssertEqual(continueCalls(model), 2,
+                       "the controller answers the pilot every time, identical words or not")
+    }
+
+    private func continueCalls(_ model: AppModel) -> Int {
+        model.transcript.filter {
+            $0.sender == .atc && $0.displayText.contains("continue present deviation")
+        }.count
+    }
+
     /// Regression: a second re-vector — a fresh deviation off the aircraft's current
     /// position while already flying a first deviation — must run all the way to the filed
     /// route, not end mid-air on the first deviation it replaces. Freezing the new line
