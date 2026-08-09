@@ -190,6 +190,14 @@ enum ATISPhraseology {
             g[1] + " " + g[2]
         }
 
+        // Standalone "VC" is the plain-language vicinity qualifier of an advisory ("BIRD
+        // ACTIVITY VC OF ARPT", "BIRD ACTIVITY VC ARPT"). The weather pass above only
+        // consumes a VC that prefixes a real weather code (VCSH, VCTS), so a lone token
+        // survives to here and would otherwise be voiced letter by letter ("V C"). The
+        // optional following "OF" is folded in so both published forms read the same
+        // ("…vicinity of airport"); "\b" keeps VCTR/VCTRS/VCNTY out of the match.
+        s = replacingMatches(in: s, pattern: "\\bVC\\b(?:\\s+OF\\b)?") { _ in "vicinity of" }
+
         // Expand the common ATIS abbreviations (word-boundary, so "APPROACHES" and
         // "DEPARTURE" are never clipped by the shorter "APCH"/"DEP" entries).
         for (abbreviation, expansion) in abbreviations {
@@ -467,7 +475,8 @@ enum ATISPhraseology {
         ("PERS", "personnel"), ("PERSONNEL", "personnel"), ("VEH", "vehicles"),
         ("CONST", "construction"), ("CONSTR", "construction"), ("OPS", "operations"),
         ("OPER", "operate"), ("OPR", "operate"),
-        ("EXP", "expect"), ("EXPC", "expect"), ("EXPCT", "expect"), ("XPCT", "expect"),
+        ("EXP", "expect"), ("EXPC", "expect"), ("EXPCT", "expect"),
+        ("XPECT", "expect"), ("XPCT", "expect"),
         ("XPDR", "transponder"), ("XPNDR", "transponder"), ("TRNSPNDR", "transponder"),
         ("MODEC", "mode charlie"),
         // Surface-surveillance / equipage acronyms read on the air as spelled letters. Both the
