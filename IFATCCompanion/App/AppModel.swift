@@ -1641,6 +1641,13 @@ final class AppModel: ObservableObject {
     func mergeLiveFlightPlanForTesting(_ live: FlightPlan) {
         mergeLiveFlightPlan(live)
     }
+
+    /// Test hook: the context the ATC calls are built from, so a test can read a derived
+    /// value (the initial departure heading, say) without driving the whole gate-to-gate
+    /// flow to the point where it would be spoken.
+    func contextForTesting(_ state: ATCState) -> ATCContext {
+        buildContext(for: state)
+    }
     #endif
 
     private func handle(state: AircraftState) {
@@ -3051,10 +3058,18 @@ final class AppModel: ObservableObject {
         // point ~180° the wrong way.
         let interceptFix = flightPlan.initialDepartureFix(sidFixes: sidProc?.fixes ?? [],
                                                           origin: headingOrigin)
+        // The bearing to that fix is a **true** course (great-circle geometry), while the
+        // pilot flies a magnetic heading bug — and `clearedForTakeoff` compares this
+        // number against the runway's magnetic heading to decide whether to say "fly
+        // runway heading" at all, so leaving it in the true frame got both the assignment
+        // and that decision wrong by the local declination. Carried into the pilot's
+        // frame like every other assigned heading (see `HeadingSolver`). The wind half of
+        // that correction is inert here — the clearance is issued on the ground, where
+        // the wind triangle isn't solved — so this is a variation conversion in practice.
         let depHeading: Int
         if let headingOrigin, let intercept = interceptFix?.coordinate,
            Geo.distanceNM(from: headingOrigin, to: intercept) >= 0.5 {
-            depHeading = Int(Geo.bearing(from: headingOrigin, to: intercept).rounded())
+            depHeading = assignedHeading(forTrueCourse: Geo.bearing(from: headingOrigin, to: intercept))
         } else {
             depHeading = 0
         }
@@ -3472,7 +3487,8 @@ final class AppModel: ObservableObject {
         }
         return ApproachIntercept.heading(finalCourse: finalCourse,
                                          aircraft: aircraft,
-                                         runwayReference: airport)
+                                         runwayReference: airport,
+                                         variationDegreesEast: lastKnownVariationEast ?? 0)
     }
 
     func requestApproach() {
@@ -5830,7 +5846,7 @@ final class AppModel: ObservableObject {
         return (v0, max(5, Int((ahead / 5).rounded()) * 5))
     }
 
-    // MARK: - Weather deviation — true course to assigned heading
+    // MARK: - True course → assigned heading
 
     /// Refresh the corrections that carry a mint-line leg into the pilot's frame.
     ///
@@ -5849,10 +5865,16 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// The heading to assign so the aircraft **tracks** `trueCourse` — a leg of the mint
-    /// line — rather than merely pointing along it: crabbed into the live wind, then
-    /// converted out of the true frame the line is computed in and into the magnetic
-    /// frame the sim's heading bug reads.
+    /// The heading to assign so the aircraft **tracks** `trueCourse` rather than merely
+    /// pointing along it: crabbed into the live wind, then converted out of the true
+    /// frame the geometry is computed in and into the magnetic frame the sim's heading
+    /// bug reads.
+    ///
+    /// Every assigned heading the app derives from great-circle geometry goes through
+    /// here — the weather-deviation vectors along the mint line, and the initial
+    /// departure heading to the first fix off the runway. (Runway-derived headings —
+    /// the approach intercept, the go-around crosswind leg — are already magnetic by
+    /// definition and need no conversion.)
     ///
     /// Applied only where a heading is handed to the pilot. The stored turn geometry
     /// (`deviationStartHeading`, `pendingRejoinHeading`, the leg bearings) stays in true

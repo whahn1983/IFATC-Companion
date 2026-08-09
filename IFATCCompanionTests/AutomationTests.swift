@@ -318,6 +318,73 @@ final class AutomationTests: XCTestCase {
                              "bearing to the southern destination should be southerly, got \(destinationHeading)")
     }
 
+    /// The initial departure heading is the bearing to the first fix — great-circle
+    /// geometry, so a **true** course — but it is spoken as "fly heading …" and is also
+    /// compared against the runway's magnetic heading to decide whether to say "fly
+    /// runway heading" at all. Leaving it in the true frame got both wrong by the local
+    /// declination, so it must be assigned in magnetic degrees.
+    @MainActor
+    func testInitialDepartureHeadingIsAssignedInMagneticDegrees() {
+        let variationEast = 12.0
+        let eastFix = wp("EASTF", 30.40, -94.20)
+
+        let model = AppModel()
+        var plan = FlightPlan()
+        plan.departure = "KIAH"
+        plan.destination = "KMSP"
+        plan.waypoints = [eastFix]
+        model.flightPlan = plan
+
+        // Lined up at the field, with the sim reporting a 12° east variation between its
+        // two headings for the same nose. On the ground the wind triangle isn't solved,
+        // so this isolates the variation half of the conversion.
+        var s = AircraftState()
+        s.onGround = true
+        s.groundSpeed = 0
+        s.latitude = iah.latitude
+        s.longitude = iah.longitude
+        s.trueHeading = 170
+        s.heading = 170 - variationEast
+        model.ingestStateForTesting(s)
+
+        guard let fixCoord = eastFix.coordinate else { return XCTFail("the fixture fix must be located") }
+        let trueCourse = Geo.bearing(from: iah, to: fixCoord)
+        let ctx = model.contextForTesting(.holdingShort)
+
+        XCTAssertEqual(ctx.departureHeading,
+                       ApproachIntercept.normalizedHeading(trueCourse - variationEast),
+                       "the departure heading must be magnetic, not the raw true bearing")
+        XCTAssertNotEqual(ctx.departureHeading, ApproachIntercept.normalizedHeading(trueCourse),
+                          "a 12° variation must actually change the number assigned")
+    }
+
+    /// With nothing to measure variation against, the departure heading is the plain true
+    /// bearing — exactly what the app assigned before any of this existed.
+    @MainActor
+    func testInitialDepartureHeadingIsUnchangedWithoutATrueHeading() {
+        let eastFix = wp("EASTF", 30.40, -94.20)
+
+        let model = AppModel()
+        var plan = FlightPlan()
+        plan.departure = "KIAH"
+        plan.destination = "KMSP"
+        plan.waypoints = [eastFix]
+        model.flightPlan = plan
+
+        var s = AircraftState()
+        s.onGround = true
+        s.groundSpeed = 0
+        s.latitude = iah.latitude
+        s.longitude = iah.longitude
+        s.heading = 170          // magnetic only — the sim exposes no true heading
+        model.ingestStateForTesting(s)
+
+        guard let fixCoord = eastFix.coordinate else { return XCTFail("the fixture fix must be located") }
+        let ctx = model.contextForTesting(.holdingShort)
+        XCTAssertEqual(ctx.departureHeading,
+                       ApproachIntercept.normalizedHeading(Geo.bearing(from: iah, to: fixCoord)))
+    }
+
     // MARK: - Read-backs echo heading + altitude and "resume own navigation"
 
     /// The takeoff clearance issues an initial heading and a climb; the read-back
