@@ -91,8 +91,9 @@ struct WeatherDeviationPhraseology {
     /// tells the pilot the drawn reroute moved.
     func deviationRedrawnAhead(cs: Callsign, distanceNM: Int,
                                facility: ATCFacility = .center) -> ATCTransmission {
-        let milesD = distancePhrase(Double(distanceNM), spoken: false)
-        let milesS = distancePhrase(Double(distanceNM), spoken: true)
+        // A turn distance, like `expectDeviation` — rounded to fives, not tens.
+        let milesD = distancePhrase(Double(distanceNM), spoken: false, nearest: 5)
+        let milesS = distancePhrase(Double(distanceNM), spoken: true, nearest: 5)
         return center("\(cs.display), weather deviation updated, revised deviation now begins \(milesD) ahead.",
                       "\(cs.spoken), weather deviation updated, revised deviation now begins \(milesS) ahead.",
                       facility: facility)
@@ -186,8 +187,10 @@ struct WeatherDeviationPhraseology {
     /// reaches the turn-out point at the start of the mint line.
     func expectDeviation(cs: Callsign, direction: DeviationDirection, distanceNM: Int,
                          maintainAltitude: Int, facility: ATCFacility = .center) -> ATCTransmission {
-        let milesD = distancePhrase(Double(distanceNM), spoken: false)
-        let milesS = distancePhrase(Double(distanceNM), spoken: true)
+        // Rounded to fives, and `distanceNM` arrives already rounded to fives — so the
+        // number spoken here is the one the caller measured, not a second rounding of it.
+        let milesD = distancePhrase(Double(distanceNM), spoken: false, nearest: 5)
+        let milesS = distancePhrase(Double(distanceNM), spoken: true, nearest: 5)
         var tx = center("\(cs.display), roger, deviation \(direction.word) of course approved, maintain \(altDisplay(maintainAltitude)), continue present heading, expect the turn in \(milesD) for weather.",
                         "\(cs.spoken), roger, deviation \(direction.word) of course approved, maintain \(altSpoken(maintainAltitude)), continue present heading, expect the turn in \(milesS) for weather.",
                         facility: facility)
@@ -372,8 +375,13 @@ struct WeatherDeviationPhraseology {
         spoken ? "\(Self.clockWords[n] ?? String(n)) o'clock" : "\(n) o'clock"
     }
 
-    private func distancePhrase(_ distance: Double, spoken: Bool) -> String {
-        let rounded = max(0, Int((distance / 10).rounded()) * 10)
+    /// Spoken distance, rounded to `nearest` miles. Weather is described in tens (a cell's
+    /// distance is never that precise), but a **turn** the pilot is about to fly is rounded
+    /// to fives: a turn-out 13 NM ahead announced as "20 miles" reads as a different turn
+    /// from the one the advisory just described, and sends the pilot past it waiting.
+    private func distancePhrase(_ distance: Double, spoken: Bool, nearest: Int = 10) -> String {
+        let step = max(1, nearest)
+        let rounded = max(0, Int((distance / Double(step)).rounded()) * step)
         if spoken { return "\(Phonetic.spellDigits(String(rounded), icao: icao)) miles" }
         return "\(rounded) miles"
     }
