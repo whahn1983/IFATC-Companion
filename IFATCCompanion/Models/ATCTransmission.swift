@@ -74,4 +74,24 @@ struct ATCTransmission: Identifiable, Equatable, Codable {
     func asReadback(facility: ATCFacility, tuneTo: ATCFacility? = nil) -> Readback {
         Readback(displayText: displayText, spokenText: spokenText, facility: facility, tuneTo: tuneTo)
     }
+
+    /// Whether this controller call would only repeat the last one in `transcript` — same
+    /// facility, same words — and the pilot has already acknowledged it.
+    ///
+    /// A controller-initiated call can come out verbatim-identical back to back: the drawn
+    /// weather-deviation line can carry the same heading across consecutive vertices, and each
+    /// vertex fires its own turn, so the radio ends up carrying "fly heading 082, vectors
+    /// around precipitation" three times over while the pilot is already flying exactly that.
+    /// Saying it again adds nothing, so the caller holds it.
+    ///
+    /// A repeat only counts once the pilot has transmitted after the original — any pilot
+    /// transmission is an acknowledgement, matching the read-back gate. A call that went
+    /// unanswered is therefore never held: re-issuing it is how an unheard instruction gets
+    /// through ("…how do you read?").
+    static func isAcknowledgedRepeat(_ tx: ATCTransmission, in transcript: [ATCTransmission]) -> Bool {
+        guard let last = transcript.lastIndex(where: { $0.sender == .atc }),
+              transcript[last].facility == tx.facility,
+              transcript[last].displayText == tx.displayText else { return false }
+        return transcript[(last + 1)...].contains { $0.sender == .pilot }
+    }
 }

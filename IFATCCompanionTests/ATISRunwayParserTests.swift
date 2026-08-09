@@ -78,6 +78,26 @@ final class ATISRunwayParserTests: XCTestCase {
         XCTAssertTrue(r.isEmpty)
     }
 
+    func testRunwayKeywordGluedToDesignatorIsParsed() {
+        // Some feeds publish the keyword flush against its designator ("RY8R"). It scans as
+        // the same runway the spaced form does, so the flight still sees it as in use.
+        let r = ATISRunwayParser.parse("ILS RY8R APCH IN USE. DEPG RWY26L.", kind: .combined)
+        XCTAssertEqual(r.arrivals, ["8R"])
+        XCTAssertEqual(r.departures, ["26L"])
+        // The plural keyword and a leading-zero designator split the same way.
+        let r2 = ATISRunwayParser.parse("LDG AND DEPG RWYS04L AND 04R.", kind: .combined)
+        XCTAssertEqual(Set(r2.arrivals), ["4L", "4R"])
+        XCTAssertEqual(Set(r2.departures), ["4L", "4R"])
+    }
+
+    func testFlushSplitOnlyAppliesToRunwayKeywords() {
+        // Only a token whose letters are exactly a runway keyword is split. A word that merely
+        // ends in those letters, or a keyword with a tail that isn't a runway ident, is left
+        // alone — neither may invent an active runway.
+        XCTAssertTrue(ATISRunwayParser.parse("ENTRY8R VIA TWY A.", kind: .combined).isEmpty)
+        XCTAssertTrue(ATISRunwayParser.parse("RWY40 IN USE.", kind: .combined).isEmpty)
+    }
+
     func testCanonicalDropsLeadingZeroAndUppercases() {
         XCTAssertEqual(ATISRunwayParser.canonical("04L"), "4L")
         XCTAssertEqual(ATISRunwayParser.canonical("09"), "9")

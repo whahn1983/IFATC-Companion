@@ -1170,6 +1170,52 @@ final class WeatherDeviationFlowTests: XCTestCase {
         XCTAssertLessThan(off, 90, "the redrawn entry point lies ahead of the aircraft, not behind it")
         XCTAssertTrue(atcContains(model, "weather deviation updated"),
                       "ATC notifies the pilot that the deviation was redrawn ahead")
+        // The call carries its own read-back — the courtesy "Roger" — so Read Back
+        // acknowledges this advisory instead of re-deriving one from the conversational state.
+        let redrawCall = model.transcript.last {
+            $0.sender == .atc && $0.displayText.contains("weather deviation updated")
+        }
+        XCTAssertTrue(redrawCall?.readback?.displayText.hasPrefix("Roger,") ?? false,
+                      redrawCall?.readback?.displayText ?? "no read-back on the redraw call")
+    }
+
+    /// Nothing was activated — the pilot elected to continue on course, which settles the
+    /// lifecycle back to idle — so when the line is redrawn ahead the update **re-opens the
+    /// decision**: the response card comes back with the call, carrying Vectors and the
+    /// left/right deviation buttons, so the revised deviation can be activated on the spot
+    /// rather than waiting for the near-turn advisory to re-raise it.
+    func testRedrawnDeviationReopensTheResponseCardWhenNothingWasActivated() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)
+
+        let center = routePointAhead(model, 150)
+        model.radarOverlay.mockCells = [RadarCell(polygon: box(around: center, half: 0.3), intensity: .heavy)]
+        await model.refreshDeviations()
+        guard let entry = model.activeWeatherConflict?.deviationPath.first, entry.isValid else {
+            return XCTFail("expected a drawn deviation for the cell ahead")
+        }
+
+        // "Continuing on course" answers the advisory without activating anything: the card
+        // goes away and the lifecycle is idle again.
+        model.continueThroughWeather()
+        XCTAssertFalse(model.weatherDeviationCardVisible, "continuing on course closes the card")
+
+        // Fly 3 NM past the entry point: the line is redrawn ahead and ATC advises it.
+        let course = Geo.bearing(from: entry, to: model.mock.route.destCoord)
+        let past = Geo.destination(from: entry, bearingDegrees: course, distanceNM: 3)
+        var state = model.mock.state(for: .cruise)
+        state.latitude = past.latitude
+        state.longitude = past.longitude
+        model.ingestStateForTesting(state)
+
+        XCTAssertTrue(atcContains(model, "weather deviation updated"),
+                      "ATC advises the revised deviation")
+        XCTAssertEqual(model.weatherDeviationState, .awaitingPilotIntentions,
+                       "the update opens the decision again")
+        XCTAssertTrue(model.weatherDeviationCardVisible, "the response card comes up with the call")
+        XCTAssertTrue(model.weatherActions.contains(.requestVector), "\(model.weatherActions)")
+        XCTAssertTrue(model.weatherActions.contains(.requestLeftDeviation), "\(model.weatherActions)")
+        XCTAssertTrue(model.weatherActions.contains(.requestRightDeviation), "\(model.weatherActions)")
     }
 
     /// The redraw never touches a deviation the pilot has committed to: once the turn is
@@ -1734,6 +1780,34 @@ final class WeatherDeviationFlowTests: XCTestCase {
                        "the committed line's rejoin is not moved when continuing")
         XCTAssertEqual(model.weatherDeviation.pendingRejoinHeading, armedTurn,
                        "the armed rejoin turn is preserved when continuing")
+    }
+
+    /// A reply to a pilot request is never held as a duplicate. The controller's words here
+    /// are identical every time the pilot taps Vectors on a still-clear reroute, but a request
+    /// left unanswered reads as a dropped call — only calls the controller makes on its own
+    /// are held when they would repeat something the pilot already acknowledged.
+    func testRepeatedPilotRequestIsAnsweredEveryTime() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)
+        model.requestVectorAroundWeather()
+        XCTAssertEqual(model.weatherDeviationState, .vectoringAroundWeather)
+
+        // The reroute ahead is clear, so every further Vectors tap draws the same reply.
+        model.radarOverlay.mockCells = []
+        model.recomputeWeatherHazards()
+
+        model.requestVectorAroundWeather()
+        model.readBack()
+        XCTAssertEqual(continueCalls(model), 1)
+        model.requestVectorAroundWeather()
+        XCTAssertEqual(continueCalls(model), 2,
+                       "the controller answers the pilot every time, identical words or not")
+    }
+
+    private func continueCalls(_ model: AppModel) -> Int {
+        model.transcript.filter {
+            $0.sender == .atc && $0.displayText.contains("continue present deviation")
+        }.count
     }
 
     /// Regression: a second re-vector — a fresh deviation off the aircraft's current

@@ -87,16 +87,22 @@ struct WeatherDeviationPhraseology {
 
     /// The suggested reroute's entry point fell behind the aircraft (flown past or missed),
     /// so the deviation has been redrawn ahead of it. The controller advises the revised
-    /// deviation and how far ahead it now begins. No read-back — nothing is assigned; it
-    /// tells the pilot the drawn reroute moved.
+    /// deviation and how far ahead it now begins. Nothing is assigned, so the read-back is
+    /// the courtesy "Roger" — carried on the call itself so the Read Back button
+    /// acknowledges *this* advisory instead of re-deriving a stale state read-back.
     func deviationRedrawnAhead(cs: Callsign, distanceNM: Int,
                                facility: ATCFacility = .center) -> ATCTransmission {
         // A turn distance, like `expectDeviation` — rounded to fives, not tens.
         let milesD = distancePhrase(Double(distanceNM), spoken: false, nearest: 5)
         let milesS = distancePhrase(Double(distanceNM), spoken: true, nearest: 5)
-        return center("\(cs.display), weather deviation updated, revised deviation now begins \(milesD) ahead.",
-                      "\(cs.spoken), weather deviation updated, revised deviation now begins \(milesS) ahead.",
-                      facility: facility)
+        var tx = center("\(cs.display), weather deviation updated, revised deviation now begins \(milesD) ahead.",
+                        "\(cs.spoken), weather deviation updated, revised deviation now begins \(milesS) ahead.",
+                        facility: facility)
+        tx.readback = ATCTransmission.Readback(
+            displayText: "Roger, \(cs.display).",
+            spokenText: "Roger, \(cs.spoken).",
+            facility: facility)
+        return tx
     }
 
     /// Outside NOAA radar coverage with no advisory data — do not invent weather.

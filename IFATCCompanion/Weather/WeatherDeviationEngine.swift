@@ -80,13 +80,29 @@ struct WeatherDeviationEngine {
 
     /// The recommended reroute's entry point fell behind the aircraft — it was flown past or
     /// missed — so the deviation was redrawn ahead of the aircraft. The controller advises the
-    /// revised deviation and how far ahead it now begins. Purely informational: the deviation
-    /// lifecycle is untouched, so a pending pilot decision (and the advisory still to come as
-    /// the new turn closes) stands exactly as it was.
-    func advisePathRedrawn(cs: Callsign, distanceNM: Int, context: WeatherDeviationContext,
-                           facility: ATCFacility) -> Result {
+    /// revised deviation and how far ahead it now begins.
+    ///
+    /// The revised deviation is the pilot's to activate, so the call **opens the decision**:
+    /// the lifecycle moves to awaiting-intentions, which puts the response card and its
+    /// request buttons (deviate left/right, vectors, higher/lower) on screen with the call.
+    /// Two states are left exactly as they were: a pilot already deciding (the card is up, so
+    /// a pending decision — and the advisory still to come as the new turn closes — stands),
+    /// and a pilot already flying an approved deviation (there is nothing to activate).
+    /// `conflict` seeds the context from the redrawn line the way `issueAdvisory` does, so a
+    /// deviation requested off this call names the redrawn line's rejoin fix.
+    func advisePathRedrawn(cs: Callsign, distanceNM: Int, conflict: RouteWeatherConflict? = nil,
+                           context: WeatherDeviationContext, facility: ATCFacility) -> Result {
         var ctx = context
         let tx = phraseology.deviationRedrawnAhead(cs: cs, distanceNM: distanceNM, facility: facility)
+        if !ctx.state.isCommittedDeviation, !ctx.state.isAwaitingPilotDecision {
+            ctx.state = .awaitingPilotIntentions
+            if let conflict {
+                ctx.activeHazardID = conflict.hazard.id
+                ctx.rejoinFix = conflict.rejoinFix?.name
+                ctx.originalRouteSegment = conflict.originalSegment
+                ctx.requestedDeviationDirection = conflict.recommendedDirection
+            }
+        }
         ctx.lastATCWeatherCall = tx.displayText
         return Result(pilot: nil, atc: [tx], context: ctx)
     }
