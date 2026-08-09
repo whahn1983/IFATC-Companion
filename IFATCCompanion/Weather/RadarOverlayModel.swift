@@ -186,11 +186,15 @@ struct WeatherDeviationContext: Codable {
     var committedDeviationPath: [PathPoint]?
     var requestedDeviationDirection: DeviationDirection?
     var approvedDeviationDegrees: Int?
+    /// The heading last spoken to the pilot — **magnetic**, and already crabbed into the
+    /// wind, since it is what the pilot dials into the heading bug (see `HeadingSolver`).
+    /// The armed-turn fields below are the opposite: they are the drawn line's own **true**
+    /// courses, kept in that frame because they are compared against the map geometry.
     var assignedHeading: Int?
     var maintainAltitude: Int?
     var rejoinFix: String?
     /// The next turn point in the committed mint line (the vertex the aircraft is
-    /// flying toward) and the heading to fly out of it toward the following vertex,
+    /// flying toward) and the **true** course out of it toward the following vertex,
     /// so the telemetry loop can auto-issue the turn once the aircraft reaches it. A
     /// side-hug line (`[start, turnOut, turnBack, rejoin]`) has **two** such turns —
     /// out onto the parallel leg, then back down to the route — so these advance from
@@ -206,7 +210,7 @@ struct WeatherDeviationContext: Codable {
     /// wide of it.
     var vectorLegBearing: Double?
     /// A deviation approved while the mint line is still drawn ahead: the turn-out
-    /// (start of the mint line) the aircraft is flying toward, the heading to fly out of
+    /// (start of the mint line) the aircraft is flying toward, the **true** course out of
     /// it onto the reroute, and the bearing of the leg into it (to detect passing abeam).
     /// While these are set the controller has approved the deviation but is **holding the
     /// turn** — the pilot continues on course until reaching the turn-out, then the

@@ -426,6 +426,14 @@ final class AppModel: ObservableObject {
     /// last automatic turn was issued. Both cleared with the deviation lifecycle.
     private var lastOffPathReplanAt: Date?
     private var lastAutoTurnIssuedAt: Date?
+    /// The corrections that turn a mint-line leg (a **true** course, straight out of the
+    /// great-circle geometry) into the heading assigned to the pilot: the local magnetic
+    /// variation, and the wind the aircraft is actually flying in. Both are sampled from
+    /// telemetry and held across ticks that don't carry a usable sample — a turn is
+    /// exactly when the samples are least trustworthy and the correction most needed, so
+    /// falling back to "no correction" mid-turn would defeat the point. See `HeadingSolver`.
+    private var lastKnownVariationEast: Double?
+    private var lastKnownWind: HeadingSolver.Wind?
     /// The steepest turn back onto the flight plan a drawn deviation may end with. Past this the
     /// rejoin is moved to the next fix down the route (`deviationWithGentleRejoin`), lengthening
     /// the closing leg so the return to course — and the turn the controller calls for it — is
@@ -1653,6 +1661,11 @@ final class AppModel: ObservableObject {
             currentFacility = tunedFacility ?? controller(for: stateMachine.current)
             return
         }
+
+        // Keep the magnetic-variation and wind estimates current. Assigned weather
+        // headings are derived from true-bearing geometry, and both corrections that
+        // carry them into the pilot's frame come from telemetry.
+        updateHeadingCorrections(from: state)
 
         // Detect a telemetry discontinuity — the first fresh fix after returning from the
         // background (the Connect socket freezes while away), or a mid-session live stall
@@ -5280,8 +5293,9 @@ final class AppModel: ObservableObject {
         let pos = aircraftState.coordinate ?? resolvedDepartureCoordinate()
         if let pos, pos.isValid,
            let apex = activeWeatherConflict?.deviationPath.dropFirst().first, apex.isValid {
-            let bearing = Geo.bearing(from: pos, to: apex)
-            return ((Int(bearing.rounded()) % 360) + 360) % 360
+            // A true course off the drawn line — carried into the pilot's frame, like
+            // every other heading issued along the mint line.
+            return assignedHeading(forTrueCourse: Geo.bearing(from: pos, to: apex))
         }
         let base = aircraftState.heading ?? pos.map { currentCourse(from: $0) } ?? 0
         let degrees = activeWeatherConflict?.recommendedDeviationDegrees ?? 20
@@ -5816,10 +5830,49 @@ final class AppModel: ObservableObject {
         return (v0, max(5, Int((ahead / 5).rounded()) * 5))
     }
 
+    // MARK: - Weather deviation — true course to assigned heading
+
+    /// Refresh the corrections that carry a mint-line leg into the pilot's frame.
+    ///
+    /// Both are read as differences between states Connect serves in separate
+    /// round-trips, so both are sampled only when the aircraft is near wings-level: a
+    /// roll smears the difference, and a stale sample beats a smeared one — variation
+    /// changes over hundreds of miles, wind over tens, neither over the seconds a turn
+    /// takes. A tick with nothing usable simply leaves the last estimate standing.
+    private func updateHeadingCorrections(from state: AircraftState) {
+        guard abs(state.bankAngle ?? 0) <= HeadingSolver.maxSampleBankDegrees else { return }
+        if let variation = HeadingSolver.variationDegreesEast(from: state) {
+            lastKnownVariationEast = variation
+        }
+        if let sample = HeadingSolver.wind(from: state) {
+            lastKnownWind = HeadingSolver.blended(lastKnownWind, sample: sample)
+        }
+    }
+
+    /// The heading to assign so the aircraft **tracks** `trueCourse` — a leg of the mint
+    /// line — rather than merely pointing along it: crabbed into the live wind, then
+    /// converted out of the true frame the line is computed in and into the magnetic
+    /// frame the sim's heading bug reads.
+    ///
+    /// Applied only where a heading is handed to the pilot. The stored turn geometry
+    /// (`deviationStartHeading`, `pendingRejoinHeading`, the leg bearings) stays in true
+    /// degrees, so the comparisons built on it — turn size, the never-reverse guard —
+    /// keep matching the drawn line rather than mixing frames.
+    private func assignedHeading(forTrueCourse trueCourse: Double) -> Int {
+        HeadingSolver.assignedHeading(forTrueCourse: trueCourse,
+                                      wind: lastKnownWind,
+                                      trueAirspeed: aircraftState.trueAirspeed,
+                                      variationDegreesEast: lastKnownVariationEast)
+    }
+
     /// Arm the held beginning turn at the mint line's turn-out point: store the turn-out
-    /// (start of the committed line), the heading to fly out of it onto the reroute, and
-    /// the bearing of the leg into it (to detect the aircraft passing abeam), so the
+    /// (start of the committed line), the course out of it onto the reroute, and the
+    /// bearing of the leg into it (to detect the aircraft passing abeam), so the
     /// telemetry loop can issue the turn once the aircraft reaches the turn-out.
+    ///
+    /// The stored course is **true**, matching the drawn line it is measured off, so the
+    /// turn-size and never-reverse checks compare like with like. It becomes a magnetic,
+    /// wind-corrected heading only where it is spoken (`assignedHeading(forTrueCourse:)`).
     private func armDeviationStart() {
         let path = committedMintLineCoordinates()
         guard path.count >= 2, let v0 = path.first, v0.isValid,
@@ -5884,7 +5937,8 @@ final class AppModel: ObservableObject {
         }
         lastAutoTurnIssuedAt = Date()   // let it roll out before drift is judged
         applyDeviationResult(
-            deviationEngine.beginDeviationTurn(cs: callsignNow(), heading: heading,
+            deviationEngine.beginDeviationTurn(cs: callsignNow(),
+                                               heading: assignedHeading(forTrueCourse: Double(heading)),
                                                maintainAltitude: weatherMaintainAltitude(),
                                                context: weatherDeviation, facility: weatherFacility),
             controllerInitiated: true)
@@ -6161,7 +6215,7 @@ final class AppModel: ObservableObject {
         applyDeviationResult(
             deviationEngine.revectorOffPath(
                 cs: callsignNow(),
-                heading: ApproachIntercept.normalizedHeading(Geo.bearing(from: pos, to: next)),
+                heading: assignedHeading(forTrueCourse: Geo.bearing(from: pos, to: next)),
                 maintainAltitude: weatherMaintainAltitude(),
                 context: weatherDeviation, facility: weatherFacility),
             controllerInitiated: true)
@@ -6173,7 +6227,9 @@ final class AppModel: ObservableObject {
     /// bearing of the leg leading into it (to detect the aircraft passing abeam), and
     /// the heading to fly out of it toward the next vertex — so the telemetry loop can
     /// auto-issue the turn once the aircraft reaches it. Only interior vertices
-    /// (1…count-2) are turns; the endpoints are the start and the rejoin.
+    /// (1…count-2) are turns; the endpoints are the start and the rejoin. Like the
+    /// beginning turn, the armed course is **true** — it is corrected into the pilot's
+    /// frame at the moment the turn is spoken, not here.
     private func armRejoinTurn(at index: Int, path: [CLLocationCoordinate2D]) {
         guard index >= 1, index <= path.count - 2,
               path[index - 1].isValid, path[index].isValid, path[index + 1].isValid else {
@@ -6452,7 +6508,8 @@ final class AppModel: ObservableObject {
         let isFinalTurn = index >= path.count - 2
         lastAutoTurnIssuedAt = Date()   // let it roll out before drift is judged
         applyDeviationResult(
-            deviationEngine.rejoinTurn(cs: callsignNow(), heading: heading,
+            deviationEngine.rejoinTurn(cs: callsignNow(),
+                                       heading: assignedHeading(forTrueCourse: Double(heading)),
                                        rejoinFix: weatherDeviation.rejoinFix,
                                        finalTurn: isFinalTurn, context: weatherDeviation,
                                        facility: weatherFacility),

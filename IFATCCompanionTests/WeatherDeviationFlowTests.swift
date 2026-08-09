@@ -154,6 +154,143 @@ final class WeatherDeviationFlowTests: XCTestCase {
         XCTAssertTrue(pilotContains(model, "maintain"), "vector read-back should echo the maintain altitude")
     }
 
+    // MARK: - True course → assigned heading (variation + wind)
+
+    /// A cruising state carrying a known magnetic variation and a known wind, built from
+    /// the mock's cruise fix so the deviation geometry is unchanged. The ground vector is
+    /// the air vector plus the wind, so the app solves back exactly this wind.
+    private func windyCruise(_ model: AppModel,
+                             variationEast: Double,
+                             windFrom: Double,
+                             windSpeed: Double) -> AircraftState {
+        func rad(_ d: Double) -> Double { d * .pi / 180 }
+        var s = model.mock.state(for: .cruise)
+        let trueHeading = s.trueHeading ?? 0
+        let tas = s.trueAirspeed ?? 460
+        s.heading = (trueHeading - variationEast + 360).truncatingRemainder(dividingBy: 360)
+        let toward = windFrom + 180
+        let east = tas * sin(rad(trueHeading)) + windSpeed * sin(rad(toward))
+        let north = tas * cos(rad(trueHeading)) + windSpeed * cos(rad(toward))
+        s.groundSpeed = (east * east + north * north).squareRoot()
+        var track = atan2(east, north) * 180 / .pi
+        if track < 0 { track += 360 }
+        s.track = track
+        return s
+    }
+
+    /// The mint line is drawn in true degrees, but the pilot flies a magnetic heading bug
+    /// through a wind that pushes the aircraft sideways for the whole length of a leg.
+    /// The assigned vector must therefore be the leg's course crabbed into the wind and
+    /// stepped into the magnetic frame — not the raw bearing off the map.
+    func testWeatherVectorIsCorrectedForVariationAndWind() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)
+
+        let variationEast = 8.0, windFrom = 200.0, windSpeed = 45.0
+        // The wind estimate is smoothed across ticks, so let it settle before reading the
+        // vector it produces — as it would over a few seconds of live telemetry.
+        let windy = windyCruise(model, variationEast: variationEast,
+                                windFrom: windFrom, windSpeed: windSpeed)
+        for _ in 0..<25 { model.ingestStateForTesting(windy) }
+
+        guard let conflict = model.activeWeatherConflict,
+              conflict.deviationPath.count >= 2,
+              let pos = model.aircraftState.coordinate else {
+            return XCTFail("expected a conflict with a deviation path")
+        }
+        let apex = conflict.deviationPath[1]
+        let course = Geo.bearing(from: pos, to: apex)
+        let tas = windy.trueAirspeed ?? 460
+
+        model.requestVectorAroundWeather()
+        guard let assigned = model.weatherDeviation.assignedHeading else {
+            return XCTFail("expected an assigned vector")
+        }
+
+        // Worked independently of the solver, from the wind this state was built to carry.
+        let crab = asin(windSpeed * sin((windFrom - course) * .pi / 180) / tas) * 180 / .pi
+        let expected = ((Int((course + crab - variationEast).rounded()) % 360) + 360) % 360
+        var error = abs(Double(assigned - expected)).truncatingRemainder(dividingBy: 360)
+        if error > 180 { error = 360 - error }
+        XCTAssertLessThanOrEqual(error, 1,
+                                 "the vector must be the leg crabbed into wind, in magnetic degrees")
+
+        // And it must actually differ from the raw map bearing — the bug this fixes.
+        let raw = ((Int(course.rounded()) % 360) + 360) % 360
+        XCTAssertNotEqual(assigned, raw,
+                          "assigning the true bearing walks the aircraft off the drawn line")
+    }
+
+    /// Every auto-issued turn along the line gets the same treatment, not just the first:
+    /// the armed turn stays in true degrees (it is compared against the drawn geometry),
+    /// while the heading spoken to the pilot is the corrected one.
+    func testAutoTurnsAlongTheMintLineAreAlsoCorrected() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)
+
+        let variationEast = 8.0, windFrom = 200.0, windSpeed = 45.0
+        let windy = windyCruise(model, variationEast: variationEast,
+                                windFrom: windFrom, windSpeed: windSpeed)
+        for _ in 0..<25 { model.ingestStateForTesting(windy) }
+
+        model.requestVectorAroundWeather()
+        guard let line = model.weatherDeviationLine, line.count >= 3,
+              let armed = model.weatherDeviation.pendingRejoinHeading else {
+            return XCTFail("expected a committed mint line with an armed turn")
+        }
+        let apex = line[1]
+        let course = Geo.bearing(from: apex, to: line[2])
+        XCTAssertEqual(armed, ((Int(course.rounded()) % 360) + 360) % 360,
+                       "the armed turn stays a true course, matching the drawn line")
+
+        // Fly to the turn vertex; the controller issues it.
+        let atcBefore = model.transcript.filter { $0.sender == .atc }.count
+        var atApex = windy
+        atApex.latitude = apex.latitude
+        atApex.longitude = apex.longitude
+        model.ingestStateForTesting(atApex)
+        XCTAssertGreaterThan(model.transcript.filter { $0.sender == .atc }.count, atcBefore,
+                             "reaching the turn vertex must issue the turn")
+
+        guard let assigned = model.weatherDeviation.assignedHeading else {
+            return XCTFail("reaching the turn must assign a heading")
+        }
+        let crab = asin(windSpeed * sin((windFrom - course) * .pi / 180)
+                        / (windy.trueAirspeed ?? 460)) * 180 / .pi
+        let expected = ((Int((course + crab - variationEast).rounded()) % 360) + 360) % 360
+        var error = abs(Double(assigned - expected)).truncatingRemainder(dividingBy: 360)
+        if error > 180 { error = 360 - error }
+        XCTAssertLessThanOrEqual(error, 1, "the turn spoken to the pilot is corrected")
+        XCTAssertNotEqual(assigned, armed,
+                          "the spoken heading is not the raw true course of the leg")
+    }
+
+    /// A sim that exposes no true heading gives the app nothing to measure variation
+    /// against, and no way to solve the wind triangle. Vectors must then come out exactly
+    /// as they always did rather than being corrected by a guess.
+    func testVectorIsUncorrectedWhenTheSimExposesNoTrueHeading() async {
+        let model = makeModel()
+        // Drive to the cruise conflict as usual, but with the true heading stripped from
+        // every tick — so no sample ever establishes a variation or a wind to correct by.
+        await model.refreshWeather()
+        for _ in 0..<4 {
+            var s = model.mock.state(for: .cruise)
+            s.trueHeading = nil
+            model.ingestStateForTesting(s)
+        }
+
+        guard let conflict = model.activeWeatherConflict,
+              conflict.deviationPath.count >= 2,
+              let pos = model.aircraftState.coordinate else {
+            return XCTFail("expected a conflict with a deviation path")
+        }
+        let raw = ApproachIntercept.normalizedHeading(Geo.bearing(from: pos, to: conflict.deviationPath[1]))
+
+        model.requestVectorAroundWeather()
+        XCTAssertEqual(model.weatherDeviation.assignedHeading, raw,
+                       "with nothing to measure, the vector is the plain map bearing")
+    }
+
     /// A weather vector must fly toward the recommended reroute (the mint deviation
     /// path) measured from the aircraft's current position — not the current heading
     /// offset by the deviation amount. Otherwise a second vector requested while
@@ -169,6 +306,9 @@ final class WeatherDeviationFlowTests: XCTestCase {
         var deviated = model.mock.state(for: .cruise)
         let skewed = ((deviated.heading ?? 0) + 70).truncatingRemainder(dividingBy: 360)
         deviated.heading = skewed
+        // Swing the true heading with it: a magnetic heading 70° off the true heading
+        // would read as 70° of magnetic variation, which is not what this test is about.
+        deviated.trueHeading = skewed
         deviated.track = skewed
         model.ingestStateForTesting(deviated)
 
