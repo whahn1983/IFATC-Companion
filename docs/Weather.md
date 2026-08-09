@@ -633,9 +633,22 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      `deviationOffPathToleranceNM` (**5 NM either side**) the deviation is re-planned **from the
      aircraft's current position**: fresh geometry when new precipitation now sits on the path
      from here (`recomputeConflictFrom`, which also carries the line down to the filed route),
-     else the committed reroute itself — in both cases **re-anchored to the aircraft**
-     (`pathAnchoredAtAircraft` drops the vertices already flown past and starts the line at the
-     aircraft, so its first leg is the intercept back onto the reroute). The re-anchored line is
+     else the committed reroute itself — in both cases **re-anchored to the aircraft and forward
+     only** (`pathAnchoredAtAircraft` keeps a vertex only when the aircraft has not already flown
+     past it *along the line* **and** it is not behind the aircraft's current track, then starts
+     the line at the aircraft, so its first leg is the intercept forward onto what remains of the
+     reroute). When **nothing** of the reroute is left ahead, no vector is issued at all and the
+     drawn line is left alone: turning the aircraft back around to pick up geometry behind it is
+     never the answer. Keeping a trailing vertex so the line "still ends on the route" is exactly
+     what produced a near-reciprocal vector (216° → 015°) once the aircraft had flown past and
+     away from the whole reroute. As a backstop, **no automatically-issued weather vector may
+     turn the aircraft more than `maxWeatherVectorTurnDegrees` (135°) off its current track** —
+     the held beginning turn, the interior turns, the post-jump resync vector and the off-path
+     re-plan all check it, since every drawn leg is already bounded to 100° off course, so a
+     vector past that bound means the geometry is behind the aircraft, not a tight turn.
+     `committedTailAhead` — the remainder of the reroute the re-plan and the Vectors button plan
+     against — uses the same forward-only rule, rather than starting at whichever vertex is
+     merely *nearest*. The re-anchored line is
      re-frozen, the controller re-vectors onto it (*"you appear to be off the assigned
      deviation, fly heading …, vectors around precipitation, maintain …, advise clear of
      weather"*), and the interior turns are re-armed against the new line so the upcoming turn

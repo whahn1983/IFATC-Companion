@@ -426,6 +426,13 @@ final class AppModel: ObservableObject {
     /// last automatic turn was issued. Both cleared with the deviation lifecycle.
     private var lastOffPathReplanAt: Date?
     private var lastAutoTurnIssuedAt: Date?
+    /// The greatest turn (degrees off the aircraft's current track) an automatically-issued
+    /// weather vector may command, and the bound on what counts as *ahead* of the aircraft when
+    /// a deviation is re-planned. The detector already clamps every drawn leg to
+    /// `maxDeviationTurnDegrees` (100°) off course — ATC vectors around a storm, it never turns
+    /// an aircraft the long way around — so a vector past this bound is not a tight turn but a
+    /// line pointing **behind** the aircraft, and is suppressed rather than flown.
+    private let maxWeatherVectorTurnDegrees: Double = 135
     /// How far (NM) before a weather system's near edge each locked deviation is solved
     /// from. A reroute is a straight-corridor offset aimed at the storm; solved from far
     /// away (the origin, hundreds of NM back across the route's bends) it renders as a
@@ -5529,10 +5536,15 @@ final class AppModel: ObservableObject {
         guard let frozen = weatherDeviation.committedDeviationPath else { return [] }
         let committed = frozen.map { $0.coordinate }.filter { $0.isValid }
         guard committed.count >= 2 else { return [] }
-        let nearestIdx = committed.enumerated().min {
-            Geo.distanceNM(from: pos, to: $0.element) < Geo.distanceNM(from: pos, to: $1.element)
-        }?.offset ?? 0
-        return Array(committed[nearestIdx...])
+        // Only the part still **ahead** of the aircraft, by the same rule the re-anchoring uses.
+        // Taking the vertex merely *nearest* it (the old rule) hands back a tail that starts
+        // behind the aircraft once it has flown past or away from the line — and a re-plan
+        // aimed along that tail points backwards. With nothing ahead the tail is empty, and the
+        // callers fall back to the filed route ahead (or treat the reroute as flown out)
+        // instead of chasing geometry behind them.
+        let anchored = pathAnchoredAtAircraft(committed, from: pos,
+                                              track: aircraftTrackDegrees(at: pos))
+        return anchored.count >= 2 ? Array(anchored.dropFirst()) : []
     }
 
     /// The route ahead to protect on a re-vector: the committed mint line still ahead
@@ -5703,6 +5715,10 @@ final class AppModel: ObservableObject {
             reached = false
         }
         guard reached else { return false }
+        // Never turn the aircraft around. The turn-out is shaped forward from the detection
+        // position, so a beginning turn this far off the current track means the aircraft is no
+        // longer where the held turn assumes — issue nothing rather than reverse it.
+        guard !vectorWouldReverseAircraft(heading, at: pos) else { return false }
         lastAutoTurnIssuedAt = Date()   // let it roll out before drift is judged
         applyDeviationResult(deviationEngine.beginDeviationTurn(
             cs: callsignNow(), heading: heading, maintainAltitude: weatherMaintainAltitude(),
@@ -5745,8 +5761,37 @@ final class AppModel: ObservableObject {
         return bestDist
     }
 
+    /// The aircraft's current direction of travel, for judging what lies ahead of it. Its track
+    /// first (true, matching the drawn geometry), then its true heading, then the magnetic
+    /// heading — off by the local declination, but that is far inside the bound this feeds —
+    /// and only as a last resort the filed course, which is where the aircraft is *meant* to be
+    /// going rather than where it is actually going.
+    private func aircraftTrackDegrees(at pos: CLLocationCoordinate2D) -> Double {
+        if let track = aircraftState.track { return track }
+        if let trueHeading = aircraftState.trueHeading { return trueHeading }
+        if let heading = aircraftState.heading { return heading }
+        return currentCourse(from: pos)
+    }
+
+    /// Whether `coord` lies **ahead** of the aircraft: reaching it is a turn of no more than
+    /// `maxWeatherVectorTurnDegrees` off the current track. Anything past that bound sits behind
+    /// the aircraft — flying to it would mean turning around, never vectoring around weather.
+    private func isAheadOfAircraft(_ coord: CLLocationCoordinate2D,
+                                   from pos: CLLocationCoordinate2D, track: Double) -> Bool {
+        guard coord.isValid, Geo.distanceNM(from: pos, to: coord) > 0.1 else { return false }
+        return courseChangeDegrees(inbound: track,
+                                   outbound: Geo.bearing(from: pos, to: coord)) <= maxWeatherVectorTurnDegrees
+    }
+
+    /// Whether an automatically-issued weather vector onto `heading` would turn the aircraft
+    /// around rather than vector it around weather. See `maxWeatherVectorTurnDegrees`.
+    private func vectorWouldReverseAircraft(_ heading: Int, at pos: CLLocationCoordinate2D) -> Bool {
+        courseChangeDegrees(inbound: aircraftTrackDegrees(at: pos),
+                            outbound: Double(heading)) > maxWeatherVectorTurnDegrees
+    }
+
     /// The along-track distance (NM) of `p` from `a` measured in the direction of the leg
-    /// a→b — negative while `p` is still short of `a`.
+    /// a→b — positive once `p` is past `a` on that leg.
     private func alongLegNM(_ p: CLLocationCoordinate2D,
                             from a: CLLocationCoordinate2D, to b: CLLocationCoordinate2D) -> Double {
         let leg = Geo.bearing(from: a, to: b)
@@ -5754,19 +5799,32 @@ final class AppModel: ObservableObject {
         return Geo.distanceNM(from: a, to: p) * cos((toP - leg) * .pi / 180)
     }
 
-    /// Re-anchor a reroute to the aircraft's current position: drop the leading vertices the
-    /// aircraft has already flown past and begin the line at the aircraft, so the drawn line
-    /// starts where the aircraft actually is (with the first leg the intercept back onto the
-    /// reroute) rather than at a point it has drifted off. The remaining vertices — and the
-    /// rejoin on the filed route — are untouched, so the maneuver still ends on the flight path.
+    /// Re-anchor a reroute to the aircraft's current position, keeping **only the part of it
+    /// that is still in front of the aircraft**, so the line starts at the aircraft and its
+    /// first leg is the intercept forward onto what remains of the reroute. Two things have to
+    /// be true of every vertex kept: the aircraft has not already flown past it *along the
+    /// line*, and it is not *behind the aircraft* (`isAheadOfAircraft`).
+    ///
+    /// Forward-only is the whole point. Keeping a trailing vertex "so the line still ends on
+    /// the route" — even one the aircraft had flown well past and away from — is what let a
+    /// re-plan aim at geometry behind the aircraft and command a near-reciprocal turn
+    /// (216° → 015°). When nothing is left ahead this returns an empty path and the caller
+    /// leaves the aircraft alone rather than turning it around to pick the line back up.
     private func pathAnchoredAtAircraft(_ path: [CLLocationCoordinate2D],
-                                        from pos: CLLocationCoordinate2D) -> [CLLocationCoordinate2D] {
-        var pts = path.filter { $0.isValid }
-        guard pts.count >= 2 else { return [] }
-        // Keep at least the final leg, so a line the aircraft is past everywhere still ends
-        // on the route rather than collapsing.
-        while pts.count > 2, alongLegNM(pos, from: pts[0], to: pts[1]) > 0 { pts.removeFirst() }
-        if Geo.distanceNM(from: pos, to: pts[0]) < 1 { pts[0] = pos } else { pts.insert(pos, at: 0) }
+                                        from pos: CLLocationCoordinate2D,
+                                        track: Double) -> [CLLocationCoordinate2D] {
+        let valid = path.filter { $0.isValid }
+        guard valid.count >= 2 else { return [] }
+        // The first vertex the aircraft has not yet flown past on the drawn line.
+        var startIdx = 0
+        while startIdx < valid.count - 1,
+              alongLegNM(pos, from: valid[startIdx], to: valid[startIdx + 1]) > 0 {
+            startIdx += 1
+        }
+        // …and of what remains, only what is genuinely ahead of where the aircraft is going.
+        var pts = valid[startIdx...].filter { isAheadOfAircraft($0, from: pos, track: track) }
+        guard let first = pts.first else { return [] }
+        if Geo.distanceNM(from: pos, to: first) < 1 { pts[0] = pos } else { pts.insert(pos, at: 0) }
         return pts
     }
 
@@ -5808,13 +5866,31 @@ final class AppModel: ObservableObject {
         // the filed route past it, so a fresh line is produced only when weather now sits on
         // the path from this position; otherwise the reroute is still good and only needs
         // re-anchoring to where the aircraft is.
+        let track = aircraftTrackDegrees(at: pos)
+        let previousConflict = activeWeatherConflict
         var replanned = path
+        var usedFreshSolve = false
         if recomputeConflictFrom(pos), let fresh = activeWeatherConflict?.deviationPath,
            fresh.count >= 2 {
             replanned = fresh
+            usedFreshSolve = true
         }
-        let anchored = pathAnchoredAtAircraft(replanned, from: pos)
-        guard anchored.count >= 2, let next = anchored.dropFirst().first, next.isValid else { return false }
+        // Keep only what is still ahead of the aircraft, anchored at it.
+        var anchored = pathAnchoredAtAircraft(replanned, from: pos, track: track)
+        if anchored.count < 2, usedFreshSolve {
+            // A fresh solve with nothing ahead is unusable — try the committed reroute before
+            // giving up (the aircraft may still be short of part of the line it was flying).
+            anchored = pathAnchoredAtAircraft(path, from: pos, track: track)
+        }
+        guard anchored.count >= 2, let next = anchored.dropFirst().first, next.isValid,
+              isAheadOfAircraft(next, from: pos, track: track) else {
+            // Nothing of the reroute lies ahead any more. Leave the aircraft on its heading and
+            // the drawn line alone: vectoring it back around to geometry behind it is never the
+            // answer. Clear-of-weather, or the rejoin auto-resume, still ends the deviation.
+            activeWeatherConflict = previousConflict   // don't adopt a re-solve we didn't take
+            diagnostics.log(.app, "Weather deviation: off the line, but no part of the reroute is ahead — no vector issued.")
+            return false
+        }
 
         // Keep the live conflict, the frozen line, the assigned heading and the armed turns all
         // keyed to the same geometry.
@@ -6025,8 +6101,15 @@ final class AppModel: ObservableObject {
     /// `activeWeatherConflict` must already reflect the recompute (`recomputeConflictFrom`).
     private func issueResyncVector(from pos: CLLocationCoordinate2D) {
         let side = activeWeatherConflict?.recommendedDirection ?? .right
+        let heading = weatherDeviationHeading(direction: side)
+        // A jumped fix can leave the freshly-solved line pointing behind the aircraft; vector it
+        // around weather, never around the compass.
+        guard !vectorWouldReverseAircraft(heading, at: pos) else {
+            clearPendingRejoinTurn()
+            return
+        }
         applyDeviationResult(deviationEngine.beginDeviationTurn(
-            cs: callsignNow(), heading: weatherDeviationHeading(direction: side),
+            cs: callsignNow(), heading: heading,
             maintainAltitude: weatherMaintainAltitude(), context: weatherDeviation,
             facility: weatherFacility))
         freezeCommittedDeviationPath()
@@ -6105,6 +6188,10 @@ final class AppModel: ObservableObject {
             reached = false
         }
         guard reached else { return false }
+        // Never turn the aircraft around: every drawn leg is bounded to 100° off course, so a
+        // turn this far off the current track means the aircraft has left the drawn geometry
+        // behind. Skip it — the off-path re-plan or the auto-resume takes it from here.
+        guard !vectorWouldReverseAircraft(heading, at: pos) else { return false }
         // The turn onto the last leg (toward the rejoin, the final point) is the final
         // turn; earlier interior vertices are intermediate turns that keep vectoring.
         let isFinalTurn = index >= path.count - 2

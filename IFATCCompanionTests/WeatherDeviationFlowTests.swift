@@ -1287,6 +1287,45 @@ final class WeatherDeviationFlowTests: XCTestCase {
                           "the committed line is untouched")
     }
 
+    /// Regression: the re-plan must never turn the aircraft around. With the aircraft off the
+    /// line *and travelling away from it*, the old re-anchoring kept a trailing vertex "so the
+    /// line still ends on the route" and vectored back to it — a near-reciprocal turn (216° →
+    /// 015°). Nothing of the reroute is ahead, so nothing is issued and the line is left alone.
+    func testOffPathReplanNeverTurnsTheAircraftAround() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)
+        model.requestVectorAroundWeather()
+        XCTAssertEqual(model.weatherDeviationState, .vectoringAroundWeather)
+        guard let line = model.weatherDeviationLine, line.count >= 3 else {
+            return XCTFail("expected a committed mint line to fly")
+        }
+        let heldHeading = model.weatherDeviation.assignedHeading
+
+        // Abeam the middle of the line, well off it, tracking the reciprocal of the line's
+        // own direction — every vertex of the reroute is now behind the aircraft.
+        let lineCourse = Geo.bearing(from: line[0], to: line[line.count - 1])
+        let abeam = Geo.destination(from: line[1], bearingDegrees: lineCourse + 90, distanceNM: 25)
+        let away = (lineCourse + 180).truncatingRemainder(dividingBy: 360)
+        var state = model.mock.state(for: .cruise)
+        state.latitude = abeam.latitude
+        state.longitude = abeam.longitude
+        state.heading = away
+        state.trueHeading = away
+        state.track = away
+        model.ingestStateForTesting(state)
+
+        XCTAssertFalse(atcContains(model, "off the assigned deviation"),
+                       "no re-vector when nothing of the reroute lies ahead")
+        XCTAssertEqual(model.weatherDeviation.assignedHeading, heldHeading,
+                       "the aircraft is never turned around to pick up geometry behind it")
+        if let assigned = model.weatherDeviation.assignedHeading {
+            var turn = abs(Double(assigned) - away).truncatingRemainder(dividingBy: 360)
+            if turn > 180 { turn = 360 - turn }
+            XCTAssertLessThanOrEqual(turn, 135,
+                                     "no automatically-issued weather vector reverses the aircraft")
+        }
+    }
+
     /// A deviation still drawn ahead (the turn held at the turn-out) is not "off path" just
     /// because the aircraft has not reached it yet — it is flying the filed course to it.
     func testDeviationDrawnAheadIsNotTreatedAsOffPath() async {
