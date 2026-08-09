@@ -1179,6 +1179,45 @@ final class WeatherDeviationFlowTests: XCTestCase {
                       redrawCall?.readback?.displayText ?? "no read-back on the redraw call")
     }
 
+    /// Nothing was activated — the pilot elected to continue on course, which settles the
+    /// lifecycle back to idle — so when the line is redrawn ahead the update **re-opens the
+    /// decision**: the response card comes back with the call, carrying Vectors and the
+    /// left/right deviation buttons, so the revised deviation can be activated on the spot
+    /// rather than waiting for the near-turn advisory to re-raise it.
+    func testRedrawnDeviationReopensTheResponseCardWhenNothingWasActivated() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)
+
+        let center = routePointAhead(model, 150)
+        model.radarOverlay.mockCells = [RadarCell(polygon: box(around: center, half: 0.3), intensity: .heavy)]
+        await model.refreshDeviations()
+        guard let entry = model.activeWeatherConflict?.deviationPath.first, entry.isValid else {
+            return XCTFail("expected a drawn deviation for the cell ahead")
+        }
+
+        // "Continuing on course" answers the advisory without activating anything: the card
+        // goes away and the lifecycle is idle again.
+        model.continueThroughWeather()
+        XCTAssertFalse(model.weatherDeviationCardVisible, "continuing on course closes the card")
+
+        // Fly 3 NM past the entry point: the line is redrawn ahead and ATC advises it.
+        let course = Geo.bearing(from: entry, to: model.mock.route.destCoord)
+        let past = Geo.destination(from: entry, bearingDegrees: course, distanceNM: 3)
+        var state = model.mock.state(for: .cruise)
+        state.latitude = past.latitude
+        state.longitude = past.longitude
+        model.ingestStateForTesting(state)
+
+        XCTAssertTrue(atcContains(model, "weather deviation updated"),
+                      "ATC advises the revised deviation")
+        XCTAssertEqual(model.weatherDeviationState, .awaitingPilotIntentions,
+                       "the update opens the decision again")
+        XCTAssertTrue(model.weatherDeviationCardVisible, "the response card comes up with the call")
+        XCTAssertTrue(model.weatherActions.contains(.requestVector), "\(model.weatherActions)")
+        XCTAssertTrue(model.weatherActions.contains(.requestLeftDeviation), "\(model.weatherActions)")
+        XCTAssertTrue(model.weatherActions.contains(.requestRightDeviation), "\(model.weatherActions)")
+    }
+
     /// The redraw never touches a deviation the pilot has committed to: once the turn is
     /// approved, the frozen line is the one being flown and its start legitimately falls
     /// behind the aircraft as the maneuver begins.

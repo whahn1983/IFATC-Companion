@@ -1139,6 +1139,57 @@ final class WeatherDeviationTests: XCTestCase {
         XCTAssertEqual(rb?.facility, .center)
     }
 
+    /// The pilot never answered the first advisory (or elected to continue, which resets the
+    /// lifecycle), so nothing is pending when the line is redrawn. The update then **opens
+    /// the decision** — awaiting-intentions is what puts the response card and its request
+    /// buttons on screen — and seeds the context from the redrawn line, so a deviation
+    /// requested off this call rejoins where the new line rejoins.
+    func testAdvisePathRedrawnOpensTheDecisionWhenNothingIsPending() {
+        let engine = PhraseologyEngine(digitStyle: .individual, mode: .faa)
+        let phr = WeatherDeviationPhraseology(engine: engine)
+        let dev = WeatherDeviationEngine(phraseology: phr)
+        let cs = engine.callsign(airline: "United", flightNumber: "598", fallback: "")
+        let hazard = radarHazard([usPosition, usPosition, usPosition])
+        let conflict = RouteWeatherConflict(
+            hazard: hazard, distanceAheadNM: 20, relativeBearingDegrees: 0,
+            leftClock: 12, centerClock: 12, rightClock: 12, estimatedTimeMinutes: nil,
+            severity: .heavy, leftBypassScore: 0, rightBypassScore: 0,
+            recommendedDirection: .left, recommendedDeviationDegrees: 20,
+            rejoinFix: Waypoint(name: "HOBTT", latitude: 41, longitude: -95),
+            originalSegment: nil, shouldPrompt: true,
+            intersectionArea: [], deviationPath: [])
+
+        for start in [WeatherDeviationState.none, .weatherAheadDetected, .resumedOwnNavigation] {
+            var ctx = WeatherDeviationContext()
+            ctx.state = start
+            let result = dev.advisePathRedrawn(cs: cs, distanceNM: 20, conflict: conflict,
+                                               context: ctx, facility: .center)
+            XCTAssertEqual(result.context.state, .awaitingPilotIntentions,
+                           "from \(start) the update must open the decision so the card comes up")
+            XCTAssertEqual(result.context.rejoinFix, "HOBTT")
+            XCTAssertEqual(result.context.requestedDeviationDirection, .left)
+            XCTAssertEqual(result.context.activeHazardID, hazard.id)
+        }
+    }
+
+    /// A pilot already flying an approved deviation has nothing to activate, so the update
+    /// leaves the committed lifecycle alone. (`maybeRedrawDeviationPastEntry` never redraws a
+    /// committed line in the first place — this is the engine holding the same line.)
+    func testAdvisePathRedrawnLeavesACommittedDeviationAlone() {
+        let engine = PhraseologyEngine(digitStyle: .individual, mode: .faa)
+        let phr = WeatherDeviationPhraseology(engine: engine)
+        let dev = WeatherDeviationEngine(phraseology: phr)
+        let cs = engine.callsign(airline: "United", flightNumber: "598", fallback: "")
+        for start in [WeatherDeviationState.deviationApproved, .vectoringAroundWeather,
+                      .deviatingAroundWeather, .clearOfWeather] {
+            var ctx = WeatherDeviationContext()
+            ctx.state = start
+            let result = dev.advisePathRedrawn(cs: cs, distanceNM: 20, context: ctx, facility: .center)
+            XCTAssertEqual(result.context.state, start,
+                           "an activated deviation must not be reopened by the update")
+        }
+    }
+
     func testBeginDeviationTurnVectorsOntoTheReroute() {
         let engine = PhraseologyEngine(digitStyle: .individual, mode: .faa)
         let phr = WeatherDeviationPhraseology(engine: engine)

@@ -503,12 +503,18 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      one flown past), the deviations are **re-solved starting `deviationRedrawAheadNM` (20 NM)
      in front of the aircraft** — far enough ahead to leave room to work the new turn — and the
      controller advises the revised deviation (*"weather deviation updated, revised deviation
-     now begins 20 miles ahead"*). That call is informational: it assigns nothing, changes no
-     deviation state, and leaves the banner and the near-turn advisory to fire for the redrawn
-     line exactly as they would have. Since it assigns nothing, it carries the courtesy
-     *"Roger"* as its read-back — attached to the call itself, so **Read Back** acknowledges
-     this advisory instead of falling through to a stale read-back re-derived from the
-     conversational state. The redraw point becomes a **walk floor** so a later
+     now begins 20 miles ahead"*). The call **assigns nothing** — it carries the courtesy
+     *"Roger"* as its read-back, attached to the call itself so **Read Back** acknowledges this
+     advisory instead of falling through to a stale read-back re-derived from the
+     conversational state — but it does **open the decision**, because the revised deviation is
+     the pilot's to activate. Unless the pilot is already deciding (the response card is up, so
+     a pending decision and the near-turn advisory still to come stand exactly as they were) or
+     is already flying an approved deviation (there is nothing to activate — and a committed
+     line is never redrawn anyway), the lifecycle moves to **awaiting-intentions**: the
+     response card and its request buttons (**Vectors**, left/right deviation, higher/lower,
+     continue) come up with the call, seeded from the redrawn line, so the revised deviation
+     can be activated on the spot rather than waiting for the near-turn advisory to raise it.
+     The redraw point becomes a **walk floor** so a later
      recompute (the 5-min auto-refresh, a pull-to-refresh, a fresh radar sample) can't step
      back behind the aircraft and re-produce the same stale line; it is cleared on a route
      change. If nothing solves from 20 NM ahead (the weather is now abeam or behind, or the

@@ -4531,20 +4531,24 @@ final class AppModel: ObservableObject {
             lastConflictSeenAt = nil
             return
         }
-        announceRedrawnDeviation(distanceNM: Geo.distanceNM(from: pos, to: entry))
+        announceRedrawnDeviation(conflict: fresh, distanceNM: Geo.distanceNM(from: pos, to: entry))
     }
 
     /// The controller advises that the weather deviation has been redrawn ahead of the
-    /// aircraft, with the distance to the new turn. Informational — it changes no deviation
-    /// state and leaves the lifecycle (and the "contact ATC" banner) exactly as it was, so the
-    /// advisory still auto-issues as the new turn-out comes within range.
-    private func announceRedrawnDeviation(distanceNM: Double) {
+    /// aircraft, with the distance to the new turn — and, unless the pilot is already deciding
+    /// or already flying an approved deviation, opens the decision so the response card and its
+    /// buttons come up with the call and the revised deviation can be activated on the spot.
+    /// A pilot who is already deciding keeps their pending decision (and the near-turn advisory
+    /// still to auto-issue for the redrawn line) exactly as it was.
+    private func announceRedrawnDeviation(conflict: RouteWeatherConflict?, distanceNM: Double) {
         guard settings.weatherDeviationAlerts.alertsEnabled, !establishedOnFinal else { return }
         let result = deviationEngine.advisePathRedrawn(
-            cs: callsignNow(), distanceNM: max(0, Int(distanceNM.rounded())),
+            cs: callsignNow(), distanceNM: max(0, Int(distanceNM.rounded())), conflict: conflict,
             context: weatherDeviation, facility: weatherFacility)
-        // Posted directly rather than through `applyDeviationResult`, which would mark the
-        // conflict "handled" and suppress the near-turn advisory for the redrawn line.
+        // Posted directly rather than through `applyDeviationResult`: ATC volunteering an
+        // update is not the pilot engaging the advisory, so the "engaged" flag
+        // (`weatherHandled`) is left exactly as it was. The lifecycle the engine returns is
+        // what decides whether the near-turn advisory still has anything to add.
         for tx in result.atc { post(tx, speak: true) }
         weatherDeviation = result.context
         updateWeatherDiagnostics(conflict: activeWeatherConflict)
@@ -5896,7 +5900,8 @@ final class AppModel: ObservableObject {
         freezeCommittedDeviationPath()
         if let ahead = deviationTurnOutAhead() {
             armDeviationStart()
-            announceRedrawnDeviation(distanceNM: Double(ahead.distanceNM))
+            announceRedrawnDeviation(conflict: activeWeatherConflict,
+                                     distanceNM: Double(ahead.distanceNM))
             return false
         }
         lastAutoTurnIssuedAt = Date()

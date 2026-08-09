@@ -137,6 +137,18 @@ enum WeatherDeviationState: String, Codable, CaseIterable {
             return false
         }
     }
+
+    /// Whether the flow is holding for the pilot's answer to an advisory: the response
+    /// card is already on screen with its request buttons (deviate left/right, vectors,
+    /// higher/lower, continue) and nothing has been approved yet.
+    var isAwaitingPilotDecision: Bool {
+        switch self {
+        case .advisoryIssued, .awaitingPilotIntentions, .deviationRequested:
+            return true
+        default:
+            return false
+        }
+    }
 }
 
 /// A reference to the filed route segment a deviation departs from (by fix name),
