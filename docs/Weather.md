@@ -664,6 +664,27 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      `committedDeviationPath`), so the second turn back down to the flight path is called
      just like the first. The turn fires when the aircraft is near the vertex or has
      passed abeam it along the leg into it, so flying wide of it still triggers it.
+   - **Every heading spoken is magnetic, and crabbed into the wind.** The mint line is
+     built with great-circle geometry (`Geo.bearing`), so every leg of it is a **true**
+     course — but the pilot flies a magnetic heading bug, through a wind that pushes the
+     aircraft sideways for the whole length of a leg. Handing over the raw map bearing
+     therefore misses on both counts, and both errors accumulate as cross-track: 1° over a
+     100 NM leg is ~1.7 NM off the line, and 40 kt of crosswind at 460 kt TAS is ~5° of
+     drift, or ~8.7 NM. So `HeadingSolver` converts a leg into the heading that makes the
+     aircraft **track** it: crab into the wind (`asin(crosswind / TAS)`), then step from
+     true into magnetic. Both corrections are measured from Infinite Flight's own
+     telemetry — variation as the difference between the true and magnetic headings it
+     reports for the same nose; wind by inverting the wind triangle
+     (`wind = ground vector − air vector`, from track/groundspeed against true
+     heading/TAS). Nothing is read from a declination table or a METAR: a METAR only ever
+     describes the surface at a field, and the triangle needs no unit guessing and works
+     on whatever states a given IF version exposes. Sampling is skipped past ~5° of bank
+     (the two states are read in separate round-trips, so a roll smears the difference)
+     and the wind is smoothed across ticks, with the last good estimate held meanwhile.
+     Where the sim exposes no true heading there is nothing to measure and the raw true
+     bearing is assigned, exactly as before. Only the **spoken** heading is converted —
+     the armed turn geometry (`deviationStartHeading`, `pendingRejoinHeading`, the leg
+     bearings) stays in true degrees so it keeps matching the drawn line.
    - **Never the same call twice — "did I say this, and was it acknowledged?"** A long
      parallel run past a multi-cell system carries several offset vertices on nearly the same
      bearing, so consecutive turns can round to the *same heading* and the radio ends up

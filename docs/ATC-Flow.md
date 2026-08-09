@@ -109,6 +109,31 @@ the destination. When no such fix can be located the heading is unknown and the
 clearance says "fly runway heading"; the heading is likewise spoken as "fly runway
 heading" whenever it lands within 10° of the runway heading.
 
+**Every assigned heading is magnetic.** The pilot flies a magnetic heading bug, so
+every number the app speaks as a heading has to be in that frame. Most already are
+by construction: the approach intercept is the landing runway's course ±30°, and the
+go-around crosswind leg is the runway heading ±90°, both derived from the runway
+number, which *is* magnetic. The two that come from great-circle geometry are not —
+the departure heading above (a bearing to the first fix) and the weather-deviation
+vectors along the mint line — so both are converted through `HeadingSolver` before
+they are spoken, using the variation the sim itself implies (the difference between
+the true and magnetic headings it reports for the same nose). Leaving the departure
+heading in the true frame also skewed the "within 10° of the runway heading" test
+above, so it decided "fly runway heading" against a number in the wrong frame. Where
+the sim exposes no true heading there is nothing to measure and the raw bearing is
+assigned, as before. The mint-line vectors additionally carry a wind correction,
+because they ask the aircraft to *track* a drawn path rather than simply point
+somewhere — see [Weather.md](Weather.md).
+
+One piece of geometry sits on the other side of the same seam: the approach
+intercept works out which side of the extended centerline the aircraft is on, and
+that centerline is laid out with `Geo.destination`, which steers in true degrees
+from a final course that is magnetic. It is now converted before the geometry runs
+and the answer converted back, so the centerline is drawn where it really is — at
+the 20 NM gate a degree of variation is ~0.35 NM of error, enough to pick the wrong
+side (and so a 30° turn the wrong way) for an aircraft close to the centerline
+somewhere with real declination.
+
 **Monitor Tower (step 5).** As the aircraft nears the departure runway on the taxi,
 Ground **automatically** hands it to Tower to *monitor* — "monitor Tower on *freq*" —
 mirroring the real-world red "MONITOR TOWER ON …" sign by the yellow checkered line

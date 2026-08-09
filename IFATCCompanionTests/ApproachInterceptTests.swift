@@ -69,4 +69,55 @@ final class ApproachInterceptTests: XCTestCase {
         XCTAssertEqual(ApproachIntercept.heading(finalCourse: 90, aircraft: south, runwayReference: airport),
                        60, "south (right) of an east-bound final intercepts on 060 (090 − 30)")
     }
+
+    // MARK: - Magnetic variation
+
+    /// The final course is magnetic (it comes from the runway number) but the extended
+    /// centerline is laid out with true-degree geometry, so somewhere with real
+    /// declination the two have to be reconciled — otherwise the centerline is drawn
+    /// rotated and the aircraft is judged to be on the wrong side of it.
+    ///
+    /// Under 15° east variation a 360 magnetic final really runs 015 true, so its
+    /// extended centerline lies out on 195 true. An aircraft sitting due *true* south of
+    /// the field — where the variation-blind geometry believed the centerline to be — is
+    /// in fact ~3.9 NM east of it, i.e. right of the inbound course, and must turn left.
+    func testVariationDecidesWhichSideOfTheCenterlineTheAircraftIsOn() {
+        let variation = 15.0
+        let onTrueNorthLine = Geo.destination(from: airport, bearingDegrees: 180, distanceNM: 15)
+
+        XCTAssertEqual(ApproachIntercept.heading(finalCourse: 360, aircraft: onTrueNorthLine,
+                                                 runwayReference: airport),
+                       0, "ignoring variation, this point reads as established on the centerline")
+
+        XCTAssertEqual(ApproachIntercept.heading(finalCourse: 360, aircraft: onTrueNorthLine,
+                                                 runwayReference: airport,
+                                                 variationDegreesEast: variation),
+                       330, "the real centerline runs 195 true, so this point is right of it — turn left")
+    }
+
+    /// An aircraft genuinely on the centerline — placed along the *true* course the
+    /// magnetic final course corresponds to — is still flown straight in.
+    func testEstablishedOnTheTrueCenterlineUnderVariation() {
+        let variation = 15.0
+        // The 360 magnetic final is 015 true, so its extended centerline runs out on 195 true.
+        let onCenter = Geo.destination(from: airport, bearingDegrees: 195, distanceNM: 15)
+        XCTAssertEqual(ApproachIntercept.heading(finalCourse: 360, aircraft: onCenter,
+                                                 runwayReference: airport,
+                                                 variationDegreesEast: variation),
+                       0, "established on the real centerline is straight in, in magnetic degrees")
+    }
+
+    /// Whatever the geometry decides, the answer never leaves the magnetic frame the
+    /// final course arrived in — it is what the pilot dials into the heading bug.
+    func testResultStaysMagneticRegardlessOfVariation() {
+        let onCenter = Geo.destination(from: airport, bearingDegrees: 195, distanceNM: 15)
+        for variation in [-20.0, -5, 0, 5, 20] {
+            let hdg = ApproachIntercept.heading(finalCourse: 360, aircraft: onCenter,
+                                                runwayReference: airport,
+                                                variationDegreesEast: variation)
+            // 360 ± 30 in magnetic degrees: 000, 030 or 330 — never rotated by the variation.
+            XCTAssertTrue([0, 30, 330].contains(hdg),
+                          "variation \(variation) produced \(hdg), which is not a magnetic 360 ± 30")
+        }
+    }
 }
