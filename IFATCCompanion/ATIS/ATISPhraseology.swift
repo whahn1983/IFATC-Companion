@@ -139,6 +139,16 @@ enum ATISPhraseology {
             return Phonetic.spellDigits(g[1], icao: icao) + " " + sep + " " + Phonetic.spellDigits(g[2], icao: icao)
         }
 
+        // Runway keyword written flush against its designator ("RY8R", "RWY22L") — some feeds
+        // publish it with no space. There is no word boundary inside the token, so neither the
+        // designator rule below nor the boundary-anchored abbreviation pass can see it: the
+        // keyword would survive to be voiced letter by letter around the digits ("R Y eight
+        // R"). Split the keyword off its designator here — after the coded groups, which carry
+        // their own runway forms (RVR) and would be broken by an earlier split.
+        s = replacingMatches(in: s, pattern: "\\b(RWYS|RWY|RYS|RY)(\\d{1,2}[LRC]?)\\b") { g in
+            g[1] + " " + g[2]
+        }
+
         // Runway designators: "24R" -> "two four right", "25L" -> "two five left" (before
         // the generic digit rule, which would otherwise leave a bare "R").
         s = replacingMatches(in: s, pattern: "\\b(\\d{1,2})([LRC])\\b") { g in

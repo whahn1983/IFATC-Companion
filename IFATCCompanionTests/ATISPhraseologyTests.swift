@@ -248,6 +248,24 @@ final class ATISPhraseologyTests: XCTestCase {
         XCTAssertTrue(s.contains("five nautical miles southwest of airport"), s)
     }
 
+    // MARK: - Runway keyword written flush against its designator
+
+    func testRunwayKeywordGluedToDesignatorIsSpoken() {
+        // "RY8R" has no word boundary inside it, so without the split neither the designator
+        // rule nor the abbreviation pass can reach it and the keyword is voiced letter by
+        // letter around the digits.
+        XCTAssertEqual(spoken("RY8R"), "runway eight right")
+        XCTAssertEqual(spoken("RWY8R"), "runway eight right")
+        XCTAssertEqual(spoken("RWY22L"), "runway two two left")
+        XCTAssertEqual(spoken("RWYS27L AND 27R"), "runways two seven left and two seven right")
+        // A designator with no side, and the spaced form, keep reading the same way.
+        XCTAssertEqual(spoken("RY8"), "runway eight")
+        XCTAssertEqual(spoken("RY 8R"), "runway eight right")
+        let s = ATISPhraseology.spokenText("ILS RY8R APCH IN USE. DEPG RWY26L.").lowercased()
+        XCTAssertTrue(s.contains("i l s runway eight right approach in use"), s)
+        XCTAssertTrue(s.contains("departing runway two six left"), s)
+    }
+
     // MARK: - Instruction / advisory abbreviations
 
     func testExpandsInstructionAndAdvisoryAbbreviations() {

@@ -1119,7 +1119,24 @@ final class WeatherDeviationTests: XCTestCase {
         let atc = result.atc.first?.displayText ?? ""
         XCTAssertTrue(atc.contains("weather deviation updated"), atc)
         XCTAssertTrue(atc.contains("20 miles ahead"), atc)
-        XCTAssertNil(result.atc.first?.readback, "nothing is assigned, so there is nothing to read back")
+    }
+
+    /// Nothing is assigned, but the call still carries its own read-back: the courtesy
+    /// "Roger". Without it the Read Back button falls through to a read-back re-derived
+    /// from the conversational state — a stale echo of whatever was said before.
+    func testAdvisePathRedrawnReadsBackRoger() {
+        let engine = PhraseologyEngine(digitStyle: .individual, mode: .faa)
+        let phr = WeatherDeviationPhraseology(engine: engine)
+        let dev = WeatherDeviationEngine(phraseology: phr)
+        let cs = engine.callsign(airline: "United", flightNumber: "598", fallback: "")
+        var ctx = WeatherDeviationContext()
+        ctx.state = .awaitingPilotIntentions
+        let result = dev.advisePathRedrawn(cs: cs, distanceNM: 20, context: ctx, facility: .center)
+        let rb = result.atc.first?.readback
+        XCTAssertNotNil(rb, "the advisory must carry its own read-back")
+        XCTAssertEqual(rb?.displayText, "Roger, \(cs.display).")
+        XCTAssertEqual(rb?.spokenText, "Roger, \(cs.spoken).")
+        XCTAssertEqual(rb?.facility, .center)
     }
 
     func testBeginDeviationTurnVectorsOntoTheReroute() {

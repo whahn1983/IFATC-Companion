@@ -1170,6 +1170,13 @@ final class WeatherDeviationFlowTests: XCTestCase {
         XCTAssertLessThan(off, 90, "the redrawn entry point lies ahead of the aircraft, not behind it")
         XCTAssertTrue(atcContains(model, "weather deviation updated"),
                       "ATC notifies the pilot that the deviation was redrawn ahead")
+        // The call carries its own read-back — the courtesy "Roger" — so Read Back
+        // acknowledges this advisory instead of re-deriving one from the conversational state.
+        let redrawCall = model.transcript.last {
+            $0.sender == .atc && $0.displayText.contains("weather deviation updated")
+        }
+        XCTAssertTrue(redrawCall?.readback?.displayText.hasPrefix("Roger,") ?? false,
+                      redrawCall?.readback?.displayText ?? "no read-back on the redraw call")
     }
 
     /// The redraw never touches a deviation the pilot has committed to: once the turn is

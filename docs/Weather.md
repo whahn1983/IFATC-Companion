@@ -505,7 +505,10 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      controller advises the revised deviation (*"weather deviation updated, revised deviation
      now begins 20 miles ahead"*). That call is informational: it assigns nothing, changes no
      deviation state, and leaves the banner and the near-turn advisory to fire for the redrawn
-     line exactly as they would have. The redraw point becomes a **walk floor** so a later
+     line exactly as they would have. Since it assigns nothing, it carries the courtesy
+     *"Roger"* as its read-back — attached to the call itself, so **Read Back** acknowledges
+     this advisory instead of falling through to a stale read-back re-derived from the
+     conversational state. The redraw point becomes a **walk floor** so a later
      recompute (the 5-min auto-refresh, a pull-to-refresh, a fresh radar sample) can't step
      back behind the aircraft and re-produce the same stale line; it is cleared on a route
      change. If nothing solves from 20 NM ahead (the weather is now abeam or behind, or the

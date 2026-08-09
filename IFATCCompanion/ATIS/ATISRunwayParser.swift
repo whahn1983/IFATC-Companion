@@ -76,7 +76,8 @@ enum ATISRunwayParser {
         // boundaries, then scan each clause with its own keyword context.
         let normalized = text.uppercased().replacingOccurrences(of: ",", with: " ")
         for clause in normalized.split(separator: ".") {
-            let tokens = clause.split { $0 == " " || $0 == "\n" || $0 == "\t" || $0 == "/" }.map(String.init)
+            let tokens = clause.split { $0 == " " || $0 == "\n" || $0 == "\t" || $0 == "/" }
+                .flatMap { splitFlushRunwayKeyword(String($0)) }
             parseClause(tokens, kind: kind, departures: &departures, arrivals: &arrivals)
         }
         return Runways(departures: dedup(departures), arrivals: dedup(arrivals))
@@ -143,6 +144,19 @@ enum ATISRunwayParser {
             k += 1
         }
         return false
+    }
+
+    /// Split a runway keyword written flush against its designator ("RY8R", "RWY22L") into the
+    /// two tokens the spaced form produces, so the scanner sees the runway either way. Only a
+    /// token whose letters are exactly a runway keyword *and* whose tail is a valid ident is
+    /// split — anything else (a fix name, a NOTAM word) is left as it was.
+    private static func splitFlushRunwayKeyword(_ token: String) -> [String] {
+        guard let firstDigit = token.firstIndex(where: \.isNumber), firstDigit != token.startIndex
+        else { return [token] }
+        let keyword = String(token[token.startIndex..<firstDigit])
+        let ident = String(token[firstDigit...])
+        guard runwayKeywords.contains(keyword), runwayToken(ident) != nil else { return [token] }
+        return [keyword, ident]
     }
 
     /// A single runway token ("24R", "8", "04L") in canonical form (leading zero dropped), or
