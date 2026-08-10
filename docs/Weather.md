@@ -587,6 +587,31 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      so it gets a stricter check — the vertex that bulges **farthest off the filed route** must
      itself be within a berth (~30 NM) of a moderate-or-greater cell. A preview whose apex is
      out in clear air, nowhere near precipitation, is hugging nothing and is dropped.
+   - **Must actually leave the flight path (`pathLeavesRoute`).** The two guards above catch
+     a line drawn *away* from the weather; this one catches its opposite — a line drawn right
+     **on top of the filed route**, recommending the course already being flown. Neither of
+     the others sees it: an on-route line passes `pathEngagesWeather` trivially (the route
+     runs into the cell), and `previewApexHugsWeather` returns true for anything that barely
+     leaves the route, having no apex to test. `minDeviationExtentNM` doesn't either — it
+     bounds the maneuver's *length*, not its offset. So the drawn line's **lateral excursion**
+     from the filed route (its farthest vertex, measured in `AppModel` once the path is finally
+     shaped — after the adjacent-deviation merge and the gentle-rejoin softening, both of which
+     move vertices) must reach `minRouteExcursionNM` (5 NM, the excursion below which
+     `previewApexHugsWeather` stops looking for an apex, so the guards meet without a gap).
+     Two constructions produce the degenerate shape: a threadable gap centered on the course
+     (the single-apex dogleg is exempt from `minParallelOffsetNM`, so nothing widens it) and
+     the zero-offset fallback taken when no candidate could be built at all. The first is fixed
+     at the source — a thread landing within the floor is slid to the roomier side of its gap
+     (`nudgedOffRoute`), kept only when the slid path still clears every cell, and taken *in
+     place of* the centered one, since the shortest-path selector would otherwise always prefer
+     the zero-offset original. Where the slot is too tight to hold the floor, the centered
+     thread is kept and simply not drawn. Suppression is **display-only and total**: the solid
+     line, the faint preview, and the rejoin marker are all withheld, and a withheld line is
+     never frozen as a committed path either (which would put it back on the map ahead of every
+     guard) — but the conflict stays in the locked set, so the weather is still detected, still
+     raises the banner and the advisory, and the pilot can still request vectors. Diagnostics
+     says so explicitly ("… — no lateral deviation available") rather than reporting a conflict
+     the map shows no line for.
    It also computes distance, clock position(s), estimated time, severity, the spoken
    deviation amount (the actual initial turn onto the threading path), and a
    downstream rejoin fix.

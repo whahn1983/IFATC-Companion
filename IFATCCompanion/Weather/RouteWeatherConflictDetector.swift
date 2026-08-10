@@ -167,6 +167,24 @@ struct RouteWeatherConflictDetector {
         /// than this reads as a twitch on the map, so a compact cell's reroute is stretched
         /// (its rejoin pushed forward, within the cap) to at least this length.
         var minDeviationExtentNM: Double = 15
+        /// The minimum **lateral** excursion (NM) the drawn maneuver must make from the
+        /// filed route to be worth showing as a deviation. `minDeviationExtentNM` bounds
+        /// the line's *length*; this bounds how far off the flight path it actually gets.
+        /// A reroute that never leaves the route is not a reroute — it draws a mint line
+        /// lying on top of the magenta one, telling the pilot to fly the course they are
+        /// already flying. Two constructions produce that shape: a threadable gap centered
+        /// on the course (the single-apex dogleg is exempt from `minParallelOffsetNM`, so
+        /// nothing widens it), and the degenerate zero-offset fallback taken when no
+        /// candidate could be built at all. The first is fixed at the source — a
+        /// gap-threading target within this floor is slid just clear of it, to the roomier
+        /// side of its gap (`nudgedOffRoute`), whenever the slid path still clears every
+        /// cell — and both are
+        /// caught at draw time by `pathLeavesRoute`, which suppresses the line. The conflict
+        /// itself is untouched: the weather is still detected, the banner still fires, and
+        /// the pilot can still request vectors; only the misleading line is withheld.
+        /// Matches the excursion below which `previewApexHugsWeather` stops looking for an
+        /// apex at all ("barely leaves the route"), so the two guards meet without a gap.
+        var minRouteExcursionNM: Double = 5
         /// When a run of back-to-back deviations sits this close end-to-start — the rejoin
         /// of one within this distance of the next one's turn-out — and both hug the same
         /// side, they are folded into one continuous parallel hug rather than drawn as a
@@ -733,9 +751,26 @@ struct RouteWeatherConflictDetector {
         // 3-point single-apex triangle. The selector prefers a clear parallel hug over a
         // clear triangle, so the mint line parallels the weather instead of cutting one
         // wide turn around it.
-        var candidates: [(path: [CLLocationCoordinate2D], target: Double, parallel: Bool)] =
-            solution.targets.filter { abs($0) <= config.searchHalfWidthNM }
-                .map { (path: finalize(apexPath(for: $0)), target: $0, parallel: false) }
+        var candidates: [(path: [CLLocationCoordinate2D], target: Double, parallel: Bool)] = []
+        for t in solution.targets where abs(t.center) <= config.searchHalfWidthNM {
+            var target = t.center
+            var path = finalize(apexPath(for: target))
+            // A gap straddling the course threads straight down the flight path — a mint
+            // line drawn on top of the magenta one. Slide the thread to the roomier side
+            // of its gap so the drawn deviation leaves the route, and take the slid line
+            // *instead of* the centered one (kept only when the slide still clears every
+            // cell — the shortest-path selector would otherwise always prefer the
+            // zero-offset original). Too tight a slot to hold the floor keeps the centered
+            // thread, which `pathLeavesRoute` then declines to draw.
+            if let nudged = nudgedOffRoute(t) {
+                let slid = finalize(apexPath(for: nudged))
+                if pathIsClear(slid, cells: cellBerths, origin: position) {
+                    target = nudged
+                    path = slid
+                }
+            }
+            candidates.append((path: path, target: target, parallel: false))
+        }
         for edge in [solution.leftEdge, solution.rightEdge] where abs(edge) <= config.searchHalfWidthNM {
             let hug = atLeastMinOffset(tightTarget: edge, gentle: false, cells: cellBerths)
             candidates.append((path: hug.path, target: hug.target, parallel: true))
@@ -900,6 +935,42 @@ struct RouteWeatherConflictDetector {
 
     // MARK: - Gap threading
 
+    /// A candidate lateral offset to steer for, with the clear interval it may slide
+    /// within. `center` is the offset the solution prefers (the middle of a gap between
+    /// two cells, or the outboard edge of the whole line); `lo`/`hi` bound how far it can
+    /// be moved sideways and still sit in air the flanking cells' buffers leave clear.
+    /// The interval is what lets a gap-thread that lands on the flight path be slid to one
+    /// side of its gap (`nudgedOffRoute`) instead of drawing a deviation along the route.
+    struct ThreadTarget {
+        var center: Double
+        var lo: Double
+        var hi: Double
+    }
+
+    /// Slide a gap-threading target off the flight path to at least `minRouteExcursionNM`,
+    /// or nil when it is already clear of the route or its gap cannot hold the floor.
+    ///
+    /// A gap that straddles the course centers its target on ~0, so the dogleg through it
+    /// is drawn straight down the route — a "deviation" that deviates nowhere. Slide it to
+    /// whichever side of the gap has more room left over, keeping it inside the clear
+    /// interval so it still threads. Where the gap is too narrow to hold the floor on
+    /// either side (genuinely threading a tight slot), nothing is returned and the caller
+    /// keeps the centered thread — the honest answer, which the draw-time guard then
+    /// declines to paint as a reroute.
+    private func nudgedOffRoute(_ t: ThreadTarget) -> Double? {
+        guard abs(t.center) < config.minRouteExcursionNM else { return nil }
+        // Just clear of the floor — half the floor again as margin, so the turn-out /
+        // rejoin reshaping that follows can move a vertex a little without dropping the
+        // line back under it. Deliberately no farther: rounding the end of a line whose
+        // edge sits a mile off course is a small jog, not a wide detour.
+        let slid = config.minRouteExcursionNM * 1.5
+        let rightRoom = t.hi - slid        // ≥ 0 when +slid still sits inside the clear gap
+        let leftRoom = -slid - t.lo        // ≥ 0 when −slid does
+        guard max(rightRoom, leftRoom) >= 0 else { return nil }
+        if rightRoom >= 0 && leftRoom >= 0 { return rightRoom >= leftRoom ? slid : -slid }
+        return rightRoom >= 0 ? slid : -slid
+    }
+
     /// The candidate lateral offsets to steer for (signed cross-track NM, +right),
     /// ordered best-first, plus the line's outboard `leftEdge`/`rightEdge` used to
     /// build the side-hug paths. Projects the cells onto the cross-track axis, pads
@@ -907,7 +978,7 @@ struct RouteWeatherConflictDetector {
     /// between adjacent cells (wide enough to fly) plus going around either end.
     /// `targets` is ordered by least deviation, then wider gap, then to the right (the
     /// conventional first offer); the caller validates each candidate's full path.
-    private func threadSolution(cells: [Projection]) -> (targets: [Double], leftEdge: Double, rightEdge: Double) {
+    private func threadSolution(cells: [Projection]) -> (targets: [ThreadTarget], leftEdge: Double, rightEdge: Double) {
         var intervals: [(lo: Double, hi: Double)] = cells.map {
             // Pad each cell by the lateral buffer — or the cell's wider berth, for a
             // red/extreme core — so the gaps and side-hug edges keep that much room.
@@ -925,31 +996,41 @@ struct RouteWeatherConflictDetector {
             }
         }
         guard let first = merged.first, let last = merged.last else {
-            return (targets: [0], leftEdge: 0, rightEdge: 0)
+            return (targets: [ThreadTarget(center: 0, lo: 0, hi: 0)], leftEdge: 0, rightEdge: 0)
         }
 
-        struct Candidate { var target: Double; var width: Double }
+        struct Candidate { var target: ThreadTarget; var width: Double }
         var candidates: [Candidate] = []
-        // Interior gaps between adjacent cells — only if wide enough to be flown.
+        // Interior gaps between adjacent cells — only if wide enough to be flown. The gap's
+        // own edges bound how far the thread may be slid off the route.
         for i in 0..<(merged.count - 1) {
             let gapLo = merged[i].hi
             let gapHi = merged[i + 1].lo
             let width = gapHi - gapLo
             if width >= config.minGapWidthNM {
-                candidates.append(Candidate(target: (gapLo + gapHi) / 2, width: width))
+                candidates.append(Candidate(target: ThreadTarget(center: (gapLo + gapHi) / 2,
+                                                                 lo: gapLo, hi: gapHi),
+                                            width: width))
             }
         }
-        // Around either end of the whole line (open air outboard of the edges).
-        candidates.append(Candidate(target: first.lo, width: config.searchHalfWidthNM))
-        candidates.append(Candidate(target: last.hi, width: config.searchHalfWidthNM))
+        // Around either end of the whole line (open air outboard of the edges), so the
+        // slide interval runs from the edge outboard to the search bound.
+        candidates.append(Candidate(target: ThreadTarget(center: first.lo,
+                                                         lo: first.lo - config.searchHalfWidthNM,
+                                                         hi: first.lo),
+                                    width: config.searchHalfWidthNM))
+        candidates.append(Candidate(target: ThreadTarget(center: last.hi, lo: last.hi,
+                                                         hi: last.hi + config.searchHalfWidthNM),
+                                    width: config.searchHalfWidthNM))
 
-        let reachable = candidates.filter { abs($0.target) <= config.searchHalfWidthNM }
+        let reachable = candidates.filter { abs($0.target.center) <= config.searchHalfWidthNM }
         let pool = reachable.isEmpty ? candidates : reachable
 
         let targets = pool.sorted { a, b in
-            if abs(a.target) != abs(b.target) { return abs(a.target) < abs(b.target) }
+            let (ca, cb) = (a.target.center, b.target.center)
+            if abs(ca) != abs(cb) { return abs(ca) < abs(cb) }
             if a.width != b.width { return a.width > b.width }
-            return a.target >= 0 && b.target < 0   // prefer the right side on an exact tie
+            return ca >= 0 && cb < 0   // prefer the right side on an exact tie
         }.map { $0.target }
 
         return (targets: targets, leftEdge: first.lo, rightEdge: last.hi)
@@ -1349,6 +1430,28 @@ struct RouteWeatherConflictDetector {
         // Barely leaves the route — not the out-and-back spike this guards against.
         guard let apex, apexExcursion >= 5 else { return true }
         return polys.contains { distanceToPolygonNM(apex, $0) <= maxDistanceNM }
+    }
+
+    /// How far (NM) a drawn deviation gets from the filed route at its farthest vertex —
+    /// the maneuver's lateral excursion, the companion to the along-track extent
+    /// `enforceMinExtent` guarantees. `.greatestFiniteMagnitude` when there is no route to
+    /// measure against, so an unmeasurable line is never mistaken for an on-route one.
+    func routeExcursionNM(_ path: [CLLocationCoordinate2D], route: [CLLocationCoordinate2D]) -> Double {
+        let line = route.filter { $0.isValid }
+        let pts = path.filter { $0.isValid }
+        guard line.count >= 2, pts.count >= 2 else { return .greatestFiniteMagnitude }
+        return pts.map { distanceToPolylineNM($0, line) }.max() ?? .greatestFiniteMagnitude
+    }
+
+    /// Whether a drawn deviation leaves the filed route far enough to be worth showing:
+    /// its excursion reaches `minRouteExcursionNM`. This is the guard against a mint line
+    /// lying on top of the flight path — a reroute that recommends the course already
+    /// being flown. Unlike `pathEngagesWeather` (which such a line passes trivially,
+    /// because the route runs into the cell) and `previewApexHugsWeather` (which returns
+    /// true for anything that barely leaves the route, having no apex to test), this asks
+    /// the one question neither does: does the line go anywhere?
+    func pathLeavesRoute(_ path: [CLLocationCoordinate2D], route: [CLLocationCoordinate2D]) -> Bool {
+        routeExcursionNM(path, route: route) >= config.minRouteExcursionNM
     }
 
     /// Distance (NM) from a point to a polyline — the nearest of its segments.

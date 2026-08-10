@@ -284,6 +284,14 @@ struct RouteWeatherConflict: Identifiable {
     /// (`mergeAdjacentDeviations`) carries more: one turn-out, every offset vertex, one
     /// rejoin — the interior turns are still walked generically at each vertex.
     var deviationPath: [CLLocationCoordinate2D]
+    /// How far the finally-drawn line gets from the filed route at its farthest point
+    /// (NM) — measured by `AppModel` once the path is fully built, *after* the adjacent-
+    /// deviation merge and the gentle-rejoin softening, both of which reshape it. A line
+    /// below `minRouteExcursionNM` deviates nowhere and is not drawn (see
+    /// `RouteWeatherConflictDetector.pathLeavesRoute`); the conflict is still detected and
+    /// still drives the banner, advisory, and Diagnostics. Defaults to "unmeasured", so a
+    /// directly-constructed conflict is drawn as before until someone measures it.
+    var maxRouteExcursionNM: Double = .greatestFiniteMagnitude
 
     var isConvectiveSigmet: Bool { hazard.isConvectiveSigmet }
     var source: WeatherHazardSource { hazard.source }

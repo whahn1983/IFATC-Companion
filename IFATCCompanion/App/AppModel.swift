@@ -4440,12 +4440,24 @@ final class AppModel: ObservableObject {
         // Finally, soften any hard turn back onto the flight plan by rejoining at a fix farther
         // down the route — bounded by the next deviation's turn-out, so a softened rejoin can
         // never run into the following reroute.
-        return merged.enumerated().map { index, deviation in
+        let softened = merged.enumerated().map { index, deviation in
             let nextTurnOutAlong = index + 1 < merged.count
                 ? merged[index + 1].deviationPath.first.map { alongRouteNM($0) - mergeAdjacentRejoinMarginNM }
                 : nil
             return deviationWithGentleRejoin(deviation, cap: cap,
                                              limitAlong: nextTurnOutAlong ?? .greatestFiniteMagnitude)
+        }
+        // Measure each line's lateral excursion from the filed route now that it is finally
+        // shaped — the merge and the gentle rejoin above both move vertices, so anything
+        // measured earlier would describe a path that no longer exists. A line that never
+        // leaves the route isn't drawn (`deviationLeavesRoute`); the conflict itself stays in
+        // the locked set so the weather is still detected, prompted, and reported.
+        let filedRoute = ([origin] + upcomingRouteCoordinates(from: origin)).filter { $0.isValid }
+        return softened.map { deviation in
+            var deviation = deviation
+            deviation.maxRouteExcursionNM = conflictDetector.routeExcursionNM(deviation.deviationPath,
+                                                                              route: filedRoute)
+            return deviation
         }
     }
 
@@ -4560,6 +4572,10 @@ final class AppModel: ObservableObject {
             lastConflictSeenAt = nil
             return
         }
+        // A re-solve that deviates nowhere is not announced: there is no revised line to be
+        // turned onto, and the call would promise one the map isn't drawing. The conflict
+        // stays selected, so the weather is still worked through the normal advisory.
+        guard deviationLeavesRoute(fresh) else { return }
         announceRedrawnDeviation(conflict: fresh, distanceNM: Geo.distanceNM(from: pos, to: entry))
     }
 
@@ -4594,6 +4610,7 @@ final class AppModel: ObservableObject {
         return lockedDeviations.compactMap { dev in
             let path = dev.deviationPath
             guard path.count >= 2, let p0 = path.first else { return nil }
+            guard deviationLeavesRoute(dev) else { return nil }                         // deviates nowhere
             if let s = solidStart, Geo.distanceNM(from: s, to: p0) < 2 { return nil }   // drawn solid
             if let ac = aircraftAlong, let end = path.last, end.isValid,
                alongRouteNM(end) <= ac - 2 { return nil }                                // already passed
@@ -5054,7 +5071,11 @@ final class AppModel: ObservableObject {
             // drawn once within draw range, but the banner has not yet been raised) from
             // one close enough to be worked now.
             let stage = c.withinTacticalRange ? "" : " — monitoring"
-            d.routeConflictStatus = "\(c.severity.displayLabel) \(c.hazard.source.label), \(Int(c.distanceAheadNM.rounded())) NM\(stage)"
+            // Say so when the solved reroute never leaves the route and so isn't drawn —
+            // otherwise Diagnostics reports a conflict the map shows no mint line for, and
+            // the missing line reads as a bug rather than "there is no lateral way around".
+            let noLine = deviationLeavesRoute(c) ? "" : " — no lateral deviation available"
+            d.routeConflictStatus = "\(c.severity.displayLabel) \(c.hazard.source.label), \(Int(c.distanceAheadNM.rounded())) NM\(stage)\(noLine)"
         } else if let pos = aircraftState.coordinate ?? resolvedDepartureCoordinate(),
                   let onRoute = conflictDetector.nearestRouteHazard(
                     route: upcomingRouteCoordinates(from: pos), from: pos, hazards: weatherHazards) {
@@ -5187,7 +5208,20 @@ final class AppModel: ObservableObject {
            !conflictDetector.pathEngagesWeather(conflict.deviationPath, hazards: weatherHazards) {
             return nil
         }
+        // And it must actually go somewhere. A reroute whose whole length lies on the filed
+        // route draws a mint line on top of the magenta one — telling the pilot to deviate
+        // onto the course being flown. Withhold the line; the conflict still raises the
+        // banner and the advisory, so the pilot can work it with ATC.
+        guard deviationLeavesRoute(conflict) else { return nil }
         return conflict.deviationPath
+    }
+
+    /// Whether a deviation's drawn line leaves the filed route far enough to be worth
+    /// drawing at all (`RouteWeatherConflictDetector.pathLeavesRoute`, measured for the
+    /// locked set in `computeDeviations`). A conflict whose excursion was never measured —
+    /// one constructed directly rather than solved — is drawn, as it was before.
+    private func deviationLeavesRoute(_ deviation: RouteWeatherConflict) -> Bool {
+        deviation.maxRouteExcursionNM >= conflictDetector.config.minRouteExcursionNM
     }
 
     /// The point `target` NM along the route polyline (`start` then `ahead`) from
@@ -5214,9 +5248,11 @@ final class AppModel: ObservableObject {
     /// put with the locked line even after the conflict itself settles.
     var weatherRejoinMarker: (name: String, coordinate: CLLocationCoordinate2D)? {
         // Mirror `weatherDeviationLine`: only show the live rejoin marker while the mint
-        // line itself is drawn (within draw range), so a lone marker never appears for
-        // far weather whose reroute is still being held.
+        // line itself is drawn (within draw range, and actually leaving the route), so a
+        // lone marker never appears for far weather whose reroute is still being held, or
+        // for a reroute that was withheld because it deviates nowhere.
         if let conflict = activeWeatherConflict, conflict.withinDrawRange,
+           deviationLeavesRoute(conflict),
            let fix = conflict.rejoinFix, let c = fix.coordinate, c.isValid {
             return (fix.name.isEmpty ? "Rejoin" : fix.name, c)
         }
@@ -5736,12 +5772,17 @@ final class AppModel: ObservableObject {
     /// each radar resample) while the deviation is flown. Once frozen, the map draws
     /// this fixed line until the pilot reports clear of weather or requests another
     /// reroute (which re-freezes it to the fresh recommendation).
+    /// A reroute that was never drawn (it deviates nowhere — `deviationLeavesRoute`) is
+    /// never frozen either: committing it would put the withheld line back on the map as a
+    /// frozen path, which is drawn ahead of every guard. The deviation is still approved —
+    /// it simply has no drawn line for the turn machinery to follow.
     private func freezeCommittedDeviationPath() {
-        guard let path = activeWeatherConflict?.deviationPath, path.count >= 2 else {
+        guard let conflict = activeWeatherConflict, conflict.deviationPath.count >= 2,
+              deviationLeavesRoute(conflict) else {
             weatherDeviation.committedDeviationPath = nil
             return
         }
-        weatherDeviation.committedDeviationPath = path.map(WeatherDeviationContext.PathPoint.init)
+        weatherDeviation.committedDeviationPath = conflict.deviationPath.map(WeatherDeviationContext.PathPoint.init)
     }
 
     /// The committed mint line the aircraft is flying, as coordinates. Prefers the
@@ -5751,7 +5792,11 @@ final class AppModel: ObservableObject {
         if let frozen = weatherDeviation.committedDeviationPath {
             return frozen.map { $0.coordinate }
         }
-        return activeWeatherConflict?.deviationPath ?? []
+        // Only a line the map actually drew can be tracked along: an undrawn reroute has no
+        // turns for the pilot to be vectored onto, so the turn issuers get nothing rather
+        // than a set of vectors down a line that deviates nowhere.
+        guard let conflict = activeWeatherConflict, deviationLeavesRoute(conflict) else { return [] }
+        return conflict.deviationPath
     }
 
     /// Clear any armed auto-turn (no turn pending).
