@@ -659,10 +659,32 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      (`replanHeldDeviation`): re-held at a fresh turn-out still ahead (with the revised
      distance announced, since the pilot was given the old one), vectored onto the reroute
      now when the aircraft is already at/past it, or — when nothing solves from here — the
-     lifecycle is **ended**. That last case matters: `.deviationApproved` counts as
-     `isCommittedDeviation`, so the per-tick rollback in `updateWeatherConflict` deliberately
-     skips it, and a context left approved-but-unarmed is a dead end for the rest of the
-     flight — no turn can fire, and no later conflict can prompt afresh.
+     clearance is **cancelled** (*"weather deviation cancelled, resume own navigation, advise
+     if you need to deviate"*, `cancelHeldDeviation`) and the lifecycle ended. Both halves of
+     that last case matter. It has to be **said**: the pilot is holding a clearance to continue
+     on course and expect a turn, so withdrawing it in silence leaves them flying toward a turn
+     that will never be called. And it has to return the lifecycle to idle: `.deviationApproved`
+     counts as `isCommittedDeviation`, so the per-tick rollback in `updateWeatherConflict`
+     deliberately skips it, and a context left approved-but-unarmed is a dead end for the rest
+     of the flight — no turn can fire, and no later conflict can prompt afresh. What it must
+     *not* do is clear `weatherHandled`: the weather ahead has just been worked (the pilot asked
+     and was approved), and re-arming the near-turn auto-advisory against that same conflict is
+     what had the controller re-open with *"…say intentions"* seconds after cancelling the
+     clearance for it. The flag clears on its own once the route genuinely reads clear; until
+     then the banner is the way back in.
+   - **An accepted deviation is never cancelled off an untrustworthy fix.** The same re-plan
+     runs on the first fix after a background gap (`resyncWeatherDeviation`), and there the
+     radar sample is stale, the aircraft has jumped, and nothing may re-solve from the new
+     position — which is not evidence that the deviation should be torn up. It is the very
+     reading `resolveConflictWithHysteresis` refuses to believe a clear route from. So the
+     resync passes `trustedFix: false`: a re-plan that finds nothing leaves the approved
+     deviation and its held turn exactly as they stand, and the next continuous tick decides.
+     Otherwise the pilot came back from the background to an accepted "pressed vectors" route
+     silently forgotten and re-advised from scratch, with the response card gone. For the same
+     reason the discontinuity tick **restarts** the confirm-clear window rather than merely
+     surviving it — the window is wall-clock, so one left running from before the gap has
+     already expired, and the tick *after* the guard would otherwise drop the conflict on its
+     first empty sample, tearing down an issued-but-unanswered advisory one tick late.
    - **Turn distances are rounded once, to fives.** Weather is described in tens (a cell's
      distance is never that precise), but a turn the pilot is about to fly is rounded to the
      nearest 5 NM by `deviationTurnOutAhead` and spoken as given. Rounding again to tens in

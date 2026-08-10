@@ -4261,8 +4261,18 @@ final class AppModel: ObservableObject {
         // A discontinuity tick (a jumped/stale fix after a background gap) isn't a
         // trustworthy "clear" reading — hold the last shown conflict rather than letting
         // it, or a confirm-clear window that elapsed on wall-clock while backgrounded,
-        // drop a storm that's really still ahead.
-        if telemetryDiscontinuity { return held }
+        // drop a storm that's really still ahead. Restart the confirm-clear window from
+        // here too: the window is measured on wall-clock, so one left running from before
+        // the gap has already expired, and the *next* tick — no longer flagged as a
+        // discontinuity — would drop the conflict on its first empty sample. That is what
+        // tore an issued-but-unanswered advisory down one tick after this guard saved it,
+        // leaving "say intentions" in the transcript with no response card on screen.
+        // Requiring a full window of continuous clear readings after the gap gives the
+        // first live resample time to land.
+        if telemetryDiscontinuity {
+            lastConflictSeenAt = Date()
+            return held
+        }
         // Otherwise hold the last shown conflict until the clear is confirmed.
         if let since = lastConflictSeenAt, Date().timeIntervalSince(since) < weatherClearConfirmWindow {
             return held
@@ -6035,14 +6045,24 @@ final class AppModel: ObservableObject {
     /// announced, since the pilot was given the old one), or vectored onto the reroute now when
     /// the aircraft is already at/past it. When nothing solves from here there is nothing left
     /// to turn for, so the lifecycle is ended rather than left approved-but-unarmed.
+    ///
+    /// `trustedFix` is false on a telemetry discontinuity (the jumped fix on return from the
+    /// background). A deviation the pilot has already accepted is never cancelled off a fix
+    /// that cannot be trusted — the same reading `resolveConflictWithHysteresis` refuses to
+    /// believe a "clear route" from. The approved deviation and its held turn are left exactly
+    /// as they stand, and the next continuous tick re-decides on a fix that can be trusted.
     /// Returns whether a turn was issued this tick.
     @discardableResult
-    private func replanHeldDeviation(from pos: CLLocationCoordinate2D) -> Bool {
-        clearDeviationStart()
+    private func replanHeldDeviation(from pos: CLLocationCoordinate2D, trustedFix: Bool = true) -> Bool {
+        // Re-solve *before* dropping the held turn, so a re-plan that finds nothing can leave
+        // the accepted deviation untouched rather than having already disarmed it.
         guard recomputeConflictFrom(pos) else {
+            guard trustedFix else { return false }
+            clearDeviationStart()
             endHeldDeviationWithNothingAhead()
             return false
         }
+        clearDeviationStart()
         freezeCommittedDeviationPath()
         if let ahead = deviationTurnOutAhead() {
             armDeviationStart()
@@ -6065,15 +6085,27 @@ final class AppModel: ObservableObject {
     /// End a held-turn deviation that has nothing left to turn for — the turn-out is gone and
     /// no fresh line solves from here.
     ///
-    /// This must return the lifecycle to idle, not merely drop the armed turn.
+    /// The controller **says so**: the pilot is holding a clearance to continue on course and
+    /// expect a turn, so withdrawing it silently leaves them flying toward a turn that will
+    /// never be called. Then the lifecycle returns to idle, not merely the armed turn dropped.
     /// `.deviationApproved` counts as `isCommittedDeviation`, so the per-tick rollback in
     /// `updateWeatherConflict` deliberately leaves it alone; a context left in that state with
     /// no armed turn is a dead end — no turn can fire, and no later conflict can prompt afresh
     /// — for the rest of the flight.
+    ///
+    /// `weatherHandled` is deliberately **left set**. It marks the weather ahead as already
+    /// worked, and the pilot just worked it — they asked for a deviation and were approved.
+    /// Clearing it here re-arms `maybeAutoIssueAdvisoryNearTurn` against the very conflict the
+    /// deviation was for, so the controller re-opens with "…say intentions" seconds after
+    /// cancelling the clearance for it. The per-tick rollback in `recomputeWeatherHazards`
+    /// clears the flag once the route genuinely reads clear, so a later, fresh conflict still
+    /// prompts on its own; until then the banner (state is idle again) is the way back in.
     private func endHeldDeviationWithNothingAhead() {
+        applyDeviationResult(
+            deviationEngine.cancelHeldDeviation(cs: callsignNow(), context: weatherDeviation,
+                                                facility: weatherFacility),
+            controllerInitiated: true)
         weatherDeviation.reset()
-        weatherHandled = false
-        mockWeatherAdvisoryIssued = false
     }
 
     // MARK: - Weather deviation — drifted off the line being flown
@@ -6369,9 +6401,13 @@ final class AppModel: ObservableObject {
             // The held beginning turn is pinned to a fixed turn-out the jump may have put
             // behind the aircraft — recompute from the current position, re-hold at a fresh
             // turn-out still ahead, or vector onto the reroute now rather than firing the
-            // stale entry heading late (which could turn into/through the weather). Nothing
-            // ahead any more ends the lifecycle, so it can't sit approved-but-unarmed.
-            replanHeldDeviation(from: pos)
+            // stale entry heading late (which could turn into/through the weather). A jumped
+            // fix is not trusted to *cancel* the deviation, though: an accepted clearance is
+            // never withdrawn off a reading the hysteresis wouldn't believe a clear route
+            // from. It stands until a continuous tick can decide, so the pilot never comes
+            // back from the background to find their approved deviation forgotten — and
+            // re-advised from scratch as if they had never asked for it.
+            replanHeldDeviation(from: pos, trustedFix: false)
         default:
             break
         }
