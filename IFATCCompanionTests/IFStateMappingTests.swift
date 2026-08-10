@@ -44,4 +44,37 @@ final class IFStateMappingTests: XCTestCase {
         XCTAssertEqual(store.entry(for: .heading)?.name, "aircraft/0/heading_magnetic")
         XCTAssertNil(store.entry(for: .trueHeading))
     }
+
+    // MARK: - Heading units (radians vs degrees)
+
+    /// Radians are converted; degrees are taken at face value. The units are settled once
+    /// per state snapshot, because a single reading can't tell them apart.
+    func testHeadingAnglesAreNormalizedByTheSnapshotsUnits() {
+        // Radians in: π/2 is 090°, and 4 rad is 229°.
+        XCTAssertEqual(IFConnectStateReader.normalizeAngle(.pi / 2, alreadyDegrees: false), 90, accuracy: 0.001)
+        XCTAssertEqual(IFConnectStateReader.normalizeAngle(4, alreadyDegrees: false), 229.183, accuracy: 0.01)
+        // Degrees in: unchanged, and wrapped to 0–360.
+        XCTAssertEqual(IFConnectStateReader.normalizeAngle(4, alreadyDegrees: true), 4, accuracy: 0.001)
+        XCTAssertEqual(IFConnectStateReader.normalizeAngle(-10, alreadyDegrees: true), 350, accuracy: 0.001)
+    }
+
+    /// Regression: judging each value on its own mangles a heading near north on a build that
+    /// reports degrees — 004° and 4 rad are the same number on the wire, and the old per-value
+    /// guess read every heading below ~6° as radians, turning 004° into 229°. That fed the
+    /// wind triangle (`HeadingSolver.wind`) and every weather vector solved from it. The
+    /// snapshot decides: any one angle too large to be radians makes them all degrees.
+    func testNearNorthHeadingIsNotMistakenForRadiansWhenTheSnapshotIsInDegrees() {
+        // A snapshot in degrees: nose on 004°, tracking 007°, magnetic 003°.
+        let snapshot: [Double] = [4, 7, 3]
+        let inDegrees = snapshot.contains { IFConnectStateReader.exceedsFullCircleInRadians($0) }
+        XCTAssertTrue(inDegrees, "a reading of 7 cannot be radians, so the snapshot is in degrees")
+        XCTAssertEqual(IFConnectStateReader.normalizeAngle(4, alreadyDegrees: inDegrees), 4, accuracy: 0.001)
+
+        // The same snapshot in radians stays radians and converts.
+        let radians: [Double] = [0.07, 0.12, 0.05]
+        let radiansInDegrees = radians.contains { IFConnectStateReader.exceedsFullCircleInRadians($0) }
+        XCTAssertFalse(radiansInDegrees)
+        XCTAssertEqual(IFConnectStateReader.normalizeAngle(0.07, alreadyDegrees: radiansInDegrees),
+                       4.011, accuracy: 0.01)
+    }
 }

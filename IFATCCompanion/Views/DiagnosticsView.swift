@@ -150,6 +150,9 @@ struct DiagnosticsView: View {
                 DataRow(label: "Route conflict", value: d.routeConflictStatus)
                 DataRow(label: "Rejoin fix", value: d.selectedRejoinFix ?? "—")
                 DataRow(label: "Deviation state", value: d.lastDeviationState.rawValue)
+                DataRow(label: "Solved wind", value: d.solvedWindText ?? "—")
+                DataRow(label: "Magnetic variation", value: d.magneticVariationText ?? "—")
+                DataRow(label: "Last weather vector", value: d.assignedHeadingText ?? "—")
                 if let err = d.providerError {
                     Text("Provider error: \(err)").font(.caption).foregroundStyle(.orange)
                         .frame(maxWidth: .infinity, alignment: .leading)

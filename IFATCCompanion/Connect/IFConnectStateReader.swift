@@ -37,9 +37,23 @@ struct IFConnectStateReader {
         s.groundSpeed = (await double(.groundSpeed)).map { $0 * IFConnectStateReader.metresPerSecondToKnots }
         s.indicatedAirspeed = (await double(.indicatedAirspeed)).map { $0 * IFConnectStateReader.metresPerSecondToKnots }
         s.trueAirspeed = (await double(.trueAirspeed)).map { $0 * IFConnectStateReader.metresPerSecondToKnots }
-        s.heading = (await double(.heading)).map(IFConnectStateReader.normalizeAngle)
-        s.trueHeading = (await double(.trueHeading)).map(IFConnectStateReader.normalizeAngle)
-        s.track = (await double(.track)).map(IFConnectStateReader.normalizeAngle)
+        // Infinite Flight reports heading/track in radians on some versions and in degrees
+        // on others, and a single value can't tell the two apart: `4` is both a heading of
+        // 004° and one of 4 rad (229°). So the units are decided **once for the whole
+        // snapshot** rather than per value — these three come out of the same API in the
+        // same convention, so if any one of them is bigger than a full circle in radians,
+        // all three are degrees. Judging each on its own turned a nose on 004° into 229°,
+        // which then poisoned the wind triangle (`HeadingSolver.wind`) and every deviation
+        // vector solved from it whenever heading or track sat within ~6° of north.
+        let rawHeading = await double(.heading)
+        let rawTrueHeading = await double(.trueHeading)
+        let rawTrack = await double(.track)
+        let anglesInDegrees = [rawHeading, rawTrueHeading, rawTrack]
+            .compactMap { $0 }
+            .contains { IFConnectStateReader.exceedsFullCircleInRadians($0) }
+        s.heading = rawHeading.map { IFConnectStateReader.normalizeAngle($0, alreadyDegrees: anglesInDegrees) }
+        s.trueHeading = rawTrueHeading.map { IFConnectStateReader.normalizeAngle($0, alreadyDegrees: anglesInDegrees) }
+        s.track = rawTrack.map { IFConnectStateReader.normalizeAngle($0, alreadyDegrees: anglesInDegrees) }
         s.verticalSpeed = (await double(.verticalSpeed)).map { $0 * IFConnectStateReader.metresPerSecondToFeetPerMinute }
         s.onGround = await bool(.onGround)
         s.approachModeEngaged = await bool(.approachMode)
@@ -131,13 +145,27 @@ struct IFConnectStateReader {
     /// Metres-per-second → feet-per-minute (vertical speed).
     static let metresPerSecondToFeetPerMinute = 196.850_4
 
+    /// Whether a raw angular reading is too large to be radians, so its state is being
+    /// reported in degrees. Used to settle the units for a whole snapshot at once — see
+    /// the heading reads in `readState`.
+    static func exceedsFullCircleInRadians(_ value: Double) -> Bool {
+        abs(value) > (2 * Double.pi + 0.01)
+    }
+
     /// IF often reports heading/track in radians; normalize to 0–360 degrees.
-    static func normalizeAngle(_ value: Double) -> Double {
-        var deg = value
-        // Heuristic: small magnitudes are radians.
-        if abs(deg) <= (2 * Double.pi + 0.01) { deg = deg * 180 / .pi }
+    ///
+    /// `alreadyDegrees` carries the decision made for the whole state snapshot. On its own
+    /// a reading of `4` is ambiguous — 004° or 4 rad — so guessing per value silently
+    /// mangles every heading near north on a build that reports degrees. The single-argument
+    /// form keeps the old per-value guess for callers with no snapshot to reason over.
+    static func normalizeAngle(_ value: Double, alreadyDegrees: Bool) -> Double {
+        var deg = alreadyDegrees ? value : value * 180 / .pi
         deg = deg.truncatingRemainder(dividingBy: 360)
         if deg < 0 { deg += 360 }
         return deg
+    }
+
+    static func normalizeAngle(_ value: Double) -> Double {
+        normalizeAngle(value, alreadyDegrees: exceedsFullCircleInRadians(value))
     }
 }

@@ -1995,6 +1995,37 @@ final class WeatherDeviationFlowTests: XCTestCase {
         XCTAssertTrue(atcContains(model, "fly heading"), "the re-vector assigns a fresh heading")
     }
 
+    /// A **re-planned** deviation must still end on the filed route. The detector's "end the
+    /// line where it first re-crosses the route" guarantee only applies to the polyline it is
+    /// handed, and a re-plan hands it the committed reroute plus the route beyond — so a fresh
+    /// line is guaranteed to end on the *old mint line*, which the new one then erases. The
+    /// splice that carries it down to the flight path is conditional, so nothing checked the
+    /// finished line against the route. This is the invariant, asserted end-to-end.
+    func testReplannedDeviationStillEndsOnTheFlightPath() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)
+
+        model.requestVectorAroundWeather()
+        XCTAssertEqual(model.weatherDeviationState, .vectoringAroundWeather)
+        guard let firstPath = model.weatherDeviation.committedDeviationPath, firstPath.count >= 2 else {
+            return XCTFail("expected a committed mint line after the first vector")
+        }
+        XCTAssertTrue(model.deviationEndsOnFlightPathForTesting(firstPath.map { $0.coordinate }),
+                      "the first deviation rejoins the filed route")
+
+        // New weather straddles the committed line ahead — the recalculate case.
+        let mid = firstPath[firstPath.count / 2].coordinate
+        model.radarOverlay.mockCells = [RadarCell(polygon: box(around: mid, half: 0.3), intensity: .heavy)]
+        model.recomputeWeatherHazards()
+        model.requestVectorAroundWeather()
+
+        guard let replanned = model.weatherDeviationLine, replanned.count >= 2 else {
+            return XCTFail("expected a re-planned mint line")
+        }
+        XCTAssertTrue(model.deviationEndsOnFlightPathForTesting(replanned),
+                      "a recalculated deviation must rejoin the filed route, not end in mid-air")
+    }
+
     /// While already flying a deviation, tapping Vectors when the reroute ahead is still
     /// clear must NOT re-vector: the controller has the pilot continue on the current
     /// deviation, and the committed line and its armed turns are left untouched.

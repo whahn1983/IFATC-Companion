@@ -732,6 +732,22 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      bearing is assigned, exactly as before. Only the **spoken** heading is converted —
      the armed turn geometry (`deviationStartHeading`, `pendingRejoinHeading`, the leg
      bearings) stays in true degrees so it keeps matching the drawn line.
+   - **Heading units are settled per state snapshot, not per value.** Infinite Flight reports
+     heading and track in radians on some versions and in degrees on others, and a single
+     reading cannot tell the two apart: `4` is both a heading of 004° and one of 4 rad (229°).
+     Guessing per value — "small magnitudes are radians" — therefore mangled *every* heading
+     within ~6° of north on a build reporting degrees, and the damage did not stop at the
+     compass rose: both inputs to the wind triangle are angles, so a nose read as 229° instead
+     of 004° invents a wind that never existed and pushes it straight into the crab on every
+     weather vector. So `IFConnectStateReader` reads magnetic heading, true heading and track
+     together and decides for the three at once: they come out of the same API in the same
+     convention, so **any one of them too large to be radians makes all three degrees**.
+   - **The correction is visible.** Neither the solved wind nor the variation was surfaced
+     anywhere, so a vector that came out pointing somewhere unexpected could only be argued
+     about. Weather Diagnostics now shows the solved wind (`270° / 85 kt`), the variation being
+     applied, and the last weather vector as `true 042° → assigned 038°` — the leg's own course
+     next to the heading actually spoken, so the crab and the magnetic step can be read off and
+     checked against what Infinite Flight itself is showing.
    - **Never the same call twice — "did I say this, and was it acknowledged?"** A long
      parallel run past a multi-cell system carries several offset vertices on nearly the same
      bearing, so consecutive turns can round to the *same heading* and the radio ends up
@@ -794,6 +810,22 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      whatever the line now ends on, so *"rejoin course direct …"* names the fix actually being
      flown to. Applied to every drawn deviation (`computeDeviations`) and to a re-planned one
      (`recomputeConflictFrom`) alike.
+   - **A re-planned line is checked against the filed route, because nothing else checks it.**
+     "Every deviation ends on the flight path" is enforced *inside the detector*, and only
+     against the polyline it was handed. On a first solve that polyline is the filed route, so
+     the line lands on it. On a **re-plan** the polyline is the committed reroute plus the route
+     beyond it (`revectorRouteAhead`) — so the fresh line is only guaranteed to end on the *old
+     mint line*, which freezing the new one then erases. `deviationExtendedToFlightPath` exists
+     to splice the rest of the old line back on so the new one still reaches the route, but it
+     is conditional (the end has to land within ~5 NM of the committed tail, with at least a
+     mile of that tail left to add), and nothing re-examined the finished line. That is how a
+     recalculated deviation could be drawn ending in mid-air, well short of the magenta line.
+     So `recomputeConflictFrom` now measures the finished line's rejoin against the filed route
+     and, when it misses by more than `deviationRejoinOnRouteToleranceNM` (3 NM), **re-solves
+     against the plain filed route ahead** — putting the detector's own truncation/snapping
+     guarantee back on the flight path rather than bending the geometry by hand. The composite
+     solve still stands when nothing solves against the filed course (weather that sits only on
+     the reroute), and either outcome is logged to Diagnostics.
    - **Auto-resume at the intercept.** If the pilot never reports clear of weather, the
      controller automatically issues *"resume own navigation"* and ends the deviation
      once the aircraft reaches within 15 NM of that intercept (measured on the final leg,
