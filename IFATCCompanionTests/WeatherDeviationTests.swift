@@ -420,6 +420,73 @@ final class WeatherDeviationTests: XCTestCase {
                        "the apex bulges into clear air far from the cell, so the preview drops it")
     }
 
+    // MARK: - Leaves-the-route protection (no mint line on top of the flight path)
+
+    /// The reported anomaly: a mint "deviation" drawn right on top of the magenta flight
+    /// path. Neither engagement guard catches it — a line lying on the route passes
+    /// `pathEngagesWeather` trivially (the route runs into the cell) and
+    /// `previewApexHugsWeather` returns true for anything that barely leaves the route —
+    /// so the excursion is measured on its own: a line that goes nowhere is not a reroute.
+    func testPathLeavesRouteRejectsALineDrawnOnTheFlightPath() throws {
+        let storm = radarHazard(cell(alongNM: 40, crossNM: 0, from: usPosition))
+        let route = [usPosition, Geo.destination(from: usPosition, bearingDegrees: course, distanceNM: 160)]
+        // A "deviation" straight down the course line — what a gap centered on the route
+        // (or the degenerate zero-offset fallback) draws.
+        let onRoute = [usPosition,
+                       Geo.destination(from: usPosition, bearingDegrees: course, distanceNM: 60),
+                       Geo.destination(from: usPosition, bearingDegrees: course, distanceNM: 120)]
+        XCTAssertLessThan(detector.routeExcursionNM(onRoute, route: route), 1,
+                          "a line along the course never leaves the route")
+        XCTAssertFalse(detector.pathLeavesRoute(onRoute, route: route),
+                       "a line that deviates nowhere must not be drawn as a deviation")
+        // Both existing guards are happy with it — which is why this one is needed.
+        XCTAssertTrue(detector.pathEngagesWeather(onRoute, hazards: [storm]),
+                      "the on-route line passes the engagement guard: the route runs into the cell")
+        XCTAssertTrue(detector.previewApexHugsWeather(onRoute, route: route, hazards: [storm]),
+                      "the apex guard passes it too — there is no apex to test")
+
+        // A real reroute around the same cell does leave the route.
+        let conflict = try XCTUnwrap(detector.detectConflict(
+            position: usPosition, course: course, groundspeedKnots: 450, phase: .cruise,
+            hazards: [storm], waypoints: [], routeAhead: route))
+        XCTAssertTrue(detector.pathLeavesRoute(conflict.deviationPath, route: route),
+                      "a reroute that rounds the cell leaves the flight path")
+    }
+
+    /// No route to measure against → the excursion is unmeasurable, not zero. A line must
+    /// never be suppressed because nobody could tell how far off course it goes.
+    func testRouteExcursionIsUnmeasurableWithoutARoute() {
+        let path = [usPosition, Geo.destination(from: usPosition, bearingDegrees: course, distanceNM: 60)]
+        XCTAssertEqual(detector.routeExcursionNM(path, route: []), .greatestFiniteMagnitude)
+        XCTAssertTrue(detector.pathLeavesRoute(path, route: [usPosition]),
+                      "a single-point route cannot bound anything — draw the line")
+    }
+
+    /// A gap wide enough to fly that straddles the course used to be threaded straight down
+    /// the flight path: the gap's midpoint is ~0 cross-track, and the single-apex dogleg is
+    /// exempt from `minParallelOffsetNM`, so nothing widened it. The thread is now slid to
+    /// one side of its gap, so the drawn line actually leaves the route.
+    func testGapStraddlingTheCourseIsNotThreadedDownTheFlightPath() throws {
+        // Two cells ~40 NM ahead: the left one crosses the course corridor (inner edge 6 NM
+        // left of course, so it genuinely blocks), the right one sits out at 14 NM. After
+        // the 4 NM lateral buffers the clear gap runs from 2 NM left of course to 10 NM
+        // right of it — a gap wide enough to fly whose midpoint (4 NM right) lands within
+        // the excursion floor, i.e. a thread drawn essentially down the flight path.
+        let polys = [
+            cell(alongNM: 40, crossNM: -20, halfCross: 14, from: usPosition),
+            cell(alongNM: 40, crossNM: 26,  halfCross: 12, from: usPosition),
+        ]
+        let route = [usPosition, Geo.destination(from: usPosition, bearingDegrees: course, distanceNM: 200)]
+        let conflict = try XCTUnwrap(detector.detectConflict(
+            position: usPosition, course: course, groundspeedKnots: 450, phase: .cruise,
+            hazards: polys.map { radarHazard($0) }, waypoints: [], routeAhead: route))
+
+        XCTAssertTrue(detector.pathLeavesRoute(conflict.deviationPath, route: route),
+                      "the drawn deviation must leave the flight path, not run down it")
+        // Sliding the thread must not push it into either cell.
+        assertPathClear(conflict.deviationPath, of: polys)
+    }
+
     // MARK: - Rejoin cap (never route past the destination / approach)
 
     /// The along-course component (NM) of a point relative to the northbound course.

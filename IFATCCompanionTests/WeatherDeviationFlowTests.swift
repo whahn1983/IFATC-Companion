@@ -1030,6 +1030,43 @@ final class WeatherDeviationFlowTests: XCTestCase {
         XCTAssertNotNil(model.weatherRejoinMarker, "weather in the draw range draws the rejoin marker")
     }
 
+    // MARK: - A reroute that deviates nowhere is not drawn
+
+    /// The reported anomaly: a mint deviation drawn right on top of the flight path. When
+    /// the solved line never leaves the route, no mint line and no rejoin marker are drawn
+    /// — and committing to it must not sneak it back onto the map as a frozen path, which
+    /// is drawn ahead of every guard. The conflict itself stays put, so the weather is
+    /// still detected and still prompts.
+    func testDeviationThatNeverLeavesTheRouteDrawsNoMintLine() {
+        let model = makeModel()
+        let pos = CLLocationCoordinate2D(latitude: 40, longitude: -95)
+        let apex = Geo.destination(from: pos, bearingDegrees: 20, distanceNM: 60)
+        let end = Geo.destination(from: pos, bearingDegrees: 0, distanceNM: 160)
+        let hazard = WeatherHazard(source: .noaaRadar, phenomenon: .precipitation, intensity: .heavy,
+                                   geometry: .polygon(box(around: apex, half: 0.3)), confidence: .high)
+        model.weatherHazards = [hazard]        // the line passes the engagement guard either way
+        func conflict(excursionNM: Double) -> RouteWeatherConflict {
+            RouteWeatherConflict(
+                hazard: hazard, distanceAheadNM: 40, relativeBearingDegrees: 0,
+                leftClock: 12, centerClock: 12, rightClock: 12, estimatedTimeMinutes: nil,
+                severity: .heavy, leftBypassScore: 0, rightBypassScore: 0,
+                recommendedDirection: .right, recommendedDeviationDegrees: 20,
+                rejoinFix: Waypoint(name: "RJOIN", latitude: end.latitude, longitude: end.longitude),
+                originalSegment: nil, shouldPrompt: true, withinTacticalRange: true,
+                withinDrawRange: true, intersectionArea: [], deviationPath: [pos, apex, end],
+                maxRouteExcursionNM: excursionNM)
+        }
+
+        model.activeWeatherConflict = conflict(excursionNM: 1.5)
+        XCTAssertNil(model.weatherDeviationLine,
+                     "a reroute that never leaves the route must not be drawn on top of it")
+        XCTAssertNil(model.weatherRejoinMarker, "and no lone rejoin marker is left behind")
+
+        model.activeWeatherConflict = conflict(excursionNM: 24)
+        XCTAssertNotNil(model.weatherDeviationLine, "a reroute that does leave the route is drawn")
+        XCTAssertNotNil(model.weatherRejoinMarker)
+    }
+
     // MARK: - Strategic preview (faint lines for each system ahead, incl. from the gate)
 
     /// The whole route's deviations can be eyeballed at once: a faint preview reroute is
