@@ -63,6 +63,18 @@ final class IFStateMappingStore {
         /// The COM1 frequency in MHz (`aircraft/0/systems/comm_radios/com_1/frequency`),
         /// read for diagnostics/logging.
         case tunedComFrequency
+        /// `environment/wind_velocity` — the wind speed at the aircraft, in metres per
+        /// second, as the sim itself models it. The app has always *solved* the wind by
+        /// inverting the wind triangle rather than reading it, because the states weren't
+        /// known to exist; read directly it needs no differencing of two ~450 kt vectors and
+        /// survives the regimes the triangle can't solve (no track, no TAS, low speed).
+        case windVelocity
+        /// `environment/wind_direction_true` — the wind direction, in radians, true. Whether
+        /// that is the direction the wind blows **from** (the meteorological convention the
+        /// app uses internally) or the direction it blows **toward** is not something the
+        /// state name settles, so it is reported alongside the solved wind rather than
+        /// trusted blind — see `WeatherProviderDiagnostics.reportedWindText`.
+        case windDirectionTrue
 
         /// Candidate name signatures (normalised, lowercased, separators removed),
         /// in priority order.
@@ -99,6 +111,10 @@ final class IFStateMappingStore {
             case .serverName: return ["servername", "sessionname", "server"]
             case .tunedComName: return ["com1name", "comm1name", "commradioscom1name", "activefrequencyname"]
             case .tunedComFrequency: return ["com1frequency", "comm1frequency", "commradioscom1frequency"]
+            // `wind_gust_velocity` normalises to "windgustvelocity", which neither ends with
+            // nor contains "windvelocity", so the steady wind is never read off the gust.
+            case .windVelocity: return ["windvelocity", "windspeed"]
+            case .windDirectionTrue: return ["winddirectiontrue", "winddirection"]
             }
         }
     }

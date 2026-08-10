@@ -150,6 +150,14 @@ struct DiagnosticsView: View {
                 DataRow(label: "Route conflict", value: d.routeConflictStatus)
                 DataRow(label: "Rejoin fix", value: d.selectedRejoinFix ?? "—")
                 DataRow(label: "Deviation state", value: d.lastDeviationState.rawValue)
+                DataRow(label: "Wind in use", value: d.windSourceText)
+                DataRow(label: "Sim-reported wind", value: d.reportedWindText ?? "not exposed")
+                DataRow(label: "Solved wind", value: d.solvedWindText ?? "—")
+                if let delta = d.reportedWindDeltaText {
+                    DataRow(label: "Reported vs solved", value: delta)
+                }
+                DataRow(label: "Magnetic variation", value: d.magneticVariationText ?? "—")
+                DataRow(label: "Last weather vector", value: d.assignedHeadingText ?? "—")
                 if let err = d.providerError {
                     Text("Provider error: \(err)").font(.caption).foregroundStyle(.orange)
                         .frame(maxWidth: .infinity, alignment: .leading)

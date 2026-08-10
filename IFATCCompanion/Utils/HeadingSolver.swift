@@ -82,6 +82,40 @@ enum HeadingSolver {
 
     // MARK: - Wind
 
+    /// The wind the sim itself reports (`environment/wind_direction_true` and
+    /// `environment/wind_velocity`), normalised by the state reader to degrees true and knots.
+    ///
+    /// **It is the direction the wind blows *from*** — the same convention as `Wind`, so it is
+    /// used as read. The state name alone doesn't settle that (a "wind direction" can name
+    /// either end of the vector, and the two are exactly 180° apart), so it was pinned against
+    /// Infinite Flight's own PFD wind readout: with the state at 5.5069 rad — 315.5° true — the
+    /// panel showed **301°**, the same direction stepped into the magnetic frame by the local
+    /// variation (~14.5°E). A "blows toward" reading would have shown ~135°.
+    ///
+    /// Preferred over the wind triangle below wherever the states exist. It is exact rather
+    /// than inferred, it needs no differencing of two ~450 kt vectors read in separate
+    /// round-trips, and — because of that — it stays right *through a turn*, which is precisely
+    /// when the next leg's crab is computed and when the triangle is least trustworthy.
+    static func reportedWind(from state: AircraftState) -> Wind? {
+        guard let from = state.reportedWindDirectionTrue,
+              let knots = state.reportedWindSpeedKnots,
+              from.isFinite, knots.isFinite, knots >= 0,
+              knots <= maxPlausibleWindKnots else { return nil }
+        // Below the resolvable floor the crab is a rounding error either way; report calm so
+        // the two sources agree on what "no wind" means.
+        guard knots >= minResolvableWindKnots else { return .calm }
+        return Wind(fromDegrees: normalizedDegrees(from), speedKnots: knots)
+    }
+
+    /// How far apart (degrees, 0–180) two winds' directions are. Used to cross-check the
+    /// reported wind against the solved one: they should agree closely, and a disagreement
+    /// past a right angle means one of them is not in the convention it is assumed to be —
+    /// at which point the inferred wind, whose convention is fixed by the arithmetic that
+    /// produced it, is the safer of the two to steer by.
+    static func directionDisagreementDegrees(_ a: Wind, _ b: Wind) -> Double {
+        abs(signedDifference(a.fromDegrees - b.fromDegrees))
+    }
+
     /// Solve the wind at the aircraft from its own state, by the wind triangle:
     /// `wind = ground vector − air vector`.
     ///

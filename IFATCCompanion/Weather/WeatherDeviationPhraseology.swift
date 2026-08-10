@@ -328,6 +328,23 @@ struct WeatherDeviationPhraseology {
         return tx
     }
 
+    /// An approved deviation whose beginning turn was still held ahead can no longer be
+    /// flown: the turn-out is behind the aircraft and no revised line solves from where it
+    /// actually is. The controller **cancels the deviation clearance** — the pilot was told
+    /// to continue on course and expect a turn, so the clearance has to be withdrawn out
+    /// loud rather than silently forgotten — and invites a fresh request, since the weather
+    /// itself may still be ahead.
+    func deviationCancelled(cs: Callsign, facility: ATCFacility = .center) -> ATCTransmission {
+        var tx = center("\(cs.display), weather deviation cancelled, resume own navigation, advise if you need to deviate.",
+                        "\(cs.spoken), weather deviation cancelled, resume own navigation, advise if you need to deviate.",
+                        facility: facility)
+        tx.readback = ATCTransmission.Readback(
+            displayText: "Resume own navigation, \(cs.display).",
+            spokenText: "Resume own navigation, \(cs.spoken).",
+            facility: facility)
+        return tx
+    }
+
     /// Clear of weather — proceed direct the rejoin fix, resume own navigation.
     func clearOfWeatherResume(cs: Callsign, rejoinFix: String?, nearRoute: Bool,
                               facility: ATCFacility = .center) -> ATCTransmission {

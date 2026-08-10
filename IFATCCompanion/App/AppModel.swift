@@ -434,6 +434,17 @@ final class AppModel: ObservableObject {
     /// falling back to "no correction" mid-turn would defeat the point. See `HeadingSolver`.
     private var lastKnownVariationEast: Double?
     private var lastKnownWind: HeadingSolver.Wind?
+    /// The last weather vector's leg course (**true**, straight off the drawn line) and the
+    /// magnetic heading actually spoken for it. Kept only so Weather Diagnostics can show what
+    /// the wind/variation correction did to a vector — neither the solved wind nor the
+    /// variation was visible anywhere, so a heading that came out pointing the wrong way could
+    /// only be argued about. Never read by the flow.
+    private var lastAssignedTrueCourse: Double?
+    private var lastAssignedVectorHeading: Int?
+    /// Whether `lastKnownWind` currently comes from the sim's own `environment/wind_*` states
+    /// rather than the inferred wind triangle. Reported in Weather Diagnostics so it is never
+    /// a guess which of the two a given vector was crabbed for.
+    private var windSourceIsSimReported = false
     /// The steepest turn back onto the flight plan a drawn deviation may end with. Past this the
     /// rejoin is moved to the next fix down the route (`deviationWithGentleRejoin`), lengthening
     /// the closing leg so the return to course — and the turn the controller calls for it — is
@@ -1621,6 +1632,14 @@ final class AppModel: ObservableObject {
     /// at least the airport margin before the field (and short of the approach fix).
     func weatherRejoinCapForTesting() -> CLLocationCoordinate2D? {
         weatherRejoinCap()
+    }
+
+    /// Test hook: whether a drawn deviation ends on the filed route — the invariant that
+    /// separates a deviation from a diversion, and the one a re-plan can lose because the
+    /// detector only guarantees it against the polyline it was handed.
+    func deviationEndsOnFlightPathForTesting(_ path: [CLLocationCoordinate2D]) -> Bool {
+        guard let pos = aircraftState.coordinate, pos.isValid else { return true }
+        return deviationEndsOnFlightPath(path, from: pos)
     }
 
     /// Test hook: the gradual return to course for an explicit path — the rejoin moved to a fix
@@ -4261,8 +4280,18 @@ final class AppModel: ObservableObject {
         // A discontinuity tick (a jumped/stale fix after a background gap) isn't a
         // trustworthy "clear" reading — hold the last shown conflict rather than letting
         // it, or a confirm-clear window that elapsed on wall-clock while backgrounded,
-        // drop a storm that's really still ahead.
-        if telemetryDiscontinuity { return held }
+        // drop a storm that's really still ahead. Restart the confirm-clear window from
+        // here too: the window is measured on wall-clock, so one left running from before
+        // the gap has already expired, and the *next* tick — no longer flagged as a
+        // discontinuity — would drop the conflict on its first empty sample. That is what
+        // tore an issued-but-unanswered advisory down one tick after this guard saved it,
+        // leaving "say intentions" in the transcript with no response card on screen.
+        // Requiring a full window of continuous clear readings after the gap gives the
+        // first live resample time to land.
+        if telemetryDiscontinuity {
+            lastConflictSeenAt = Date()
+            return held
+        }
         // Otherwise hold the last shown conflict until the clear is confirmed.
         if let since = lastConflictSeenAt, Date().timeIntervalSince(since) < weatherClearConfirmWindow {
             return held
@@ -5088,6 +5117,14 @@ final class AppModel: ObservableObject {
         }
         d.selectedRejoinFix = conflict?.rejoinFix?.name ?? weatherDeviation.rejoinFix
         d.lastDeviationState = weatherDeviation.state
+        d.solvedWindFromDegrees = lastKnownWind?.fromDegrees
+        d.solvedWindKnots = lastKnownWind?.speedKnots
+        d.reportedWindDirectionTrue = aircraftState.reportedWindDirectionTrue
+        d.reportedWindKnots = aircraftState.reportedWindSpeedKnots
+        d.windSourceIsSimReported = windSourceIsSimReported
+        d.magneticVariationEast = lastKnownVariationEast
+        d.lastAssignedTrueCourse = lastAssignedTrueCourse
+        d.lastAssignedHeading = lastAssignedVectorHeading
         d.providerError = precipService.lastError
         d.coverageMessage = radarOverlay.coverageAvailable ? nil : radarOverlay.unavailableMessage
         d.radarLastBytes = ordDataUsage.last
@@ -5895,20 +5932,64 @@ final class AppModel: ObservableObject {
 
     /// Refresh the corrections that carry a mint-line leg into the pilot's frame.
     ///
-    /// Both are read as differences between states Connect serves in separate
-    /// round-trips, so both are sampled only when the aircraft is near wings-level: a
-    /// roll smears the difference, and a stale sample beats a smeared one — variation
-    /// changes over hundreds of miles, wind over tens, neither over the seconds a turn
-    /// takes. A tick with nothing usable simply leaves the last estimate standing.
+    /// **Variation** is a difference between two headings Connect serves in separate
+    /// round-trips, so it is sampled only near wings-level: a roll smears the difference, and
+    /// a stale sample beats a smeared one — variation changes over hundreds of miles, not over
+    /// the seconds a turn takes. A tick with nothing usable leaves the last estimate standing.
+    ///
+    /// **Wind** prefers the sim's own `environment/wind_*` states over the inferred triangle.
+    /// Read directly it is exact, so it needs neither the smoothing (which exists purely to
+    /// absorb the noise of differencing two ~450 kt vectors) nor the bank guard — and that
+    /// second point matters: the triangle has to stand down through a turn, which is exactly
+    /// when the *next* leg's crab is computed off it. The reported wind is right throughout.
+    /// Older Infinite Flight versions don't expose the states; there the triangle carries on
+    /// unchanged.
     private func updateHeadingCorrections(from state: AircraftState) {
-        guard abs(state.bankAngle ?? 0) <= HeadingSolver.maxSampleBankDegrees else { return }
-        if let variation = HeadingSolver.variationDegreesEast(from: state) {
+        let nearLevel = abs(state.bankAngle ?? 0) <= HeadingSolver.maxSampleBankDegrees
+        if nearLevel, let variation = HeadingSolver.variationDegreesEast(from: state) {
             lastKnownVariationEast = variation
         }
-        if let sample = HeadingSolver.wind(from: state) {
-            lastKnownWind = HeadingSolver.blended(lastKnownWind, sample: sample)
+        let solved = nearLevel ? HeadingSolver.wind(from: state) : nil
+        if let reported = HeadingSolver.reportedWind(from: state),
+           trustReportedWind(reported, against: solved) {
+            lastKnownWind = reported
+            windSourceIsSimReported = true
+            return
+        }
+        if let solved {
+            lastKnownWind = HeadingSolver.blended(lastKnownWind, sample: solved)
+            windSourceIsSimReported = false
         }
     }
+
+    /// Whether the sim's reported wind may be steered by. It is used as the direction the wind
+    /// blows **from**, pinned against Infinite Flight's own PFD wind readout — but that is one
+    /// observation of one build, and getting it backwards would put every weather vector on the
+    /// wrong side of course. So when the triangle has independently solved a wind worth
+    /// comparing against, a disagreement past a right angle is treated as "this isn't the
+    /// convention we think it is" and the inferred wind — whose convention is fixed by the
+    /// arithmetic that produced it — is used instead.
+    ///
+    /// The comparison is only made on a wind strong enough for the triangle's own direction to
+    /// mean anything; in light air the two can differ wildly while both are effectively calm,
+    /// and disagreeing about the direction of a 3 kt wind decides nothing.
+    private func trustReportedWind(_ reported: HeadingSolver.Wind,
+                                   against solved: HeadingSolver.Wind?) -> Bool {
+        guard let solved,
+              reported.speedKnots >= windCrossCheckMinKnots,
+              solved.speedKnots >= windCrossCheckMinKnots else { return true }
+        let disagreement = HeadingSolver.directionDisagreementDegrees(reported, solved)
+        guard disagreement > windCrossCheckMaxDisagreementDegrees else { return true }
+        diagnostics.log(.app, String(format: "Wind: the sim-reported direction (%03.0f°) disagrees with the solved wind (%03.0f°) by %.0f° — using the solved wind.",
+                                     reported.fromDegrees, solved.fromDegrees, disagreement))
+        return false
+    }
+
+    /// Wind speed (knots) below which the reported/solved cross-check is not worth making —
+    /// the direction of a wind this light barely moves the crab either way.
+    private let windCrossCheckMinKnots: Double = 10
+    /// How far the two winds' directions may disagree before the reported one is distrusted.
+    private let windCrossCheckMaxDisagreementDegrees: Double = 90
 
     /// The heading to assign so the aircraft **tracks** `trueCourse` rather than merely
     /// pointing along it: crabbed into the live wind, then converted out of the true
@@ -5926,10 +6007,13 @@ final class AppModel: ObservableObject {
     /// degrees, so the comparisons built on it — turn size, the never-reverse guard —
     /// keep matching the drawn line rather than mixing frames.
     private func assignedHeading(forTrueCourse trueCourse: Double) -> Int {
-        HeadingSolver.assignedHeading(forTrueCourse: trueCourse,
-                                      wind: lastKnownWind,
-                                      trueAirspeed: aircraftState.trueAirspeed,
-                                      variationDegreesEast: lastKnownVariationEast)
+        let assigned = HeadingSolver.assignedHeading(forTrueCourse: trueCourse,
+                                                     wind: lastKnownWind,
+                                                     trueAirspeed: aircraftState.trueAirspeed,
+                                                     variationDegreesEast: lastKnownVariationEast)
+        lastAssignedTrueCourse = trueCourse
+        lastAssignedVectorHeading = assigned
+        return assigned
     }
 
     /// Arm the held beginning turn at the mint line's turn-out point: store the turn-out
@@ -6035,14 +6119,24 @@ final class AppModel: ObservableObject {
     /// announced, since the pilot was given the old one), or vectored onto the reroute now when
     /// the aircraft is already at/past it. When nothing solves from here there is nothing left
     /// to turn for, so the lifecycle is ended rather than left approved-but-unarmed.
+    ///
+    /// `trustedFix` is false on a telemetry discontinuity (the jumped fix on return from the
+    /// background). A deviation the pilot has already accepted is never cancelled off a fix
+    /// that cannot be trusted — the same reading `resolveConflictWithHysteresis` refuses to
+    /// believe a "clear route" from. The approved deviation and its held turn are left exactly
+    /// as they stand, and the next continuous tick re-decides on a fix that can be trusted.
     /// Returns whether a turn was issued this tick.
     @discardableResult
-    private func replanHeldDeviation(from pos: CLLocationCoordinate2D) -> Bool {
-        clearDeviationStart()
+    private func replanHeldDeviation(from pos: CLLocationCoordinate2D, trustedFix: Bool = true) -> Bool {
+        // Re-solve *before* dropping the held turn, so a re-plan that finds nothing can leave
+        // the accepted deviation untouched rather than having already disarmed it.
         guard recomputeConflictFrom(pos) else {
+            guard trustedFix else { return false }
+            clearDeviationStart()
             endHeldDeviationWithNothingAhead()
             return false
         }
+        clearDeviationStart()
         freezeCommittedDeviationPath()
         if let ahead = deviationTurnOutAhead() {
             armDeviationStart()
@@ -6065,15 +6159,27 @@ final class AppModel: ObservableObject {
     /// End a held-turn deviation that has nothing left to turn for — the turn-out is gone and
     /// no fresh line solves from here.
     ///
-    /// This must return the lifecycle to idle, not merely drop the armed turn.
+    /// The controller **says so**: the pilot is holding a clearance to continue on course and
+    /// expect a turn, so withdrawing it silently leaves them flying toward a turn that will
+    /// never be called. Then the lifecycle returns to idle, not merely the armed turn dropped.
     /// `.deviationApproved` counts as `isCommittedDeviation`, so the per-tick rollback in
     /// `updateWeatherConflict` deliberately leaves it alone; a context left in that state with
     /// no armed turn is a dead end — no turn can fire, and no later conflict can prompt afresh
     /// — for the rest of the flight.
+    ///
+    /// `weatherHandled` is deliberately **left set**. It marks the weather ahead as already
+    /// worked, and the pilot just worked it — they asked for a deviation and were approved.
+    /// Clearing it here re-arms `maybeAutoIssueAdvisoryNearTurn` against the very conflict the
+    /// deviation was for, so the controller re-opens with "…say intentions" seconds after
+    /// cancelling the clearance for it. The per-tick rollback in `recomputeWeatherHazards`
+    /// clears the flag once the route genuinely reads clear, so a later, fresh conflict still
+    /// prompts on its own; until then the banner (state is idle again) is the way back in.
     private func endHeldDeviationWithNothingAhead() {
+        applyDeviationResult(
+            deviationEngine.cancelHeldDeviation(cs: callsignNow(), context: weatherDeviation,
+                                                facility: weatherFacility),
+            controllerInitiated: true)
         weatherDeviation.reset()
-        weatherHandled = false
-        mockWeatherAdvisoryIssued = false
     }
 
     // MARK: - Weather deviation — drifted off the line being flown
@@ -6369,9 +6475,13 @@ final class AppModel: ObservableObject {
             // The held beginning turn is pinned to a fixed turn-out the jump may have put
             // behind the aircraft — recompute from the current position, re-hold at a fresh
             // turn-out still ahead, or vector onto the reroute now rather than firing the
-            // stale entry heading late (which could turn into/through the weather). Nothing
-            // ahead any more ends the lifecycle, so it can't sit approved-but-unarmed.
-            replanHeldDeviation(from: pos)
+            // stale entry heading late (which could turn into/through the weather). A jumped
+            // fix is not trusted to *cancel* the deviation, though: an accepted clearance is
+            // never withdrawn off a reading the hysteresis wouldn't believe a clear route
+            // from. It stands until a continuous tick can decide, so the pilot never comes
+            // back from the background to find their approved deviation forgotten — and
+            // re-advised from scratch as if they had never asked for it.
+            replanHeldDeviation(from: pos, trustedFix: false)
         default:
             break
         }
@@ -6397,9 +6507,73 @@ final class AppModel: ObservableObject {
         // A re-planned line gets the same gradual return to course as a drawn one.
         fresh = deviationWithGentleRejoin(fresh, cap: weatherRejoinCap(),
                                           limitAlong: .greatestFiniteMagnitude)
+        // …and the result is checked against the **filed route**, because nothing above has
+        // been. The detector's "end the line where it first re-crosses the route" guarantee
+        // only ever applies to the polyline it was handed, and here that polyline is the
+        // committed reroute plus the route beyond it — so a fresh line is guaranteed to end on
+        // the *old mint line*, which this one is about to erase. The splice above is what
+        // carries it down to the flight path, and it is conditional (the end has to land within
+        // a few miles of the committed tail, with enough of that tail left to be worth adding)
+        // — so when it doesn't apply, the re-planned line ends in mid-air, which is exactly the
+        // "recalculated route that doesn't end on the flight path" seen on the map.
+        //
+        // Rather than bend the geometry by hand, re-solve against the plain filed route ahead:
+        // that puts the detector's own truncation/snapping guarantee back on the flight path.
+        // The composite solve still stands if the plain one finds nothing (weather that only
+        // sits on the reroute, not on the filed course), and the miss is logged either way.
+        if !deviationEndsOnFlightPath(fresh.deviationPath, from: pos) {
+            if var direct = detectConflictAlong(route: upcomingRouteCoordinates(from: pos)),
+               deviationEndsOnFlightPath(direct.deviationPath, from: pos) {
+                direct = deviationWithGentleRejoin(direct, cap: weatherRejoinCap(),
+                                                   limitAlong: .greatestFiniteMagnitude)
+                fresh = direct
+                diagnostics.log(.app, "Weather deviation: the re-planned line ended off the flight path — re-solved against the filed route so it rejoins it.")
+            } else {
+                diagnostics.log(.app, "Weather deviation: the re-planned line ends off the flight path and no line against the filed route solves from here.")
+            }
+        }
         activeWeatherConflict = fresh
         lastConflictSeenAt = Date()
         return true
+    }
+
+    /// How far (NM) a deviation's rejoin may sit from the filed route and still count as
+    /// ending on it. Wide enough to absorb the planar/great-circle rounding the deviation
+    /// geometry works in, narrow enough that a line ending in mid-air is caught.
+    private let deviationRejoinOnRouteToleranceNM: Double = 3
+
+    /// Whether a drawn deviation actually ends **on the flight path** — the property that makes
+    /// it a deviation rather than a diversion, and the one thing no single step in the re-plan
+    /// chain checks end-to-end.
+    private func deviationEndsOnFlightPath(_ path: [CLLocationCoordinate2D],
+                                           from pos: CLLocationCoordinate2D) -> Bool {
+        guard path.count >= 2, let end = path.last, end.isValid else { return true }
+        let route = ([pos] + upcomingRouteCoordinates(from: pos)).filter { $0.isValid }
+        guard route.count >= 2, let off = distanceToPolylineNM(end, route) else { return true }
+        return off <= deviationRejoinOnRouteToleranceNM
+    }
+
+    /// Shortest distance (NM) from a point to a polyline, measured to the nearest **segment**
+    /// rather than the nearest vertex — a rejoin that lands mid-segment between two fixes is
+    /// on the route, and measuring to the fixes alone would call it tens of miles off.
+    /// Local-plane approximation, like the rest of the deviation geometry.
+    private func distanceToPolylineNM(_ p: CLLocationCoordinate2D,
+                                      _ line: [CLLocationCoordinate2D]) -> Double? {
+        guard line.count >= 2 else { return nil }
+        let latScale = 60.0
+        let lonScale = 60.0 * cos(p.latitude * .pi / 180)
+        let px = p.longitude * lonScale, py = p.latitude * latScale
+        var best = Double.greatestFiniteMagnitude
+        for i in 0..<(line.count - 1) {
+            let a = line[i], b = line[i + 1]
+            let ax = a.longitude * lonScale, ay = a.latitude * latScale
+            let bx = b.longitude * lonScale, by = b.latitude * latScale
+            let dx = bx - ax, dy = by - ay
+            let lenSq = dx * dx + dy * dy
+            let t = lenSq <= 0 ? 0 : max(0, min(1, ((px - ax) * dx + (py - ay) * dy) / lenSq))
+            best = min(best, hypot(px - (ax + t * dx), py - (ay + t * dy)))
+        }
+        return best.isFinite ? best : nil
     }
 
     /// When a re-vector's fresh line rejoins the committed deviation the aircraft is already

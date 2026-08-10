@@ -659,10 +659,32 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      (`replanHeldDeviation`): re-held at a fresh turn-out still ahead (with the revised
      distance announced, since the pilot was given the old one), vectored onto the reroute
      now when the aircraft is already at/past it, or — when nothing solves from here — the
-     lifecycle is **ended**. That last case matters: `.deviationApproved` counts as
-     `isCommittedDeviation`, so the per-tick rollback in `updateWeatherConflict` deliberately
-     skips it, and a context left approved-but-unarmed is a dead end for the rest of the
-     flight — no turn can fire, and no later conflict can prompt afresh.
+     clearance is **cancelled** (*"weather deviation cancelled, resume own navigation, advise
+     if you need to deviate"*, `cancelHeldDeviation`) and the lifecycle ended. Both halves of
+     that last case matter. It has to be **said**: the pilot is holding a clearance to continue
+     on course and expect a turn, so withdrawing it in silence leaves them flying toward a turn
+     that will never be called. And it has to return the lifecycle to idle: `.deviationApproved`
+     counts as `isCommittedDeviation`, so the per-tick rollback in `updateWeatherConflict`
+     deliberately skips it, and a context left approved-but-unarmed is a dead end for the rest
+     of the flight — no turn can fire, and no later conflict can prompt afresh. What it must
+     *not* do is clear `weatherHandled`: the weather ahead has just been worked (the pilot asked
+     and was approved), and re-arming the near-turn auto-advisory against that same conflict is
+     what had the controller re-open with *"…say intentions"* seconds after cancelling the
+     clearance for it. The flag clears on its own once the route genuinely reads clear; until
+     then the banner is the way back in.
+   - **An accepted deviation is never cancelled off an untrustworthy fix.** The same re-plan
+     runs on the first fix after a background gap (`resyncWeatherDeviation`), and there the
+     radar sample is stale, the aircraft has jumped, and nothing may re-solve from the new
+     position — which is not evidence that the deviation should be torn up. It is the very
+     reading `resolveConflictWithHysteresis` refuses to believe a clear route from. So the
+     resync passes `trustedFix: false`: a re-plan that finds nothing leaves the approved
+     deviation and its held turn exactly as they stand, and the next continuous tick decides.
+     Otherwise the pilot came back from the background to an accepted "pressed vectors" route
+     silently forgotten and re-advised from scratch, with the response card gone. For the same
+     reason the discontinuity tick **restarts** the confirm-clear window rather than merely
+     surviving it — the window is wall-clock, so one left running from before the gap has
+     already expired, and the tick *after* the guard would otherwise drop the conflict on its
+     first empty sample, tearing down an issued-but-unanswered advisory one tick late.
    - **Turn distances are rounded once, to fives.** Weather is described in tens (a cell's
      distance is never that precise), but a turn the pilot is about to fly is rounded to the
      nearest 5 NM by `deviationTurnOutAhead` and spoken as given. Rounding again to tens in
@@ -710,6 +732,45 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      bearing is assigned, exactly as before. Only the **spoken** heading is converted —
      the armed turn geometry (`deviationStartHeading`, `pendingRejoinHeading`, the leg
      bearings) stays in true degrees so it keeps matching the drawn line.
+   - **Heading units are settled per state snapshot, not per value.** Infinite Flight reports
+     heading and track in radians on some versions and in degrees on others, and a single
+     reading cannot tell the two apart: `4` is both a heading of 004° and one of 4 rad (229°).
+     Guessing per value — "small magnitudes are radians" — therefore mangled *every* heading
+     within ~6° of north on a build reporting degrees, and the damage did not stop at the
+     compass rose: both inputs to the wind triangle are angles, so a nose read as 229° instead
+     of 004° invents a wind that never existed and pushes it straight into the crab on every
+     weather vector. So `IFConnectStateReader` reads magnetic heading, true heading and track
+     together and decides for the three at once: they come out of the same API in the same
+     convention, so **any one of them too large to be radians makes all three degrees**.
+   - **The sim's own wind is read, and preferred.** Infinite Flight exposes
+     `environment/wind_velocity` (m/s) and `environment/wind_direction_true` (radians), so the
+     wind no longer *has* to be inferred. Both are mapped (`windVelocity` / `windDirectionTrue`)
+     and normalised to knots and degrees true — the direction joining the snapshot's
+     radians-vs-degrees vote, since it is an angle from the same API in the same convention, and
+     the steady wind matched so it can never resolve onto `wind_gust_velocity` beside it.
+     Read directly the wind is exact, so it needs neither the smoothing (which exists only to
+     absorb the noise of differencing two ~450 kt vectors) nor the near-wings-level sampling
+     guard — and that second point is the real gain: the triangle has to stand down through a
+     turn, which is precisely when the *next* leg's crab is computed off it. Older versions
+     don't expose the states; there the triangle carries on exactly as before.
+   - **The reported direction is the "from" direction — pinned against the sim's own PFD.** A
+     state called `wind_direction_true` can name either end of the vector, and the two are
+     exactly 180° apart, so this was settled by observation rather than by the name: with the
+     state reading **5.5069 rad = 315.5° true**, Infinite Flight's own panel showed **301°** —
+     the same direction stepped into the magnetic frame by ~14.5° of local variation, not the
+     ~135° a "blows toward" reading would have given. It is therefore used as read.
+     Because that is one observation of one build, it is not left unguarded: whenever the
+     triangle independently solves a wind of at least 10 kt, the two directions are compared,
+     and a disagreement past 90° is treated as "this isn't the convention we think it is" — the
+     inferred wind, whose convention is fixed by the arithmetic that produced it, is used
+     instead and the mismatch logged. Weather Diagnostics shows which source is in use, both
+     winds, and the signed difference between them.
+   - **The correction is visible.** Neither the solved wind nor the variation was surfaced
+     anywhere, so a vector that came out pointing somewhere unexpected could only be argued
+     about. Weather Diagnostics now shows the solved wind (`270° / 85 kt`), the variation being
+     applied, and the last weather vector as `true 042° → assigned 038°` — the leg's own course
+     next to the heading actually spoken, so the crab and the magnetic step can be read off and
+     checked against what Infinite Flight itself is showing.
    - **Never the same call twice — "did I say this, and was it acknowledged?"** A long
      parallel run past a multi-cell system carries several offset vertices on nearly the same
      bearing, so consecutive turns can round to the *same heading* and the radio ends up
@@ -772,6 +833,22 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      whatever the line now ends on, so *"rejoin course direct …"* names the fix actually being
      flown to. Applied to every drawn deviation (`computeDeviations`) and to a re-planned one
      (`recomputeConflictFrom`) alike.
+   - **A re-planned line is checked against the filed route, because nothing else checks it.**
+     "Every deviation ends on the flight path" is enforced *inside the detector*, and only
+     against the polyline it was handed. On a first solve that polyline is the filed route, so
+     the line lands on it. On a **re-plan** the polyline is the committed reroute plus the route
+     beyond it (`revectorRouteAhead`) — so the fresh line is only guaranteed to end on the *old
+     mint line*, which freezing the new one then erases. `deviationExtendedToFlightPath` exists
+     to splice the rest of the old line back on so the new one still reaches the route, but it
+     is conditional (the end has to land within ~5 NM of the committed tail, with at least a
+     mile of that tail left to add), and nothing re-examined the finished line. That is how a
+     recalculated deviation could be drawn ending in mid-air, well short of the magenta line.
+     So `recomputeConflictFrom` now measures the finished line's rejoin against the filed route
+     and, when it misses by more than `deviationRejoinOnRouteToleranceNM` (3 NM), **re-solves
+     against the plain filed route ahead** — putting the detector's own truncation/snapping
+     guarantee back on the flight path rather than bending the geometry by hand. The composite
+     solve still stands when nothing solves against the filed course (weather that sits only on
+     the reroute), and either outcome is logged to Diagnostics.
    - **Auto-resume at the intercept.** If the pilot never reports clear of weather, the
      controller automatically issues *"resume own navigation"* and ends the deviation
      once the aircraft reaches within 15 NM of that intercept (measured on the final leg,

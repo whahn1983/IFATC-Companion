@@ -309,6 +309,20 @@ struct WeatherDeviationEngine {
         return Result(pilot: pilotTx, atc: [atc], context: ctx)
     }
 
+    /// The pilot holds an approved deviation whose beginning turn was still ahead, and that
+    /// turn can no longer be flown — the turn-out fell behind the aircraft and no revised
+    /// line solves from here. Cancel the clearance out loud: the pilot was told to continue
+    /// on course and expect a turn, so dropping it silently leaves them flying toward a turn
+    /// that will never be called. Controller-initiated — no pilot line.
+    func cancelHeldDeviation(cs: Callsign, context: WeatherDeviationContext,
+                             facility: ATCFacility) -> Result {
+        var ctx = context
+        let tx = phraseology.deviationCancelled(cs: cs, facility: facility)
+        ctx.state = .resumedOwnNavigation
+        ctx.lastATCWeatherCall = tx.displayText
+        return Result(pilot: nil, atc: [tx], context: ctx)
+    }
+
     /// The aircraft reached the rejoin end of the deviation without the pilot reporting
     /// clear of weather. The controller automatically resumes own navigation and ends
     /// the deviation — no pilot call, since the pilot did not initiate it.

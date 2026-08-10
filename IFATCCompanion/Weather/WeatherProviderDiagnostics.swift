@@ -20,10 +20,82 @@ struct WeatherProviderDiagnostics {
     var radarLastBytes: Int = 0
     var radarSessionBytes: Int = 0
 
+    /// The inputs that turn a mint-line leg (a **true** course) into the heading spoken to
+    /// the pilot: the wind solved from the aircraft's own wind triangle, the local magnetic
+    /// variation read from the sim's two headings, and the crab those produce for the leg
+    /// currently assigned. None of it was visible anywhere before, so a vector that came out
+    /// pointing the wrong way could only be argued about — these rows make the correction
+    /// checkable against what Infinite Flight itself is showing.
+    var solvedWindFromDegrees: Double?
+    var solvedWindKnots: Double?
+    /// The wind Infinite Flight itself reports (`environment/wind_direction_true` /
+    /// `environment/wind_velocity`), when the version exposes them — the preferred source for
+    /// the crab. Both winds stay on screen with the signed difference between them
+    /// (`reportedWindDeltaText`): the reported direction is used as the meteorological "from",
+    /// and that row is the standing check on it. It should sit near 0°; near 180° would mean a
+    /// build reporting the direction the wind blows *toward*, and the cross-check in
+    /// `AppModel.trustReportedWind` will already have fallen back to the solved wind.
+    var reportedWindDirectionTrue: Double?
+    var reportedWindKnots: Double?
+    /// Which of the two the assigned headings are actually being crabbed for.
+    var windSourceIsSimReported = false
+    var magneticVariationEast: Double?
+    /// The true course of the leg last assigned, and the magnetic heading actually spoken.
+    var lastAssignedTrueCourse: Double?
+    var lastAssignedHeading: Int?
+
     static let empty = WeatherProviderDiagnostics()
 
     /// Human-readable coverage yes/no for the panel.
     var coverageText: String { radarCoverageAvailable ? "Yes" : "No" }
+
+    /// "270° / 85 kt" — the solved wind, or nil until the triangle has a usable sample.
+    var solvedWindText: String? {
+        guard let from = solvedWindFromDegrees, let kt = solvedWindKnots else { return nil }
+        return String(format: "%03.0f° / %.0f kt", from, kt)
+    }
+
+    /// "221° / 14 kt" — the wind the sim reports, or nil when it doesn't expose it.
+    var reportedWindText: String? {
+        guard let dir = reportedWindDirectionTrue, let kt = reportedWindKnots else { return nil }
+        return String(format: "%03.0f° / %.0f kt", dir, kt)
+    }
+
+    /// Which wind the assigned headings are crabbed for — never left to inference.
+    var windSourceText: String {
+        windSourceIsSimReported ? "sim-reported" : "solved (wind triangle)"
+    }
+
+    /// How far the sim's reported direction sits from the wind the triangle solved, as a
+    /// signed 0–180° difference. Near **0°** the sim reports the direction the wind blows
+    /// *from* (the convention the app uses); near **180°** it reports the direction it blows
+    /// *toward*. Anything in between means one of the two is wrong. Nil unless both are known.
+    var reportedWindDeltaText: String? {
+        guard let reported = reportedWindDirectionTrue, let solved = solvedWindFromDegrees else { return nil }
+        var diff = (reported - solved).truncatingRemainder(dividingBy: 360)
+        if diff > 180 { diff -= 360 }
+        if diff < -180 { diff += 360 }
+        let reading: String
+        switch abs(diff) {
+        case ..<45: reading = "sim reports “from”"
+        case 135...: reading = "sim reports “toward”"
+        default: reading = "inconsistent"
+        }
+        return String(format: "%.0f° — %@", diff, reading)
+    }
+
+    /// "6.2°E" / "3.1°W" — the variation the magnetic conversion is using.
+    var magneticVariationText: String? {
+        guard let v = magneticVariationEast else { return nil }
+        return String(format: "%.1f°%@", abs(v), v >= 0 ? "E" : "W")
+    }
+
+    /// "true 042° → assigned 038°" for the last weather vector, so the crab plus variation
+    /// applied to it can be read off directly.
+    var assignedHeadingText: String? {
+        guard let course = lastAssignedTrueCourse, let assigned = lastAssignedHeading else { return nil }
+        return String(format: "true %03.0f° → assigned %03d°", course, assigned)
+    }
 
     /// "1.8 MB (last 1.8 MB)"-style summary of composite data usage, or nil when
     /// nothing has been downloaded (NOAA/NASA/mock, or no composite fetched yet).

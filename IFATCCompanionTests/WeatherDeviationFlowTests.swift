@@ -570,6 +570,89 @@ final class WeatherDeviationFlowTests: XCTestCase {
         XCTAssertNotNil(model.activeWeatherConflict, "the conflict is held through the discontinuity")
     }
 
+    /// Regression (reported): the pilot had an **accepted** deviation with its turn still
+    /// held ahead — "continue present heading, expect the turn in X miles" — backgrounded the
+    /// app, and came back to the controller asking "…say intentions" all over again, as if
+    /// nothing had been agreed, with no response card on screen.
+    ///
+    /// The cause was the resync re-plan believing a jumped fix: the radar sample is stale
+    /// after the gap, nothing re-solved from the new position, and the approved deviation was
+    /// cancelled on the spot — silently, and clearing the "already worked" flag, so the
+    /// near-turn auto-advisory re-opened the same weather seconds later. An accepted clearance
+    /// must survive a fix the hysteresis itself refuses to read a clear route from.
+    func testBackgroundResyncKeepsAcceptedDeviationAndDoesNotReAdvise() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)
+        guard let pos0 = model.aircraftState.coordinate else { return XCTFail("no cruise position") }
+
+        // A narrow cell ~60 NM ahead: the reroute is drawn ahead, and the pilot's request is
+        // approved with the beginning turn held ("expect the turn in …").
+        let course = Geo.bearing(from: model.mock.route.depCoord, to: model.mock.route.destCoord)
+        let center = Geo.destination(from: pos0, bearingDegrees: course, distanceNM: 60)
+        model.radarOverlay.mockCells = [RadarCell(polygon: box(around: center, half: 0.15), intensity: .moderate)]
+        await model.refreshDeviations()
+        model.requestVectorAroundWeather()
+        XCTAssertEqual(model.weatherDeviationState, .deviationApproved)
+        XCTAssertNotNil(model.weatherDeviation.deviationStartLatitude, "the entry turn is held ahead")
+        XCTAssertTrue(atcContains(model, "expect the turn"), "the approval holds the turn")
+        guard let v0 = model.activeWeatherConflict?.deviationPath.first else {
+            return XCTFail("expected a drawn-ahead turn-out")
+        }
+
+        func advisories() -> Int {
+            model.transcript.filter { $0.sender == .atc && $0.displayText.contains("Say intentions") }.count
+        }
+        let advisoriesBefore = advisories()
+
+        // Return from the background 10 NM short of the held turn-out — inside the 15 NM
+        // near-turn auto-advisory range — with the radar sample gone stale while away, so
+        // nothing re-solves from the new position.
+        model.radarOverlay.mockCells = []
+        model.expireWeatherClearWindowForTesting()
+        let shortOfEntry = Geo.destination(from: v0, bearingDegrees: course + 180, distanceNM: 10)
+        model.markTelemetryResyncPendingForTesting()
+        var jumped = model.mock.state(for: .cruise)
+        jumped.latitude = shortOfEntry.latitude
+        jumped.longitude = shortOfEntry.longitude
+        model.ingestStateForTesting(jumped)
+
+        XCTAssertEqual(model.weatherDeviationState, .deviationApproved,
+                       "an accepted deviation is not cancelled off a jumped fix")
+        XCTAssertNotNil(model.weatherDeviation.deviationStartLatitude,
+                        "the held turn stays armed — the pilot is still flying toward it")
+        XCTAssertTrue(model.weatherDeviationCardVisible,
+                      "the deviation card is still up on return from the background")
+
+        // …and the following continuous tick doesn't re-open the advisory either.
+        model.ingestStateForTesting(jumped)
+        XCTAssertEqual(advisories(), advisoriesBefore,
+                       "the controller must not re-ask intentions for weather the pilot already deviated for")
+        XCTAssertEqual(model.weatherDeviationState, .deviationApproved)
+    }
+
+    /// When a held turn genuinely can no longer be flown — the turn-out is behind the
+    /// aircraft and no revised line solves from where it is — the clearance is cancelled
+    /// **out loud**. The pilot was told to continue on course and expect a turn, so dropping
+    /// it in silence leaves them flying toward a turn that never comes.
+    func testCancelledHeldDeviationIsAnnouncedAndEndsTheLifecycle() {
+        let phr = WeatherDeviationPhraseology(engine: PhraseologyEngine(digitStyle: .individual, mode: .faa))
+        let eng = WeatherDeviationEngine(phraseology: phr)
+        let cs = phr.engine.callsign(airline: "United", flightNumber: "598", fallback: "")
+        var ctx = WeatherDeviationContext()
+        ctx.state = .deviationApproved
+
+        let result = eng.cancelHeldDeviation(cs: cs, context: ctx, facility: .center)
+
+        XCTAssertNil(result.pilot, "the controller initiates the cancellation")
+        guard let atc = result.atc.first else { return XCTFail("expected a cancellation call") }
+        XCTAssertTrue(atc.displayText.contains("weather deviation cancelled"), atc.displayText)
+        XCTAssertTrue(atc.displayText.contains("resume own navigation"), atc.displayText)
+        XCTAssertTrue(atc.readback?.displayText.contains("Resume own navigation") ?? false,
+                      atc.readback?.displayText ?? "")
+        XCTAssertEqual(result.context.state, .resumedOwnNavigation,
+                       "the deviation is no longer committed")
+    }
+
     /// Flying the mint line all the way to its end (the flight-plan intercept) without
     /// reporting clear of weather auto-resumes own navigation and ends the deviation.
     func testAutoResumesOwnNavigationNearRouteIntercept() async {
@@ -1910,6 +1993,37 @@ final class WeatherDeviationFlowTests: XCTestCase {
         XCTAssertNotNil(model.weatherDeviation.pendingRejoinHeading,
                         "a fresh re-vector re-arms the rejoin turn")
         XCTAssertTrue(atcContains(model, "fly heading"), "the re-vector assigns a fresh heading")
+    }
+
+    /// A **re-planned** deviation must still end on the filed route. The detector's "end the
+    /// line where it first re-crosses the route" guarantee only applies to the polyline it is
+    /// handed, and a re-plan hands it the committed reroute plus the route beyond — so a fresh
+    /// line is guaranteed to end on the *old mint line*, which the new one then erases. The
+    /// splice that carries it down to the flight path is conditional, so nothing checked the
+    /// finished line against the route. This is the invariant, asserted end-to-end.
+    func testReplannedDeviationStillEndsOnTheFlightPath() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)
+
+        model.requestVectorAroundWeather()
+        XCTAssertEqual(model.weatherDeviationState, .vectoringAroundWeather)
+        guard let firstPath = model.weatherDeviation.committedDeviationPath, firstPath.count >= 2 else {
+            return XCTFail("expected a committed mint line after the first vector")
+        }
+        XCTAssertTrue(model.deviationEndsOnFlightPathForTesting(firstPath.map { $0.coordinate }),
+                      "the first deviation rejoins the filed route")
+
+        // New weather straddles the committed line ahead — the recalculate case.
+        let mid = firstPath[firstPath.count / 2].coordinate
+        model.radarOverlay.mockCells = [RadarCell(polygon: box(around: mid, half: 0.3), intensity: .heavy)]
+        model.recomputeWeatherHazards()
+        model.requestVectorAroundWeather()
+
+        guard let replanned = model.weatherDeviationLine, replanned.count >= 2 else {
+            return XCTFail("expected a re-planned mint line")
+        }
+        XCTAssertTrue(model.deviationEndsOnFlightPathForTesting(replanned),
+                      "a recalculated deviation must rejoin the filed route, not end in mid-air")
     }
 
     /// While already flying a deviation, tapping Vectors when the reroute ahead is still
