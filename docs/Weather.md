@@ -742,6 +742,22 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      weather vector. So `IFConnectStateReader` reads magnetic heading, true heading and track
      together and decides for the three at once: they come out of the same API in the same
      convention, so **any one of them too large to be radians makes all three degrees**.
+   - **The sim's own wind is read too — and reported next to the solved one, not instead of
+     it.** Infinite Flight's State Explorer exposes `environment/wind_velocity` (m/s) and
+     `environment/wind_direction_true` (radians), so the wind no longer *has* to be inferred:
+     read directly it needs no differencing of two ~450 kt vectors and it survives the regimes
+     the triangle can't solve (no track or TAS exposed, low speed, on the ground). Both are
+     mapped (`windVelocity` / `windDirectionTrue`) and normalised to knots and degrees true —
+     the direction joining the snapshot's radians-vs-degrees vote, since it is an angle from
+     the same API in the same convention. The steady wind is matched so it can never resolve
+     onto `wind_gust_velocity` sitting beside it.
+     **It is not yet used for the crab**, because the state name does not settle whether the
+     direction is the meteorological *from* or the direction the wind blows *toward*, and the
+     two are exactly 180° apart — adopting the wrong one would put every weather vector on the
+     wrong side of course. So Weather Diagnostics shows the reported wind, the solved wind, and
+     the **signed difference between them** with the verdict spelled out: near 0° the sim
+     reports "from" and the solver can read it directly; near 180° it reports "toward" and the
+     value needs reversing first. One look at a real flight settles it.
    - **The correction is visible.** Neither the solved wind nor the variation was surfaced
      anywhere, so a vector that came out pointing somewhere unexpected could only be argued
      about. Weather Diagnostics now shows the solved wind (`270° / 85 kt`), the variation being

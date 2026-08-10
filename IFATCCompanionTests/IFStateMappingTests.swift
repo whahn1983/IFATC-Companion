@@ -45,6 +45,62 @@ final class IFStateMappingTests: XCTestCase {
         XCTAssertNil(store.entry(for: .trueHeading))
     }
 
+    // MARK: - Environment wind states
+
+    /// The sim's own wind states resolve — and the steady wind is never read off the **gust**
+    /// state sitting next to it in the same group.
+    func testEnvironmentWindStatesResolveAndNeverMatchTheGust() {
+        let entries = IFManifestParser.parse("""
+        901,2,environment/turbulence_factor
+        902,2,environment/temperature
+        903,2,environment/wind_gust_velocity
+        904,2,environment/wind_velocity
+        905,2,environment/wind_direction_true
+        906,2,environment/surface_temperature
+        """)
+        let store = IFStateMappingStore()
+        store.resolve(from: entries)
+
+        XCTAssertEqual(store.entry(for: .windVelocity)?.name, "environment/wind_velocity")
+        XCTAssertEqual(store.entry(for: .windDirectionTrue)?.name, "environment/wind_direction_true")
+        XCTAssertNotEqual(store.entry(for: .windVelocity)?.name, "environment/wind_gust_velocity",
+                          "the steady wind must not resolve onto the gust state")
+    }
+
+    /// A version that exposes neither leaves both unresolved, so the reader simply reports no
+    /// sim wind and the solved wind triangle carries on as before.
+    func testWindStatesUnresolvedWhenAbsent() {
+        let entries = IFManifestParser.parse("746,3,aircraft/0/latitude")
+        let store = IFStateMappingStore()
+        store.resolve(from: entries)
+
+        XCTAssertNil(store.entry(for: .windVelocity))
+        XCTAssertNil(store.entry(for: .windDirectionTrue))
+    }
+
+    /// The reported-vs-solved delta is what settles whether the sim's `wind_direction_true`
+    /// is the meteorological "from" or the direction the wind blows "toward" — the two differ
+    /// by exactly 180°, and the state name doesn't say which.
+    func testReportedWindDeltaNamesTheConvention() {
+        var d = WeatherProviderDiagnostics.empty
+        d.solvedWindFromDegrees = 220
+        d.reportedWindKnots = 14
+
+        d.reportedWindDirectionTrue = 221
+        XCTAssertEqual(d.reportedWindDeltaText, "1° — sim reports “from”")
+
+        d.reportedWindDirectionTrue = 41
+        XCTAssertEqual(d.reportedWindDeltaText, "-179° — sim reports “toward”")
+
+        // Neither: the two disagree in a way no convention explains.
+        d.reportedWindDirectionTrue = 310
+        XCTAssertEqual(d.reportedWindDeltaText, "90° — inconsistent")
+
+        // Nothing to compare against until the triangle has solved.
+        d.solvedWindFromDegrees = nil
+        XCTAssertNil(d.reportedWindDeltaText)
+    }
+
     // MARK: - Heading units (radians vs degrees)
 
     /// Radians are converted; degrees are taken at face value. The units are settled once

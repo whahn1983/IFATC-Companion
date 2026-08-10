@@ -45,15 +45,23 @@ struct IFConnectStateReader {
         // all three are degrees. Judging each on its own turned a nose on 004° into 229°,
         // which then poisoned the wind triangle (`HeadingSolver.wind`) and every deviation
         // vector solved from it whenever heading or track sat within ~6° of north.
+        // `environment/wind_direction_true` is an angle from the same API in the same
+        // convention, so it joins the snapshot's units vote rather than guessing on its own.
         let rawHeading = await double(.heading)
         let rawTrueHeading = await double(.trueHeading)
         let rawTrack = await double(.track)
-        let anglesInDegrees = [rawHeading, rawTrueHeading, rawTrack]
+        let rawWindDirection = await double(.windDirectionTrue)
+        let anglesInDegrees = [rawHeading, rawTrueHeading, rawTrack, rawWindDirection]
             .compactMap { $0 }
             .contains { IFConnectStateReader.exceedsFullCircleInRadians($0) }
         s.heading = rawHeading.map { IFConnectStateReader.normalizeAngle($0, alreadyDegrees: anglesInDegrees) }
         s.trueHeading = rawTrueHeading.map { IFConnectStateReader.normalizeAngle($0, alreadyDegrees: anglesInDegrees) }
         s.track = rawTrack.map { IFConnectStateReader.normalizeAngle($0, alreadyDegrees: anglesInDegrees) }
+        s.reportedWindDirectionTrue = rawWindDirection.map {
+            IFConnectStateReader.normalizeAngle($0, alreadyDegrees: anglesInDegrees)
+        }
+        // The sim reports wind speed in m/s, like every other speed it exposes.
+        s.reportedWindSpeedKnots = (await double(.windVelocity)).map { $0 * IFConnectStateReader.metresPerSecondToKnots }
         s.verticalSpeed = (await double(.verticalSpeed)).map { $0 * IFConnectStateReader.metresPerSecondToFeetPerMinute }
         s.onGround = await bool(.onGround)
         s.approachModeEngaged = await bool(.approachMode)

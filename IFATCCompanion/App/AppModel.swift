@@ -5115,6 +5115,8 @@ final class AppModel: ObservableObject {
         d.lastDeviationState = weatherDeviation.state
         d.solvedWindFromDegrees = lastKnownWind?.fromDegrees
         d.solvedWindKnots = lastKnownWind?.speedKnots
+        d.reportedWindDirectionTrue = aircraftState.reportedWindDirectionTrue
+        d.reportedWindKnots = aircraftState.reportedWindSpeedKnots
         d.magneticVariationEast = lastKnownVariationEast
         d.lastAssignedTrueCourse = lastAssignedTrueCourse
         d.lastAssignedHeading = lastAssignedVectorHeading

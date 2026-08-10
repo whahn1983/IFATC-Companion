@@ -28,6 +28,15 @@ struct WeatherProviderDiagnostics {
     /// checkable against what Infinite Flight itself is showing.
     var solvedWindFromDegrees: Double?
     var solvedWindKnots: Double?
+    /// The wind Infinite Flight itself reports (`environment/wind_direction_true` /
+    /// `environment/wind_velocity`), when the version exposes them. Shown **next to** the
+    /// solved wind rather than replacing it: the state name doesn't settle whether the
+    /// direction is the meteorological "from" or the direction the wind blows "toward", and
+    /// the two differ by exactly 180°. `reportedWindDeltaText` puts that difference on screen,
+    /// so one look at a real flight settles the convention — a delta near 0° means the sim
+    /// reports "from" and the solver can read it directly; near 180° means "toward".
+    var reportedWindDirectionTrue: Double?
+    var reportedWindKnots: Double?
     var magneticVariationEast: Double?
     /// The true course of the leg last assigned, and the magnetic heading actually spoken.
     var lastAssignedTrueCourse: Double?
@@ -42,6 +51,30 @@ struct WeatherProviderDiagnostics {
     var solvedWindText: String? {
         guard let from = solvedWindFromDegrees, let kt = solvedWindKnots else { return nil }
         return String(format: "%03.0f° / %.0f kt", from, kt)
+    }
+
+    /// "221° / 14 kt" — the wind the sim reports, or nil when it doesn't expose it.
+    var reportedWindText: String? {
+        guard let dir = reportedWindDirectionTrue, let kt = reportedWindKnots else { return nil }
+        return String(format: "%03.0f° / %.0f kt", dir, kt)
+    }
+
+    /// How far the sim's reported direction sits from the wind the triangle solved, as a
+    /// signed 0–180° difference. Near **0°** the sim reports the direction the wind blows
+    /// *from* (the convention the app uses); near **180°** it reports the direction it blows
+    /// *toward*. Anything in between means one of the two is wrong. Nil unless both are known.
+    var reportedWindDeltaText: String? {
+        guard let reported = reportedWindDirectionTrue, let solved = solvedWindFromDegrees else { return nil }
+        var diff = (reported - solved).truncatingRemainder(dividingBy: 360)
+        if diff > 180 { diff -= 360 }
+        if diff < -180 { diff += 360 }
+        let reading: String
+        switch abs(diff) {
+        case ..<45: reading = "sim reports “from”"
+        case 135...: reading = "sim reports “toward”"
+        default: reading = "inconsistent"
+        }
+        return String(format: "%.0f° — %@", diff, reading)
     }
 
     /// "6.2°E" / "3.1°W" — the variation the magnetic conversion is using.

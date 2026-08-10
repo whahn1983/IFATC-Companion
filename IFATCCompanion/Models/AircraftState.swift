@@ -32,6 +32,15 @@ struct AircraftState: Equatable {
     var gForce: Double?
     var bankAngle: Double?
     var pitch: Double?
+    /// The wind at the aircraft as the **sim itself reports it** (`environment/wind_velocity`
+    /// and `environment/wind_direction_true`), normalised to knots and degrees true. Distinct
+    /// from `HeadingSolver.wind(from:)`, which *solves* the wind by inverting the wind
+    /// triangle from track/groundspeed against true heading/TAS. Nil when the version doesn't
+    /// expose the states. Whether the reported direction is the meteorological "from" or the
+    /// direction the wind blows "toward" is not settled by the state name, so this is
+    /// reported next to the solved wind rather than substituted for it.
+    var reportedWindDirectionTrue: Double?   // degrees true, as reported
+    var reportedWindSpeedKnots: Double?
     var nearestAirport: String?     // ICAO if known
     var nearestAirportDistanceNM: Double?
     var aircraftName: String?
