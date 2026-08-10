@@ -253,4 +253,61 @@ final class HeadingSolverTests: XCTestCase {
                                                      trueAirspeed: nil,
                                                      variationDegreesEast: nil), 123)
     }
+
+    // MARK: - The sim's own reported wind
+
+    /// `environment/wind_direction_true` is the direction the wind blows **from**, so it is
+    /// taken as read. Pinned against Infinite Flight's own PFD: with the state at 5.5069 rad
+    /// (315.5° true) the panel showed 301° — the same direction in the magnetic frame, ~14.5°
+    /// of local variation apart, not the ~135° a "blows toward" reading would have shown.
+    func testReportedWindIsTakenAsTheFromDirection() {
+        var s = AircraftState()
+        s.reportedWindDirectionTrue = 315.5
+        s.reportedWindSpeedKnots = 40
+        let wind = HeadingSolver.reportedWind(from: s)
+        XCTAssertEqual(wind?.fromDegrees ?? -1, 315.5, accuracy: 0.001)
+        XCTAssertEqual(wind?.speedKnots ?? -1, 40, accuracy: 0.001)
+
+        // Read as "from", a 315° wind on a course of 315 is a pure headwind — no crab at all.
+        // Read as "toward" it would be a pure tailwind, which is also no crab — so the case
+        // that separates them is a crosswind course.
+        let crab = HeadingSolver.windCorrectionDegrees(trueCourse: 45, wind: wind, trueAirspeed: 450)
+        XCTAssertEqual(crab, asin(40 * sin((315.5 - 45) * .pi / 180) / 450) * 180 / .pi, accuracy: 0.01)
+        XCTAssertLessThan(crab, 0, "a wind from 90° left of course crabs the nose left, into it")
+    }
+
+    /// Unavailable, implausible, or below the resolvable floor — the same rules the solved
+    /// wind already follows, so the two sources agree on what "no usable wind" means.
+    func testReportedWindDeclinesTheSameCasesAsTheSolvedWind() {
+        XCTAssertNil(HeadingSolver.reportedWind(from: AircraftState()),
+                     "a version that exposes neither state reports no wind")
+
+        var partial = AircraftState()
+        partial.reportedWindDirectionTrue = 200
+        XCTAssertNil(HeadingSolver.reportedWind(from: partial), "direction without speed is unusable")
+
+        var absurd = AircraftState()
+        absurd.reportedWindDirectionTrue = 200
+        absurd.reportedWindSpeedKnots = 400
+        XCTAssertNil(HeadingSolver.reportedWind(from: absurd), "a 400 kt wind is a torn read, not weather")
+
+        var light = AircraftState()
+        light.reportedWindDirectionTrue = 315.5
+        light.reportedWindSpeedKnots = 0.72     // the 0.3681 m/s in the captured state
+        XCTAssertEqual(HeadingSolver.reportedWind(from: light), HeadingSolver.Wind.calm,
+                       "below the resolvable floor is reported calm, as the triangle does")
+    }
+
+    /// The cross-check that guards the convention: the reported and solved winds should agree
+    /// closely, and a disagreement past a right angle is the signature of a build reporting the
+    /// other end of the vector.
+    func testDirectionDisagreementMeasuresTheShortWayRound() {
+        let a = HeadingSolver.Wind(fromDegrees: 350, speedKnots: 40)
+        let b = HeadingSolver.Wind(fromDegrees: 10, speedKnots: 40)
+        XCTAssertEqual(HeadingSolver.directionDisagreementDegrees(a, b), 20, accuracy: 0.001,
+                       "the difference wraps through north rather than reading 340°")
+
+        let flipped = HeadingSolver.Wind(fromDegrees: 170, speedKnots: 40)
+        XCTAssertEqual(HeadingSolver.directionDisagreementDegrees(a, flipped), 180, accuracy: 0.001)
+    }
 }

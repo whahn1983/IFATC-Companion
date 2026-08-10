@@ -441,6 +441,10 @@ final class AppModel: ObservableObject {
     /// only be argued about. Never read by the flow.
     private var lastAssignedTrueCourse: Double?
     private var lastAssignedVectorHeading: Int?
+    /// Whether `lastKnownWind` currently comes from the sim's own `environment/wind_*` states
+    /// rather than the inferred wind triangle. Reported in Weather Diagnostics so it is never
+    /// a guess which of the two a given vector was crabbed for.
+    private var windSourceIsSimReported = false
     /// The steepest turn back onto the flight plan a drawn deviation may end with. Past this the
     /// rejoin is moved to the next fix down the route (`deviationWithGentleRejoin`), lengthening
     /// the closing leg so the return to course — and the turn the controller calls for it — is
@@ -5117,6 +5121,7 @@ final class AppModel: ObservableObject {
         d.solvedWindKnots = lastKnownWind?.speedKnots
         d.reportedWindDirectionTrue = aircraftState.reportedWindDirectionTrue
         d.reportedWindKnots = aircraftState.reportedWindSpeedKnots
+        d.windSourceIsSimReported = windSourceIsSimReported
         d.magneticVariationEast = lastKnownVariationEast
         d.lastAssignedTrueCourse = lastAssignedTrueCourse
         d.lastAssignedHeading = lastAssignedVectorHeading
@@ -5927,20 +5932,64 @@ final class AppModel: ObservableObject {
 
     /// Refresh the corrections that carry a mint-line leg into the pilot's frame.
     ///
-    /// Both are read as differences between states Connect serves in separate
-    /// round-trips, so both are sampled only when the aircraft is near wings-level: a
-    /// roll smears the difference, and a stale sample beats a smeared one — variation
-    /// changes over hundreds of miles, wind over tens, neither over the seconds a turn
-    /// takes. A tick with nothing usable simply leaves the last estimate standing.
+    /// **Variation** is a difference between two headings Connect serves in separate
+    /// round-trips, so it is sampled only near wings-level: a roll smears the difference, and
+    /// a stale sample beats a smeared one — variation changes over hundreds of miles, not over
+    /// the seconds a turn takes. A tick with nothing usable leaves the last estimate standing.
+    ///
+    /// **Wind** prefers the sim's own `environment/wind_*` states over the inferred triangle.
+    /// Read directly it is exact, so it needs neither the smoothing (which exists purely to
+    /// absorb the noise of differencing two ~450 kt vectors) nor the bank guard — and that
+    /// second point matters: the triangle has to stand down through a turn, which is exactly
+    /// when the *next* leg's crab is computed off it. The reported wind is right throughout.
+    /// Older Infinite Flight versions don't expose the states; there the triangle carries on
+    /// unchanged.
     private func updateHeadingCorrections(from state: AircraftState) {
-        guard abs(state.bankAngle ?? 0) <= HeadingSolver.maxSampleBankDegrees else { return }
-        if let variation = HeadingSolver.variationDegreesEast(from: state) {
+        let nearLevel = abs(state.bankAngle ?? 0) <= HeadingSolver.maxSampleBankDegrees
+        if nearLevel, let variation = HeadingSolver.variationDegreesEast(from: state) {
             lastKnownVariationEast = variation
         }
-        if let sample = HeadingSolver.wind(from: state) {
-            lastKnownWind = HeadingSolver.blended(lastKnownWind, sample: sample)
+        let solved = nearLevel ? HeadingSolver.wind(from: state) : nil
+        if let reported = HeadingSolver.reportedWind(from: state),
+           trustReportedWind(reported, against: solved) {
+            lastKnownWind = reported
+            windSourceIsSimReported = true
+            return
+        }
+        if let solved {
+            lastKnownWind = HeadingSolver.blended(lastKnownWind, sample: solved)
+            windSourceIsSimReported = false
         }
     }
+
+    /// Whether the sim's reported wind may be steered by. It is used as the direction the wind
+    /// blows **from**, pinned against Infinite Flight's own PFD wind readout — but that is one
+    /// observation of one build, and getting it backwards would put every weather vector on the
+    /// wrong side of course. So when the triangle has independently solved a wind worth
+    /// comparing against, a disagreement past a right angle is treated as "this isn't the
+    /// convention we think it is" and the inferred wind — whose convention is fixed by the
+    /// arithmetic that produced it — is used instead.
+    ///
+    /// The comparison is only made on a wind strong enough for the triangle's own direction to
+    /// mean anything; in light air the two can differ wildly while both are effectively calm,
+    /// and disagreeing about the direction of a 3 kt wind decides nothing.
+    private func trustReportedWind(_ reported: HeadingSolver.Wind,
+                                   against solved: HeadingSolver.Wind?) -> Bool {
+        guard let solved,
+              reported.speedKnots >= windCrossCheckMinKnots,
+              solved.speedKnots >= windCrossCheckMinKnots else { return true }
+        let disagreement = HeadingSolver.directionDisagreementDegrees(reported, solved)
+        guard disagreement > windCrossCheckMaxDisagreementDegrees else { return true }
+        diagnostics.log(.app, String(format: "Wind: the sim-reported direction (%03.0f°) disagrees with the solved wind (%03.0f°) by %.0f° — using the solved wind.",
+                                     reported.fromDegrees, solved.fromDegrees, disagreement))
+        return false
+    }
+
+    /// Wind speed (knots) below which the reported/solved cross-check is not worth making —
+    /// the direction of a wind this light barely moves the crab either way.
+    private let windCrossCheckMinKnots: Double = 10
+    /// How far the two winds' directions may disagree before the reported one is distrusted.
+    private let windCrossCheckMaxDisagreementDegrees: Double = 90
 
     /// The heading to assign so the aircraft **tracks** `trueCourse` rather than merely
     /// pointing along it: crabbed into the live wind, then converted out of the true

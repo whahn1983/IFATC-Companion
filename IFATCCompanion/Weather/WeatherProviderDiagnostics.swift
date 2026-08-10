@@ -29,14 +29,16 @@ struct WeatherProviderDiagnostics {
     var solvedWindFromDegrees: Double?
     var solvedWindKnots: Double?
     /// The wind Infinite Flight itself reports (`environment/wind_direction_true` /
-    /// `environment/wind_velocity`), when the version exposes them. Shown **next to** the
-    /// solved wind rather than replacing it: the state name doesn't settle whether the
-    /// direction is the meteorological "from" or the direction the wind blows "toward", and
-    /// the two differ by exactly 180°. `reportedWindDeltaText` puts that difference on screen,
-    /// so one look at a real flight settles the convention — a delta near 0° means the sim
-    /// reports "from" and the solver can read it directly; near 180° means "toward".
+    /// `environment/wind_velocity`), when the version exposes them — the preferred source for
+    /// the crab. Both winds stay on screen with the signed difference between them
+    /// (`reportedWindDeltaText`): the reported direction is used as the meteorological "from",
+    /// and that row is the standing check on it. It should sit near 0°; near 180° would mean a
+    /// build reporting the direction the wind blows *toward*, and the cross-check in
+    /// `AppModel.trustReportedWind` will already have fallen back to the solved wind.
     var reportedWindDirectionTrue: Double?
     var reportedWindKnots: Double?
+    /// Which of the two the assigned headings are actually being crabbed for.
+    var windSourceIsSimReported = false
     var magneticVariationEast: Double?
     /// The true course of the leg last assigned, and the magnetic heading actually spoken.
     var lastAssignedTrueCourse: Double?
@@ -57,6 +59,11 @@ struct WeatherProviderDiagnostics {
     var reportedWindText: String? {
         guard let dir = reportedWindDirectionTrue, let kt = reportedWindKnots else { return nil }
         return String(format: "%03.0f° / %.0f kt", dir, kt)
+    }
+
+    /// Which wind the assigned headings are crabbed for — never left to inference.
+    var windSourceText: String {
+        windSourceIsSimReported ? "sim-reported" : "solved (wind triangle)"
     }
 
     /// How far the sim's reported direction sits from the wind the triangle solved, as a
