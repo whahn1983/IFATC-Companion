@@ -281,6 +281,32 @@ final class ATISPhraseologyTests: XCTestCase {
         XCTAssertTrue(s.contains("read back all hold short instructions"), s)
     }
 
+    func testExpandsExpectSpellings() {
+        // Every published shortening of "expect" reads as the word, including the
+        // E-less "XPECT".
+        XCTAssertEqual(spoken("XPECT"), "expect")
+        XCTAssertEqual(spoken("XPCT"), "expect")
+        XCTAssertEqual(spoken("EXPCT"), "expect")
+        XCTAssertEqual(spoken("EXP"), "expect")
+        let s = ATISPhraseology.spokenText("XPECT ILS RWY 27L APCH.").lowercased()
+        XCTAssertTrue(s.contains("expect i l s runway two seven left approach"), s)
+    }
+
+    func testStandaloneVicinityAbbreviationIsSpoken() {
+        // A lone "VC" is the vicinity qualifier of a plain-language advisory, not the
+        // weather-group prefix, and must not be voiced letter by letter.
+        let withOf = ATISPhraseology.spokenText("PILOTS USE CTN FOR BIRD ACTIVITY VC OF ARPT.").lowercased()
+        XCTAssertTrue(withOf.contains("bird activity vicinity of airport"), withOf)
+        XCTAssertFalse(withOf.contains("v c"), withOf)
+        // The "OF"-less form published by some feeds reads the same way.
+        let withoutOf = ATISPhraseology.spokenText("BIRD ACTIVITY VC ARPT.").lowercased()
+        XCTAssertTrue(withoutOf.contains("bird activity vicinity of airport"), withoutOf)
+        // The weather-group prefix and the longer VC… abbreviations are untouched.
+        XCTAssertEqual(spoken("VCSH"), "showers in the vicinity")
+        XCTAssertEqual(spoken("VCTRS"), "vectors")
+        XCTAssertEqual(spoken("VCNTY"), "vicinity")
+    }
+
     func testExpandsSurfaceSurveillanceAcronyms() {
         // Bare acronyms must be spelled on the air, not voiced as an invented word.
         XCTAssertEqual(spoken("ATC"), "a t c")
