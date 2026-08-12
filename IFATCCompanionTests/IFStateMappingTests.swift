@@ -101,6 +101,36 @@ final class IFStateMappingTests: XCTestCase {
         XCTAssertNil(d.reportedWindDeltaText)
     }
 
+    /// Both wind rows print both frames. Every wind the app holds is true, while the sim's own
+    /// panel shows the wind magnetic — so the true figure alone made a correct wind look wrong
+    /// by exactly the local variation, which is the whole thing these rows exist to be checked
+    /// against. Captured: 346° true beside an instrument reading 352°, 6.2°W apart.
+    func testWindRowsCarryBothFramesSoTheyCanBeReadAgainstTheSimsPanel() {
+        var d = WeatherProviderDiagnostics.empty
+        d.reportedWindDirectionTrue = 346
+        d.reportedWindKnots = 9
+        d.solvedWindFromDegrees = 346
+        d.solvedWindKnots = 9
+        d.magneticVariationEast = -6.2      // 6.2°W
+        XCTAssertEqual(d.reportedWindText, "346°T · 352°M / 9 kt")
+        XCTAssertEqual(d.solvedWindText, "346°T · 352°M / 9 kt")
+
+        // East variation steps the other way — the same 14.5° that pinned the convention
+        // against the sim's PFD in the first place.
+        d.magneticVariationEast = 14.5
+        XCTAssertEqual(d.reportedWindText, "346°T · 332°M / 9 kt")
+
+        // The magnetic figure wraps through north rather than printing 360°.
+        d.magneticVariationEast = -6.2
+        d.reportedWindDirectionTrue = 356
+        XCTAssertEqual(d.reportedWindText, "356°T · 002°M / 9 kt")
+
+        // Until the variation is solved there is nothing to step by — the true figure alone,
+        // labelled so it can't be mistaken for the instrument's frame.
+        d.magneticVariationEast = nil
+        XCTAssertEqual(d.reportedWindText, "356°T / 9 kt")
+    }
+
     // MARK: - Heading units (radians vs degrees)
 
     /// Radians are converted; degrees are taken at face value. The units are settled once

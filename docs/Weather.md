@@ -793,6 +793,15 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      applied, and the last weather vector as `true 042° → assigned 038°` — the leg's own course
      next to the heading actually spoken, so the crab and the magnetic step can be read off and
      checked against what Infinite Flight itself is showing.
+   - **Both wind rows print both frames** (`346°T · 352°M / 9 kt`). Every wind the app holds is
+     true — `wind_direction_true` by name, and a triangle built from true heading and track —
+     while the sim's own PFD shows the wind *magnetic*, like the heading bug beside it. The rows
+     exist precisely to be held up against that panel, so printing the true figure alone made a
+     perfectly correct wind look wrong by exactly the local variation and sent us chasing it:
+     346°T beside an instrument reading 352°M, 6.2°W apart, is the same wind written twice. The
+     magnetic step is the one the assigned heading already uses (`magnetic = true −
+     variationEast`); before any variation is solved there is nothing to step by, so the true
+     figure stands alone and is labelled `°T` either way.
    - **Never the same call twice — "did I say this, and was it acknowledged?"** A long
      parallel run past a multi-cell system carries several offset vertices on nearly the same
      bearing, so consecutive turns can round to the *same heading* and the radio ends up
