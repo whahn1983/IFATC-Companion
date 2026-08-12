@@ -2745,6 +2745,25 @@ final class AppModel: ObservableObject {
                 plan.departureLongitude = nil
             }
         }
+        // The departure *runway's* own coordinate travels the same way, and matters more than
+        // the field's: it is the origin the initial departure heading is measured from, so a
+        // stale one points the takeoff vector off a runway the aircraft isn't on. Kept through
+        // a momentarily degraded read (a route-string-only parse carries no coordinates at
+        // all), but dropped the moment the plan names a different departure runway or field —
+        // there is no such thing as "roughly the right runway" at a hub with five of them.
+        if plan.departure == live.departure {
+            if let lat = live.departureRunwayLatitude, let lon = live.departureRunwayLongitude {
+                plan.departureRunwayLatitude = lat
+                plan.departureRunwayLongitude = lon
+            } else if (!live.departureRunway.isEmpty && plan.departureRunway != live.departureRunway)
+                        || plan.departure != before.0 {
+                plan.departureRunwayLatitude = nil
+                plan.departureRunwayLongitude = nil
+            }
+        } else {
+            plan.departureRunwayLatitude = nil
+            plan.departureRunwayLongitude = nil
+        }
         if plan.destination == live.destination {
             if let lat = live.destinationLatitude, let lon = live.destinationLongitude {
                 plan.destinationLatitude = lat
@@ -3054,16 +3073,29 @@ final class AppModel: ObservableObject {
         let approachName = approachProc?.displayName
             ?? (flightPlan.approach.isEmpty ? "the ILS" : flightPlan.approach)
 
-        // Initial departure heading: the bearing the aircraft must fly off the
-        // runway to reach the first fix of the departure. The origin is the live
-        // on-ground position (the aircraft lined up / holding on the runway) when
-        // telemetry is available, otherwise the departure field reference. For a fix
-        // a few miles out the two agree to within a degree, but on the runway the
-        // live position is the most faithful to "from the aircraft's position on the
-        // runway".
+        // Initial departure heading: the bearing the aircraft must fly off the runway to reach
+        // the first fix of the departure. Measured, in order of preference, from
+        //
+        //  1. **the departure runway itself** — the `DPT RW26L` marker SimBrief files and
+        //     Infinite Flight locates at the runway end. This is the point the departure leg is
+        //     actually flown from, and it is what the aircraft's own FMS measures the leg from,
+        //     so it is the number the pilot can check the clearance against.
+        //  2. the live on-ground position, when the plan names no located departure runway.
+        //  3. the departure field reference, with no telemetry at all.
+        //
+        // The three used to be assumed interchangeable — "for a fix a few miles out the two
+        // agree to within a degree". They don't at a hub. Holding short of 26L at KATL puts the
+        // aircraft over a mile from both the field reference and the far threshold, and a mile
+        // of offset against a departure fix eight miles out is ~10° of bearing — enough for the
+        // assigned vector to disagree with the FMS by more than the whole magnetic-variation
+        // correction, and for the "within 10° of runway heading" test to flip and say "fly
+        // runway heading" when it shouldn't (or fail to when it should).
         let depCoord = resolvedDepartureCoordinate()
         let onRunwayPosition = (aircraftState.onGround == true) ? aircraftState.coordinate : nil
-        let headingOrigin = onRunwayPosition ?? depCoord
+        // A plan can carry a runway marker with a null island coordinate; that must not
+        // outrank real telemetry, so it has to be valid to win.
+        let departureRunwayCoord = flightPlan.departureRunwayCoordinate.flatMap { $0.isValid ? $0 : nil }
+        let headingOrigin = departureRunwayCoord ?? onRunwayPosition ?? depCoord
         let firstWaypoint = flightPlan.waypoints.first
         // The "resume own navigation, direct …" fix in the departure climb: once
         // airborne, the next fix *ahead* of the aircraft (not the runway-end fix the

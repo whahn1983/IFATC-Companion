@@ -243,8 +243,12 @@ enum IFFlightPlanParser {
         // Recover a cruise altitude from any flight-level / altitude token.
         plan.cruiseAltitude = middle.compactMap(altitudeFromToken).max() ?? 0
 
-        // Recover the departure/arrival runways from runway tokens before filtering.
-        captureRunways(from: middle.map { Waypoint(name: $0) }, into: &plan)
+        // Recover the departure/arrival runways from runway tokens before filtering. A route
+        // *string* carries no coordinates, so there is no departure-runway position to collect
+        // here — only the ident.
+        var noCoordinate: (lat: Double, lon: Double)?
+        captureRunways(from: middle.map { Waypoint(name: $0) }, into: &plan,
+                       departureCoordinate: &noCoordinate)
 
         var seen = Set<String>()
         plan.waypoints = middle.compactMap { token -> Waypoint? in
@@ -277,6 +281,7 @@ enum IFFlightPlanParser {
         var fixes: [Waypoint] = []
         var maxAltitude = 0
         var seen = Set<String>()
+        var departureRunwayCoord: (lat: Double, lon: Double)?
 
         // Walk the (possibly nested) items in order. Procedure groups carry their
         // fixes as `children`; their name is the published procedure identifier.
@@ -302,7 +307,8 @@ enum IFFlightPlanParser {
                 // drives the takeoff heading.
                 let isSID = sidWasEmpty && plan.sid == name && plan.sidFixNames.isEmpty
                 for (i, child) in children.enumerated() {
-                    appendFix(child, to: &fixes, maxAltitude: &maxAltitude, seen: &seen)
+                    appendFix(child, to: &fixes, maxAltitude: &maxAltitude, seen: &seen,
+                              departureRunway: &departureRunwayCoord)
                     // Record the SID's published fixes in order (skipping runway /
                     // display markers) so the initial departure heading can target the
                     // SID's own first fix rather than an intermediate buffer fix filed
@@ -330,7 +336,8 @@ enum IFFlightPlanParser {
                     }
                 }
             } else {
-                appendFix(item, to: &fixes, maxAltitude: &maxAltitude, seen: &seen)
+                appendFix(item, to: &fixes, maxAltitude: &maxAltitude, seen: &seen,
+                          departureRunway: &departureRunwayCoord)
             }
         }
 
@@ -354,8 +361,11 @@ enum IFFlightPlanParser {
 
         // Recover the departure/arrival runways from any runway tokens (e.g. a
         // `RW22R` token after the field, or `22R` ahead of the destination) before
-        // they are dropped from the enroute fixes.
-        captureRunways(from: fixes, into: &plan)
+        // they are dropped from the enroute fixes — the departure one's coordinate
+        // included, unless a `DPT RW…` marker already supplied it.
+        captureRunways(from: fixes, into: &plan, departureCoordinate: &departureRunwayCoord)
+        plan.departureRunwayLatitude = departureRunwayCoord?.lat
+        plan.departureRunwayLongitude = departureRunwayCoord?.lon
 
         // Drop runway tokens / IF display markers so neither is shown as a fix.
         plan.waypoints = fixes.filter { !isRunwayToken($0.name) && !isPseudoWaypoint($0.name) }
@@ -425,8 +435,12 @@ enum IFFlightPlanParser {
     }
 
     /// Append a single fix (with coordinate + planned altitude when present).
+    ///
+    /// `departureRunway` collects the one thing worth keeping from a fix that is otherwise
+    /// dropped: the position of the departure marker. See `isDepartureRunwayMarker`.
     private static func appendFix(_ item: Any, to fixes: inout [Waypoint],
-                                  maxAltitude: inout Int, seen: inout Set<String>) {
+                                  maxAltitude: inout Int, seen: inout Set<String>,
+                                  departureRunway: inout (lat: Double, lon: Double)?) {
         // A bare string entry (a `waypoints` name list) has no coordinate.
         if let name = item as? String {
             let n = name.trimmingCharacters(in: .whitespaces).uppercased()
@@ -450,8 +464,14 @@ enum IFFlightPlanParser {
         if let alt, alt > maxAltitude, alt < 60000 { maxAltitude = alt }
 
         // The marker itself (DPT/TOC/TOD/DEST) contributed its altitude above but is
-        // never shown as a fix.
-        guard !isPseudoWaypoint(name) else { return }
+        // never shown as a fix. The departure marker's *position* is worth keeping even so:
+        // it sits at the runway end, which is where the departure leg is actually flown from.
+        guard !isPseudoWaypoint(name) else {
+            if departureRunway == nil, let coord, isDepartureRunwayMarker(name) {
+                departureRunway = coord
+            }
+            return
+        }
 
         // De-dupe by name, but prefer the entry that carries a coordinate.
         if seen.contains(name) {
@@ -581,6 +601,20 @@ enum IFFlightPlanParser {
         return false
     }
 
+    /// A compound **departure** marker pairing a departure word with a runway as one
+    /// identifier — `DPT RW26L`, `DEP RW09`. SimBrief files these and Infinite Flight serves
+    /// them located at the runway end. `isPseudoWaypoint` already recognises them, on purpose:
+    /// left in the route the runway end becomes the first "waypoint" and, sitting straight
+    /// down the runway from the aircraft, collapses the takeoff clearance to "fly runway
+    /// heading". This narrower test picks out the departure ones specifically, so their
+    /// position can be kept as the origin of the departure leg while the fix itself stays out
+    /// of the route. Arrival markers (`ARR RW09`) are deliberately excluded.
+    static func isDepartureRunwayMarker(_ token: String) -> Bool {
+        let parts = token.uppercased().split(separator: " ")
+        guard parts.count == 2, isRunwayToken(String(parts[1])) else { return false }
+        return ["DPT", "DEP", "DEPARTURE"].contains(String(parts[0]))
+    }
+
     /// A runway token such as `RW14`, `14`, `30L`, `09C` — these appear at the
     /// ends of a route (the departure/arrival runway) and must not be treated as
     /// enroute waypoints.
@@ -607,18 +641,29 @@ enum IFFlightPlanParser {
     /// list. The departure runway sits near the start of the route (after the
     /// field), the arrival runway near the end. With a single token, its position
     /// decides which end it belongs to (first half → departure, else arrival).
-    private static func captureRunways(from fixes: [Waypoint], into plan: inout FlightPlan) {
+    /// `departureCoordinate` also collects the departure token's position when it carries one
+    /// and a `DPT RW…` marker hasn't already supplied it — a bare `RW26L` entry is located at
+    /// the runway just the same, and it is about to be dropped from the fix list.
+    private static func captureRunways(from fixes: [Waypoint], into plan: inout FlightPlan,
+                                       departureCoordinate: inout (lat: Double, lon: Double)?) {
         let indices = fixes.indices.filter { isRunwayToken(fixes[$0].name) }
         guard let first = indices.first, let last = indices.last else { return }
+        func noteDeparture(_ index: Int) {
+            if plan.departureRunway.isEmpty {
+                plan.departureRunway = runwayIdent(from: fixes[index].name) ?? ""
+            }
+            if departureCoordinate == nil, let c = fixes[index].coordinate {
+                departureCoordinate = (c.latitude, c.longitude)
+            }
+        }
         if first == last {
-            let ident = runwayIdent(from: fixes[first].name) ?? ""
             if first <= fixes.count / 2 {
-                if plan.departureRunway.isEmpty { plan.departureRunway = ident }
+                noteDeparture(first)
             } else if plan.arrivalRunway.isEmpty {
-                plan.arrivalRunway = ident
+                plan.arrivalRunway = runwayIdent(from: fixes[first].name) ?? ""
             }
         } else {
-            if plan.departureRunway.isEmpty { plan.departureRunway = runwayIdent(from: fixes[first].name) ?? "" }
+            noteDeparture(first)
             if plan.arrivalRunway.isEmpty { plan.arrivalRunway = runwayIdent(from: fixes[last].name) ?? "" }
         }
     }

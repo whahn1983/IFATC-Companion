@@ -70,6 +70,14 @@ struct FlightPlan: Equatable, Codable {
     /// Coordinate Infinite Flight reports for the destination field (see above).
     var destinationLatitude: Double?
     var destinationLongitude: Double?
+    /// Coordinate of the **departure runway** itself, recovered from the plan's departure
+    /// marker (`DPT RW26L`, which SimBrief and Infinite Flight place at the runway end) or
+    /// from a bare `RW26L` token near the start of the route. The marker is not a navigable
+    /// fix and is never shown as a waypoint — only its position is kept, because it is the
+    /// point the departure leg is actually flown *from*, and the initial departure heading is
+    /// measured from it. Nil when the plan names no departure runway with a coordinate.
+    var departureRunwayLatitude: Double?
+    var departureRunwayLongitude: Double?
 
     /// Source of truth flag — when true, fields were entered manually and should
     /// not be overwritten by Connect parsing.
@@ -85,6 +93,16 @@ struct FlightPlan: Equatable, Codable {
     /// sits on the actual field rather than the first enroute fix.
     var departureCoordinate: CLLocationCoordinate2D? {
         guard let lat = departureLatitude, let lon = departureLongitude else { return nil }
+        return CLLocationCoordinate2D(latitude: lat, longitude: lon)
+    }
+
+    /// The departure runway's own coordinate, when the plan carries one. This is where the
+    /// departure leg starts, so it is the truest origin for the initial departure heading —
+    /// truer than the field reference (which at a hub like KATL can sit miles from the
+    /// threshold you are actually rolling off) and truer than the aircraft's live position
+    /// (which is wherever it happens to be holding short).
+    var departureRunwayCoordinate: CLLocationCoordinate2D? {
+        guard let lat = departureRunwayLatitude, let lon = departureRunwayLongitude else { return nil }
         return CLLocationCoordinate2D(latitude: lat, longitude: lon)
     }
 
