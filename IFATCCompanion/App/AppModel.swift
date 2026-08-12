@@ -433,7 +433,14 @@ final class AppModel: ObservableObject {
     /// exactly when the samples are least trustworthy and the correction most needed, so
     /// falling back to "no correction" mid-turn would defeat the point. See `HeadingSolver`.
     private var lastKnownVariationEast: Double?
+    /// The wind the crab is actually computed for — the sim's own reading wherever it is
+    /// exposed and trusted, the triangle's estimate otherwise.
     private var lastKnownWind: HeadingSolver.Wind?
+    /// The wind triangle's own running estimate, kept apart from `lastKnownWind` so it stays
+    /// an independent second opinion: it is never contaminated by a sim-reported sample, which
+    /// is what lets it cross-check one (and lets Weather Diagnostics print the two side by side
+    /// and mean it).
+    private var lastSolvedWind: HeadingSolver.Wind?
     /// The last weather vector's leg course (**true**, straight off the drawn line) and the
     /// magnetic heading actually spoken for it. Kept only so Weather Diagnostics can show what
     /// the wind/variation correction did to a vector — neither the solved wind nor the
@@ -2569,8 +2576,8 @@ final class AppModel: ObservableObject {
         if s.approachModeEngaged == true { return true }
         guard lineupDetector.isOnFinalApproach(state: s, runway: runway) else { return false }
         // Lined up with the runway and not still turning onto final (wings roughly
-        // level). Bank is reported in degrees; if a build reports radians the check
-        // simply never trips and the line-up test alone governs.
+        // level). Bank reaches here in signed degrees whichever units the sim reports it
+        // in — `IFConnectStateReader` settles that with the rest of the snapshot's angles.
         if let bank = s.bankAngle, abs(bank) > 6 { return false }
         return true
     }
@@ -2737,6 +2744,25 @@ final class AppModel: ObservableObject {
                 plan.departureLatitude = nil
                 plan.departureLongitude = nil
             }
+        }
+        // The departure *runway's* own coordinate travels the same way, and matters more than
+        // the field's: it is the origin the initial departure heading is measured from, so a
+        // stale one points the takeoff vector off a runway the aircraft isn't on. Kept through
+        // a momentarily degraded read (a route-string-only parse carries no coordinates at
+        // all), but dropped the moment the plan names a different departure runway or field —
+        // there is no such thing as "roughly the right runway" at a hub with five of them.
+        if plan.departure == live.departure {
+            if let lat = live.departureRunwayLatitude, let lon = live.departureRunwayLongitude {
+                plan.departureRunwayLatitude = lat
+                plan.departureRunwayLongitude = lon
+            } else if (!live.departureRunway.isEmpty && plan.departureRunway != live.departureRunway)
+                        || plan.departure != before.0 {
+                plan.departureRunwayLatitude = nil
+                plan.departureRunwayLongitude = nil
+            }
+        } else {
+            plan.departureRunwayLatitude = nil
+            plan.departureRunwayLongitude = nil
         }
         if plan.destination == live.destination {
             if let lat = live.destinationLatitude, let lon = live.destinationLongitude {
@@ -3047,16 +3073,29 @@ final class AppModel: ObservableObject {
         let approachName = approachProc?.displayName
             ?? (flightPlan.approach.isEmpty ? "the ILS" : flightPlan.approach)
 
-        // Initial departure heading: the bearing the aircraft must fly off the
-        // runway to reach the first fix of the departure. The origin is the live
-        // on-ground position (the aircraft lined up / holding on the runway) when
-        // telemetry is available, otherwise the departure field reference. For a fix
-        // a few miles out the two agree to within a degree, but on the runway the
-        // live position is the most faithful to "from the aircraft's position on the
-        // runway".
+        // Initial departure heading: the bearing the aircraft must fly off the runway to reach
+        // the first fix of the departure. Measured, in order of preference, from
+        //
+        //  1. **the departure runway itself** — the `DPT RW26L` marker SimBrief files and
+        //     Infinite Flight locates at the runway end. This is the point the departure leg is
+        //     actually flown from, and it is what the aircraft's own FMS measures the leg from,
+        //     so it is the number the pilot can check the clearance against.
+        //  2. the live on-ground position, when the plan names no located departure runway.
+        //  3. the departure field reference, with no telemetry at all.
+        //
+        // The three used to be assumed interchangeable — "for a fix a few miles out the two
+        // agree to within a degree". They don't at a hub. Holding short of 26L at KATL puts the
+        // aircraft over a mile from both the field reference and the far threshold, and a mile
+        // of offset against a departure fix eight miles out is ~10° of bearing — enough for the
+        // assigned vector to disagree with the FMS by more than the whole magnetic-variation
+        // correction, and for the "within 10° of runway heading" test to flip and say "fly
+        // runway heading" when it shouldn't (or fail to when it should).
         let depCoord = resolvedDepartureCoordinate()
         let onRunwayPosition = (aircraftState.onGround == true) ? aircraftState.coordinate : nil
-        let headingOrigin = onRunwayPosition ?? depCoord
+        // A plan can carry a runway marker with a null island coordinate; that must not
+        // outrank real telemetry, so it has to be valid to win.
+        let departureRunwayCoord = flightPlan.departureRunwayCoordinate.flatMap { $0.isValid ? $0 : nil }
+        let headingOrigin = departureRunwayCoord ?? onRunwayPosition ?? depCoord
         let firstWaypoint = flightPlan.waypoints.first
         // The "resume own navigation, direct …" fix in the departure climb: once
         // airborne, the next fix *ahead* of the aircraft (not the runway-end fix the
@@ -5117,8 +5156,8 @@ final class AppModel: ObservableObject {
         }
         d.selectedRejoinFix = conflict?.rejoinFix?.name ?? weatherDeviation.rejoinFix
         d.lastDeviationState = weatherDeviation.state
-        d.solvedWindFromDegrees = lastKnownWind?.fromDegrees
-        d.solvedWindKnots = lastKnownWind?.speedKnots
+        d.solvedWindFromDegrees = lastSolvedWind?.fromDegrees
+        d.solvedWindKnots = lastSolvedWind?.speedKnots
         d.reportedWindDirectionTrue = aircraftState.reportedWindDirectionTrue
         d.reportedWindKnots = aircraftState.reportedWindSpeedKnots
         d.windSourceIsSimReported = windSourceIsSimReported
@@ -5950,14 +5989,24 @@ final class AppModel: ObservableObject {
             lastKnownVariationEast = variation
         }
         let solved = nearLevel ? HeadingSolver.wind(from: state) : nil
+        // The triangle's estimate is kept on its own, never blended with a reported sample,
+        // so it stays an *independent* second opinion: it is what the cross-check below is
+        // checked against and what Weather Diagnostics prints beside the sim's wind. Folding
+        // the reported wind into it would make that comparison compare a number with itself.
+        if let solved {
+            lastSolvedWind = HeadingSolver.blended(lastSolvedWind, sample: solved)
+        }
+        // Cross-checked against the *fresh* sample, not the running estimate: with no sample
+        // this tick the triangle has stood down (a turn, too slow, no TAS) and has no opinion
+        // to overrule the sim with.
         if let reported = HeadingSolver.reportedWind(from: state),
            trustReportedWind(reported, against: solved) {
             lastKnownWind = reported
             windSourceIsSimReported = true
             return
         }
-        if let solved {
-            lastKnownWind = HeadingSolver.blended(lastKnownWind, sample: solved)
+        if solved != nil, let triangle = lastSolvedWind {
+            lastKnownWind = triangle
             windSourceIsSimReported = false
         }
     }
@@ -5966,9 +6015,15 @@ final class AppModel: ObservableObject {
     /// blows **from**, pinned against Infinite Flight's own PFD wind readout — but that is one
     /// observation of one build, and getting it backwards would put every weather vector on the
     /// wrong side of course. So when the triangle has independently solved a wind worth
-    /// comparing against, a disagreement past a right angle is treated as "this isn't the
-    /// convention we think it is" and the inferred wind — whose convention is fixed by the
-    /// arithmetic that produced it — is used instead.
+    /// comparing against, a disagreement past a right angle **at the same speed** is treated as
+    /// "this isn't the convention we think it is" and the inferred wind — whose convention is
+    /// fixed by the arithmetic that produced it — is used instead.
+    ///
+    /// The speed clause is what keeps the check from backfiring. Direction alone hands the
+    /// decision to whichever source disagrees loudest, and the triangle is by far the louder:
+    /// it differences two ~450 kt vectors read in separate round-trips, so one smeared sample
+    /// invents a wind of its own and shouts down an exact reading. (Seen in the field: 12 kt
+    /// reported, 84 kt solved, 118° apart — and every weather vector crabbed for the gale.)
     ///
     /// The comparison is only made on a wind strong enough for the triangle's own direction to
     /// mean anything; in light air the two can differ wildly while both are effectively calm,
@@ -5980,7 +6035,17 @@ final class AppModel: ObservableObject {
               solved.speedKnots >= windCrossCheckMinKnots else { return true }
         let disagreement = HeadingSolver.directionDisagreementDegrees(reported, solved)
         guard disagreement > windCrossCheckMaxDisagreementDegrees else { return true }
-        diagnostics.log(.app, String(format: "Wind: the sim-reported direction (%03.0f°) disagrees with the solved wind (%03.0f°) by %.0f° — using the solved wind.",
+        // A convention mismatch reverses a wind without changing its strength, so it is only
+        // that if the two agree about the speed. When they don't, the disagreement is the
+        // triangle's own — a smeared sample differencing two ~450 kt vectors — and the sim's
+        // exact reading must not be thrown out on its word.
+        guard HeadingSolver.speedsCorroborate(reported, solved) else {
+            diagnostics.log(.app, String(format: "Wind: the solved wind (%03.0f° / %.0f kt) disagrees with the sim's own (%03.0f° / %.0f kt) about the speed as well as the direction — the triangle is unreliable here, keeping the sim-reported wind.",
+                                         solved.fromDegrees, solved.speedKnots,
+                                         reported.fromDegrees, reported.speedKnots))
+            return true
+        }
+        diagnostics.log(.app, String(format: "Wind: the sim-reported direction (%03.0f°) disagrees with the solved wind (%03.0f°) by %.0f° at the same speed — using the solved wind.",
                                      reported.fromDegrees, solved.fromDegrees, disagreement))
         return false
     }

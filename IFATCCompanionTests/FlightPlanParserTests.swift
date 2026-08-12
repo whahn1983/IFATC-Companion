@@ -542,6 +542,18 @@ final class FlightPlanParserTests: XCTestCase {
         XCTAssertFalse(IFFlightPlanParser.isPseudoWaypoint("DPT ABCDE"))
     }
 
+    /// The narrower test that picks the *departure* markers out of the pseudo-waypoints, so
+    /// their position can be kept as the origin of the departure leg. Arrival markers carry a
+    /// runway position too and must not be mistaken for it.
+    func testDepartureRunwayMarkerDetection() {
+        for marker in ["DPT RW15L", "DEP RW09", "DEPARTURE RW04L", "dpt rw26l"] {
+            XCTAssertTrue(IFFlightPlanParser.isDepartureRunwayMarker(marker), "\(marker) is a departure marker")
+        }
+        for other in ["ARR RW09", "ARRIVAL RW22R", "DEST RW09", "DPT", "RW15L", "DPT ABCDE", "MERIT"] {
+            XCTAssertFalse(IFFlightPlanParser.isDepartureRunwayMarker(other), "\(other) is not one")
+        }
+    }
+
     /// Infinite Flight's detailed JSON carries a "DPT RW__" marker at the departure end
     /// of the runway as a single identifier (unlike the route string, where the space
     /// splits it apart). It is a non-navigational display marker, not a fix. Left in, it
@@ -593,6 +605,88 @@ final class FlightPlanParserTests: XCTestCase {
         let hdg = Geo.bearing(from: threshold, to: fix!.coordinate!)
         XCTAssertGreaterThan(PhraseologyEngine.angularDiff(hdg, 150), 10,
                              "bearing to TTAPS should be a real heading off runway 150, got \(hdg)")
+    }
+
+    /// The `DPT RW…` marker stays out of the route — but its *position* is kept, because it
+    /// sits at the runway end and that is where the departure leg is actually flown from. The
+    /// initial departure heading is measured from there rather than from the field reference
+    /// or from wherever the aircraft happens to be holding short: at a hub those are a mile or
+    /// more apart, which against a fix a few miles out is worth ~10° of bearing — more than
+    /// the whole magnetic-variation correction the same heading gets.
+    func testDepartureRunwayMarkerKeepsItsPositionAsTheDepartureOrigin() {
+        let json = """
+        {
+          "flightPlanItems": [
+            { "name": "KIAH", "type": 0, "children": [],
+              "location": { "Latitude": 29.9854, "Longitude": -95.3412 } },
+            { "name": "DPT RW15L", "type": 0, "children": [],
+              "location": { "Latitude": 29.9588, "Longitude": -95.3401 } },
+            { "name": "TTAPS", "type": 0, "children": [],
+              "location": { "Latitude": 29.9200, "Longitude": -95.2600 } },
+            { "name": "KMIA", "type": 0, "children": [],
+              "location": { "Latitude": 25.7938, "Longitude": -80.2870 } }
+          ]
+        }
+        """
+        guard let plan = IFFlightPlanParser.parse(json) else {
+            return XCTFail("expected a parsed plan")
+        }
+        // Still not a fix.
+        XCTAssertFalse(plan.waypoints.contains { $0.name.contains("RW15L") })
+        // But its position is on the plan.
+        guard let origin = plan.departureRunwayCoordinate else {
+            return XCTFail("expected the departure runway's coordinate")
+        }
+        XCTAssertEqual(origin.latitude, 29.9588, accuracy: 0.0001)
+        XCTAssertEqual(origin.longitude, -95.3401, accuracy: 0.0001)
+
+        // And it is a materially different origin from the field reference — the whole reason
+        // for keeping it. Measured to the same fix, the two bearings disagree by more than the
+        // 10° that decides "fly runway heading" vs a vector.
+        let field = CLLocationCoordinate2D(latitude: 29.9854, longitude: -95.3412)
+        let fix = plan.initialDepartureFix(sidFixes: [], origin: origin)
+        XCTAssertEqual(fix?.name, "TTAPS")
+        let fromRunway = Geo.bearing(from: origin, to: fix!.coordinate!)
+        let fromField = Geo.bearing(from: field, to: fix!.coordinate!)
+        XCTAssertGreaterThan(PhraseologyEngine.angularDiff(fromRunway, fromField), 10,
+                             "the origin has to matter, or there is nothing to fix here")
+    }
+
+    /// No compound marker, but the plan still names the runway as a bare located token near
+    /// the start of the route — the same position, so it serves as the same origin. The
+    /// arrival runway token at the far end must not be mistaken for it.
+    func testBareDepartureRunwayTokenAlsoSuppliesTheOrigin() {
+        let json = """
+        {
+          "flightPlanItems": [
+            { "name": "KIAH", "type": 0, "children": [],
+              "location": { "Latitude": 29.9854, "Longitude": -95.3412 } },
+            { "name": "RW15L", "type": 0, "children": [],
+              "location": { "Latitude": 29.9588, "Longitude": -95.3401 } },
+            { "name": "TTAPS", "type": 0, "children": [],
+              "location": { "Latitude": 29.8884, "Longitude": -95.2389 } },
+            { "name": "RW09R", "type": 0, "children": [],
+              "location": { "Latitude": 25.7959, "Longitude": -80.2903 } },
+            { "name": "KMIA", "type": 0, "children": [],
+              "location": { "Latitude": 25.7938, "Longitude": -80.2870 } }
+          ]
+        }
+        """
+        guard let plan = IFFlightPlanParser.parse(json) else {
+            return XCTFail("expected a parsed plan")
+        }
+        XCTAssertEqual(plan.departureRunway, "15L")
+        XCTAssertEqual(plan.arrivalRunway, "09R")
+        XCTAssertEqual(plan.departureRunwayCoordinate?.latitude ?? 0, 29.9588, accuracy: 0.0001,
+                       "the departure token's position, not the arrival token's")
+    }
+
+    /// A route *string* carries no coordinates at all, so there is no origin to recover from
+    /// one — the ident still is, and the departure heading falls back to live telemetry.
+    func testRouteStringYieldsNoDepartureRunwayCoordinate() {
+        let plan = IFFlightPlanParser.parse("KEWR RW22R MERIT NEION 01R KBOS")
+        XCTAssertEqual(plan?.departureRunway, "22R")
+        XCTAssertNil(plan?.departureRunwayCoordinate)
     }
 
     /// A pilot may file an intermediate "buffer" fix between the runway and the SID so

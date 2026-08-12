@@ -732,7 +732,7 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      bearing is assigned, exactly as before. Only the **spoken** heading is converted —
      the armed turn geometry (`deviationStartHeading`, `pendingRejoinHeading`, the leg
      bearings) stays in true degrees so it keeps matching the drawn line.
-   - **Heading units are settled per state snapshot, not per value.** Infinite Flight reports
+   - **Heading units are settled per *connection*, not per value or per snapshot.** Infinite Flight reports
      heading and track in radians on some versions and in degrees on others, and a single
      reading cannot tell the two apart: `4` is both a heading of 004° and one of 4 rad (229°).
      Guessing per value — "small magnitudes are radians" — therefore mangled *every* heading
@@ -740,8 +740,27 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      compass rose: both inputs to the wind triangle are angles, so a nose read as 229° instead
      of 004° invents a wind that never existed and pushes it straight into the crab on every
      weather vector. So `IFConnectStateReader` reads magnetic heading, true heading and track
-     together and decides for the three at once: they come out of the same API in the same
-     convention, so **any one of them too large to be radians makes all three degrees**.
+     together and decides for them at once: they come out of the same API in the same
+     convention, so **any one of them too large to be radians makes them all degrees**. And the
+     proof is *latched for the connection*, because deciding it per snapshot left the same hole
+     open one size smaller: a snapshot whose angles are **all** near north — nose 004°, track
+     004°, a northerly wind — witnesses nothing, since each reading is a valid radian value on
+     its own. A build reporting degrees was then read as radians for as long as it stayed
+     pointed north, which is precisely what a north-facing runway makes an aircraft do and hold:
+     the nose reads 229°, and the one-degree gap between the true and magnetic headings becomes
+     tens of degrees of "variation" that goes straight into the departure vector in the takeoff
+     clearance. Units don't change mid-connection and no reading can ever prove *radians*
+     (every radian value is a valid degree value), so the latch is one-way: one taxi turn, one
+     heading off north, one non-northerly wind — any single witness since connect — settles the
+     whole session, and a later witness-less snapshot leaves it standing. A fresh manifest means
+     a fresh connection, and possibly a different IF build, so it starts over.
+     **Bank and pitch follow the same decision** — they are angles out of the same API, and
+     read raw they were the quietest bug of the lot: no reading of bank is ever large enough to
+     look wrong, so on a build reporting radians a 25° bank simply arrived as `0.44` and every
+     degree-scaled test of it passed. The wings-level guard below (5°) therefore never tripped
+     once, and the wind triangle was solved *through every turn* — see the next bullet. They
+     wrap to −180…180 rather than onto the compass rose, so a 4° left bank stays −4° instead of
+     becoming 356° and reading as knife-edge.
    - **The sim's own wind is read, and preferred.** Infinite Flight exposes
      `environment/wind_velocity` (m/s) and `environment/wind_direction_true` (radians), so the
      wind no longer *has* to be inferred. Both are mapped (`windVelocity` / `windDirectionTrue`)
@@ -765,12 +784,36 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      inferred wind, whose convention is fixed by the arithmetic that produced it, is used
      instead and the mismatch logged. Weather Diagnostics shows which source is in use, both
      winds, and the signed difference between them.
+   - **…but the speeds have to corroborate before that fallback fires.** The direction check
+     alone hands the decision to whichever source disagrees *loudest*, which is exactly the
+     wrong way round: the triangle differences two ~450 kt vectors read in separate
+     round-trips, so a smeared sample can invent a wind of its own, while the sim's reading has
+     nothing to smear. Caught in the field — the sim reporting 12 kt from 331°, the triangle
+     solving 84 kt from 089°, 118° apart, and the app dutifully crabbing every weather vector
+     for the 84 kt gale. So the fallback now also asks whether the two winds *could be the same
+     wind*: naming the other end of a vector reverses it without changing its strength, so only
+     matching speeds (within 5 kt or 1.5×) make a direction disagreement a convention problem.
+     Speeds that disagree too mean the triangle is the broken one, and the sim's exact reading
+     stands. Relatedly, the triangle's estimate is now kept apart from the wind actually in use
+     rather than blended into it — a reported sample folded into the "solved" wind makes the
+     Diagnostics comparison compare a number with itself, and reads `0° — sim reports “from”`
+     however wrong the triangle is.
    - **The correction is visible.** Neither the solved wind nor the variation was surfaced
      anywhere, so a vector that came out pointing somewhere unexpected could only be argued
-     about. Weather Diagnostics now shows the solved wind (`270° / 85 kt`), the variation being
+     about. Weather Diagnostics now shows the triangle's solved wind (`270° / 85 kt`) beside the
+     sim's own reading and which of the two is in use, the variation being
      applied, and the last weather vector as `true 042° → assigned 038°` — the leg's own course
      next to the heading actually spoken, so the crab and the magnetic step can be read off and
      checked against what Infinite Flight itself is showing.
+   - **Both wind rows print both frames** (`346°T · 352°M / 9 kt`). Every wind the app holds is
+     true — `wind_direction_true` by name, and a triangle built from true heading and track —
+     while the sim's own PFD shows the wind *magnetic*, like the heading bug beside it. The rows
+     exist precisely to be held up against that panel, so printing the true figure alone made a
+     perfectly correct wind look wrong by exactly the local variation and sent us chasing it:
+     346°T beside an instrument reading 352°M, 6.2°W apart, is the same wind written twice. The
+     magnetic step is the one the assigned heading already uses (`magnetic = true −
+     variationEast`); before any variation is solved there is nothing to step by, so the true
+     figure stands alone and is labelled `°T` either way.
    - **Never the same call twice — "did I say this, and was it acknowledged?"** A long
      parallel run past a multi-cell system carries several offset vertices on nearly the same
      bearing, so consecutive turns can round to the *same heading* and the radio ends up

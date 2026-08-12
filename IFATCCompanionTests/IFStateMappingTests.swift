@@ -101,6 +101,36 @@ final class IFStateMappingTests: XCTestCase {
         XCTAssertNil(d.reportedWindDeltaText)
     }
 
+    /// Both wind rows print both frames. Every wind the app holds is true, while the sim's own
+    /// panel shows the wind magnetic — so the true figure alone made a correct wind look wrong
+    /// by exactly the local variation, which is the whole thing these rows exist to be checked
+    /// against. Captured: 346° true beside an instrument reading 352°, 6.2°W apart.
+    func testWindRowsCarryBothFramesSoTheyCanBeReadAgainstTheSimsPanel() {
+        var d = WeatherProviderDiagnostics.empty
+        d.reportedWindDirectionTrue = 346
+        d.reportedWindKnots = 9
+        d.solvedWindFromDegrees = 346
+        d.solvedWindKnots = 9
+        d.magneticVariationEast = -6.2      // 6.2°W
+        XCTAssertEqual(d.reportedWindText, "346°T · 352°M / 9 kt")
+        XCTAssertEqual(d.solvedWindText, "346°T · 352°M / 9 kt")
+
+        // East variation steps the other way — the same 14.5° that pinned the convention
+        // against the sim's PFD in the first place.
+        d.magneticVariationEast = 14.5
+        XCTAssertEqual(d.reportedWindText, "346°T · 332°M / 9 kt")
+
+        // The magnetic figure wraps through north rather than printing 360°.
+        d.magneticVariationEast = -6.2
+        d.reportedWindDirectionTrue = 356
+        XCTAssertEqual(d.reportedWindText, "356°T · 002°M / 9 kt")
+
+        // Until the variation is solved there is nothing to step by — the true figure alone,
+        // labelled so it can't be mistaken for the instrument's frame.
+        d.magneticVariationEast = nil
+        XCTAssertEqual(d.reportedWindText, "356°T / 9 kt")
+    }
+
     // MARK: - Heading units (radians vs degrees)
 
     /// Radians are converted; degrees are taken at face value. The units are settled once
@@ -132,5 +162,84 @@ final class IFStateMappingTests: XCTestCase {
         XCTAssertFalse(radiansInDegrees)
         XCTAssertEqual(IFConnectStateReader.normalizeAngle(0.07, alreadyDegrees: radiansInDegrees),
                        4.011, accuracy: 0.01)
+    }
+
+    /// Regression: a snapshot whose angles are *all* within ~6° of north witnesses nothing —
+    /// nose 004°, track 004°, a northerly wind are each a valid radian reading — so a build
+    /// reporting degrees was read as radians for as long as it stayed pointed north, which is
+    /// exactly what a north-facing runway makes an aircraft do. The proof is latched for the
+    /// connection instead: any one witness since connect settles the session, and a later
+    /// witness-less snapshot leaves it standing rather than reverting.
+    func testTheDegreesProofIsLatchedForTheConnection() {
+        let store = IFStateMappingStore()
+        XCTAssertFalse(store.anglesProvedDegrees, "nothing witnessed yet — assume radians")
+
+        // A snapshot with no witness changes nothing.
+        store.noteAnglesProvedDegrees([4.0, 4.0, 3.5].contains { IFConnectStateReader.exceedsFullCircleInRadians($0) })
+        XCTAssertFalse(store.anglesProvedDegrees)
+
+        // One heading off north proves it — 47 cannot be radians.
+        store.noteAnglesProvedDegrees([47.0, 44.0, 350.0].contains { IFConnectStateReader.exceedsFullCircleInRadians($0) })
+        XCTAssertTrue(store.anglesProvedDegrees)
+
+        // Back to a north-facing runway: the proof holds, so 004° stays 004°.
+        store.noteAnglesProvedDegrees([4.0, 4.0, 3.5].contains { IFConnectStateReader.exceedsFullCircleInRadians($0) })
+        XCTAssertTrue(store.anglesProvedDegrees, "units don't change mid-connection")
+        XCTAssertEqual(IFConnectStateReader.normalizeAngle(4, alreadyDegrees: store.anglesProvedDegrees),
+                       4, accuracy: 0.001)
+
+        // A fresh manifest is a fresh connection, and possibly a different IF build.
+        store.resolve(from: IFManifestParser.parse(manifest))
+        XCTAssertFalse(store.anglesProvedDegrees)
+    }
+
+    /// Regression: bank was passed through raw, so on a build reporting radians a 25° bank
+    /// arrived as `0.44` and every degree-scaled test of it quietly passed — the wings-level
+    /// guard on the wind sample (`HeadingSolver.maxSampleBankDegrees`, 5°) never tripped, and
+    /// the triangle was solved in the middle of a turn. Bank follows the snapshot's units like
+    /// every other angle, and stays signed about zero rather than wrapping onto a compass rose.
+    func testBankFollowsTheSnapshotsUnitsAndStaysSigned() {
+        // Radians in: a 25° right bank, and a 25° left bank that must not read as 335°.
+        XCTAssertEqual(IFConnectStateReader.normalizeSignedAngle(0.4363, alreadyDegrees: false),
+                       25, accuracy: 0.01)
+        XCTAssertEqual(IFConnectStateReader.normalizeSignedAngle(-0.4363, alreadyDegrees: false),
+                       -25, accuracy: 0.01)
+        // Degrees in: taken at face value, sign intact.
+        XCTAssertEqual(IFConnectStateReader.normalizeSignedAngle(25, alreadyDegrees: true), 25, accuracy: 0.001)
+        XCTAssertEqual(IFConnectStateReader.normalizeSignedAngle(-4, alreadyDegrees: true), -4, accuracy: 0.001)
+
+        // The guard the conversion exists for: banked past the threshold either way.
+        for raw in [0.4363, -0.4363] {
+            let bank = IFConnectStateReader.normalizeSignedAngle(raw, alreadyDegrees: false)
+            XCTAssertGreaterThan(abs(bank), HeadingSolver.maxSampleBankDegrees,
+                                 "a quarter-bank turn must stand the wind triangle down")
+        }
+        // ...and wings level still reads as level.
+        XCTAssertLessThanOrEqual(abs(IFConnectStateReader.normalizeSignedAngle(-0.0349, alreadyDegrees: false)),
+                                 HeadingSolver.maxSampleBankDegrees)
+    }
+
+    /// Why that guard matters: the triangle differences two ~450 kt vectors, so a sample taken
+    /// where heading and track are seconds apart in a roll invents a wind out of nothing. This
+    /// is the captured failure — 11° of lag at 460 kt solving to ~87 kt of wind that was never
+    /// there, against the 12 kt the sim itself was reporting.
+    func testATurnSmearsTheWindTriangleIntoAWindThatIsNotThere() {
+        var s = AircraftState()
+        s.onGround = false
+        s.trueHeading = 287
+        s.track = 276          // still swinging round behind the nose
+        s.trueAirspeed = 460
+        s.groundSpeed = 460
+        let solved = HeadingSolver.wind(from: s)
+        XCTAssertGreaterThan(solved?.speedKnots ?? 0, 60,
+                             "a lagging track alone solves to a gale — hence the wings-level guard")
+
+        // Wings level, the same aircraft in the same air solves the real wind: 12 kt from 331.
+        var level = s
+        level.track = 285.94
+        level.groundSpeed = 451.44
+        let real = HeadingSolver.wind(from: level)
+        XCTAssertEqual(real?.speedKnots ?? 0, 12, accuracy: 1.5)
+        XCTAssertEqual(real?.fromDegrees ?? 0, 331, accuracy: 8)
     }
 }

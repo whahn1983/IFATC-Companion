@@ -26,6 +26,10 @@ struct WeatherProviderDiagnostics {
     /// currently assigned. None of it was visible anywhere before, so a vector that came out
     /// pointing the wrong way could only be argued about — these rows make the correction
     /// checkable against what Infinite Flight itself is showing.
+    /// The wind triangle's own estimate — always the triangle's, never whichever wind is in
+    /// use. The two rows only mean something as a cross-check if the solved one is solved
+    /// independently, so a tick spent steering by the sim's wind must not write that wind
+    /// into this row and turn the comparison below into `0° — sim reports “from”` forever.
     var solvedWindFromDegrees: Double?
     var solvedWindKnots: Double?
     /// The wind Infinite Flight itself reports (`environment/wind_direction_true` /
@@ -33,8 +37,11 @@ struct WeatherProviderDiagnostics {
     /// the crab. Both winds stay on screen with the signed difference between them
     /// (`reportedWindDeltaText`): the reported direction is used as the meteorological "from",
     /// and that row is the standing check on it. It should sit near 0°; near 180° would mean a
-    /// build reporting the direction the wind blows *toward*, and the cross-check in
-    /// `AppModel.trustReportedWind` will already have fallen back to the solved wind.
+    /// build reporting the direction the wind blows *toward*, and — if the two agree on the
+    /// speed — the cross-check in `AppModel.trustReportedWind` will already have fallen back
+    /// to the solved wind. A difference at some other angle, with the speeds far apart, is the
+    /// triangle mis-solving rather than the sim mis-reporting; compare the two speeds to tell
+    /// which row to disbelieve.
     var reportedWindDirectionTrue: Double?
     var reportedWindKnots: Double?
     /// Which of the two the assigned headings are actually being crabbed for.
@@ -49,16 +56,37 @@ struct WeatherProviderDiagnostics {
     /// Human-readable coverage yes/no for the panel.
     var coverageText: String { radarCoverageAvailable ? "Yes" : "No" }
 
-    /// "270° / 85 kt" — the solved wind, or nil until the triangle has a usable sample.
+    /// "270°T · 276°M / 85 kt" — the solved wind, or nil until the triangle has a usable sample.
     var solvedWindText: String? {
         guard let from = solvedWindFromDegrees, let kt = solvedWindKnots else { return nil }
-        return String(format: "%03.0f° / %.0f kt", from, kt)
+        return WeatherProviderDiagnostics.windText(fromTrue: from, knots: kt,
+                                                   variationEast: magneticVariationEast)
     }
 
-    /// "221° / 14 kt" — the wind the sim reports, or nil when it doesn't expose it.
+    /// "221°T · 227°M / 14 kt" — the wind the sim reports, or nil when it doesn't expose it.
     var reportedWindText: String? {
         guard let dir = reportedWindDirectionTrue, let kt = reportedWindKnots else { return nil }
-        return String(format: "%03.0f° / %.0f kt", dir, kt)
+        return WeatherProviderDiagnostics.windText(fromTrue: dir, knots: kt,
+                                                   variationEast: magneticVariationEast)
+    }
+
+    /// A wind rendered in **both frames**, because the two rows exist to be held up against
+    /// Infinite Flight's own panel and the two panels don't speak the same one: every wind
+    /// here is true (`wind_direction_true`, and a triangle built from true heading and track),
+    /// while the sim's PFD shows the wind magnetic, like the heading bug beside it. Printing
+    /// the true number alone made a correct wind look wrong by exactly the local variation —
+    /// 346°T beside an instrument reading 352°M, with 6.2°W of variation between them, is the
+    /// same wind twice and nothing to chase. The magnetic step is the one the assigned heading
+    /// already uses (`magnetic = true − variationEast`); with no variation solved yet there is
+    /// nothing to step by, so only the true figure is shown, labelled as such.
+    static func windText(fromTrue: Double, knots: Double, variationEast: Double?) -> String {
+        // Rounded before wrapping, so a wind just shy of north prints 000° rather than 360°.
+        func degrees(_ value: Double) -> Int { (Int(value.rounded()) % 360 + 360) % 360 }
+        guard let variationEast else {
+            return String(format: "%03d°T / %.0f kt", degrees(fromTrue), knots)
+        }
+        return String(format: "%03d°T · %03d°M / %.0f kt",
+                      degrees(fromTrue), degrees(fromTrue - variationEast), knots)
     }
 
     /// Which wind the assigned headings are crabbed for — never left to inference.

@@ -100,14 +100,31 @@ fix it has already passed. Center's first call after the Departure hand-off (ste
 | 11 | Climb | **Center (ARTCC)** | "Climb and maintain *cruise*." | `climbMaintain` | IF Center |
 
 The **initial climb altitude** (default 5,000 ft) and the **TRACON ceiling**
-(default FL180) are configurable. The **departure heading** is the bearing from
-the aircraft's position on the runway (the live on-ground position when telemetry
-is available, otherwise the departure field reference) to the first fix of the
-departure — the SID's first published fix when a SID is filed, otherwise the next
-filed fix after the runway. It is airport-agnostic and never uses the bearing to
-the destination. When no such fix can be located the heading is unknown and the
-clearance says "fly runway heading"; the heading is likewise spoken as "fly runway
-heading" whenever it lands within 10° of the runway heading.
+(default FL180) are configurable. The **departure heading** is the bearing to the
+first fix of the departure — the SID's first published fix when a SID is filed,
+otherwise the next filed fix after the runway. It is airport-agnostic and never
+uses the bearing to the destination. When no such fix can be located the heading is
+unknown and the clearance says "fly runway heading"; the heading is likewise spoken
+as "fly runway heading" whenever it lands within 10° of the runway heading.
+
+It is measured **from the departure runway** — the `DPT RW26L` marker SimBrief files
+and Infinite Flight locates at the runway end. That marker is not a navigable fix and
+is never shown as a waypoint (left in the route it becomes the first "waypoint" and,
+lying straight down the runway, collapses the clearance to "fly runway heading" every
+flight), so only its *position* is kept, on `FlightPlan.departureRunwayCoordinate`. A
+bare located `RW26L` token near the start of the route serves the same purpose. Where
+the plan carries neither — a route string has no coordinates at all — the origin falls
+back to the live on-ground position, and then to the departure field reference.
+
+The origin is not a detail. The three points were once treated as interchangeable, on
+the grounds that "for a fix a few miles out they agree to within a degree"; at a hub
+they do not. Holding short of 26L at KATL puts the aircraft over a mile from both the
+field reference and the runway end, and a mile of offset against a departure fix eight
+miles out is worth **~10° of bearing** — more than the entire magnetic-variation
+correction the same heading gets, enough to disagree visibly with the FMS's own course
+to that fix, and enough to flip the "within 10° of the runway heading" test. Measuring
+from the runway end puts the app on the same datum as the aircraft's FMS, which is what
+makes the assigned vector checkable against the box.
 
 **Every assigned heading is magnetic.** The pilot flies a magnetic heading bug, so
 every number the app speaks as a heading has to be in that frame. Most already are

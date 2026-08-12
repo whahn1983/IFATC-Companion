@@ -121,10 +121,36 @@ final class IFStateMappingStore {
 
     private(set) var resolved: [Logical: IFManifestEntry] = [:]
 
+    /// Whether this connection has been **proved** to report angles in degrees rather than
+    /// radians, by any snapshot since it was established carrying an angle too large to be
+    /// radians. Latched, and deliberately one-way: a build reports one convention for its
+    /// whole life, and while `4.7` proves degrees, *no* reading can ever prove radians —
+    /// every radian value is also a valid degree value.
+    ///
+    /// Deciding it per snapshot instead left one hole open. A snapshot whose angles are *all*
+    /// within ~6° of north — nose 004°, track 004°, a northerly wind — has no witness, so a
+    /// build reporting degrees was read as radians and every angle in it multiplied by 57.3:
+    /// a 4° nose becomes 229°, and the variation taken from the pair of headings (`004 − 003`,
+    /// a degree apart, read as 229° and 172°) becomes tens of degrees of declination that then
+    /// went straight into the departure vector. Precisely the case a north-facing runway lines
+    /// an aircraft up for and holds it in. Latching closes it: one taxi turn, one heading off
+    /// north, one non-northerly wind — any single reading since connect — settles the whole
+    /// session.
+    private(set) var anglesProvedDegrees = false
+
+    /// Record what a snapshot's angles witnessed. Only a positive proof is kept; a snapshot
+    /// with no witness leaves an earlier one standing rather than reverting to "assume radians".
+    func noteAnglesProvedDegrees(_ proved: Bool) {
+        if proved { anglesProvedDegrees = true }
+    }
+
     /// Resolve all logical keys against a freshly parsed manifest.
     /// Matching is exact-suffix first, then substring, honoring signature priority.
+    /// A fresh manifest means a fresh connection, so the units proof starts over with it —
+    /// the next session may be a different Infinite Flight build.
     func resolve(from entries: [IFManifestEntry]) {
         resolved.removeAll()
+        anglesProvedDegrees = false
         for logical in Logical.allCases {
             if let match = bestMatch(for: logical.signatures, in: entries) {
                 resolved[logical] = match

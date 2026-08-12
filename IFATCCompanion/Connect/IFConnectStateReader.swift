@@ -39,21 +39,30 @@ struct IFConnectStateReader {
         s.trueAirspeed = (await double(.trueAirspeed)).map { $0 * IFConnectStateReader.metresPerSecondToKnots }
         // Infinite Flight reports heading/track in radians on some versions and in degrees
         // on others, and a single value can't tell the two apart: `4` is both a heading of
-        // 004° and one of 4 rad (229°). So the units are decided **once for the whole
-        // snapshot** rather than per value — these three come out of the same API in the
-        // same convention, so if any one of them is bigger than a full circle in radians,
-        // all three are degrees. Judging each on its own turned a nose on 004° into 229°,
-        // which then poisoned the wind triangle (`HeadingSolver.wind`) and every deviation
-        // vector solved from it whenever heading or track sat within ~6° of north.
-        // `environment/wind_direction_true` is an angle from the same API in the same
-        // convention, so it joins the snapshot's units vote rather than guessing on its own.
+        // 004° and one of 4 rad (229°). So the units are never decided per value — every angle
+        // here comes out of the same API in the same convention, so any one of them bigger
+        // than a full circle in radians makes them all degrees. Judging each on its own turned
+        // a nose on 004° into 229°, which then poisoned the wind triangle
+        // (`HeadingSolver.wind`) and every deviation vector solved from it whenever heading or
+        // track sat within ~6° of north. `environment/wind_direction_true` is an angle from the
+        // same API in the same convention, so it witnesses the units too rather than guessing
+        // on its own.
         let rawHeading = await double(.heading)
         let rawTrueHeading = await double(.trueHeading)
         let rawTrack = await double(.track)
         let rawWindDirection = await double(.windDirectionTrue)
-        let anglesInDegrees = [rawHeading, rawTrueHeading, rawTrack, rawWindDirection]
+        // …and the decision is latched for the whole connection, not just the snapshot. One
+        // snapshot can still fail to witness anything: with the nose, the track and the wind
+        // all within ~6° of north there is no angle too large to be radians, so a build
+        // reporting degrees was read as radians and every angle in it multiplied by 57.3 — a
+        // 004° nose becoming 229°, and the two headings' one-degree difference becoming tens of
+        // degrees of "variation" that went straight into the departure vector. A north-facing
+        // runway lines an aircraft up for exactly that and holds it there. Units don't change
+        // mid-connection, so any single witness since connect settles the session.
+        store.noteAnglesProvedDegrees([rawHeading, rawTrueHeading, rawTrack, rawWindDirection]
             .compactMap { $0 }
-            .contains { IFConnectStateReader.exceedsFullCircleInRadians($0) }
+            .contains { IFConnectStateReader.exceedsFullCircleInRadians($0) })
+        let anglesInDegrees = store.anglesProvedDegrees
         s.heading = rawHeading.map { IFConnectStateReader.normalizeAngle($0, alreadyDegrees: anglesInDegrees) }
         s.trueHeading = rawTrueHeading.map { IFConnectStateReader.normalizeAngle($0, alreadyDegrees: anglesInDegrees) }
         s.track = rawTrack.map { IFConnectStateReader.normalizeAngle($0, alreadyDegrees: anglesInDegrees) }
@@ -67,8 +76,23 @@ struct IFConnectStateReader {
         s.approachModeEngaged = await bool(.approachMode)
         s.parkingBrakeSet = await bool(.parkingBrake)
         s.gForce = await double(.gForce)
-        s.bankAngle = await double(.bankAngle)
-        s.pitch = await double(.pitch)
+        // Bank and pitch are angles out of the same API in the same convention as the
+        // headings above, so they follow the snapshot's units decision instead of being
+        // passed through raw. Raw, a build reporting radians handed a 25° bank over as
+        // `0.44`, and every degree-scaled test of it silently passed: the wings-level guard
+        // on the wind sample (`HeadingSolver.maxSampleBankDegrees`) never once tripped, so
+        // the triangle was solved *mid-turn* — differencing a ~450 kt air vector against a
+        // ~450 kt ground vector whose directions were seconds apart in a roll, which invents
+        // tens of knots of wind that was never there and crabs every weather vector for it.
+        // Unlike a heading these are small signed angles — a left bank is negative — so they
+        // wrap to −180…180 rather than onto the 0–360 compass rose, which would turn a −4°
+        // bank into 356° and read wings-level as knife-edge.
+        s.bankAngle = (await double(.bankAngle)).map {
+            IFConnectStateReader.normalizeSignedAngle($0, alreadyDegrees: anglesInDegrees)
+        }
+        s.pitch = (await double(.pitch)).map {
+            IFConnectStateReader.normalizeSignedAngle($0, alreadyDegrees: anglesInDegrees)
+        }
         s.aircraftName = await string(.aircraftName)
         s.liveryName = await string(.liveryName)
         s.nearestAirport = await string(.nearestAirportICAO)
@@ -175,5 +199,13 @@ struct IFConnectStateReader {
 
     static func normalizeAngle(_ value: Double) -> Double {
         normalizeAngle(value, alreadyDegrees: exceedsFullCircleInRadians(value))
+    }
+
+    /// The same conversion for an attitude angle — bank, pitch — which is signed about zero
+    /// rather than measured round a compass rose. Wrapped to −180…180 so "how far from level"
+    /// stays `abs(value)`.
+    static func normalizeSignedAngle(_ value: Double, alreadyDegrees: Bool) -> Double {
+        let deg = normalizeAngle(value, alreadyDegrees: alreadyDegrees)
+        return deg > 180 ? deg - 360 : deg
     }
 }
