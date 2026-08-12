@@ -26,6 +26,10 @@ struct WeatherProviderDiagnostics {
     /// currently assigned. None of it was visible anywhere before, so a vector that came out
     /// pointing the wrong way could only be argued about — these rows make the correction
     /// checkable against what Infinite Flight itself is showing.
+    /// The wind triangle's own estimate — always the triangle's, never whichever wind is in
+    /// use. The two rows only mean something as a cross-check if the solved one is solved
+    /// independently, so a tick spent steering by the sim's wind must not write that wind
+    /// into this row and turn the comparison below into `0° — sim reports “from”` forever.
     var solvedWindFromDegrees: Double?
     var solvedWindKnots: Double?
     /// The wind Infinite Flight itself reports (`environment/wind_direction_true` /
@@ -33,8 +37,11 @@ struct WeatherProviderDiagnostics {
     /// the crab. Both winds stay on screen with the signed difference between them
     /// (`reportedWindDeltaText`): the reported direction is used as the meteorological "from",
     /// and that row is the standing check on it. It should sit near 0°; near 180° would mean a
-    /// build reporting the direction the wind blows *toward*, and the cross-check in
-    /// `AppModel.trustReportedWind` will already have fallen back to the solved wind.
+    /// build reporting the direction the wind blows *toward*, and — if the two agree on the
+    /// speed — the cross-check in `AppModel.trustReportedWind` will already have fallen back
+    /// to the solved wind. A difference at some other angle, with the speeds far apart, is the
+    /// triangle mis-solving rather than the sim mis-reporting; compare the two speeds to tell
+    /// which row to disbelieve.
     var reportedWindDirectionTrue: Double?
     var reportedWindKnots: Double?
     /// Which of the two the assigned headings are actually being crabbed for.

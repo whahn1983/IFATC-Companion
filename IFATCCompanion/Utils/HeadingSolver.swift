@@ -109,12 +109,40 @@ enum HeadingSolver {
 
     /// How far apart (degrees, 0–180) two winds' directions are. Used to cross-check the
     /// reported wind against the solved one: they should agree closely, and a disagreement
-    /// past a right angle means one of them is not in the convention it is assumed to be —
-    /// at which point the inferred wind, whose convention is fixed by the arithmetic that
-    /// produced it, is the safer of the two to steer by.
+    /// past a right angle *may* mean one of them is not in the convention it is assumed to
+    /// be — at which point the inferred wind, whose convention is fixed by the arithmetic
+    /// that produced it, is the safer of the two to steer by. Only read together with
+    /// `speedsCorroborate`, which separates that case from a triangle that has simply
+    /// solved a wind out of noise.
     static func directionDisagreementDegrees(_ a: Wind, _ b: Wind) -> Double {
         abs(signedDifference(a.fromDegrees - b.fromDegrees))
     }
+
+    /// Whether two winds' **speeds** agree closely enough that a difference in their
+    /// directions can still be read as a difference of *convention*.
+    ///
+    /// This is what makes the direction cross-check above safe to act on. Naming the other
+    /// end of the vector reverses a wind without changing its strength, so a genuine
+    /// convention mismatch shows up as two winds of the *same speed* pointing opposite ways.
+    /// Two winds that disagree about the speed as well aren't the same wind described two
+    /// ways — one of them is simply wrong, and it is the inferred one: the triangle
+    /// differences two ~450 kt vectors read in separate round-trips, so a smeared sample
+    /// invents a wind of its own (12 kt reported against 84 kt solved, 118° apart), while the
+    /// sim's own reading has nothing to smear. Without this check that garbage outvoted the
+    /// exact number purely by disagreeing loudly enough.
+    static func speedsCorroborate(_ a: Wind, _ b: Wind) -> Bool {
+        let slower = min(a.speedKnots, b.speedKnots)
+        let faster = max(a.speedKnots, b.speedKnots)
+        // An absolute floor first, so two light winds a few knots apart still corroborate —
+        // a ratio alone calls 3 kt against 7 kt a wild disagreement.
+        if faster - slower <= speedCorroborationToleranceKnots { return true }
+        return faster <= slower * speedCorroborationRatio
+    }
+
+    /// How far apart two winds' speeds may sit and still be taken for the same wind: within
+    /// this many knots, or within this ratio, whichever is the more forgiving.
+    static let speedCorroborationToleranceKnots: Double = 5
+    static let speedCorroborationRatio: Double = 1.5
 
     /// Solve the wind at the aircraft from its own state, by the wind triangle:
     /// `wind = ground vector − air vector`.

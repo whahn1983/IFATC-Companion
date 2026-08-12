@@ -67,8 +67,23 @@ struct IFConnectStateReader {
         s.approachModeEngaged = await bool(.approachMode)
         s.parkingBrakeSet = await bool(.parkingBrake)
         s.gForce = await double(.gForce)
-        s.bankAngle = await double(.bankAngle)
-        s.pitch = await double(.pitch)
+        // Bank and pitch are angles out of the same API in the same convention as the
+        // headings above, so they follow the snapshot's units decision instead of being
+        // passed through raw. Raw, a build reporting radians handed a 25° bank over as
+        // `0.44`, and every degree-scaled test of it silently passed: the wings-level guard
+        // on the wind sample (`HeadingSolver.maxSampleBankDegrees`) never once tripped, so
+        // the triangle was solved *mid-turn* — differencing a ~450 kt air vector against a
+        // ~450 kt ground vector whose directions were seconds apart in a roll, which invents
+        // tens of knots of wind that was never there and crabs every weather vector for it.
+        // Unlike a heading these are small signed angles — a left bank is negative — so they
+        // wrap to −180…180 rather than onto the 0–360 compass rose, which would turn a −4°
+        // bank into 356° and read wings-level as knife-edge.
+        s.bankAngle = (await double(.bankAngle)).map {
+            IFConnectStateReader.normalizeSignedAngle($0, alreadyDegrees: anglesInDegrees)
+        }
+        s.pitch = (await double(.pitch)).map {
+            IFConnectStateReader.normalizeSignedAngle($0, alreadyDegrees: anglesInDegrees)
+        }
         s.aircraftName = await string(.aircraftName)
         s.liveryName = await string(.liveryName)
         s.nearestAirport = await string(.nearestAirportICAO)
@@ -175,5 +190,13 @@ struct IFConnectStateReader {
 
     static func normalizeAngle(_ value: Double) -> Double {
         normalizeAngle(value, alreadyDegrees: exceedsFullCircleInRadians(value))
+    }
+
+    /// The same conversion for an attitude angle — bank, pitch — which is signed about zero
+    /// rather than measured round a compass rose. Wrapped to −180…180 so "how far from level"
+    /// stays `abs(value)`.
+    static func normalizeSignedAngle(_ value: Double, alreadyDegrees: Bool) -> Double {
+        let deg = normalizeAngle(value, alreadyDegrees: alreadyDegrees)
+        return deg > 180 ? deg - 360 : deg
     }
 }

@@ -30,6 +30,10 @@ struct AircraftState: Equatable {
     /// announced complete. `nil` when the sim/version doesn't expose it.
     var parkingBrakeSet: Bool?
     var gForce: Double?
+    /// Attitude in **signed degrees** — right/up positive — whichever units the sim reported
+    /// them in. `IFConnectStateReader` settles radians-vs-degrees for the whole state snapshot
+    /// at once, these included, and wraps them to −180…180 rather than onto a compass rose so
+    /// "how far from level" is just `abs(bankAngle)`.
     var bankAngle: Double?
     var pitch: Double?
     /// The wind at the aircraft as the **sim itself reports it** (`environment/wind_velocity`

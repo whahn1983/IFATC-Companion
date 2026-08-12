@@ -433,7 +433,14 @@ final class AppModel: ObservableObject {
     /// exactly when the samples are least trustworthy and the correction most needed, so
     /// falling back to "no correction" mid-turn would defeat the point. See `HeadingSolver`.
     private var lastKnownVariationEast: Double?
+    /// The wind the crab is actually computed for — the sim's own reading wherever it is
+    /// exposed and trusted, the triangle's estimate otherwise.
     private var lastKnownWind: HeadingSolver.Wind?
+    /// The wind triangle's own running estimate, kept apart from `lastKnownWind` so it stays
+    /// an independent second opinion: it is never contaminated by a sim-reported sample, which
+    /// is what lets it cross-check one (and lets Weather Diagnostics print the two side by side
+    /// and mean it).
+    private var lastSolvedWind: HeadingSolver.Wind?
     /// The last weather vector's leg course (**true**, straight off the drawn line) and the
     /// magnetic heading actually spoken for it. Kept only so Weather Diagnostics can show what
     /// the wind/variation correction did to a vector — neither the solved wind nor the
@@ -2569,8 +2576,8 @@ final class AppModel: ObservableObject {
         if s.approachModeEngaged == true { return true }
         guard lineupDetector.isOnFinalApproach(state: s, runway: runway) else { return false }
         // Lined up with the runway and not still turning onto final (wings roughly
-        // level). Bank is reported in degrees; if a build reports radians the check
-        // simply never trips and the line-up test alone governs.
+        // level). Bank reaches here in signed degrees whichever units the sim reports it
+        // in — `IFConnectStateReader` settles that with the rest of the snapshot's angles.
         if let bank = s.bankAngle, abs(bank) > 6 { return false }
         return true
     }
@@ -5117,8 +5124,8 @@ final class AppModel: ObservableObject {
         }
         d.selectedRejoinFix = conflict?.rejoinFix?.name ?? weatherDeviation.rejoinFix
         d.lastDeviationState = weatherDeviation.state
-        d.solvedWindFromDegrees = lastKnownWind?.fromDegrees
-        d.solvedWindKnots = lastKnownWind?.speedKnots
+        d.solvedWindFromDegrees = lastSolvedWind?.fromDegrees
+        d.solvedWindKnots = lastSolvedWind?.speedKnots
         d.reportedWindDirectionTrue = aircraftState.reportedWindDirectionTrue
         d.reportedWindKnots = aircraftState.reportedWindSpeedKnots
         d.windSourceIsSimReported = windSourceIsSimReported
@@ -5950,14 +5957,24 @@ final class AppModel: ObservableObject {
             lastKnownVariationEast = variation
         }
         let solved = nearLevel ? HeadingSolver.wind(from: state) : nil
+        // The triangle's estimate is kept on its own, never blended with a reported sample,
+        // so it stays an *independent* second opinion: it is what the cross-check below is
+        // checked against and what Weather Diagnostics prints beside the sim's wind. Folding
+        // the reported wind into it would make that comparison compare a number with itself.
+        if let solved {
+            lastSolvedWind = HeadingSolver.blended(lastSolvedWind, sample: solved)
+        }
+        // Cross-checked against the *fresh* sample, not the running estimate: with no sample
+        // this tick the triangle has stood down (a turn, too slow, no TAS) and has no opinion
+        // to overrule the sim with.
         if let reported = HeadingSolver.reportedWind(from: state),
            trustReportedWind(reported, against: solved) {
             lastKnownWind = reported
             windSourceIsSimReported = true
             return
         }
-        if let solved {
-            lastKnownWind = HeadingSolver.blended(lastKnownWind, sample: solved)
+        if solved != nil, let triangle = lastSolvedWind {
+            lastKnownWind = triangle
             windSourceIsSimReported = false
         }
     }
@@ -5966,9 +5983,15 @@ final class AppModel: ObservableObject {
     /// blows **from**, pinned against Infinite Flight's own PFD wind readout — but that is one
     /// observation of one build, and getting it backwards would put every weather vector on the
     /// wrong side of course. So when the triangle has independently solved a wind worth
-    /// comparing against, a disagreement past a right angle is treated as "this isn't the
-    /// convention we think it is" and the inferred wind — whose convention is fixed by the
-    /// arithmetic that produced it — is used instead.
+    /// comparing against, a disagreement past a right angle **at the same speed** is treated as
+    /// "this isn't the convention we think it is" and the inferred wind — whose convention is
+    /// fixed by the arithmetic that produced it — is used instead.
+    ///
+    /// The speed clause is what keeps the check from backfiring. Direction alone hands the
+    /// decision to whichever source disagrees loudest, and the triangle is by far the louder:
+    /// it differences two ~450 kt vectors read in separate round-trips, so one smeared sample
+    /// invents a wind of its own and shouts down an exact reading. (Seen in the field: 12 kt
+    /// reported, 84 kt solved, 118° apart — and every weather vector crabbed for the gale.)
     ///
     /// The comparison is only made on a wind strong enough for the triangle's own direction to
     /// mean anything; in light air the two can differ wildly while both are effectively calm,
@@ -5980,7 +6003,17 @@ final class AppModel: ObservableObject {
               solved.speedKnots >= windCrossCheckMinKnots else { return true }
         let disagreement = HeadingSolver.directionDisagreementDegrees(reported, solved)
         guard disagreement > windCrossCheckMaxDisagreementDegrees else { return true }
-        diagnostics.log(.app, String(format: "Wind: the sim-reported direction (%03.0f°) disagrees with the solved wind (%03.0f°) by %.0f° — using the solved wind.",
+        // A convention mismatch reverses a wind without changing its strength, so it is only
+        // that if the two agree about the speed. When they don't, the disagreement is the
+        // triangle's own — a smeared sample differencing two ~450 kt vectors — and the sim's
+        // exact reading must not be thrown out on its word.
+        guard HeadingSolver.speedsCorroborate(reported, solved) else {
+            diagnostics.log(.app, String(format: "Wind: the solved wind (%03.0f° / %.0f kt) disagrees with the sim's own (%03.0f° / %.0f kt) about the speed as well as the direction — the triangle is unreliable here, keeping the sim-reported wind.",
+                                         solved.fromDegrees, solved.speedKnots,
+                                         reported.fromDegrees, reported.speedKnots))
+            return true
+        }
+        diagnostics.log(.app, String(format: "Wind: the sim-reported direction (%03.0f°) disagrees with the solved wind (%03.0f°) by %.0f° at the same speed — using the solved wind.",
                                      reported.fromDegrees, solved.fromDegrees, disagreement))
         return false
     }

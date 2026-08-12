@@ -133,4 +133,54 @@ final class IFStateMappingTests: XCTestCase {
         XCTAssertEqual(IFConnectStateReader.normalizeAngle(0.07, alreadyDegrees: radiansInDegrees),
                        4.011, accuracy: 0.01)
     }
+
+    /// Regression: bank was passed through raw, so on a build reporting radians a 25° bank
+    /// arrived as `0.44` and every degree-scaled test of it quietly passed — the wings-level
+    /// guard on the wind sample (`HeadingSolver.maxSampleBankDegrees`, 5°) never tripped, and
+    /// the triangle was solved in the middle of a turn. Bank follows the snapshot's units like
+    /// every other angle, and stays signed about zero rather than wrapping onto a compass rose.
+    func testBankFollowsTheSnapshotsUnitsAndStaysSigned() {
+        // Radians in: a 25° right bank, and a 25° left bank that must not read as 335°.
+        XCTAssertEqual(IFConnectStateReader.normalizeSignedAngle(0.4363, alreadyDegrees: false),
+                       25, accuracy: 0.01)
+        XCTAssertEqual(IFConnectStateReader.normalizeSignedAngle(-0.4363, alreadyDegrees: false),
+                       -25, accuracy: 0.01)
+        // Degrees in: taken at face value, sign intact.
+        XCTAssertEqual(IFConnectStateReader.normalizeSignedAngle(25, alreadyDegrees: true), 25, accuracy: 0.001)
+        XCTAssertEqual(IFConnectStateReader.normalizeSignedAngle(-4, alreadyDegrees: true), -4, accuracy: 0.001)
+
+        // The guard the conversion exists for: banked past the threshold either way.
+        for raw in [0.4363, -0.4363] {
+            let bank = IFConnectStateReader.normalizeSignedAngle(raw, alreadyDegrees: false)
+            XCTAssertGreaterThan(abs(bank), HeadingSolver.maxSampleBankDegrees,
+                                 "a quarter-bank turn must stand the wind triangle down")
+        }
+        // ...and wings level still reads as level.
+        XCTAssertLessThanOrEqual(abs(IFConnectStateReader.normalizeSignedAngle(-0.0349, alreadyDegrees: false)),
+                                 HeadingSolver.maxSampleBankDegrees)
+    }
+
+    /// Why that guard matters: the triangle differences two ~450 kt vectors, so a sample taken
+    /// where heading and track are seconds apart in a roll invents a wind out of nothing. This
+    /// is the captured failure — 11° of lag at 460 kt solving to ~87 kt of wind that was never
+    /// there, against the 12 kt the sim itself was reporting.
+    func testATurnSmearsTheWindTriangleIntoAWindThatIsNotThere() {
+        var s = AircraftState()
+        s.onGround = false
+        s.trueHeading = 287
+        s.track = 276          // still swinging round behind the nose
+        s.trueAirspeed = 460
+        s.groundSpeed = 460
+        let solved = HeadingSolver.wind(from: s)
+        XCTAssertGreaterThan(solved?.speedKnots ?? 0, 60,
+                             "a lagging track alone solves to a gale — hence the wings-level guard")
+
+        // Wings level, the same aircraft in the same air solves the real wind: 12 kt from 331.
+        var level = s
+        level.track = 285.94
+        level.groundSpeed = 451.44
+        let real = HeadingSolver.wind(from: level)
+        XCTAssertEqual(real?.speedKnots ?? 0, 12, accuracy: 1.5)
+        XCTAssertEqual(real?.fromDegrees ?? 0, 331, accuracy: 8)
+    }
 }

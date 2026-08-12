@@ -742,6 +742,13 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      weather vector. So `IFConnectStateReader` reads magnetic heading, true heading and track
      together and decides for the three at once: they come out of the same API in the same
      convention, so **any one of them too large to be radians makes all three degrees**.
+     **Bank and pitch follow the same decision** — they are angles out of the same API, and
+     read raw they were the quietest bug of the lot: no reading of bank is ever large enough to
+     look wrong, so on a build reporting radians a 25° bank simply arrived as `0.44` and every
+     degree-scaled test of it passed. The wings-level guard below (5°) therefore never tripped
+     once, and the wind triangle was solved *through every turn* — see the next bullet. They
+     wrap to −180…180 rather than onto the compass rose, so a 4° left bank stays −4° instead of
+     becoming 356° and reading as knife-edge.
    - **The sim's own wind is read, and preferred.** Infinite Flight exposes
      `environment/wind_velocity` (m/s) and `environment/wind_direction_true` (radians), so the
      wind no longer *has* to be inferred. Both are mapped (`windVelocity` / `windDirectionTrue`)
@@ -765,9 +772,24 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      inferred wind, whose convention is fixed by the arithmetic that produced it, is used
      instead and the mismatch logged. Weather Diagnostics shows which source is in use, both
      winds, and the signed difference between them.
+   - **…but the speeds have to corroborate before that fallback fires.** The direction check
+     alone hands the decision to whichever source disagrees *loudest*, which is exactly the
+     wrong way round: the triangle differences two ~450 kt vectors read in separate
+     round-trips, so a smeared sample can invent a wind of its own, while the sim's reading has
+     nothing to smear. Caught in the field — the sim reporting 12 kt from 331°, the triangle
+     solving 84 kt from 089°, 118° apart, and the app dutifully crabbing every weather vector
+     for the 84 kt gale. So the fallback now also asks whether the two winds *could be the same
+     wind*: naming the other end of a vector reverses it without changing its strength, so only
+     matching speeds (within 5 kt or 1.5×) make a direction disagreement a convention problem.
+     Speeds that disagree too mean the triangle is the broken one, and the sim's exact reading
+     stands. Relatedly, the triangle's estimate is now kept apart from the wind actually in use
+     rather than blended into it — a reported sample folded into the "solved" wind makes the
+     Diagnostics comparison compare a number with itself, and reads `0° — sim reports “from”`
+     however wrong the triangle is.
    - **The correction is visible.** Neither the solved wind nor the variation was surfaced
      anywhere, so a vector that came out pointing somewhere unexpected could only be argued
-     about. Weather Diagnostics now shows the solved wind (`270° / 85 kt`), the variation being
+     about. Weather Diagnostics now shows the triangle's solved wind (`270° / 85 kt`) beside the
+     sim's own reading and which of the two is in use, the variation being
      applied, and the last weather vector as `true 042° → assigned 038°` — the leg's own course
      next to the heading actually spoken, so the crab and the magnetic step can be read off and
      checked against what Infinite Flight itself is showing.

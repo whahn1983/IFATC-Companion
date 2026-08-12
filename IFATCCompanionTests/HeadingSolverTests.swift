@@ -310,4 +310,28 @@ final class HeadingSolverTests: XCTestCase {
         let flipped = HeadingSolver.Wind(fromDegrees: 170, speedKnots: 40)
         XCTAssertEqual(HeadingSolver.directionDisagreementDegrees(a, flipped), 180, accuracy: 0.001)
     }
+
+    /// The second half of that cross-check. Naming the other end of the vector reverses a wind
+    /// without changing its strength, so only two winds of the *same speed* can be the same
+    /// wind described two ways.
+    func testSpeedsCorroborateOnlyWhenTheTwoWindsCouldBeTheSameWind() {
+        let reported = HeadingSolver.Wind(fromDegrees: 221, speedKnots: 40)
+        let flipped = HeadingSolver.Wind(fromDegrees: 41, speedKnots: 40)
+        XCTAssertTrue(HeadingSolver.speedsCorroborate(reported, flipped),
+                      "a convention flip changes the direction and nothing else")
+
+        // The captured failure: the sim reported 12 kt, the triangle solved 84 kt out of a
+        // smeared mid-turn sample. Nothing about a convention explains that.
+        let sim = HeadingSolver.Wind(fromDegrees: 331, speedKnots: 12)
+        let smeared = HeadingSolver.Wind(fromDegrees: 89, speedKnots: 84)
+        XCTAssertFalse(HeadingSolver.speedsCorroborate(sim, smeared))
+
+        // Ordinary sampling noise between two readings of the same wind still corroborates —
+        // by ratio when the wind is strong, and by the absolute floor when it is light enough
+        // that a ratio would call a couple of knots a disagreement.
+        XCTAssertTrue(HeadingSolver.speedsCorroborate(HeadingSolver.Wind(fromDegrees: 200, speedKnots: 40),
+                                                      HeadingSolver.Wind(fromDegrees: 20, speedKnots: 52)))
+        XCTAssertTrue(HeadingSolver.speedsCorroborate(HeadingSolver.Wind(fromDegrees: 200, speedKnots: 3),
+                                                      HeadingSolver.Wind(fromDegrees: 20, speedKnots: 7)))
+    }
 }
