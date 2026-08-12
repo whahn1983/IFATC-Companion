@@ -164,6 +164,35 @@ final class IFStateMappingTests: XCTestCase {
                        4.011, accuracy: 0.01)
     }
 
+    /// Regression: a snapshot whose angles are *all* within ~6° of north witnesses nothing —
+    /// nose 004°, track 004°, a northerly wind are each a valid radian reading — so a build
+    /// reporting degrees was read as radians for as long as it stayed pointed north, which is
+    /// exactly what a north-facing runway makes an aircraft do. The proof is latched for the
+    /// connection instead: any one witness since connect settles the session, and a later
+    /// witness-less snapshot leaves it standing rather than reverting.
+    func testTheDegreesProofIsLatchedForTheConnection() {
+        let store = IFStateMappingStore()
+        XCTAssertFalse(store.anglesProvedDegrees, "nothing witnessed yet — assume radians")
+
+        // A snapshot with no witness changes nothing.
+        store.noteAnglesProvedDegrees([4.0, 4.0, 3.5].contains { IFConnectStateReader.exceedsFullCircleInRadians($0) })
+        XCTAssertFalse(store.anglesProvedDegrees)
+
+        // One heading off north proves it — 47 cannot be radians.
+        store.noteAnglesProvedDegrees([47.0, 44.0, 350.0].contains { IFConnectStateReader.exceedsFullCircleInRadians($0) })
+        XCTAssertTrue(store.anglesProvedDegrees)
+
+        // Back to a north-facing runway: the proof holds, so 004° stays 004°.
+        store.noteAnglesProvedDegrees([4.0, 4.0, 3.5].contains { IFConnectStateReader.exceedsFullCircleInRadians($0) })
+        XCTAssertTrue(store.anglesProvedDegrees, "units don't change mid-connection")
+        XCTAssertEqual(IFConnectStateReader.normalizeAngle(4, alreadyDegrees: store.anglesProvedDegrees),
+                       4, accuracy: 0.001)
+
+        // A fresh manifest is a fresh connection, and possibly a different IF build.
+        store.resolve(from: IFManifestParser.parse(manifest))
+        XCTAssertFalse(store.anglesProvedDegrees)
+    }
+
     /// Regression: bank was passed through raw, so on a build reporting radians a 25° bank
     /// arrived as `0.44` and every degree-scaled test of it quietly passed — the wings-level
     /// guard on the wind sample (`HeadingSolver.maxSampleBankDegrees`, 5°) never tripped, and

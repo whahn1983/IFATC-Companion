@@ -732,7 +732,7 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      bearing is assigned, exactly as before. Only the **spoken** heading is converted —
      the armed turn geometry (`deviationStartHeading`, `pendingRejoinHeading`, the leg
      bearings) stays in true degrees so it keeps matching the drawn line.
-   - **Heading units are settled per state snapshot, not per value.** Infinite Flight reports
+   - **Heading units are settled per *connection*, not per value or per snapshot.** Infinite Flight reports
      heading and track in radians on some versions and in degrees on others, and a single
      reading cannot tell the two apart: `4` is both a heading of 004° and one of 4 rad (229°).
      Guessing per value — "small magnitudes are radians" — therefore mangled *every* heading
@@ -740,8 +740,20 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      compass rose: both inputs to the wind triangle are angles, so a nose read as 229° instead
      of 004° invents a wind that never existed and pushes it straight into the crab on every
      weather vector. So `IFConnectStateReader` reads magnetic heading, true heading and track
-     together and decides for the three at once: they come out of the same API in the same
-     convention, so **any one of them too large to be radians makes all three degrees**.
+     together and decides for them at once: they come out of the same API in the same
+     convention, so **any one of them too large to be radians makes them all degrees**. And the
+     proof is *latched for the connection*, because deciding it per snapshot left the same hole
+     open one size smaller: a snapshot whose angles are **all** near north — nose 004°, track
+     004°, a northerly wind — witnesses nothing, since each reading is a valid radian value on
+     its own. A build reporting degrees was then read as radians for as long as it stayed
+     pointed north, which is precisely what a north-facing runway makes an aircraft do and hold:
+     the nose reads 229°, and the one-degree gap between the true and magnetic headings becomes
+     tens of degrees of "variation" that goes straight into the departure vector in the takeoff
+     clearance. Units don't change mid-connection and no reading can ever prove *radians*
+     (every radian value is a valid degree value), so the latch is one-way: one taxi turn, one
+     heading off north, one non-northerly wind — any single witness since connect — settles the
+     whole session, and a later witness-less snapshot leaves it standing. A fresh manifest means
+     a fresh connection, and possibly a different IF build, so it starts over.
      **Bank and pitch follow the same decision** — they are angles out of the same API, and
      read raw they were the quietest bug of the lot: no reading of bank is ever large enough to
      look wrong, so on a build reporting radians a 25° bank simply arrived as `0.44` and every
