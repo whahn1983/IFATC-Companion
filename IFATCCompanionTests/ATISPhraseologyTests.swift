@@ -248,6 +248,11 @@ final class ATISPhraseologyTests: XCTestCase {
         XCTAssertEqual(s, "airside one and three and general aviation contact ground control "
                        + "one two one point eight")
         XCTAssertFalse(s.contains("a/s"), s)
+        XCTAssertEqual(spoken("CTC GC 126.4"), "contact ground control one two six point four")
+        // A field with a taxiway GC still reads it as the ident: the taxiway passes run before
+        // the abbreviation table, so by then the token is "Golf Charlie" and no longer matches.
+        XCTAssertEqual(spoken("TWY GC CLSD"), "taxiway golf charlie closed")
+        XCTAssertEqual(spoken("GC CLSD BTWN A AND B."), "golf charlie closed between alpha and bravo.")
     }
 
     // MARK: - Hold short / hazard abbreviations
