@@ -214,6 +214,42 @@ final class ATISPhraseologyTests: XCTestCase {
         XCTAssertEqual(ATISPhraseology.spokenText("TWY,S CLSD").lowercased(), "taxiway sierra closed")
     }
 
+    // MARK: - Bare taxiway idents (no TWY keyword)
+
+    func testBareTaxiwayIdentWithNumberIsSpelledPhonetically() {
+        // Many fields publish the closure list with no TWY keyword. "B1" has no word boundary
+        // inside it, so without the split the digit rule glues the number to the letter and the
+        // synthesizer says "bone".
+        XCTAssertEqual(spoken("B1"), "bravo one")
+        XCTAssertEqual(spoken("B1 CLSD"), "bravo one closed")
+        XCTAssertEqual(spoken("GATE B12 CLSD"), "gate bravo one two closed")
+        // The keyworded form is unchanged — it is spelled by the TWY pass, not twice.
+        XCTAssertEqual(spoken("TWY B1 CLSD"), "taxiway bravo one closed")
+    }
+
+    func testBareClosureIdentsAreSpelledPhonetically() {
+        // A lone letter in a closure NOTAM is a taxiway ident and must read phonetically,
+        // not as the letter name the synthesizer would voice ("see", "bee").
+        XCTAssertEqual(spoken("C B CLSD BTWN, B1 AND B2."),
+                       "charlie bravo closed between, bravo one and bravo two.")
+        XCTAssertEqual(spoken("TWY B CLSD BTWN A AND C."), "taxiway bravo closed between alpha and charlie.")
+        XCTAssertEqual(spoken("TWY B AND C CLSD."), "taxiway bravo and charlie closed.")
+        // A runway closure keeps reading as a runway, and the English article next to a
+        // closure is left alone — only the idents in the closure grammar are spelled.
+        XCTAssertEqual(spoken("RWY 4L, 22R CLSD."), "runway four left, two two right closed.")
+        XCTAssertEqual(spoken("TWY A CLSD DUE TO A DISABLED ACFT."),
+                       "taxiway alpha closed due to a disabled aircraft.")
+    }
+
+    // MARK: - Ramp / ground-control handoff abbreviations
+
+    func testAirsideAndGroundControlAbbreviations() {
+        let s = spoken("A/S 1 AND 3 AND GA CTC GC 121.8")
+        XCTAssertEqual(s, "airside one and three and general aviation contact ground control "
+                       + "one two one point eight")
+        XCTAssertFalse(s.contains("a/s"), s)
+    }
+
     // MARK: - Hold short / hazard abbreviations
 
     func testHoldShortAbbreviation() {
@@ -231,6 +267,15 @@ final class ATISPhraseologyTests: XCTestCase {
         XCTAssertEqual(spoken("HAZDS"), "hazards")
         let s = ATISPhraseology.spokenText("BIRD HAZD INVOF ARPT.").lowercased()
         XCTAssertTrue(s.contains("hazard"), s)
+    }
+
+    func testHazardousWeatherAdvisoryReadsAsAdjective() {
+        // "HAZD WX" / "HAZS WX" is the flight-service hazardous-weather advisory, so the
+        // token is the adjective there — the noun reading ("hazard weather") is wrong.
+        XCTAssertEqual(spoken("HAZD WX"), "hazardous weather")
+        XCTAssertEqual(spoken("HAZS"), "hazardous")
+        let s = spoken("HAZS WX INFO FOR MCO AREA AVBL ON FLT SVC FREQ.")
+        XCTAssertEqual(s, "hazardous weather information for mco area available on flight service frequency.")
     }
 
     // MARK: - Units written flush against their number
@@ -500,6 +545,45 @@ final class ATISPhraseologyTests: XCTestCase {
         XCTAssertTrue(s.contains("read back all runway hold short instructions"), s)
         XCTAssertTrue(s.contains("contact ground metering on frequency one two one point six seven"), s)
         XCTAssertTrue(s.contains("advise you have information golf"), s)
+    }
+
+    func testFullOrlandoBroadcastDecodes() {
+        // Orlando departure D-ATIS: taxiway closures published bare (no TWY keyword), the
+        // airside / ground-control handoff lines, and the flight-service hazardous-weather
+        // advisory.
+        let raw = "MCO DEP INFO V 2253Z. 08004G16KT 10SM FEW045 SCT080 SCT110 BKN300 27/24 "
+            + "A3007 (THREE ZERO ZERO SEVEN) RMK RAB03E37 TSE42. DEPG RWYS 17R, 18L, 18R. "
+            + "NOTICE TO AIRMEN. B1 CLSD BTWN, 18L AND, C B CLSD BTWN, B1 AND B2. A/S 1 AND 3 "
+            + "AND GA CTC GC 121.8 A/S 2 AND 4 CTC GC 126.4. HAZS WX INFO FOR MCO AREA AVBL ON "
+            + "FLT SVC FREQ. INCREASED BIRD ACTIVITY IN THE VCNTY OF THE ARPT. LLWS ADZYS ARE "
+            + "IN EFFECT. ...ADVS YOU HAVE INFO V."
+        let s = ATISPhraseology.spokenText(raw).lowercased()
+        XCTAssertTrue(s.contains("information victor"), s)
+        XCTAssertTrue(s.contains("wind zero eight zero at four gusts one six"), s)
+        XCTAssertTrue(s.contains("few clouds at four thousand five hundred"), s)
+        XCTAssertTrue(s.contains("one one thousand scattered"), s)
+        XCTAssertTrue(s.contains("three zero thousand broken"), s)
+        XCTAssertTrue(s.contains("altimeter three zero zero seven"), s)
+        // The coded remarks group is dropped, not spoken.
+        XCTAssertFalse(s.contains("rab"), s)
+        XCTAssertFalse(s.contains("tse"), s)
+        XCTAssertTrue(s.contains("departing runways one seven right, one eight left, one eight right"), s)
+        // Bare taxiway idents read as idents, never glued to their number.
+        XCTAssertTrue(s.contains("bravo one closed between"), s)
+        XCTAssertTrue(s.contains("charlie bravo closed between, bravo one and bravo two"), s)
+        XCTAssertFalse(s.contains("bone"), s)
+        XCTAssertFalse(s.contains("btwo"), s)
+        // Airside / ground-control handoff.
+        XCTAssertTrue(s.contains("airside one and three and general aviation contact ground control "
+                                 + "one two one point eight"), s)
+        XCTAssertTrue(s.contains("airside two and four contact ground control one two six point four"), s)
+        XCTAssertFalse(s.contains("a/s"), s)
+        // Advisory tail.
+        XCTAssertTrue(s.contains("hazardous weather information for mco area available on flight "
+                                 + "service frequency"), s)
+        XCTAssertTrue(s.contains("bird activity in the vicinity of the airport"), s)
+        XCTAssertTrue(s.contains("low level wind shear advisories are in effect"), s)
+        XCTAssertTrue(s.contains("advise you have information victor"), s)
     }
 
     // Convenience: spoken text for a bare coded fragment, trimmed and case-folded so the
