@@ -181,6 +181,37 @@ enum ATISPhraseology {
             return g[1] + " " + Phonetic.spellToken(ident, icao: icao)
         }
 
+        // A taxiway / gate ident written flush against its number with no keyword in front
+        // of it ("B1 CLSD BTWN B AND B2") — many fields publish the closure list bare, so the
+        // TWY pass above never sees the ident. There is no word boundary inside the token, so
+        // the digit rule at the end of the pipeline would voice the number glued to the letter
+        // ("B1" -> "Bone", "B2" -> "Btwo"). Spell it phonetically, exactly as the keyworded
+        // form already reads. Bounded to one or two letters and one or two digits, so a longer
+        // coded token that survives to here is left alone.
+        s = replacingMatches(in: s, pattern: "\\b([A-Z]{1,2})(\\d{1,2})\\b") { g in
+            Phonetic.spellToken(g[1] + g[2], icao: icao)
+        }
+
+        // Bare taxiway idents in a closure NOTAM ("C B CLSD BTWN, B1 AND B2"). Without the TWY
+        // keyword the letters survive to the synthesizer, which voices them as letter names
+        // ("see", "bee") rather than the ident a controller says. Scoped to the closure grammar
+        // so no stray capital is caught: an ident is a one/two-letter token sitting in the short
+        // run immediately before CLSD/CLOSED, or between BTWN and AND. Tokens that are common
+        // words or carry their own expansion (`nonTaxiwayTokens`) are left for the passes below.
+        s = replacingMatches(in: s,
+                             pattern: "\\b([A-Z]{1,2})\\b(?=(?:[,\\s]+[A-Z]{1,2}\\b){0,2}[,\\s]+(?:CLSD|CLOSED)\\b)") { g in
+            taxiwayIdent(g[1], icao: icao)
+        }
+        s = replacingMatches(in: s,
+                             pattern: "\\b(BTWN|BTN)[,\\s]+([A-Z]{1,2})\\b[,\\s]+AND[,\\s]+([A-Z]{1,2})\\b") { g in
+            g[1] + " " + taxiwayIdent(g[2], icao: icao) + " AND " + taxiwayIdent(g[3], icao: icao)
+        }
+
+        // "HAZD WX" / "HAZS WX" is the flight-service hazardous-weather advisory — the
+        // adjective, not the noun a bare HAZD expands to in a NOTAM ("BIRD HAZD INVOF ARPT").
+        // Resolve it from the following WX before the abbreviation pass reaches either token.
+        s = replacingMatches(in: s, pattern: "\\b(?:HAZDS?|HAZS)\\s+WX\\b") { _ in "hazardous weather" }
+
         // Units written flush against their number ("CRANE 155FT AGL", "GUSTS TO 30KT",
         // "WITHIN 5NM"). The abbreviation pass below is word-boundary anchored, so "155FT"
         // can never match "\bFT\b" — the unit would survive to be voiced as "F T". Split the
@@ -420,6 +451,12 @@ enum ATISPhraseology {
         "NE", "NW", "SE", "SW", "HS", "WS", "MU", "GS", "BA", "FT", "WX", "OM", "MM", "IM"
     ]
 
+    /// Spell a bare closure-NOTAM taxiway ident phonetically ("B" -> "Bravo"), leaving a token
+    /// that is a common word or carries its own expansion (`nonTaxiwayTokens`) untouched.
+    private static func taxiwayIdent(_ token: String, icao: Bool) -> String {
+        nonTaxiwayTokens.contains(token) ? token : Phonetic.spellToken(token, icao: icao)
+    }
+
     // MARK: - Abbreviation table
 
     /// Common D-ATIS abbreviations → spoken words. Multi-letter identifiers that should
@@ -468,6 +505,11 @@ enum ATISPhraseology {
         ("SIMUL", "simultaneous"), ("SIMULT", "simultaneous"), ("SIMO", "simultaneous"),
         ("CONV", "converging"), ("PARL", "parallel"), ("DPNDNT", "dependent"), ("DPENDT", "dependent"),
         ("TWR", "tower"), ("GND", "ground"), ("FSS", "flight service station"),
+        // "GC" is ground control and "A/S" the terminal airside, both used in the
+        // "…CTC GC 121.8" ramp-handoff lines. "FLT SVC FREQ" is the flight-service frequency
+        // the hazardous-weather advisory points at.
+        ("GC", "ground control"), ("GA", "general aviation"), ("A/S", "airside"),
+        ("FLT", "flight"), ("SVCS", "services"), ("SVC", "service"),
         ("CLNC", "clearance"), ("CLRNC", "clearance"),
         ("DEL", "delivery"), ("CTL", "control"), ("CTLR", "controller"), ("CTRL", "control"),
         ("ATC", "A T C"),
@@ -505,7 +547,7 @@ enum ATISPhraseology {
         // Hold short appears as both "HS" and the slashed "H/S"; the slash is a literal in
         // the escaped pattern, so "H/S" needs its own entry ("\bHS\b" can't reach across it).
         ("HS", "hold short"), ("H/S", "hold short"),
-        ("HAZDS", "hazards"), ("HAZD", "hazard")
+        ("HAZDS", "hazards"), ("HAZD", "hazard"), ("HAZS", "hazardous")
     ]
 
     // MARK: - Regex helpers
