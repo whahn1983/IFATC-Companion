@@ -1684,11 +1684,12 @@ final class AppModel: ObservableObject {
         defer { persistSession(); refreshLiveActivity() }
 
         // Ignore an empty telemetry snapshot — Infinite Flight returns one during the
-        // reconnect handshake, and PhaseDetector would read its nil "on ground" as
-        // airborne and default to "climb". Driving the flow from that would jump a
-        // parked aircraft to cruise on reconnect. Hold the current (restored) ATC
-        // state until real telemetry arrives. (Partial telemetry — e.g. altitude or
-        // ground state without a position fix — is still processed.)
+        // reconnect handshake, and it says nothing about the aircraft at all. Hold the
+        // current (restored) ATC state until real telemetry arrives. (Partial telemetry
+        // — e.g. altitude or ground state without a position fix — is still processed;
+        // a partial snapshot with no ground reference is handled where it matters, by
+        // PhaseDetector holding the phase rather than reading the missing flag as
+        // airborne and defaulting to "climb".)
         guard state.hasUsableTelemetry else {
             atcState = stateMachine.current
             currentFacility = tunedFacility ?? controller(for: stateMachine.current)
@@ -1746,7 +1747,16 @@ final class AppModel: ObservableObject {
         // MSL − AGL) before the aircraft departs, so initial-climb altitudes can be
         // raised above the field at high-elevation airports. Kept fresh while on the
         // ground so the last value before takeoff is the field elevation.
-        if !hasDeparted, (state.onGround ?? phase.isGround), let msl = state.altitudeMSL {
+        //
+        // Only ever from a snapshot that *reports* being on the ground. Falling back to
+        // the detected phase looks equivalent but isn't: a half-read snapshot carries no
+        // ground reference, so `PhaseDetector` holds the phase where it is — on the ground
+        // for a departure — and this would then take the raw MSL, with no AGL to subtract,
+        // as the field elevation. One such snapshot in the seconds after rotation would
+        // put the field hundreds of feet up and raise every initial-climb altitude
+        // derived from it.
+        let reportedOnGround = state.onGround ?? state.altitudeAGL.map { $0 < 10 }
+        if !hasDeparted, reportedOnGround == true, let msl = state.altitudeMSL {
             departureFieldElevationMSL = max(0, msl - (state.altitudeAGL ?? 0))
         }
 
