@@ -62,14 +62,25 @@ struct RunwayDatabase {
     /// Calm/variable wind (≤ 3 kt) keeps the field's primary runway (first in the
     /// list) for a stable, realistic default rather than chasing noise.
     func activeRunway(for code: String, windDirection: Int, windSpeed: Int) -> String? {
-        let runways = runways(for: code)
-        guard let primary = runways.first else { return nil }
+        activeRunway(among: runways(for: code), windDirection: windDirection, windSpeed: windSpeed)
+    }
+
+    /// The same pick, made among a runway list supplied by the caller — the field's own
+    /// runway-end idents parsed from its loaded airport surface. That source is
+    /// airport-agnostic, so it reaches the many fields the curated table above does not, and
+    /// choosing *among real runways* is the whole point: the alternative last resort invents a
+    /// runway number from the wind, and that number is read back as a heading by the takeoff
+    /// clearance and the line-up detector. The curated table is still consulted first, because
+    /// it is ordered with each field's commonly-active end first and so gives a stable,
+    /// realistic answer in calm wind; a parsed surface has no such ordering.
+    func activeRunway(among idents: [String], windDirection: Int, windSpeed: Int) -> String? {
+        guard let primary = idents.first else { return nil }
         guard windSpeed > 3, windDirection > 0 else { return primary }
 
         let wind = Double(windDirection)
         // Most into-wind runway: smallest angular difference between the runway's
         // heading and the wind direction. Stable on ties (keeps list order).
-        let best = runways.min { a, b in
+        let best = idents.min { a, b in
             Geo.headingDifference(heading(of: a), wind) < Geo.headingDifference(heading(of: b), wind)
         }
         return best ?? primary

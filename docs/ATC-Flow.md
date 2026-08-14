@@ -124,14 +124,26 @@ field reference.
 Reading the *ident* off the marker matters as much as reading its position. The marker
 is filtered out of the fix list before `captureRunways` — the only thing that set
 `departureRunway` — ever sees it, so a detailed plan whose sole runway evidence was the
-marker came out naming no departure runway at all. `resolvedRunway` then falls past the
-built-in runway inventory (which covers a few dozen fields, not KMCO) to its last
-resort: **the wind direction rounded to the nearest ten, called a runway.** That is a
-tolerable thing to say out loud at an unknown field and a bad thing to measure against,
-because the "within 10° of the runway heading" test is then asking whether the departure
-vector lies near the *wind* — and a departure that happens to sit near it loses its turn
-to "fly runway heading". `ATCContext.runwayIsKnown` marks a runway that was guessed this
-way, and the takeoff clearance never makes the substitution against one: an explicit
+marker came out naming no departure runway at all — and an unknown departure runway is
+where `resolvedRunway` starts guessing.
+
+`resolvedRunway` picks, in order: the filed departure/arrival runway (or a parsed
+approach's), the runway the pilot typed, the into-wind runway from the **curated runway
+inventory** (a few dozen fields, ordered with each field's commonly-active end first so
+calm wind gives a stable answer), then the into-wind runway from **the field's own
+runway-end idents parsed off its loaded airport surface** — airport-agnostic, and at the
+departure field it is loaded by the time a takeoff clearance is due, because the taxi map
+is built from it. Only with none of those does it fall to its last resort: **the wind
+direction rounded to the nearest ten, called a runway.**
+
+Choosing the into-wind runway *from a field's real runways* is what the wind is good for.
+Inventing a runway number from it is what the wind is not good for, and that number is a
+name, never a measurement — the clearance may name a runway the field does not have (KMCO
+has no runway 15), and two consumers read the ident back as geometry: the takeoff
+clearance's "within 10° of the runway heading" test, and `RunwayLineupDetector`, whose 18°
+alignment tolerance is what triggers the automatic clearance in the first place.
+`ATCContext.runwayIsKnown` marks a runway that was guessed this way, and the takeoff
+clearance never makes the "fly runway heading" substitution against one: an explicit
 heading is never wrong, only wordier.
 
 The origin is not a detail. The three points were once treated as interchangeable, on

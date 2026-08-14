@@ -3264,6 +3264,20 @@ final class AppModel: ObservableObject {
         if let real = runways.activeRunway(for: icao, windDirection: windDir, windSpeed: windSpeed) {
             return (real, true)
         }
+        // The field's own runway-end idents, parsed from its loaded airport surface. The
+        // curated table above covers a few dozen fields; this covers every field whose
+        // surface the taxi map has already fetched — which, at the departure airport by the
+        // time a takeoff clearance is due, is the field the aircraft is sitting on. Picking
+        // the into-wind runway *from the field's real runways* is what the wind is actually
+        // good for; the fallthrough below is what it is not.
+        let surfaceRunways = airportSurface.cachedRunwayIdents(icao: icao)
+        if let real = runways.activeRunway(among: surfaceRunways,
+                                           windDirection: windDir, windSpeed: windSpeed) {
+            return (real, true)
+        }
+        // Last resort, and only a *name*: the wind direction rounded to the nearest ten,
+        // which at least sounds like a runway at a field nothing else knows anything about.
+        // It is returned as not-known so no caller reads it back as a heading.
         let dir = windDir == 0 ? 270 : windDir
         var num = Int((Double(dir) / 10).rounded())
         if num <= 0 { num = 36 }
