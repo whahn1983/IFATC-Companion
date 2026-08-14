@@ -728,6 +728,15 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      on whatever states a given IF version exposes. Sampling is skipped past ~5° of bank
      (the two states are read in separate round-trips, so a roll smears the difference)
      and the wind is smoothed across ticks, with the last good estimate held meanwhile.
+     The **variation is corroborated, not latched** (`HeadingSolver.VariationEstimate`):
+     it is a property of where the aircraft is, drifting about a degree per hundred miles
+     and never jumping, so a sample past ±45° is discarded outright and one that disagrees
+     with the value in use by more than 3° has to be repeated by the next sample before it
+     displaces it. The two headings are read in separate round-trips over one socket, and a
+     reply landing in the wrong read makes a clean-looking `float` out of some other state
+     — the difference between a real heading and someone else's number is tens of degrees
+     of "variation", which used to be adopted on the spot and went straight into the
+     takeoff clearance's departure vector.
      Where the sim exposes no true heading there is nothing to measure and the raw true
      bearing is assigned, exactly as before. Only the **spoken** heading is converted —
      the armed turn geometry (`deviationStartHeading`, `pendingRejoinHeading`, the leg

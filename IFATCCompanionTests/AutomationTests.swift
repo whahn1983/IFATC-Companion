@@ -386,7 +386,9 @@ final class AutomationTests: XCTestCase {
 
         // Lined up at the field, with the sim reporting a 12° east variation between its
         // two headings for the same nose. On the ground the wind triangle isn't solved,
-        // so this isolates the variation half of the conversion.
+        // so this isolates the variation half of the conversion. Ingested twice because a
+        // variation is only adopted once a second reading corroborates it — one torn pair of
+        // headings must never reach the departure vector (`HeadingSolver.VariationEstimate`).
         var s = AircraftState()
         s.onGround = true
         s.groundSpeed = 0
@@ -394,6 +396,7 @@ final class AutomationTests: XCTestCase {
         s.longitude = iah.longitude
         s.trueHeading = 170
         s.heading = 170 - variationEast
+        model.ingestStateForTesting(s)
         model.ingestStateForTesting(s)
 
         guard let fixCoord = eastFix.coordinate else { return XCTFail("the fixture fix must be located") }

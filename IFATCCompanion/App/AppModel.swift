@@ -432,7 +432,9 @@ final class AppModel: ObservableObject {
     /// telemetry and held across ticks that don't carry a usable sample — a turn is
     /// exactly when the samples are least trustworthy and the correction most needed, so
     /// falling back to "no correction" mid-turn would defeat the point. See `HeadingSolver`.
-    private var lastKnownVariationEast: Double?
+    private var variationEstimate = HeadingSolver.VariationEstimate()
+    /// The variation the magnetic conversion is using — nil until two readings have agreed.
+    private var lastKnownVariationEast: Double? { variationEstimate.degreesEast }
     /// The wind the crab is actually computed for — the sim's own reading wherever it is
     /// exposed and trusted, the triangle's estimate otherwise.
     private var lastKnownWind: HeadingSolver.Wind?
@@ -6047,8 +6049,11 @@ final class AppModel: ObservableObject {
     /// unchanged.
     private func updateHeadingCorrections(from state: AircraftState) {
         let nearLevel = abs(state.bankAngle ?? 0) <= HeadingSolver.maxSampleBankDegrees
-        if nearLevel, let variation = HeadingSolver.variationDegreesEast(from: state) {
-            lastKnownVariationEast = variation
+        if nearLevel, let sample = HeadingSolver.variationDegreesEast(from: state) {
+            // Corroborated rather than latched: the variation goes straight into the initial
+            // departure vector, where one torn pair of headings is the difference between a
+            // turn and "fly runway heading". See `HeadingSolver.VariationEstimate`.
+            variationEstimate.note(sample)
         }
         let solved = nearLevel ? HeadingSolver.wind(from: state) : nil
         // The triangle's estimate is kept on its own, never blended with a reported sample,

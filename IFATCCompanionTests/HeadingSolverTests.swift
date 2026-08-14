@@ -78,6 +78,72 @@ final class HeadingSolverTests: XCTestCase {
         XCTAssertNil(HeadingSolver.variationDegreesEast(from: trueOnly))
     }
 
+    // MARK: - Variation estimate (corroboration)
+
+    /// Nothing is used until two consecutive readings agree — a single sample is not an
+    /// estimate, and the caller's degrade path (assign the plain true bearing) is fine for
+    /// the second it takes a healthy link to produce the second one.
+    func testVariationNeedsASecondAgreeingReadingBeforeItIsUsed() {
+        var estimate = HeadingSolver.VariationEstimate()
+        XCTAssertNil(estimate.degreesEast)
+        estimate.note(-7.4)
+        XCTAssertNil(estimate.degreesEast, "one reading is not corroboration")
+        estimate.note(-7.5)
+        XCTAssertEqual(estimate.degreesEast ?? .nan, -7.5, accuracy: 0.001)
+    }
+
+    /// Regression for the reported KMCO takeoff clearance. A variation is a property of where
+    /// the aircraft *is*: it drifts about a degree per hundred miles and never jumps. A single
+    /// torn pair of headings — the failure mode #219 was about, where a reply lands in the
+    /// wrong read — used to be latched as-is and went straight into the departure vector, and
+    /// ~20° of bogus variation is exactly what turns a 152° departure into 172° and collapses
+    /// the clearance to "fly runway heading" against runway 17R.
+    func testOneTornReadingCannotMoveTheVariationInUse() {
+        var estimate = HeadingSolver.VariationEstimate()
+        estimate.note(-7.4)
+        estimate.note(-7.5)
+        XCTAssertEqual(estimate.degreesEast ?? .nan, -7.5, accuracy: 0.001)
+
+        estimate.note(-29.0)                       // a torn read
+        XCTAssertEqual(estimate.degreesEast ?? .nan, -7.5, accuracy: 0.001,
+                       "the held variation stands until a second reading corroborates the jump")
+        estimate.note(-7.6)                        // link recovers
+        XCTAssertEqual(estimate.degreesEast ?? .nan, -7.6, accuracy: 0.001)
+    }
+
+    /// A jump that keeps repeating is not noise — it is the reading, and it has to win, or a
+    /// wrong early value would be held forever.
+    func testACorroboratedJumpIsAdopted() {
+        var estimate = HeadingSolver.VariationEstimate()
+        estimate.note(-7.5)
+        estimate.note(-7.5)
+        estimate.note(-20.0)
+        estimate.note(-20.1)
+        XCTAssertEqual(estimate.degreesEast ?? .nan, -20.1, accuracy: 0.001)
+    }
+
+    /// Declination stays inside ~30° across the flyable world; a sample past the bound is a
+    /// bad pair of headings, not a place, and must not even become a candidate.
+    func testImplausibleVariationIsRejectedOutright() {
+        var estimate = HeadingSolver.VariationEstimate()
+        estimate.note(57.0)                        // "229 minus 172" — the #217 reading
+        estimate.note(57.0)
+        XCTAssertNil(estimate.degreesEast, "a corroborated impossibility is still an impossibility")
+
+        estimate.note(.nan)
+        XCTAssertNil(estimate.degreesEast)
+    }
+
+    /// Ordinary drift down a long leg is accepted every tick — the guard must not freeze the
+    /// estimate at wherever the aircraft first switched on.
+    func testVariationFollowsSlowDrift() {
+        var estimate = HeadingSolver.VariationEstimate()
+        estimate.note(-7.5)
+        estimate.note(-7.5)
+        for step in stride(from: -7.5, through: -12.0, by: -0.5) { estimate.note(step) }
+        XCTAssertEqual(estimate.degreesEast ?? .nan, -12.0, accuracy: 0.001)
+    }
+
     // MARK: - Wind
 
     /// The wind triangle, inverted: given what the aircraft is doing through the air and
