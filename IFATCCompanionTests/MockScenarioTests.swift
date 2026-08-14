@@ -136,6 +136,33 @@ final class MockScenarioTests: XCTestCase {
         XCTAssertEqual(model.assignedAltitude, 11000)
     }
 
+    /// The field elevation is only ever taken from a snapshot that *reports* being on
+    /// the ground. A half-read one (the link torn down mid-poll) carries no ground
+    /// reference, so the phase holds where it is — on the ground, for a departure — and
+    /// its raw MSL has no AGL to subtract. Capturing that would put the field hundreds
+    /// of feet up and raise every initial climb derived from it.
+    func testFieldElevationIsNotTakenFromASnapshotWithNoGroundReference() {
+        let model = makeModel()
+        var ground = AircraftState()
+        ground.onGround = true
+        ground.altitudeMSL = 5434
+        ground.altitudeAGL = 0
+        ground.latitude = 39.86; ground.longitude = -104.67
+        ground.groundSpeed = 0; ground.heading = 340
+        model.ingestStateForTesting(ground)
+
+        // Position and altitude read; the on-ground, AGL and vertical-speed reads
+        // didn't complete before the link went away — and the aircraft has rotated.
+        var halfRead = AircraftState()
+        halfRead.altitudeMSL = 6200
+        halfRead.latitude = 39.86; halfRead.longitude = -104.67
+        model.ingestStateForTesting(halfRead)
+
+        model.requestClearance()
+        XCTAssertEqual(model.assignedAltitude, 11000,
+                       "the field must still be the 5,434 ft captured from real on-ground telemetry")
+    }
+
     // MARK: - Descent: STAR + no contradiction
 
     func testDescentSaysDescendViaStarAndIsNotContradictory() {

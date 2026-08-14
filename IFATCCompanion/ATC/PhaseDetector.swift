@@ -25,8 +25,16 @@ struct PhaseDetector {
         let gs = state.groundSpeed ?? 0
         let alt = state.altitudeMSL ?? 0
         let vs = state.verticalSpeed ?? 0
-        let onGround = state.onGround ?? (state.altitudeAGL.map { $0 < 10 } ?? false)
-        debug.onGround = onGround
+        // Whether the aircraft is on the ground is *reported*, never assumed. Infinite
+        // Flight answers each state read as its own request/response, so any one of them
+        // can time out or be dropped while the rest of the snapshot arrives intact — most
+        // often around a reconnect, including the forced one the app performs when it
+        // returns from the background. A snapshot carrying a position and an altitude but
+        // no on-ground flag is therefore routine, and reading that missing flag as
+        // "airborne" is what put a taxiing aircraft into the climb: the airborne branch
+        // below has no better answer for a slow, level fix than "climb", which is Center
+        // on the radio while the aircraft is still on the taxiway.
+        let reportedOnGround = state.onGround ?? state.altitudeAGL.map { $0 < 10 }
         debug.groundSpeed = gs
         debug.altitudeMSL = alt
         debug.verticalSpeed = vs
@@ -42,6 +50,22 @@ struct PhaseDetector {
         if let coord, let destCoord {
             debug.distanceToDestNM = Geo.distanceNM(from: coord, to: destCoord)
         }
+
+        // With no ground reference in this snapshot, hold the phase the flight is already
+        // in rather than guess at it. Only a genuine vertical rate overrides the hold —
+        // ground speed can't, since a takeoff roll is fast and firmly on the runway.
+        let onGround: Bool
+        if let reportedOnGround {
+            onGround = reportedOnGround
+        } else if abs(vs) > 500 {
+            debug.notes.append("On-ground state not reported — vertical rate shows airborne")
+            onGround = false
+        } else {
+            debug.onGround = previous.isGround
+            debug.notes.append("On-ground state not reported — holding \(previous.title)")
+            return (previous, debug)
+        }
+        debug.onGround = onGround
 
         // --- On the ground ---
         if onGround {

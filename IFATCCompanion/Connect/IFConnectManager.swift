@@ -230,6 +230,16 @@ final class IFConnectManager: ObservableObject {
                     break
                 }
                 let state = await self.reader.readState(using: self.client)
+                // Reading a snapshot is a long chain of individual socket round-trips, and
+                // cancelling this task doesn't interrupt one that is already part-way
+                // through — `disconnect()` tears the link down under it, so the reads that
+                // hadn't run yet simply fail. What comes back is a half-read snapshot: the
+                // fields read before the tear-down, nil for the rest. Publishing that hands
+                // the app a position and an altitude with no on-ground flag, which is
+                // exactly the shape that used to read as "airborne". A cancelled poll has
+                // nothing true left to say, so drop it. (This fires on every forced
+                // reconnect — the one the app performs on returning from the background.)
+                if Task.isCancelled { break }
                 self.onState?(state)
                 await self.logTelemetryHealth(state)
                 self.liveATC = await self.reader.readATCStatus(using: self.client)
