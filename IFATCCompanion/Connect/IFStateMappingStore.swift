@@ -162,22 +162,92 @@ final class IFStateMappingStore {
 
     private(set) var resolved: [Logical: IFManifestEntry] = [:]
 
-    /// Whether this connection is currently read as reporting angles in **degrees** rather
-    /// than radians, proved by snapshots carrying an angle too large to be radians.
+    /// A group of states that must be read in one angular convention, because they come out of
+    /// one part of the sim together.
     ///
-    /// Deciding it per snapshot left a hole. A snapshot whose angles are *all* within ~6° of
-    /// north — nose 004°, track 004°, a northerly wind — has no witness, so a build reporting
-    /// degrees was read as radians and every angle in it multiplied by 57.3: a 4° nose becomes
-    /// 229°, and the variation taken from the pair of headings (`004 − 003`, a degree apart,
-    /// read as 229° and 172°) becomes tens of degrees of declination that then went straight
-    /// into the departure vector. Precisely the case a north-facing runway lines an aircraft
-    /// up for and holds it in.
+    /// **Each family decides its own units, from its own readings.** They were decided together,
+    /// on the reasoning that every angle comes out of "the same API in the same convention" —
+    /// and that is exactly where the field failure came from: `environment/wind_direction_true`
+    /// reports the weather in degrees on builds whose *aircraft* states are radians. One wind
+    /// from 331 then witnessed "degrees" on every single snapshot, which pinned the aircraft's
+    /// heading — 084° magnetic arrives as 1.466 rad, and read as degrees it is shown as 001° —
+    /// and kept re-witnessing, so the contradiction below never got a run to accumulate either.
+    /// The nose sat on north on the Flight tab, the taxi map and the weather map at once.
     ///
-    /// So the decision persists across snapshots — but it is **not** taken on a single reading
-    /// and **not** irreversible, because both of those turn one bad number into a session-long
-    /// fault. The failure they caused: a radians build read as degrees shows every heading in
-    /// 0…6.28 as 0–6°, so the aircraft symbol points north on the taxi and weather maps no
-    /// matter which way the nose is, until the app is relaunched. Two guards:
+    /// The aircraft's own attitude states (`aircraft/0/heading_magnetic`, `heading_true`,
+    /// the ground track, and the bank/pitch that follow them) genuinely are one group. The
+    /// weather is a different subsystem and gets no vote on the nose.
+    enum AngleFamily: CaseIterable {
+        /// `aircraft/0/…` — heading, true heading, ground track, bank, pitch.
+        case aircraft
+        /// `environment/…` — the reported wind direction.
+        case environment
+    }
+
+    /// Whether the aircraft's angle states are currently read as **degrees** rather than radians.
+    var anglesProvedDegrees: Bool { units[.aircraft]?.provedDegrees ?? false }
+    /// The same decision for the sim's reported wind direction, made from its own readings.
+    var windAnglesProvedDegrees: Bool { units[.environment]?.provedDegrees ?? false }
+
+    private var units: [AngleFamily: AngleUnits] = [:]
+
+    /// One angle exactly as the sim reported it, before any conversion.
+    struct RawAngleReading {
+        let name: String
+        let value: Double
+    }
+
+    /// The raw angle readings behind the current units decisions. Logged whenever a decision
+    /// changes: the whole radians-vs-degrees question turns on the *magnitude* of these
+    /// numbers, and until now nothing anywhere recorded them — so a heading shown as 001°
+    /// while the sim's own panel read 084° could only be argued about.
+    private(set) var lastRawAngles: [RawAngleReading] = []
+
+    func noteRawAngles(_ readings: [RawAngleReading]) { lastRawAngles = readings }
+
+    /// Consecutive witnessing snapshots required before degrees is taken as proved.
+    static let degreeWitnessesToProve = 2
+    /// Radian-only snapshots required before a degrees proof is treated as contradicted.
+    static let radianSamplesToDisprove = 12
+    /// Distinct quadrants of the 0…2π circle the heading must visit in that run.
+    static let radianQuadrantsToDisprove = 3
+
+    /// Record what one telemetry snapshot's angles witnessed about one family's units.
+    ///
+    /// - Parameters:
+    ///   - family: which group of states these readings came from. A family is never told
+    ///     about another's readings — see `AngleFamily`.
+    ///   - provesDegrees: an angle in the snapshot was too large to be radians *and* still a
+    ///     plausible compass angle. A reading beyond a full circle in degrees is a corrupt
+    ///     read, not evidence of the units.
+    ///   - anyAboveRadianCircle: any angle exceeded a full circle in radians, plausible or
+    ///     not. Only used to keep the radians disproof honest — a build genuinely reporting
+    ///     degrees produces these constantly, so they reset the disproof run.
+    ///   - rawHeading: the snapshot's raw heading, before any conversion. The disproof needs a
+    ///     value that sweeps the compass over a flight, so only the aircraft family has one.
+    func noteAngleSnapshot(family: AngleFamily,
+                           provesDegrees: Bool,
+                           anyAboveRadianCircle: Bool,
+                           rawHeading: Double?) {
+        var state = units[family] ?? AngleUnits()
+        state.note(provesDegrees: provesDegrees,
+                   anyAboveRadianCircle: anyAboveRadianCircle,
+                   rawHeading: rawHeading)
+        units[family] = state
+    }
+
+    /// One family's radians-vs-degrees decision, and the evidence behind it.
+    ///
+    /// The decision persists across snapshots, because one snapshot can fail to witness
+    /// anything: with the nose and the track both within ~6° of north there is no angle too
+    /// large to be radians, so a build reporting degrees was read as radians and every angle in
+    /// it multiplied by 57.3 — a 4° nose becoming 229°, and the two headings' one-degree
+    /// difference becoming tens of degrees of "variation" that went straight into the departure
+    /// vector. A north-facing runway lines an aircraft up for exactly that and holds it there.
+    ///
+    /// But it is **not** taken on a single reading and **not** irreversible, because both of
+    /// those turn one bad number into a session-long fault — a radians build read as degrees
+    /// shows every heading in 0…6.28 as 0–6°, so the nose reads north whichever way it points:
     ///
     /// - **Proof needs corroboration** (`degreeWitnessesToProve` consecutive snapshots). A
     ///   genuine degrees build witnesses on every snapshot the nose is off north, so it still
@@ -187,68 +257,47 @@ final class IFStateMappingStore {
     ///   value is also a valid degree value), but a *run* of them can: a heading that visits
     ///   three of the four quadrants of the 0…2π circle without one reading ever exceeding a
     ///   full circle in radians is an aircraft turning through the compass, not one holding
-    ///   within a 6° arc of north for a dozen samples. That disproof clears the latch and the
-    ///   headings come right without a relaunch.
-    private(set) var anglesProvedDegrees = false
+    ///   within a 6° arc of north for a dozen samples. That clears the proof and the headings
+    ///   come right without a relaunch.
+    private struct AngleUnits {
+        private(set) var provedDegrees = false
+        private var consecutiveDegreeWitnesses = 0
+        private var radianOnlySamples = 0
+        private var radianHeadingQuadrants: Set<Int> = []
 
-    /// Consecutive snapshots that witnessed degrees so far, before the proof is taken.
-    private var consecutiveDegreeWitnesses = 0
-    /// Snapshots since the degrees proof in which no angle exceeded a full circle in radians.
-    private var radianOnlySamples = 0
-    /// Which quadrants of the 0…2π circle the raw heading has visited in that run.
-    private var radianHeadingQuadrants: Set<Int> = []
-
-    /// Consecutive witnessing snapshots required before degrees is taken as proved.
-    static let degreeWitnessesToProve = 2
-    /// Radian-only snapshots required before a degrees proof is treated as contradicted.
-    static let radianSamplesToDisprove = 12
-    /// Distinct quadrants of the 0…2π circle the heading must visit in that run.
-    static let radianQuadrantsToDisprove = 3
-
-    /// Record what one telemetry snapshot's angles witnessed about the reporting units.
-    ///
-    /// - Parameters:
-    ///   - provesDegrees: an angle in the snapshot was too large to be radians *and* still a
-    ///     plausible compass angle. A reading beyond a full circle in degrees is a corrupt
-    ///     read, not evidence of the units.
-    ///   - anyAboveRadianCircle: any angle exceeded a full circle in radians, plausible or
-    ///     not. Only used to keep the radians disproof honest — a build genuinely reporting
-    ///     degrees produces these constantly, so they reset the disproof run.
-    ///   - rawHeading: the snapshot's raw heading, before any conversion.
-    func noteAngleSnapshot(provesDegrees: Bool, anyAboveRadianCircle: Bool, rawHeading: Double?) {
-        guard anglesProvedDegrees else {
-            if provesDegrees {
-                consecutiveDegreeWitnesses += 1
-                if consecutiveDegreeWitnesses >= Self.degreeWitnessesToProve { takeDegreesProof() }
-            } else {
-                consecutiveDegreeWitnesses = 0
+        mutating func note(provesDegrees: Bool, anyAboveRadianCircle: Bool, rawHeading: Double?) {
+            guard provedDegrees else {
+                if provesDegrees {
+                    consecutiveDegreeWitnesses += 1
+                    if consecutiveDegreeWitnesses >= IFStateMappingStore.degreeWitnessesToProve {
+                        provedDegrees = true
+                        resetDisproof()
+                    }
+                } else {
+                    consecutiveDegreeWitnesses = 0
+                }
+                return
             }
-            return
+            // Proved — watch for the contradiction that means it was taken in error.
+            if anyAboveRadianCircle {
+                resetDisproof()
+                return
+            }
+            guard let rawHeading, rawHeading.isFinite else { return }
+            radianOnlySamples += 1
+            radianHeadingQuadrants.insert(IFStateMappingStore.radianQuadrant(of: rawHeading))
+            if radianOnlySamples >= IFStateMappingStore.radianSamplesToDisprove,
+               radianHeadingQuadrants.count >= IFStateMappingStore.radianQuadrantsToDisprove {
+                provedDegrees = false
+                consecutiveDegreeWitnesses = 0
+                resetDisproof()
+            }
         }
-        // Latched to degrees — watch for the contradiction that means it was taken in error.
-        if anyAboveRadianCircle {
-            resetRadiansDisproof()
-            return
-        }
-        guard let rawHeading, rawHeading.isFinite else { return }
-        radianOnlySamples += 1
-        radianHeadingQuadrants.insert(Self.radianQuadrant(of: rawHeading))
-        if radianOnlySamples >= Self.radianSamplesToDisprove,
-           radianHeadingQuadrants.count >= Self.radianQuadrantsToDisprove {
-            anglesProvedDegrees = false
-            consecutiveDegreeWitnesses = 0
-            resetRadiansDisproof()
-        }
-    }
 
-    private func takeDegreesProof() {
-        anglesProvedDegrees = true
-        resetRadiansDisproof()
-    }
-
-    private func resetRadiansDisproof() {
-        radianOnlySamples = 0
-        radianHeadingQuadrants.removeAll()
+        private mutating func resetDisproof() {
+            radianOnlySamples = 0
+            radianHeadingQuadrants.removeAll()
+        }
     }
 
     /// Which quarter of the 0…2π circle a raw heading falls in (0–3), wrapping negatives.
@@ -265,9 +314,7 @@ final class IFStateMappingStore {
     /// the next session may be a different Infinite Flight build.
     func resolve(from entries: [IFManifestEntry]) {
         resolved.removeAll()
-        anglesProvedDegrees = false
-        consecutiveDegreeWitnesses = 0
-        resetRadiansDisproof()
+        units.removeAll()
         for logical in Logical.allCases {
             if let match = bestMatch(for: logical.signatures, in: entries, kind: logical.valueKind) {
                 resolved[logical] = match

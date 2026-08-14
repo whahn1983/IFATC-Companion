@@ -732,6 +732,19 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      bearing is assigned, exactly as before. Only the **spoken** heading is converted —
      the armed turn geometry (`deviationStartHeading`, `pendingRejoinHeading`, the leg
      bearings) stays in true degrees so it keeps matching the drawn line.
+   - **The aircraft's angles and the weather's settle their units separately.** They were settled
+     together, on the reasoning that every angle comes out of the same API in the same convention.
+     They don't: `environment/wind_direction_true` reports the weather in **degrees** on builds
+     whose `aircraft/0/…` states are radians. Folding it into one vote meant a wind from 331
+     proved "degrees" on every single snapshot, and the nose went with it — 084° magnetic arrives
+     on the wire as 1.466, and read as degrees it is shown as 001°, so every heading in the app
+     landed within 6° of north on the Flight tab, the taxi map and the weather map at once
+     (reported from the field with the sim's own PFD beside it). It re-witnessed continuously, so
+     the radians contradiction below never got a run to accumulate either. The aircraft's attitude
+     states — magnetic heading, true heading, ground track, and the bank/pitch that follow them —
+     are one family and vote together; the weather is another and votes only on itself
+     (`IFStateMappingStore.AngleFamily`). Both decisions, and the raw readings behind them, are
+     written to Diagnostics.
    - **Heading units are settled per *connection*, not per value or per snapshot.** Infinite Flight reports
      heading and track in radians on some versions and in degrees on others, and a single
      reading cannot tell the two apart: `4` is both a heading of 004° and one of 4 rad (229°).
@@ -780,11 +793,12 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      wrap to −180…180 rather than onto the compass rose, so a 4° left bank stays −4° instead of
      becoming 356° and reading as knife-edge.
    - **The sim's own wind is read, and preferred.** Infinite Flight exposes
-     `environment/wind_velocity` (m/s) and `environment/wind_direction_true` (radians), so the
-     wind no longer *has* to be inferred. Both are mapped (`windVelocity` / `windDirectionTrue`)
-     and normalised to knots and degrees true — the direction joining the snapshot's
-     radians-vs-degrees vote, since it is an angle from the same API in the same convention, and
-     the steady wind matched so it can never resolve onto `wind_gust_velocity` beside it.
+     `environment/wind_velocity` (m/s) and `environment/wind_direction_true` (radians on some
+     builds, degrees on others), so the wind no longer *has* to be inferred. Both are mapped
+     (`windVelocity` / `windDirectionTrue`) and normalised to knots and degrees true — the
+     direction settling its **own** radians-vs-degrees decision, separately from the aircraft's,
+     because the two are not always in the same convention (see above) — and the steady wind
+     matched so it can never resolve onto `wind_gust_velocity` beside it.
      Read directly the wind is exact, so it needs neither the smoothing (which exists only to
      absorb the noise of differencing two ~450 kt vectors) nor the near-wings-level sampling
      guard — and that second point is the real gain: the triangle has to stand down through a

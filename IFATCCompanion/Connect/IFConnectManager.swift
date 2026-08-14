@@ -22,8 +22,12 @@ final class IFConnectManager: ObservableObject {
     private weak var diagnostics: DiagnosticsStore?
     private var pollTask: Task<Void, Never>?
     private var discoveryTimeoutTask: Task<Void, Never>?
-    /// Last angular convention written to Diagnostics, so only the changes are logged.
-    private var lastLoggedAnglesInDegrees: Bool?
+    /// Last angular conventions written to Diagnostics, so only the changes are logged.
+    private struct AngleUnitsSnapshot: Equatable {
+        let aircraftInDegrees: Bool
+        let windInDegrees: Bool
+    }
+    private var lastLoggedAngleUnits: AngleUnitsSnapshot?
 
     /// How long to wait for an Infinite Flight discovery broadcast before giving up
     /// and pointing the user at manual IP entry.
@@ -139,8 +143,8 @@ final class IFConnectManager: ObservableObject {
         }
         logATCRelatedStates(entries)
         logAngleStates()
-        // A fresh manifest re-decides the angular convention, so log it afresh too.
-        lastLoggedAnglesInDegrees = nil
+        // A fresh manifest re-decides the angular conventions, so log them afresh too.
+        lastLoggedAngleUnits = nil
         connectionState = .connected
         await readFlightPlan()
         startPolling()
@@ -244,13 +248,23 @@ final class IFConnectManager: ObservableObject {
     /// of these two — a radians build read as degrees shows every heading as 0–6° — and
     /// neither left a trace in a diagnostics export before.
     private func logTelemetryHealth(_ state: AircraftState) async {
-        let degrees = mappingStore.anglesProvedDegrees
-        if degrees != lastLoggedAnglesInDegrees {
-            lastLoggedAnglesInDegrees = degrees
+        let units = AngleUnitsSnapshot(aircraftInDegrees: mappingStore.anglesProvedDegrees,
+                                       windInDegrees: mappingStore.windAnglesProvedDegrees)
+        if units != lastLoggedAngleUnits {
+            lastLoggedAngleUnits = units
             let heading = state.heading.map { String(format: "%.0f°", $0) } ?? "—"
-            diagnostics?.log(.state, degrees
-                ? "Angles read as DEGREES (proved by \(IFStateMappingStore.degreeWitnessesToProve) consecutive snapshots). Heading now \(heading)."
-                : "Angles read as RADIANS. Heading now \(heading).")
+            // The raw readings are the whole argument: 084° magnetic arrives as 1.466 on a
+            // build reporting radians, and a wind on 331 sitting beside it is the weather
+            // reporting degrees — two conventions on one connection, which is what these two
+            // decisions exist to keep apart.
+            let raw = mappingStore.lastRawAngles
+                .map { "\($0.name) \(String(format: "%.3f", $0.value))" }
+                .joined(separator: ", ")
+            diagnostics?.log(.state, """
+                Angle units — aircraft: \(units.aircraftInDegrees ? "DEGREES" : "RADIANS"), \
+                wind: \(units.windInDegrees ? "DEGREES" : "RADIANS"). \
+                Heading now \(heading). Raw: \(raw.isEmpty ? "—" : raw).
+                """)
         }
         let mismatched = await client.takeMismatchedFrameCount()
         if mismatched > 0 {

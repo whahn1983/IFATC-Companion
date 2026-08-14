@@ -37,45 +37,68 @@ struct IFConnectStateReader {
         s.groundSpeed = (await double(.groundSpeed)).map { $0 * IFConnectStateReader.metresPerSecondToKnots }
         s.indicatedAirspeed = (await double(.indicatedAirspeed)).map { $0 * IFConnectStateReader.metresPerSecondToKnots }
         s.trueAirspeed = (await double(.trueAirspeed)).map { $0 * IFConnectStateReader.metresPerSecondToKnots }
-        // Infinite Flight reports heading/track in radians on some versions and in degrees
+        // Infinite Flight reports heading and track in radians on some versions and in degrees
         // on others, and a single value can't tell the two apart: `4` is both a heading of
-        // 004° and one of 4 rad (229°). So the units are never decided per value — every angle
-        // here comes out of the same API in the same convention, so any one of them bigger
-        // than a full circle in radians makes them all degrees. Judging each on its own turned
-        // a nose on 004° into 229°, which then poisoned the wind triangle
+        // 004° and one of 4 rad (229°). So the units are never decided per value — the
+        // aircraft's attitude states come out of one part of the sim together, so any one of
+        // them bigger than a full circle in radians makes them all degrees. Judging each on its
+        // own turned a nose on 004° into 229°, which then poisoned the wind triangle
         // (`HeadingSolver.wind`) and every deviation vector solved from it whenever heading or
-        // track sat within ~6° of north. `environment/wind_direction_true` is an angle from the
-        // same API in the same convention, so it witnesses the units too rather than guessing
-        // on its own.
+        // track sat within ~6° of north.
+        //
+        // The **wind is not one of them.** It was, on the reasoning that every angle comes out
+        // of "the same API in the same convention", and that is precisely what broke the nose
+        // in the field: `environment/wind_direction_true` reports degrees on builds whose
+        // aircraft states are radians, so one wind from 331 proved "degrees" on every snapshot
+        // and every heading — all of them in 0…6.28 — was shown within 6° of north. 084°
+        // magnetic arrives as 1.466 and read that way it is 001°. The weather is a separate
+        // subsystem and settles its own units from its own readings (`AngleFamily`).
         let rawHeading = await double(.heading)
         let rawTrueHeading = await double(.trueHeading)
         let rawTrack = await double(.track)
         let rawWindDirection = await double(.windDirectionTrue)
-        // …and the decision carries across snapshots, not just within one. One snapshot can
-        // fail to witness anything: with the nose, the track and the wind all within ~6° of
-        // north there is no angle too large to be radians, so a build reporting degrees was
-        // read as radians and every angle in it multiplied by 57.3 — a 004° nose becoming
-        // 229°, and the two headings' one-degree difference becoming tens of degrees of
-        // "variation" that went straight into the departure vector. A north-facing runway
-        // lines an aircraft up for exactly that and holds it there.
+        // Keep the raw readings for Diagnostics. The whole radians-vs-degrees question turns on
+        // the magnitude of these numbers, and nothing recorded them: a nose shown as 001° while
+        // the sim's own panel read 084° could only be argued about.
+        var rawAngleLog: [IFStateMappingStore.RawAngleReading] = []
+        if let value = rawHeading { rawAngleLog.append(.init(name: "heading", value: value)) }
+        if let value = rawTrueHeading { rawAngleLog.append(.init(name: "trueHeading", value: value)) }
+        if let value = rawTrack { rawAngleLog.append(.init(name: "track", value: value)) }
+        if let value = rawWindDirection { rawAngleLog.append(.init(name: "windDirection", value: value)) }
+        store.noteRawAngles(rawAngleLog)
+
+        // The decision also carries across snapshots, not just within one. One snapshot can
+        // fail to witness anything: with the nose and the track both within ~6° of north there
+        // is no angle too large to be radians, so a build reporting degrees was read as radians
+        // and every angle in it multiplied by 57.3 — a 004° nose becoming 229°, and the two
+        // headings' one-degree difference becoming tens of degrees of "variation" that went
+        // straight into the departure vector. A north-facing runway lines an aircraft up for
+        // exactly that and holds it there.
         //
         // The store decides how much evidence that takes and when it has been contradicted
         // (`noteAngleSnapshot`); what belongs here is what each reading is worth. A value past
-        // a full circle *in degrees* witnesses nothing: no heading, track or wind direction can
-        // read 450, so such a number is a corrupt read — the answer to a different state — and
-        // treating it as proof of degrees is what pinned every heading into 0–6° and the
-        // aircraft symbol to north for a whole session.
-        let rawAngles = [rawHeading, rawTrueHeading, rawTrack, rawWindDirection].compactMap { $0 }
+        // a full circle *in degrees* witnesses nothing: no heading or track can read 450, so
+        // such a number is a corrupt read — the answer to a different state — and treating it
+        // as proof of degrees is the other way every heading ends up pinned to north.
+        let aircraftAngles = [rawHeading, rawTrueHeading, rawTrack].compactMap { $0 }
         store.noteAngleSnapshot(
-            provesDegrees: rawAngles.contains { IFConnectStateReader.provesDegrees($0) },
-            anyAboveRadianCircle: rawAngles.contains { IFConnectStateReader.exceedsFullCircleInRadians($0) },
+            family: .aircraft,
+            provesDegrees: aircraftAngles.contains { IFConnectStateReader.provesDegrees($0) },
+            anyAboveRadianCircle: aircraftAngles.contains { IFConnectStateReader.exceedsFullCircleInRadians($0) },
             rawHeading: rawHeading ?? rawTrueHeading)
+        store.noteAngleSnapshot(
+            family: .environment,
+            provesDegrees: rawWindDirection.map { IFConnectStateReader.provesDegrees($0) } ?? false,
+            anyAboveRadianCircle: rawWindDirection.map { IFConnectStateReader.exceedsFullCircleInRadians($0) } ?? false,
+            // The wind direction barely moves over a flight, so it can never sweep the compass
+            // the way a nose does; its proof is corroborated but not contradicted this way.
+            rawHeading: nil)
         let anglesInDegrees = store.anglesProvedDegrees
         s.heading = rawHeading.map { IFConnectStateReader.normalizeAngle($0, alreadyDegrees: anglesInDegrees) }
         s.trueHeading = rawTrueHeading.map { IFConnectStateReader.normalizeAngle($0, alreadyDegrees: anglesInDegrees) }
         s.track = rawTrack.map { IFConnectStateReader.normalizeAngle($0, alreadyDegrees: anglesInDegrees) }
         s.reportedWindDirectionTrue = rawWindDirection.map {
-            IFConnectStateReader.normalizeAngle($0, alreadyDegrees: anglesInDegrees)
+            IFConnectStateReader.normalizeAngle($0, alreadyDegrees: store.windAnglesProvedDegrees)
         }
         // The sim reports wind speed in m/s, like every other speed it exposes.
         s.reportedWindSpeedKnots = (await double(.windVelocity)).map { $0 * IFConnectStateReader.metresPerSecondToKnots }
