@@ -36,6 +36,12 @@ struct ATCContext {
     /// Initial assigned heading after departure (bearing to the first fix / route
     /// intercept). 0 when unknown — the takeoff clearance then says "runway heading".
     var departureHeading: Int = 0
+    /// Whether `runway` is a runway the field actually has (filed, typed, or from the
+    /// built-in runway inventory) rather than a number the app derived from the wind
+    /// because nothing named one. Only a real runway's ident carries a real heading, so
+    /// only then may the takeoff clearance replace the departure vector with "fly runway
+    /// heading" on the strength of the two being close.
+    var runwayIsKnown: Bool = true
     /// Name of the first enroute fix, used for "resume own navigation, direct …".
     var firstFixName: String = ""
     /// Altitude (ft MSL) up to which Departure works the climb before handing to
@@ -163,7 +169,8 @@ struct ATCStateMachine {
                 return engine.clearedForTakeoff(cs: c.callsign, runway: c.runway,
                                                 windDir: c.windDirection, windSpeed: c.windSpeed,
                                                 departureHeading: c.departureHeading,
-                                                initialAltitude: c.initialClimbAltitude)
+                                                initialAltitude: c.initialClimbAltitude,
+                                                runwayIsKnown: c.runwayIsKnown)
             }
             return engine.clearedForTakeoff(cs: c.callsign, runway: c.runway,
                                             windDir: c.windDirection, windSpeed: c.windSpeed)

@@ -105,16 +105,34 @@ first fix of the departure — the SID's first published fix when a SID is filed
 otherwise the next filed fix after the runway. It is airport-agnostic and never
 uses the bearing to the destination. When no such fix can be located the heading is
 unknown and the clearance says "fly runway heading"; the heading is likewise spoken
-as "fly runway heading" whenever it lands within 10° of the runway heading.
+as "fly runway heading" whenever it lands within 10° of the runway heading. The fix it
+targets must be **clear of the field** (≥ 1 NM from the origin) on both branches — a
+published SID commonly names a fly-over fix at the runway end as its first fix, and a
+bearing measured across a few hundred feet is noise.
 
 It is measured **from the departure runway** — the `DPT RW26L` marker SimBrief files
 and Infinite Flight locates at the runway end. That marker is not a navigable fix and
 is never shown as a waypoint (left in the route it becomes the first "waypoint" and,
 lying straight down the runway, collapses the clearance to "fly runway heading" every
-flight), so only its *position* is kept, on `FlightPlan.departureRunwayCoordinate`. A
-bare located `RW26L` token near the start of the route serves the same purpose. Where
-the plan carries neither — a route string has no coordinates at all — the origin falls
-back to the live on-ground position, and then to the departure field reference.
+flight), so its *position* is kept on `FlightPlan.departureRunwayCoordinate` and the
+**runway it names** on `FlightPlan.departureRunway` (`ARR RW18C` likewise supplies the
+arrival runway). A bare located `RW26L` token near the start of the route serves the
+same purpose. Where the plan carries neither — a route string has no coordinates at
+all — the origin falls back to the live on-ground position, and then to the departure
+field reference.
+
+Reading the *ident* off the marker matters as much as reading its position. The marker
+is filtered out of the fix list before `captureRunways` — the only thing that set
+`departureRunway` — ever sees it, so a detailed plan whose sole runway evidence was the
+marker came out naming no departure runway at all. `resolvedRunway` then falls past the
+built-in runway inventory (which covers a few dozen fields, not KMCO) to its last
+resort: **the wind direction rounded to the nearest ten, called a runway.** That is a
+tolerable thing to say out loud at an unknown field and a bad thing to measure against,
+because the "within 10° of the runway heading" test is then asking whether the departure
+vector lies near the *wind* — and a departure that happens to sit near it loses its turn
+to "fly runway heading". `ATCContext.runwayIsKnown` marks a runway that was guessed this
+way, and the takeoff clearance never makes the substitution against one: an explicit
+heading is never wrong, only wordier.
 
 The origin is not a detail. The three points were once treated as interchangeable, on
 the grounds that "for a fix a few miles out they agree to within a degree"; at a hub

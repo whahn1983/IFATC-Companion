@@ -158,6 +158,7 @@ struct DiagnosticsView: View {
                 }
                 DataRow(label: "Magnetic variation", value: d.magneticVariationText ?? "—")
                 DataRow(label: "Last weather vector", value: d.assignedHeadingText ?? "—")
+                DataRow(label: "Departure heading", value: d.departureHeadingSummary ?? "—")
                 if let err = d.providerError {
                     Text("Provider error: \(err)").font(.caption).foregroundStyle(.orange)
                         .frame(maxWidth: .infinity, alignment: .leading)

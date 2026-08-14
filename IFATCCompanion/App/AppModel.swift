@@ -448,6 +448,10 @@ final class AppModel: ObservableObject {
     /// only be argued about. Never read by the flow.
     private var lastAssignedTrueCourse: Double?
     private var lastAssignedVectorHeading: Int?
+    /// How the last initial departure heading was arrived at — the runway it will be
+    /// measured against, the origin it was taken from, the fix it targeted, and the
+    /// true→magnetic step. Shown in Diagnostics. Never read by the flow.
+    private var lastDepartureHeadingSummary: String?
     /// Whether `lastKnownWind` currently comes from the sim's own `environment/wind_*` states
     /// rather than the inferred wind triangle. Reported in Weather Diagnostics so it is never
     /// a guess which of the two a given vector was crabbed for.
@@ -3066,8 +3070,9 @@ final class AppModel: ObservableObject {
         let approachProc = flightPlan.approach.isEmpty ? nil
             : ProcedureParser.parseApproach(flightPlan.approach)
 
-        let runway = resolvedRunway(windDir: windDir, windSpeed: windSpeed, arrival: arrival,
-                                    approach: approachProc)
+        let resolved = resolvedRunway(windDir: windDir, windSpeed: windSpeed, arrival: arrival,
+                                      approach: approachProc)
+        let runway = resolved.ident
         let taxiPlan = taxiPlanner.plan(airport: arrival ? flightPlan.destination : flightPlan.departure,
                                         runway: runway, arrival: arrival)
         let approachName = approachProc?.displayName
@@ -3125,11 +3130,41 @@ final class AppModel: ObservableObject {
         // that correction is inert here — the clearance is issued on the ground, where
         // the wind triangle isn't solved — so this is a variation conversion in practice.
         let depHeading: Int
+        var trueCourse: Double?
         if let headingOrigin, let intercept = interceptFix?.coordinate,
            Geo.distanceNM(from: headingOrigin, to: intercept) >= 0.5 {
-            depHeading = assignedHeading(forTrueCourse: Geo.bearing(from: headingOrigin, to: intercept))
+            let course = Geo.bearing(from: headingOrigin, to: intercept)
+            trueCourse = course
+            depHeading = assignedHeading(forTrueCourse: course)
         } else {
             depHeading = 0
+        }
+        // Record how that number was arrived at, for the Diagnostics row. Every ingredient
+        // here has been the culprit at least once — the origin, the fix it targeted, the
+        // true→magnetic step, and the runway the "fly runway heading" test measures against
+        // (which is a guess from the wind whenever nothing named a runway) — and none of
+        // them were visible anywhere, so a clearance that came out "fly runway heading" when
+        // it should have carried a turn could only be argued about.
+        if !arrival {
+            let origin: String
+            if departureRunwayCoord != nil { origin = "runway marker" }
+            else if onRunwayPosition != nil { origin = "aircraft" }
+            else if depCoord != nil { origin = "field" }
+            else { origin = "none" }
+            let fix: String
+            if let interceptFix {
+                fix = interceptFix.coordinate == nil ? "\(interceptFix.name) (unlocated)" : interceptFix.name
+            } else {
+                fix = "none"
+            }
+            var parts = ["rwy \(runway)\(resolved.isKnown ? "" : " (wind guess)")",
+                         "from \(origin)", "fix \(fix)"]
+            if let trueCourse {
+                parts.append(String(format: "true %03.0f° → %03d°", trueCourse, depHeading))
+            } else {
+                parts.append("no bearing → runway heading")
+            }
+            lastDepartureHeadingSummary = parts.joined(separator: " · ")
         }
         // The configured initial climb is a height above the departure field. Add it
         // to the field elevation and round up to the next thousand so the callout is a
@@ -3186,6 +3221,7 @@ final class AppModel: ObservableObject {
             rampSpot: rampSpot,
             gate: arrival ? flightPlan.arrivalGate : flightPlan.departureGate,
             departureHeading: ((depHeading % 360) + 360) % 360,
+            runwayIsKnown: resolved.isKnown,
             firstFixName: directFix?.name ?? "",
             traconCeiling: currentTraconCeiling,
             approachInterceptAltitude: flightPlan.approachInterceptAltitude,
@@ -3200,28 +3236,39 @@ final class AppModel: ObservableObject {
         return String(format: "%04o", (abs(n) * 7 + 1) % 4096)
     }
 
+    /// The runway to work with, and whether it is a runway the app actually *knows* the
+    /// field has — filed, typed by the pilot, or looked up in the field's runway inventory —
+    /// rather than a number invented from the wind.
+    ///
+    /// The distinction matters wherever the runway ident is used as a *heading*. The last
+    /// resort below rounds the wind direction to the nearest ten and calls it a runway, which
+    /// is a reasonable thing to say out loud at an unknown field and a terrible thing to
+    /// measure against: the takeoff clearance compares the initial departure heading to the
+    /// runway's heading (ident × 10) to decide whether to say "fly runway heading" at all, and
+    /// against a wind-derived number that test asks "is the departure vector near the wind?" —
+    /// which throws away a real turn whenever it happens to be.
     private func resolvedRunway(windDir: Int, windSpeed: Int, arrival: Bool,
-                                approach: Procedure? = nil) -> String {
+                                approach: Procedure? = nil) -> (ident: String, isKnown: Bool) {
         // On arrival a parsed approach's runway wins, then the flight plan's arrival
         // runway; on departure the flight plan's departure runway wins. Either way a
         // manual override is honored next, then the real active runway for the field
         // from the live wind (ATIS-style), and finally a wind-derived guess.
         if arrival {
-            if let rwy = approach?.runway, !rwy.isEmpty { return rwy }
-            if !flightPlan.arrivalRunway.isEmpty { return flightPlan.arrivalRunway }
+            if let rwy = approach?.runway, !rwy.isEmpty { return (rwy, true) }
+            if !flightPlan.arrivalRunway.isEmpty { return (flightPlan.arrivalRunway, true) }
         } else if !flightPlan.departureRunway.isEmpty {
-            return flightPlan.departureRunway
+            return (flightPlan.departureRunway, true)
         }
-        if !flightPlan.runway.isEmpty { return flightPlan.runway }
+        if !flightPlan.runway.isEmpty { return (flightPlan.runway, true) }
         let icao = arrival ? flightPlan.destination : flightPlan.departure
         if let real = runways.activeRunway(for: icao, windDirection: windDir, windSpeed: windSpeed) {
-            return real
+            return (real, true)
         }
         let dir = windDir == 0 ? 270 : windDir
         var num = Int((Double(dir) / 10).rounded())
         if num <= 0 { num = 36 }
         if num > 36 { num -= 36 }
-        return String(format: "%02d", num)
+        return (String(format: "%02d", num), false)
     }
 
     // MARK: - Flight plan
@@ -5164,6 +5211,7 @@ final class AppModel: ObservableObject {
         d.magneticVariationEast = lastKnownVariationEast
         d.lastAssignedTrueCourse = lastAssignedTrueCourse
         d.lastAssignedHeading = lastAssignedVectorHeading
+        d.departureHeadingSummary = lastDepartureHeadingSummary
         d.providerError = precipService.lastError
         d.coverageMessage = radarOverlay.coverageAvailable ? nil : radarOverlay.unavailableMessage
         d.radarLastBytes = ordDataUsage.last

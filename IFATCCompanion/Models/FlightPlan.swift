@@ -173,39 +173,53 @@ struct FlightPlan: Equatable, Codable {
     /// field being in a built-in table.
     ///
     ///   1. When a SID is filed, the SID's first published fix that is present as a
-    ///      located flight-plan waypoint. The SID's own fix list is taken from the
-    ///      filed procedure structure (`sidFixNames`, recovered from the SID group in
-    ///      the plan) first, then from any caller-supplied list (`sidFixes` — the
-    ///      built-in library for the demo airports). The first name that matches a
-    ///      located filed waypoint wins. Because the match is by name — not by route
-    ///      position — an intermediate "buffer" fix filed between the runway and the
-    ///      SID never displaces the SID's true first fix.
+    ///      located flight-plan waypoint **and clear of the field**. The SID's own fix
+    ///      list is taken from the filed procedure structure (`sidFixNames`, recovered
+    ///      from the SID group in the plan) first, then from any caller-supplied list
+    ///      (`sidFixes` — the built-in library for the demo airports). The first name
+    ///      that matches a located filed waypoint wins. Because the match is by name —
+    ///      not by route position — an intermediate "buffer" fix filed between the
+    ///      runway and the SID never displaces the SID's true first fix.
     ///   2. Only when no SID structure is known: the next filed fix after the runway —
-    ///      the first located fix clear of the field (≥ 1 NM from `origin`), so a fix
-    ///      sitting on the field is never chosen. Falls back to the first located fix,
-    ///      then the first filed fix (which may be unlocated).
+    ///      the first located fix clear of the field, so a fix sitting on the field is
+    ///      never chosen. Falls back to the first located fix, then the first filed fix
+    ///      (which may be unlocated).
     ///
     /// Returns nil only when the plan carries no fixes at all. When the chosen fix has
     /// no coordinate the caller cannot form a bearing and should issue "runway
     /// heading" — it must never fall back to a bearing toward the destination, which
     /// for a northern departure to a southern destination points ~180° the wrong way.
     func initialDepartureFix(sidFixes: [String], origin: CLLocationCoordinate2D?) -> Waypoint? {
+        // Whether a fix is far enough from the departure runway to give a meaningful
+        // bearing off it. Applied to *both* branches: a published SID commonly names a
+        // fly-over fix at the runway end as its first fix, and taking that one leaves the
+        // caller measuring a bearing across a few hundred feet — which it rejects,
+        // collapsing the whole clearance to "runway heading". The SID branch used to skip
+        // this test, so it was the one path that could still pick such a fix.
+        func clearOfTheField(_ waypoint: Waypoint) -> Bool {
+            guard let coordinate = waypoint.coordinate else { return false }
+            guard let origin else { return true }
+            return Geo.distanceNM(from: origin, to: coordinate) >= FlightPlan.departureFixClearanceNM
+        }
         // The SID's own first published fix, matched by name to a located waypoint. The
         // filed SID structure (`sidFixNames`) is authoritative; `sidFixes` covers the
         // demo airports whose fixes come from the built-in library.
         for name in sidFixNames + sidFixes {
             if let sidFix = waypoints.first(where: {
-                $0.coordinate != nil && $0.name.caseInsensitiveCompare(name) == .orderedSame
+                $0.name.caseInsensitiveCompare(name) == .orderedSame && clearOfTheField($0)
             }) {
                 return sidFix
             }
         }
         // No SID structure: the next filed fix after the runway.
         let located = waypoints.filter { $0.coordinate != nil }
-        if let origin,
-           let ahead = located.first(where: { Geo.distanceNM(from: origin, to: $0.coordinate!) >= 1 }) {
+        if let ahead = located.first(where: clearOfTheField) {
             return ahead
         }
         return located.first ?? waypoints.first
     }
+
+    /// How far from the departure runway a fix must sit before the bearing to it is
+    /// worth flying. Inside this the fix is on the field and the bearing is noise.
+    static let departureFixClearanceNM: Double = 1
 }
