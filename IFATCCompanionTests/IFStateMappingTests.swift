@@ -227,9 +227,9 @@ final class IFStateMappingTests: XCTestCase {
     /// never got a run to accumulate either. The weather gets no vote on the nose.
     func testAWindReportedInDegreesCannotDecideTheAircraftsUnits() {
         let store = IFStateMappingStore()
-        // Taxiing at KMCO: nose 084° (1.466 rad), track 172° (3.0 rad), wind from 331°.
+        // Taxiing at KMCO: nose 084° (1.466 rad), true 081° (1.421 rad), wind from 331°.
         for _ in 0..<8 {
-            note([1.466, 1.421, 3.0], on: store)
+            note([1.466, 1.421], on: store)
             note([331.0], on: store, family: .environment)
         }
 
@@ -244,12 +244,31 @@ final class IFStateMappingTests: XCTestCase {
                        331, accuracy: 0.001)
     }
 
+    /// Only the two headings decide the heading's units. They are the states the decision is
+    /// *for*, and the only angles matched by an exact name; the ground track is matched by a
+    /// looser signature and has already been seen to land on something that isn't a bearing at
+    /// all. It follows the decision rather than making it.
+    func testOnlyTheHeadingsDecideTheHeadingsUnits() {
+        let store = IFStateMappingStore()
+        // A track state reading in degrees — or simply reading something that isn't a bearing —
+        // alongside headings that are plainly radians.
+        for _ in 0..<8 { note([1.466, 1.421], on: store) }
+
+        XCTAssertFalse(store.anglesProvedDegrees)
+        XCTAssertEqual(IFConnectStateReader.normalizeAngle(1.466, alreadyDegrees: store.anglesProvedDegrees),
+                       84, accuracy: 0.5)
+
+        // The headings themselves still settle it the moment they read in degrees.
+        for _ in 0..<IFStateMappingStore.degreeWitnessesToProve { note([84.0, 82.0], on: store) }
+        XCTAssertTrue(store.anglesProvedDegrees)
+    }
+
     /// The two decisions are genuinely independent: a build reporting the aircraft in degrees
     /// and the wind in radians is read correctly too.
     func testTheAircraftAndTheWindSettleTheirUnitsSeparately() {
         let store = IFStateMappingStore()
         for _ in 0..<8 {
-            note([84.0, 82.0, 172.0], on: store)          // aircraft in degrees
+            note([84.0, 82.0], on: store)                  // headings in degrees
             note([5.777], on: store, family: .environment) // wind from 331°, in radians
         }
         XCTAssertTrue(store.anglesProvedDegrees)

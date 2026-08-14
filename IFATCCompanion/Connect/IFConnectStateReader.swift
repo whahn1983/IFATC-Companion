@@ -39,12 +39,10 @@ struct IFConnectStateReader {
         s.trueAirspeed = (await double(.trueAirspeed)).map { $0 * IFConnectStateReader.metresPerSecondToKnots }
         // Infinite Flight reports heading and track in radians on some versions and in degrees
         // on others, and a single value can't tell the two apart: `4` is both a heading of
-        // 004° and one of 4 rad (229°). So the units are never decided per value — the
-        // aircraft's attitude states come out of one part of the sim together, so any one of
-        // them bigger than a full circle in radians makes them all degrees. Judging each on its
-        // own turned a nose on 004° into 229°, which then poisoned the wind triangle
-        // (`HeadingSolver.wind`) and every deviation vector solved from it whenever heading or
-        // track sat within ~6° of north.
+        // 004° and one of 4 rad (229°). So the heading's units are decided from the **heading
+        // states themselves** — magnetic and true, read together — and everything else that
+        // shares their convention (the ground track, bank, pitch) follows that decision rather
+        // than contributing to it.
         //
         // The **wind is not one of them.** It was, on the reasoning that every angle comes out
         // of "the same API in the same convention", and that is precisely what broke the nose
@@ -52,7 +50,8 @@ struct IFConnectStateReader {
         // aircraft states are radians, so one wind from 331 proved "degrees" on every snapshot
         // and every heading — all of them in 0…6.28 — was shown within 6° of north. 084°
         // magnetic arrives as 1.466 and read that way it is 001°. The weather is a separate
-        // subsystem and settles its own units from its own readings (`AngleFamily`).
+        // subsystem and settles its own units from its own readings (`AngleFamily`), which is
+        // also what restores the heading to what it read before the wind was ever consulted.
         let rawHeading = await double(.heading)
         let rawTrueHeading = await double(.trueHeading)
         let rawTrack = await double(.track)
@@ -77,14 +76,21 @@ struct IFConnectStateReader {
         //
         // The store decides how much evidence that takes and when it has been contradicted
         // (`noteAngleSnapshot`); what belongs here is what each reading is worth. A value past
-        // a full circle *in degrees* witnesses nothing: no heading or track can read 450, so
-        // such a number is a corrupt read — the answer to a different state — and treating it
-        // as proof of degrees is the other way every heading ends up pinned to north.
-        let aircraftAngles = [rawHeading, rawTrueHeading, rawTrack].compactMap { $0 }
+        // a full circle *in degrees* witnesses nothing: no heading can read 450, so such a
+        // number is a corrupt read — the answer to a different state — and treating it as proof
+        // of degrees is the other way every heading ends up pinned to north.
+        //
+        // **Only the two headings vote.** They are the states the decision is *for*, and the
+        // only angles resolved by an exact name (`heading_magnetic`, `heading_true`). The
+        // ground track is matched by a looser signature — on one build it landed on the bool
+        // `aircraft/0/is_on_flight_plan_track` — and a state that isn't the angle its name
+        // suggests has no business moving the nose. It follows the decision instead of making
+        // it, as bank and pitch already do.
+        let headingAngles = [rawHeading, rawTrueHeading].compactMap { $0 }
         store.noteAngleSnapshot(
             family: .aircraft,
-            provesDegrees: aircraftAngles.contains { IFConnectStateReader.provesDegrees($0) },
-            anyAboveRadianCircle: aircraftAngles.contains { IFConnectStateReader.exceedsFullCircleInRadians($0) },
+            provesDegrees: headingAngles.contains { IFConnectStateReader.provesDegrees($0) },
+            anyAboveRadianCircle: headingAngles.contains { IFConnectStateReader.exceedsFullCircleInRadians($0) },
             rawHeading: rawHeading ?? rawTrueHeading)
         store.noteAngleSnapshot(
             family: .environment,

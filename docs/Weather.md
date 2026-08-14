@@ -740,10 +740,15 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      on the wire as 1.466, and read as degrees it is shown as 001°, so every heading in the app
      landed within 6° of north on the Flight tab, the taxi map and the weather map at once
      (reported from the field with the sim's own PFD beside it). It re-witnessed continuously, so
-     the radians contradiction below never got a run to accumulate either. The aircraft's attitude
-     states — magnetic heading, true heading, ground track, and the bank/pitch that follow them —
-     are one family and vote together; the weather is another and votes only on itself
-     (`IFStateMappingStore.AngleFamily`). Both decisions, and the raw readings behind them, are
+     the radians contradiction below never got a run to accumulate either. The heading's units are
+     now settled by the **heading states themselves** — `heading_magnetic` and `heading_true`, the
+     only angles resolved by an exact name, and the states the decision is actually for. The
+     ground track, bank and pitch share their convention and *follow* that decision without
+     contributing to it: the track is matched by a looser signature and has already been seen to
+     land on the bool `is_on_flight_plan_track`, and a state that isn't the angle its name suggests
+     has no business moving the nose. The weather is a separate family and votes only on itself
+     (`IFStateMappingStore.AngleFamily`), which is also what restores the heading to what it read
+     before the wind was ever consulted. Both decisions, and the raw readings behind them, are
      written to Diagnostics.
    - **Heading units are settled per *connection*, not per value or per snapshot.** Infinite Flight reports
      heading and track in radians on some versions and in degrees on others, and a single
