@@ -111,15 +111,77 @@ actor IFConnectClient {
             onEvent: onEvent)
     }
 
+    /// How many frames belonging to some *other* state a single read will discard while
+    /// looking for its own answer before giving up. A handful covers the realistic case —
+    /// the late replies to one or two reads that timed out — while still bounding the read.
+    static let maxMismatchedFramesPerRead = 8
+
+    /// Frames discarded because their id didn't echo the requested state. Non-zero means
+    /// the link desynchronised at least once; surfaced in Diagnostics rather than silently
+    /// absorbed, because a desync used to be *invisible* — see `readState`.
+    private(set) var mismatchedFrameCount = 0
+
     /// Read a single state by its manifest entry, decoding per its declared type.
+    ///
+    /// The response frame carries the id it answers, and that id is **checked**. Every read
+    /// is request/response over one socket, so a reply that arrives after its read has timed
+    /// out lands in the *next* read instead — and taking it on trust shifted every subsequent
+    /// read by one for as long as the link stayed desynchronised, silently, since a `float`
+    /// decodes cleanly whatever it actually measures. The damage is worst where a reading is
+    /// interpreted rather than merely displayed: the heading is judged radians-or-degrees by
+    /// magnitude (`IFStateMappingStore.noteAngleSnapshot`), so one altitude or latitude
+    /// landing in a heading slot reads as proof the sim reports degrees, and every genuine
+    /// radian heading afterwards — 0…6.28 — is then shown as 0–6°, pinning the aircraft
+    /// symbol to north on the taxi and weather maps for the rest of the connection.
+    ///
+    /// Frames for other ids are dropped (bounded) until this state's own answer arrives, so a
+    /// desync costs one read rather than every read that follows it.
     func readState(_ entry: IFManifestEntry, timeout: TimeInterval = 4) async throws -> IFStateValue {
         _ = try activeConnection()
         // Each state read is a self-contained request/response; start from an empty
         // buffer so a leftover byte from a prior timed-out read can't misalign it.
         receiveBuffer.reset()
         try await sendStateRequest(id: Int32(entry.id), write: false)
-        let frame = try await readFrame(timeout: timeout)
-        return try decode(frame.payload, as: entry.type)
+        // Skipping is bounded by both a frame count and the wall clock: a stale reply is
+        // already sitting in the buffer, so draining it costs nothing, but a peer that keeps
+        // answering with ids we didn't ask for must not stall the 1 Hz poll indefinitely.
+        let deadline = Date().addingTimeInterval(timeout)
+        let answer = try await IFConnectClient.payload(
+            answering: Int32(entry.id),
+            isExpired: { Date() >= deadline },
+            nextFrame: {
+                let frame = try await self.readFrame(timeout: timeout)
+                return (frame.id, frame.payload)
+            })
+        mismatchedFrameCount += answer.mismatched
+        return try decode(answer.payload, as: entry.type)
+    }
+
+    /// Pull frames from `nextFrame` until one answers `id`, discarding any that don't and
+    /// reporting how many were discarded. Pure but for the injected frame source, so the
+    /// resynchronisation can be exercised without a socket.
+    ///
+    /// Throws `decodingFailed` once the skip budget or the deadline is spent — better a read
+    /// that fails than one that returns another state's number.
+    static func payload(answering id: Int32,
+                        maxMismatched: Int = IFConnectClient.maxMismatchedFramesPerRead,
+                        isExpired: @Sendable () -> Bool = { false },
+                        nextFrame: @Sendable () async throws -> (id: Int32, payload: Data))
+        async throws -> (payload: Data, mismatched: Int) {
+        var mismatched = 0
+        while mismatched <= maxMismatched {
+            let frame = try await nextFrame()
+            if frame.id == id { return (frame.payload, mismatched) }
+            mismatched += 1
+            if isExpired() { break }
+        }
+        throw IFConnectError.decodingFailed
+    }
+
+    /// Read and clear the mismatched-frame tally (diagnostics only).
+    func takeMismatchedFrameCount() -> Int {
+        defer { mismatchedFrameCount = 0 }
+        return mismatchedFrameCount
     }
 
     /// Run a command (write) by id. Many IF commands take no payload.

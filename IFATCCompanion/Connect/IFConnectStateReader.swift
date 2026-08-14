@@ -51,17 +51,25 @@ struct IFConnectStateReader {
         let rawTrueHeading = await double(.trueHeading)
         let rawTrack = await double(.track)
         let rawWindDirection = await double(.windDirectionTrue)
-        // …and the decision is latched for the whole connection, not just the snapshot. One
-        // snapshot can still fail to witness anything: with the nose, the track and the wind
-        // all within ~6° of north there is no angle too large to be radians, so a build
-        // reporting degrees was read as radians and every angle in it multiplied by 57.3 — a
-        // 004° nose becoming 229°, and the two headings' one-degree difference becoming tens of
-        // degrees of "variation" that went straight into the departure vector. A north-facing
-        // runway lines an aircraft up for exactly that and holds it there. Units don't change
-        // mid-connection, so any single witness since connect settles the session.
-        store.noteAnglesProvedDegrees([rawHeading, rawTrueHeading, rawTrack, rawWindDirection]
-            .compactMap { $0 }
-            .contains { IFConnectStateReader.exceedsFullCircleInRadians($0) })
+        // …and the decision carries across snapshots, not just within one. One snapshot can
+        // fail to witness anything: with the nose, the track and the wind all within ~6° of
+        // north there is no angle too large to be radians, so a build reporting degrees was
+        // read as radians and every angle in it multiplied by 57.3 — a 004° nose becoming
+        // 229°, and the two headings' one-degree difference becoming tens of degrees of
+        // "variation" that went straight into the departure vector. A north-facing runway
+        // lines an aircraft up for exactly that and holds it there.
+        //
+        // The store decides how much evidence that takes and when it has been contradicted
+        // (`noteAngleSnapshot`); what belongs here is what each reading is worth. A value past
+        // a full circle *in degrees* witnesses nothing: no heading, track or wind direction can
+        // read 450, so such a number is a corrupt read — the answer to a different state — and
+        // treating it as proof of degrees is what pinned every heading into 0–6° and the
+        // aircraft symbol to north for a whole session.
+        let rawAngles = [rawHeading, rawTrueHeading, rawTrack, rawWindDirection].compactMap { $0 }
+        store.noteAngleSnapshot(
+            provesDegrees: rawAngles.contains { IFConnectStateReader.provesDegrees($0) },
+            anyAboveRadianCircle: rawAngles.contains { IFConnectStateReader.exceedsFullCircleInRadians($0) },
+            rawHeading: rawHeading ?? rawTrueHeading)
         let anglesInDegrees = store.anglesProvedDegrees
         s.heading = rawHeading.map { IFConnectStateReader.normalizeAngle($0, alreadyDegrees: anglesInDegrees) }
         s.trueHeading = rawTrueHeading.map { IFConnectStateReader.normalizeAngle($0, alreadyDegrees: anglesInDegrees) }
@@ -182,6 +190,19 @@ struct IFConnectStateReader {
     /// the heading reads in `readState`.
     static func exceedsFullCircleInRadians(_ value: Double) -> Bool {
         abs(value) > (2 * Double.pi + 0.01)
+    }
+
+    /// A full circle in degrees, with slack for a reading that rounds past 360.
+    static let fullCircleInDegrees = 360.5
+
+    /// Whether a raw angular reading is evidence that this connection reports angles in
+    /// degrees: too large to be radians, and still small enough to *be* an angle in degrees.
+    /// Anything past a full circle is not a heading in either convention — it is a reading
+    /// that belongs to some other state — so it proves nothing about the units.
+    static func provesDegrees(_ value: Double) -> Bool {
+        value.isFinite
+            && exceedsFullCircleInRadians(value)
+            && abs(value) <= fullCircleInDegrees
     }
 
     /// IF often reports heading/track in radians; normalize to 0–360 degrees.

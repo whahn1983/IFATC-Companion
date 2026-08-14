@@ -22,6 +22,8 @@ final class IFConnectManager: ObservableObject {
     private weak var diagnostics: DiagnosticsStore?
     private var pollTask: Task<Void, Never>?
     private var discoveryTimeoutTask: Task<Void, Never>?
+    /// Last angular convention written to Diagnostics, so only the changes are logged.
+    private var lastLoggedAnglesInDegrees: Bool?
 
     /// How long to wait for an Infinite Flight discovery broadcast before giving up
     /// and pointing the user at manual IP entry.
@@ -136,6 +138,9 @@ final class IFConnectManager: ObservableObject {
             diagnostics?.log(.manifest, "Unresolved (use manual override if needed): \(names)")
         }
         logATCRelatedStates(entries)
+        logAngleStates()
+        // A fresh manifest re-decides the angular convention, so log it afresh too.
+        lastLoggedAnglesInDegrees = nil
         connectionState = .connected
         await readFlightPlan()
         startPolling()
@@ -222,6 +227,7 @@ final class IFConnectManager: ObservableObject {
                 }
                 let state = await self.reader.readState(using: self.client)
                 self.onState?(state)
+                await self.logTelemetryHealth(state)
                 self.liveATC = await self.reader.readATCStatus(using: self.client)
                 tick += 1
                 if tick % self.flightPlanReadEveryTicks == 0 {
@@ -229,6 +235,27 @@ final class IFConnectManager: ObservableObject {
                 }
                 try? await Task.sleep(nanoseconds: UInt64(self.pollInterval * 1_000_000_000))
             }
+        }
+    }
+
+    /// Log the two things that decide whether every heading in the app is right, and that
+    /// were previously invisible: which angular convention the connection has been read as,
+    /// and whether the link has desynchronised. A heading pinned to north on the maps is one
+    /// of these two — a radians build read as degrees shows every heading as 0–6° — and
+    /// neither left a trace in a diagnostics export before.
+    private func logTelemetryHealth(_ state: AircraftState) async {
+        let degrees = mappingStore.anglesProvedDegrees
+        if degrees != lastLoggedAnglesInDegrees {
+            lastLoggedAnglesInDegrees = degrees
+            let heading = state.heading.map { String(format: "%.0f°", $0) } ?? "—"
+            diagnostics?.log(.state, degrees
+                ? "Angles read as DEGREES (proved by \(IFStateMappingStore.degreeWitnessesToProve) consecutive snapshots). Heading now \(heading)."
+                : "Angles read as RADIANS. Heading now \(heading).")
+        }
+        let mismatched = await client.takeMismatchedFrameCount()
+        if mismatched > 0 {
+            diagnostics?.log(.connect,
+                             "Discarded \(mismatched) response frame(s) answering a state we didn't ask for — link resynchronised.")
         }
     }
 
@@ -329,6 +356,21 @@ final class IFConnectManager: ObservableObject {
                 diagnostics?.log(.manifest, "  \(key.rawValue) → \(entry.name)")
             }
         }
+    }
+
+    /// Log which manifest state each angle was resolved onto, with its declared type. These
+    /// are the readings the aircraft symbol, the departure vector and the wind are all built
+    /// from, and a signature landing on the wrong entry — a bool named `…_track`, a command
+    /// sharing a word with a state — is otherwise indistinguishable from the sim reporting
+    /// something odd.
+    private func logAngleStates() {
+        let angles: [IFStateMappingStore.Logical] = [.heading, .trueHeading, .track, .windDirectionTrue,
+                                                     .bankAngle, .pitch]
+        let described = angles.map { key -> String in
+            guard let entry = mappingStore.entry(for: key) else { return "\(key.rawValue) → —" }
+            return "\(key.rawValue) → \(entry.name) [\(entry.type.shortName)]"
+        }
+        diagnostics?.log(.manifest, "Angle states: \(described.joined(separator: ", "))")
     }
 
     // MARK: - Discovery

@@ -749,11 +749,29 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      pointed north, which is precisely what a north-facing runway makes an aircraft do and hold:
      the nose reads 229°, and the one-degree gap between the true and magnetic headings becomes
      tens of degrees of "variation" that goes straight into the departure vector in the takeoff
-     clearance. Units don't change mid-connection and no reading can ever prove *radians*
-     (every radian value is a valid degree value), so the latch is one-way: one taxi turn, one
-     heading off north, one non-northerly wind — any single witness since connect — settles the
-     whole session, and a later witness-less snapshot leaves it standing. A fresh manifest means
-     a fresh connection, and possibly a different IF build, so it starts over.
+     clearance. Units don't change mid-connection, so the proof carries across snapshots and a
+     later witness-less snapshot leaves it standing. A fresh manifest means a fresh connection,
+     and possibly a different IF build, so it starts over.
+     **What that proof costs when it is wrong is the whole other half of it.** Taken on a single
+     reading and never revisited, one bad number pins the session: a radians build read as
+     degrees shows every heading — all of them in 0…6.28 — as 0–6°, so the aircraft symbol
+     points north on the taxi and weather maps whichever way the nose is, until the app is
+     relaunched. That was reported from the field. So the decision is **corroborated** and
+     **falsifiable** (`IFStateMappingStore.noteAngleSnapshot`):
+       - A reading past a full circle *in degrees* witnesses nothing. No heading, track or wind
+         direction reads 450 in either convention, so such a number is a corrupt read — the
+         answer to a different state — not evidence about units.
+       - Two consecutive witnessing snapshots are required before the proof is taken. A genuine
+         degrees build witnesses on every snapshot its nose is off north, so it still settles
+         within a second; a lone stray reading settles nothing.
+       - No single reading can prove *radians* — every radian value is a valid degree value —
+         but a run of them can. A heading that visits three of the four quadrants of the 0…2π
+         circle across a dozen samples, without one reading in them ever passing a full circle
+         in radians, is an aircraft turning through the compass rather than one holding inside a
+         6° arc of north. That contradiction clears the proof, and the headings come right
+         without a relaunch. Any reading past the radian circle resets the run, so a build that
+         genuinely reports degrees is never disproved by holding short on a north-facing runway.
+     Which convention is in force, and every change to it, is written to Diagnostics.
      **Bank and pitch follow the same decision** — they are angles out of the same API, and
      read raw they were the quietest bug of the lot: no reading of bank is ever large enough to
      look wrong, so on a build reporting radians a 25° bank simply arrived as `0.44` and every
