@@ -63,6 +63,36 @@ final class ReconnectStateTests: XCTestCase {
         XCTAssertFalse(contains(model, "Climb and maintain"))
     }
 
+    /// The other shape a reconnect tick arrives in: a *half-read* snapshot. Each state is
+    /// its own request/response over the Connect socket, so a poll interrupted part-way
+    /// through (as the forced reconnect on returning from the background does) returns the
+    /// fields it managed to read — a position, an altitude — with the rest nil. That
+    /// carries enough telemetry to pass the empty-snapshot guard, and with the on-ground
+    /// read missing it used to read as airborne and default to a climb: a taxiing aircraft
+    /// was told to contact Center while it was still on the taxiway.
+    func testTelemetryWithoutGroundStateDoesNotHandOffToCenter() {
+        let model = makeLiveModel()
+        model.ingestStateForTesting(model.mock.state(for: .taxiOut))
+        let phaseWhileTaxiing = model.phase
+        XCTAssertTrue(phaseWhileTaxiing.isGround, "precondition: the aircraft is taxiing out")
+
+        var halfRead = model.mock.state(for: .taxiOut)
+        halfRead.onGround = nil            // the reads that didn't complete before the
+        halfRead.altitudeAGL = nil         // link was torn down under the poll
+        halfRead.groundSpeed = nil
+        halfRead.verticalSpeed = nil
+        model.ingestStateForTesting(halfRead)
+
+        XCTAssertEqual(model.phase, phaseWhileTaxiing,
+                       "a snapshot with no ground reference must hold the taxi phase")
+        XCTAssertFalse(model.hasDeparted,
+                       "a half-read snapshot must not mark a taxiing flight departed")
+        XCTAssertFalse(contains(model, "contact Center"),
+                       "a taxiing aircraft must never be handed to Center on a reconnect tick")
+        XCTAssertFalse(contains(model, "Climb and maintain"))
+        XCTAssertNotEqual(model.currentFacility, .center)
+    }
+
     // MARK: - Restore resumes where the flight left off
 
     /// Capturing a snapshot and re-applying it on a fresh model (as a reconnect
