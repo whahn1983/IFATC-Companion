@@ -205,13 +205,78 @@ final class IFStateMappingTests: XCTestCase {
                        4.011, accuracy: 0.01)
     }
 
-    /// Feed one telemetry snapshot's raw angles to the units decision, exactly as
+    /// Feed one telemetry snapshot's raw angles to a family's units decision, exactly as
     /// `IFConnectStateReader.readState` does.
-    private func note(_ angles: [Double], on store: IFStateMappingStore, heading: Double? = nil) {
+    private func note(_ angles: [Double], on store: IFStateMappingStore,
+                      family: IFStateMappingStore.AngleFamily = .aircraft,
+                      heading: Double? = nil) {
         store.noteAngleSnapshot(
+            family: family,
             provesDegrees: angles.contains { IFConnectStateReader.provesDegrees($0) },
             anyAboveRadianCircle: angles.contains { IFConnectStateReader.exceedsFullCircleInRadians($0) },
-            rawHeading: heading ?? angles.first)
+            rawHeading: family == .aircraft ? (heading ?? angles.first) : nil)
+    }
+
+    /// Regression (field report, with the sim's own PFD beside the app: nose on 084° magnetic,
+    /// Flight tab reading 001°). The aircraft's angles were decided together with the *wind's*,
+    /// on the reasoning that every angle comes out of one API in one convention — and
+    /// `environment/wind_direction_true` reports the weather in degrees on builds whose aircraft
+    /// states are radians. A wind from 331 then witnessed "degrees" on every single snapshot, so
+    /// 084° magnetic — 1.466 rad on the wire — was shown as 001°, and every heading in the app
+    /// landed within 6° of north. It re-witnessed continuously, so the radians contradiction
+    /// never got a run to accumulate either. The weather gets no vote on the nose.
+    func testAWindReportedInDegreesCannotDecideTheAircraftsUnits() {
+        let store = IFStateMappingStore()
+        // Taxiing at KMCO: nose 084° (1.466 rad), true 081° (1.421 rad), wind from 331°.
+        for _ in 0..<8 {
+            note([1.466, 1.421], on: store)
+            note([331.0], on: store, family: .environment)
+        }
+
+        XCTAssertFalse(store.anglesProvedDegrees, "a wind in degrees says nothing about the nose")
+        XCTAssertEqual(IFConnectStateReader.normalizeAngle(1.466, alreadyDegrees: store.anglesProvedDegrees),
+                       84, accuracy: 0.5, "084° magnetic must read 084°, not 001°")
+
+        // …and the wind still reads correctly in its own convention, rather than being
+        // multiplied by 57.3 to satisfy the aircraft's.
+        XCTAssertTrue(store.windAnglesProvedDegrees)
+        XCTAssertEqual(IFConnectStateReader.normalizeAngle(331, alreadyDegrees: store.windAnglesProvedDegrees),
+                       331, accuracy: 0.001)
+    }
+
+    /// Only the two headings decide the heading's units. They are the states the decision is
+    /// *for*, and the only angles matched by an exact name; the ground track is matched by a
+    /// looser signature and has already been seen to land on something that isn't a bearing at
+    /// all. It follows the decision rather than making it.
+    func testOnlyTheHeadingsDecideTheHeadingsUnits() {
+        let store = IFStateMappingStore()
+        // A track state reading in degrees — or simply reading something that isn't a bearing —
+        // alongside headings that are plainly radians.
+        for _ in 0..<8 { note([1.466, 1.421], on: store) }
+
+        XCTAssertFalse(store.anglesProvedDegrees)
+        XCTAssertEqual(IFConnectStateReader.normalizeAngle(1.466, alreadyDegrees: store.anglesProvedDegrees),
+                       84, accuracy: 0.5)
+
+        // The headings themselves still settle it the moment they read in degrees.
+        for _ in 0..<IFStateMappingStore.degreeWitnessesToProve { note([84.0, 82.0], on: store) }
+        XCTAssertTrue(store.anglesProvedDegrees)
+    }
+
+    /// The two decisions are genuinely independent: a build reporting the aircraft in degrees
+    /// and the wind in radians is read correctly too.
+    func testTheAircraftAndTheWindSettleTheirUnitsSeparately() {
+        let store = IFStateMappingStore()
+        for _ in 0..<8 {
+            note([84.0, 82.0], on: store)                  // headings in degrees
+            note([5.777], on: store, family: .environment) // wind from 331°, in radians
+        }
+        XCTAssertTrue(store.anglesProvedDegrees)
+        XCTAssertFalse(store.windAnglesProvedDegrees)
+        XCTAssertEqual(IFConnectStateReader.normalizeAngle(84, alreadyDegrees: store.anglesProvedDegrees),
+                       84, accuracy: 0.001)
+        XCTAssertEqual(IFConnectStateReader.normalizeAngle(5.777, alreadyDegrees: store.windAnglesProvedDegrees),
+                       331, accuracy: 0.5)
     }
 
     /// Regression: a snapshot whose angles are *all* within ~6° of north witnesses nothing —
