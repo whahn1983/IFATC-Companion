@@ -45,6 +45,47 @@ final class IFStateMappingTests: XCTestCase {
         XCTAssertNil(store.entry(for: .trueHeading))
     }
 
+    // MARK: - What a name is allowed to match
+
+    /// A signature matched across ~1700 states plus every command lands on whatever shares a
+    /// word with it. The ground track resolved onto `is_on_flight_plan_track` — a *bool* — so
+    /// the track read as 0° or 57° and went into the wind triangle as if it were a bearing.
+    /// A measurement only ever resolves onto a measurement.
+    func testTheGroundTrackNeverResolvesOntoAFlightPlanBool() {
+        let entries = IFManifestParser.parse("""
+        731,2,aircraft/0/heading_magnetic
+        744,2,aircraft/0/course
+        945,0,aircraft/0/is_on_flight_plan_track
+        """)
+        let store = IFStateMappingStore()
+        store.resolve(from: entries)
+
+        XCTAssertEqual(store.entry(for: .track)?.name, "aircraft/0/course")
+        XCTAssertNotEqual(store.entry(for: .track)?.name, "aircraft/0/is_on_flight_plan_track")
+    }
+
+    /// With no track-like measurement exposed the key stays unresolved, so the wind triangle
+    /// simply doesn't solve — rather than solving off a bool.
+    func testTheGroundTrackIsUnresolvedRatherThanWrongWhenAbsent() {
+        let store = IFStateMappingStore()
+        store.resolve(from: IFManifestParser.parse("945,0,aircraft/0/is_on_flight_plan_track"))
+        XCTAssertNil(store.entry(for: .track))
+    }
+
+    /// Commands share their words with the states they act on, and are not readable values.
+    func testAStateNeverResolvesOntoACommand() {
+        let entries = IFManifestParser.parse("""
+        1100,-1,commands/ParkingBrakes
+        845,0,aircraft/0/systems/parking_brakes/state
+        1101,-1,commands/Autopilot.SetApproachModeState
+        """)
+        let store = IFStateMappingStore()
+        store.resolve(from: entries)
+
+        XCTAssertEqual(store.entry(for: .parkingBrake)?.name, "aircraft/0/systems/parking_brakes/state")
+        XCTAssertNil(store.entry(for: .approachMode), "a command is not an approach-mode reading")
+    }
+
     // MARK: - Environment wind states
 
     /// The sim's own wind states resolve — and the steady wind is never read off the **gust**
@@ -164,26 +205,34 @@ final class IFStateMappingTests: XCTestCase {
                        4.011, accuracy: 0.01)
     }
 
+    /// Feed one telemetry snapshot's raw angles to the units decision, exactly as
+    /// `IFConnectStateReader.readState` does.
+    private func note(_ angles: [Double], on store: IFStateMappingStore, heading: Double? = nil) {
+        store.noteAngleSnapshot(
+            provesDegrees: angles.contains { IFConnectStateReader.provesDegrees($0) },
+            anyAboveRadianCircle: angles.contains { IFConnectStateReader.exceedsFullCircleInRadians($0) },
+            rawHeading: heading ?? angles.first)
+    }
+
     /// Regression: a snapshot whose angles are *all* within ~6° of north witnesses nothing —
     /// nose 004°, track 004°, a northerly wind are each a valid radian reading — so a build
     /// reporting degrees was read as radians for as long as it stayed pointed north, which is
-    /// exactly what a north-facing runway makes an aircraft do. The proof is latched for the
-    /// connection instead: any one witness since connect settles the session, and a later
-    /// witness-less snapshot leaves it standing rather than reverting.
-    func testTheDegreesProofIsLatchedForTheConnection() {
+    /// exactly what a north-facing runway makes an aircraft do. The proof therefore carries
+    /// across snapshots rather than being retaken on each one.
+    func testTheDegreesProofCarriesAcrossSnapshots() {
         let store = IFStateMappingStore()
         XCTAssertFalse(store.anglesProvedDegrees, "nothing witnessed yet — assume radians")
 
         // A snapshot with no witness changes nothing.
-        store.noteAnglesProvedDegrees([4.0, 4.0, 3.5].contains { IFConnectStateReader.exceedsFullCircleInRadians($0) })
+        note([4.0, 4.0, 3.5], on: store)
         XCTAssertFalse(store.anglesProvedDegrees)
 
-        // One heading off north proves it — 47 cannot be radians.
-        store.noteAnglesProvedDegrees([47.0, 44.0, 350.0].contains { IFConnectStateReader.exceedsFullCircleInRadians($0) })
+        // Headings off north prove it — 47 cannot be radians — once corroborated.
+        for _ in 0..<IFStateMappingStore.degreeWitnessesToProve { note([47.0, 44.0, 350.0], on: store) }
         XCTAssertTrue(store.anglesProvedDegrees)
 
         // Back to a north-facing runway: the proof holds, so 004° stays 004°.
-        store.noteAnglesProvedDegrees([4.0, 4.0, 3.5].contains { IFConnectStateReader.exceedsFullCircleInRadians($0) })
+        note([4.0, 4.0, 3.5], on: store)
         XCTAssertTrue(store.anglesProvedDegrees, "units don't change mid-connection")
         XCTAssertEqual(IFConnectStateReader.normalizeAngle(4, alreadyDegrees: store.anglesProvedDegrees),
                        4, accuracy: 0.001)
@@ -191,6 +240,76 @@ final class IFStateMappingTests: XCTestCase {
         // A fresh manifest is a fresh connection, and possibly a different IF build.
         store.resolve(from: IFManifestParser.parse(manifest))
         XCTAssertFalse(store.anglesProvedDegrees)
+    }
+
+    /// Regression (field report: the aircraft symbol pointed north on the taxi and weather
+    /// maps whatever the nose was doing). On a build reporting radians every heading is 0…6.28,
+    /// so reading it as degrees pins the symbol within 6° of north — and the proof was taken on
+    /// a *single* reading, so one anomalous number settled the whole session. Two consecutive
+    /// witnesses are required, and a lone stray reading is forgotten by the next snapshot.
+    func testOneStrayReadingCannotDecideTheUnits() {
+        let store = IFStateMappingStore()
+        let radians = [2.967, 2.9, 5.5]      // nose 170°, tracking 166°, wind from 315°
+
+        note(radians, on: store)
+        // One desynchronised read drops another state's number into a heading slot.
+        note([28.43, 2.9, 5.5], on: store)   // the aircraft's latitude, in a heading's place
+        XCTAssertFalse(store.anglesProvedDegrees, "a single reading is not proof of the units")
+
+        note(radians, on: store)
+        XCTAssertFalse(store.anglesProvedDegrees, "and the stray reading is forgotten")
+        XCTAssertEqual(IFConnectStateReader.normalizeAngle(2.967, alreadyDegrees: store.anglesProvedDegrees),
+                       170, accuracy: 0.1, "the nose still reads 170°, not 003°")
+    }
+
+    /// A number past a full circle *in degrees* is not an angle in either convention — it is
+    /// the answer to some other state — so it witnesses nothing however often it repeats.
+    func testAnImplausibleReadingProvesNothingAboutTheUnits() {
+        XCTAssertTrue(IFConnectStateReader.provesDegrees(170))
+        XCTAssertTrue(IFConnectStateReader.provesDegrees(350))
+        XCTAssertFalse(IFConnectStateReader.provesDegrees(3.0), "3 is a valid radian heading")
+        XCTAssertFalse(IFConnectStateReader.provesDegrees(450), "no heading reads 450°")
+        XCTAssertFalse(IFConnectStateReader.provesDegrees(29_260), "an altitude in a heading slot")
+
+        let store = IFStateMappingStore()
+        for _ in 0..<6 { note([29_260, 2.9, 5.5], on: store) }
+        XCTAssertFalse(store.anglesProvedDegrees)
+    }
+
+    /// The proof can be contradicted, so a wrong one costs seconds rather than the session. No
+    /// single reading proves radians — every radian value is a valid degree value — but a
+    /// heading that visits three quadrants of the 0…2π circle without one reading ever passing
+    /// a full circle in radians is an aircraft turning through the compass, not one holding
+    /// inside a 6° arc of north.
+    func testARunOfRadianHeadingsContradictsAWrongDegreesProof() {
+        let store = IFStateMappingStore()
+        // Two plausible-but-wrong readings in a row take the proof.
+        for _ in 0..<IFStateMappingStore.degreeWitnessesToProve { note([28.43, 2.9], on: store) }
+        XCTAssertTrue(store.anglesProvedDegrees)
+
+        // Then the aircraft taxis a circuit: every reading a radian heading, sweeping the rose.
+        let sweep: [Double] = [0.4, 1.2, 2.0, 2.9, 3.6, 4.4, 5.2, 6.0, 0.6, 1.8, 3.1, 4.9]
+        XCTAssertGreaterThanOrEqual(sweep.count, IFStateMappingStore.radianSamplesToDisprove)
+        for heading in sweep { note([heading, 2.9], on: store, heading: heading) }
+
+        XCTAssertFalse(store.anglesProvedDegrees, "a full sweep of the rose can only be radians")
+        XCTAssertEqual(IFConnectStateReader.normalizeAngle(2.967, alreadyDegrees: store.anglesProvedDegrees),
+                       170, accuracy: 0.1)
+    }
+
+    /// …and the contradiction never fires on a build that really does report degrees: holding
+    /// short on a north-facing runway keeps every angle inside the radian circle, but the nose
+    /// stays in one quadrant of it, and any reading off north resets the run outright.
+    func testAGenuineDegreesProofSurvivesHoldingShortOnANorthFacingRunway() {
+        let store = IFStateMappingStore()
+        for _ in 0..<IFStateMappingStore.degreeWitnessesToProve { note([170.0, 166.0], on: store) }
+        XCTAssertTrue(store.anglesProvedDegrees)
+
+        // Lined up on 36: 004° magnetic, 003° true — no witness, for a long hold.
+        for _ in 0..<(IFStateMappingStore.radianSamplesToDisprove * 3) { note([4.0, 3.0], on: store) }
+        XCTAssertTrue(store.anglesProvedDegrees, "004° is one quadrant of the radian circle, not three")
+        XCTAssertEqual(IFConnectStateReader.normalizeAngle(4, alreadyDegrees: store.anglesProvedDegrees),
+                       4, accuracy: 0.001)
     }
 
     /// Regression: bank was passed through raw, so on a build reporting radians a 25° bank

@@ -303,4 +303,83 @@ final class IFConnectManifestBufferingTests: XCTestCase {
         XCTAssertEqual(entries[2].name, "aircraft/0/name")
         XCTAssertEqual(entries[2].type, .string)
     }
+
+    // MARK: - A state read answers the state it asked for
+
+    /// A canned sequence of framed responses, handed out one per `nextFrame` call.
+    private func frameSource(_ frames: [(id: Int32, payload: Data)])
+        -> @Sendable () async throws -> (id: Int32, payload: Data) {
+        let box = FrameQueue(frames)
+        return { try await box.next() }
+    }
+
+    private actor FrameQueue {
+        private var frames: [(id: Int32, payload: Data)]
+        init(_ frames: [(id: Int32, payload: Data)]) { self.frames = frames }
+        func next() throws -> (id: Int32, payload: Data) {
+            guard !frames.isEmpty else { throw IFConnectError.timeout }
+            return frames.removeFirst()
+        }
+    }
+
+    private func float(_ value: Float) -> Data {
+        var d = Data()
+        d.append(littleEndian: Int32(bitPattern: value.bitPattern))
+        return d
+    }
+
+    /// Regression (field report: the aircraft symbol stuck pointing north). Every state read is
+    /// request/response over one socket, so the reply to a read that timed out lands in the
+    /// *next* read — and the response id was never checked, so from then on every read returned
+    /// the previous request's answer. A `float` decodes cleanly whatever it measures, so nothing
+    /// looked wrong; downstream, one latitude landing in a heading slot was read as proof the
+    /// sim reports degrees, and every genuine radian heading after it was shown as 0–6°.
+    func testAStateReadSkipsTheLateAnswerToAnEarlierRead() async throws {
+        // The stale reply to state 746 (latitude, 28.43) arrives first; ours answers 731.
+        let answer = try await IFConnectClient.payload(
+            answering: 731,
+            nextFrame: frameSource([(id: 746, payload: float(28.43)),
+                                    (id: 731, payload: float(2.967))]))
+
+        XCTAssertEqual(answer.mismatched, 1)
+        XCTAssertEqual(Float(bitPattern: UInt32(bitPattern: answer.payload.readInt32LE(at: 0))), 2.967,
+                       "the heading read must return the heading, not the latitude before it")
+    }
+
+    /// The matching answer is returned untouched when the link is in step — the common case.
+    func testAnInStepReadReturnsItsOwnAnswerImmediately() async throws {
+        let answer = try await IFConnectClient.payload(
+            answering: 731,
+            nextFrame: frameSource([(id: 731, payload: float(2.967)),
+                                    (id: 732, payload: float(2.98))]))
+        XCTAssertEqual(answer.mismatched, 0)
+    }
+
+    /// A read that never sees its own answer fails rather than returning someone else's number:
+    /// a nil reading is skipped harmlessly upstream, a wrong one is believed.
+    func testAReadThatNeverSeesItsAnswerFailsRatherThanGuessing() async {
+        var frames: [(id: Int32, payload: Data)] = []
+        for i in 0..<40 { frames.append((id: Int32(900 + i), payload: float(Float(i)))) }
+        do {
+            _ = try await IFConnectClient.payload(answering: 731, nextFrame: frameSource(frames))
+            XCTFail("a read with no matching answer must throw")
+        } catch {
+            // Expected — `decodingFailed` once the skip budget is spent.
+        }
+    }
+
+    /// …and the skipping is also bounded by the clock, so a peer answering ids we never asked
+    /// for can't stall the 1 Hz poll.
+    func testSkippingStopsWhenTheReadDeadlinePasses() async {
+        var frames: [(id: Int32, payload: Data)] = []
+        for i in 0..<40 { frames.append((id: Int32(900 + i), payload: float(Float(i)))) }
+        do {
+            _ = try await IFConnectClient.payload(answering: 731,
+                                                  isExpired: { true },
+                                                  nextFrame: frameSource(frames))
+            XCTFail("an expired read must throw")
+        } catch {
+            // Expected.
+        }
+    }
 }

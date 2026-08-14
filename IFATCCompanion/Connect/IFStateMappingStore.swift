@@ -89,7 +89,11 @@ final class IFStateMappingStore {
             case .trueAirspeed: return ["trueairspeed", "tas"]
             case .heading: return ["headingmagnetic", "heading", "magneticheading"]
             case .trueHeading: return ["headingtrue", "trueheading"]
-            case .track: return ["gpstrack", "track", "courseovertheground"]
+            // `aircraft/0/course` is the course over the ground on the builds that expose it,
+            // and is the only track-like *measurement* in the manifest — the entries actually
+            // ending in "track" are flight-plan booleans (`is_on_flight_plan_track`), which the
+            // numeric filter now keeps out of this key entirely.
+            case .track: return ["gpstrack", "track", "courseovertheground", "course"]
             case .verticalSpeed: return ["verticalspeed", "vspeed", "verticalspeedfpm"]
             case .onGround: return ["isonground", "onground"]
             case .approachMode: return ["autopilotapproach", "approachmode", "apprmode", "isapproach", "appr", "approachhold"]
@@ -117,31 +121,142 @@ final class IFStateMappingStore {
             case .windDirectionTrue: return ["winddirectiontrue", "winddirection"]
             }
         }
+
+        /// What kind of value this key stands for. Name matching alone is not enough to
+        /// identify a state: Infinite Flight's manifest carries ~1700 entries plus every
+        /// command, and a signature matched across all of them lands on whatever shares a
+        /// word. `track` matched `aircraft/0/is_on_flight_plan_track` — a *bool* — so the
+        /// ground track read as 0° or 57°, and `parkingbrake` matched the `commands/…` entry
+        /// beside the state. Filtering the candidates by type first makes the match mean what
+        /// the name says.
+        var valueKind: ValueKind {
+            switch self {
+            case .onGround, .approachMode, .parkingBrake, .atcActive, .isOnline:
+                return .boolean
+            case .aircraftName, .liveryName, .nearestAirportICAO, .flightPlan, .flightPlanFullInfo,
+                 .flightPlanRoute, .flightPlanCoordinates, .atcFacilityName, .serverName, .tunedComName:
+                return .text
+            default:
+                return .numeric
+            }
+        }
+    }
+
+    /// The family of manifest types a logical key may resolve onto. Commands (`.unknown`)
+    /// are excluded from all three — they are actions, never readable values.
+    enum ValueKind {
+        case numeric
+        case boolean
+        case text
+
+        func accepts(_ type: IFDataType) -> Bool {
+            switch self {
+            // A measurement is never a bool; an int one (a count, an enum-backed state) is fine.
+            case .numeric: return type == .int32 || type == .float || type == .double || type == .long
+            // Some builds expose an on/off state as an int rather than a bool.
+            case .boolean: return type == .boolean || type == .int32
+            case .text: return type == .string
+            }
+        }
     }
 
     private(set) var resolved: [Logical: IFManifestEntry] = [:]
 
-    /// Whether this connection has been **proved** to report angles in degrees rather than
-    /// radians, by any snapshot since it was established carrying an angle too large to be
-    /// radians. Latched, and deliberately one-way: a build reports one convention for its
-    /// whole life, and while `4.7` proves degrees, *no* reading can ever prove radians —
-    /// every radian value is also a valid degree value.
+    /// Whether this connection is currently read as reporting angles in **degrees** rather
+    /// than radians, proved by snapshots carrying an angle too large to be radians.
     ///
-    /// Deciding it per snapshot instead left one hole open. A snapshot whose angles are *all*
-    /// within ~6° of north — nose 004°, track 004°, a northerly wind — has no witness, so a
-    /// build reporting degrees was read as radians and every angle in it multiplied by 57.3:
-    /// a 4° nose becomes 229°, and the variation taken from the pair of headings (`004 − 003`,
-    /// a degree apart, read as 229° and 172°) becomes tens of degrees of declination that then
-    /// went straight into the departure vector. Precisely the case a north-facing runway lines
-    /// an aircraft up for and holds it in. Latching closes it: one taxi turn, one heading off
-    /// north, one non-northerly wind — any single reading since connect — settles the whole
-    /// session.
+    /// Deciding it per snapshot left a hole. A snapshot whose angles are *all* within ~6° of
+    /// north — nose 004°, track 004°, a northerly wind — has no witness, so a build reporting
+    /// degrees was read as radians and every angle in it multiplied by 57.3: a 4° nose becomes
+    /// 229°, and the variation taken from the pair of headings (`004 − 003`, a degree apart,
+    /// read as 229° and 172°) becomes tens of degrees of declination that then went straight
+    /// into the departure vector. Precisely the case a north-facing runway lines an aircraft
+    /// up for and holds it in.
+    ///
+    /// So the decision persists across snapshots — but it is **not** taken on a single reading
+    /// and **not** irreversible, because both of those turn one bad number into a session-long
+    /// fault. The failure they caused: a radians build read as degrees shows every heading in
+    /// 0…6.28 as 0–6°, so the aircraft symbol points north on the taxi and weather maps no
+    /// matter which way the nose is, until the app is relaunched. Two guards:
+    ///
+    /// - **Proof needs corroboration** (`degreeWitnessesToProve` consecutive snapshots). A
+    ///   genuine degrees build witnesses on every snapshot the nose is off north, so it still
+    ///   settles within a second; a lone anomalous reading — a desynchronised response frame,
+    ///   a state that isn't the angle its name suggests — no longer settles anything.
+    /// - **The proof can be contradicted.** No single reading can prove radians (every radian
+    ///   value is also a valid degree value), but a *run* of them can: a heading that visits
+    ///   three of the four quadrants of the 0…2π circle without one reading ever exceeding a
+    ///   full circle in radians is an aircraft turning through the compass, not one holding
+    ///   within a 6° arc of north for a dozen samples. That disproof clears the latch and the
+    ///   headings come right without a relaunch.
     private(set) var anglesProvedDegrees = false
 
-    /// Record what a snapshot's angles witnessed. Only a positive proof is kept; a snapshot
-    /// with no witness leaves an earlier one standing rather than reverting to "assume radians".
-    func noteAnglesProvedDegrees(_ proved: Bool) {
-        if proved { anglesProvedDegrees = true }
+    /// Consecutive snapshots that witnessed degrees so far, before the proof is taken.
+    private var consecutiveDegreeWitnesses = 0
+    /// Snapshots since the degrees proof in which no angle exceeded a full circle in radians.
+    private var radianOnlySamples = 0
+    /// Which quadrants of the 0…2π circle the raw heading has visited in that run.
+    private var radianHeadingQuadrants: Set<Int> = []
+
+    /// Consecutive witnessing snapshots required before degrees is taken as proved.
+    static let degreeWitnessesToProve = 2
+    /// Radian-only snapshots required before a degrees proof is treated as contradicted.
+    static let radianSamplesToDisprove = 12
+    /// Distinct quadrants of the 0…2π circle the heading must visit in that run.
+    static let radianQuadrantsToDisprove = 3
+
+    /// Record what one telemetry snapshot's angles witnessed about the reporting units.
+    ///
+    /// - Parameters:
+    ///   - provesDegrees: an angle in the snapshot was too large to be radians *and* still a
+    ///     plausible compass angle. A reading beyond a full circle in degrees is a corrupt
+    ///     read, not evidence of the units.
+    ///   - anyAboveRadianCircle: any angle exceeded a full circle in radians, plausible or
+    ///     not. Only used to keep the radians disproof honest — a build genuinely reporting
+    ///     degrees produces these constantly, so they reset the disproof run.
+    ///   - rawHeading: the snapshot's raw heading, before any conversion.
+    func noteAngleSnapshot(provesDegrees: Bool, anyAboveRadianCircle: Bool, rawHeading: Double?) {
+        guard anglesProvedDegrees else {
+            if provesDegrees {
+                consecutiveDegreeWitnesses += 1
+                if consecutiveDegreeWitnesses >= Self.degreeWitnessesToProve { takeDegreesProof() }
+            } else {
+                consecutiveDegreeWitnesses = 0
+            }
+            return
+        }
+        // Latched to degrees — watch for the contradiction that means it was taken in error.
+        if anyAboveRadianCircle {
+            resetRadiansDisproof()
+            return
+        }
+        guard let rawHeading, rawHeading.isFinite else { return }
+        radianOnlySamples += 1
+        radianHeadingQuadrants.insert(Self.radianQuadrant(of: rawHeading))
+        if radianOnlySamples >= Self.radianSamplesToDisprove,
+           radianHeadingQuadrants.count >= Self.radianQuadrantsToDisprove {
+            anglesProvedDegrees = false
+            consecutiveDegreeWitnesses = 0
+            resetRadiansDisproof()
+        }
+    }
+
+    private func takeDegreesProof() {
+        anglesProvedDegrees = true
+        resetRadiansDisproof()
+    }
+
+    private func resetRadiansDisproof() {
+        radianOnlySamples = 0
+        radianHeadingQuadrants.removeAll()
+    }
+
+    /// Which quarter of the 0…2π circle a raw heading falls in (0–3), wrapping negatives.
+    static func radianQuadrant(of value: Double) -> Int {
+        let circle = 2 * Double.pi
+        var wrapped = value.truncatingRemainder(dividingBy: circle)
+        if wrapped < 0 { wrapped += circle }
+        return min(3, Int(wrapped / (circle / 4)))
     }
 
     /// Resolve all logical keys against a freshly parsed manifest.
@@ -151,8 +266,10 @@ final class IFStateMappingStore {
     func resolve(from entries: [IFManifestEntry]) {
         resolved.removeAll()
         anglesProvedDegrees = false
+        consecutiveDegreeWitnesses = 0
+        resetRadiansDisproof()
         for logical in Logical.allCases {
-            if let match = bestMatch(for: logical.signatures, in: entries) {
+            if let match = bestMatch(for: logical.signatures, in: entries, kind: logical.valueKind) {
                 resolved[logical] = match
             }
         }
@@ -164,15 +281,18 @@ final class IFStateMappingStore {
         Logical.allCases.filter { resolved[$0] == nil }
     }
 
-    /// Find the best manifest entry for an ordered list of candidate signatures.
-    private func bestMatch(for signatures: [String], in entries: [IFManifestEntry]) -> IFManifestEntry? {
+    /// Find the best manifest entry for an ordered list of candidate signatures, considering
+    /// only entries that could actually carry the value the logical key stands for.
+    private func bestMatch(for signatures: [String], in entries: [IFManifestEntry],
+                           kind: ValueKind) -> IFManifestEntry? {
+        let candidates = entries.filter { kind.accepts($0.type) }
         for sig in signatures {
             // Prefer an entry whose normalised key ends with the signature.
-            if let suffix = entries.first(where: { $0.matchKey.hasSuffix(sig) }) {
+            if let suffix = candidates.first(where: { $0.matchKey.hasSuffix(sig) }) {
                 return suffix
             }
             // Then any entry containing the signature.
-            if let contains = entries.first(where: { $0.matchKey.contains(sig) }) {
+            if let contains = candidates.first(where: { $0.matchKey.contains(sig) }) {
                 return contains
             }
         }
