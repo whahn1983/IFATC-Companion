@@ -281,7 +281,7 @@ enum IFFlightPlanParser {
         var fixes: [Waypoint] = []
         var maxAltitude = 0
         var seen = Set<String>()
-        var departureRunwayCoord: (lat: Double, lon: Double)?
+        var markers = RunwayMarkers()
 
         // Walk the (possibly nested) items in order. Procedure groups carry their
         // fixes as `children`; their name is the published procedure identifier.
@@ -308,7 +308,7 @@ enum IFFlightPlanParser {
                 let isSID = sidWasEmpty && plan.sid == name && plan.sidFixNames.isEmpty
                 for (i, child) in children.enumerated() {
                     appendFix(child, to: &fixes, maxAltitude: &maxAltitude, seen: &seen,
-                              departureRunway: &departureRunwayCoord)
+                              markers: &markers)
                     // Record the SID's published fixes in order (skipping runway /
                     // display markers) so the initial departure heading can target the
                     // SID's own first fix rather than an intermediate buffer fix filed
@@ -337,7 +337,7 @@ enum IFFlightPlanParser {
                 }
             } else {
                 appendFix(item, to: &fixes, maxAltitude: &maxAltitude, seen: &seen,
-                          departureRunway: &departureRunwayCoord)
+                          markers: &markers)
             }
         }
 
@@ -359,13 +359,26 @@ enum IFFlightPlanParser {
             fixes.removeLast()
         }
 
+        // The compound `DPT RW17R` / `ARR RW18C` markers name their runway outright, so they
+        // are believed ahead of the positional guess `captureRunways` makes from bare runway
+        // tokens. They are dropped from the fix list before that runs and used to contribute
+        // nothing but a position, which left a detailed plan carrying no departure runway at
+        // all — and an unknown departure runway is what sends the takeoff clearance down to a
+        // runway number derived from the wind. See `markerRunway(from:)`.
+        if plan.departureRunway.isEmpty, let ident = markers.departureIdent {
+            plan.departureRunway = ident
+        }
+        if plan.arrivalRunway.isEmpty, let ident = markers.arrivalIdent {
+            plan.arrivalRunway = ident
+        }
+
         // Recover the departure/arrival runways from any runway tokens (e.g. a
         // `RW22R` token after the field, or `22R` ahead of the destination) before
         // they are dropped from the enroute fixes — the departure one's coordinate
         // included, unless a `DPT RW…` marker already supplied it.
-        captureRunways(from: fixes, into: &plan, departureCoordinate: &departureRunwayCoord)
-        plan.departureRunwayLatitude = departureRunwayCoord?.lat
-        plan.departureRunwayLongitude = departureRunwayCoord?.lon
+        captureRunways(from: fixes, into: &plan, departureCoordinate: &markers.departureCoordinate)
+        plan.departureRunwayLatitude = markers.departureCoordinate?.lat
+        plan.departureRunwayLongitude = markers.departureCoordinate?.lon
 
         // Drop runway tokens / IF display markers so neither is shown as a fix.
         plan.waypoints = fixes.filter { !isRunwayToken($0.name) && !isPseudoWaypoint($0.name) }
@@ -434,17 +447,43 @@ enum IFFlightPlanParser {
         return ""
     }
 
+    /// What the compound `DPT RW…` / `ARR RW…` display markers are worth keeping once the
+    /// markers themselves have been dropped from the route: the runways they name, and where
+    /// the departure one sits. See `markerRunway(from:)`.
+    struct RunwayMarkers {
+        var departureIdent: String?
+        var arrivalIdent: String?
+        var departureCoordinate: (lat: Double, lon: Double)?
+
+        /// Harvest a marker being dropped. First one of each kind wins, so a route that
+        /// somehow names two never lets the later one displace the one at its own end.
+        mutating func note(_ name: String, coordinate: (lat: Double, lon: Double)?) {
+            guard let marker = IFFlightPlanParser.markerRunway(from: name) else { return }
+            switch marker.end {
+            case .departure:
+                if departureIdent == nil { departureIdent = marker.ident }
+                if departureCoordinate == nil, let coordinate { departureCoordinate = coordinate }
+            case .arrival:
+                if arrivalIdent == nil { arrivalIdent = marker.ident }
+            }
+        }
+    }
+
     /// Append a single fix (with coordinate + planned altitude when present).
     ///
-    /// `departureRunway` collects the one thing worth keeping from a fix that is otherwise
-    /// dropped: the position of the departure marker. See `isDepartureRunwayMarker`.
+    /// `markers` collects what is worth keeping from a fix that is otherwise dropped: the
+    /// runway a `DPT RW…` / `ARR RW…` marker names, and the departure marker's position.
     private static func appendFix(_ item: Any, to fixes: inout [Waypoint],
                                   maxAltitude: inout Int, seen: inout Set<String>,
-                                  departureRunway: inout (lat: Double, lon: Double)?) {
+                                  markers: inout RunwayMarkers) {
         // A bare string entry (a `waypoints` name list) has no coordinate.
         if let name = item as? String {
             let n = name.trimmingCharacters(in: .whitespaces).uppercased()
-            guard !n.isEmpty, !isPseudoWaypoint(n), !seen.contains(n) else { return }
+            guard !n.isEmpty, !isPseudoWaypoint(n), !seen.contains(n) else {
+                // Dropped — but a compound marker still names its runway.
+                markers.note(n, coordinate: nil)
+                return
+            }
             seen.insert(n)
             fixes.append(Waypoint(name: n))
             return
@@ -464,12 +503,11 @@ enum IFFlightPlanParser {
         if let alt, alt > maxAltitude, alt < 60000 { maxAltitude = alt }
 
         // The marker itself (DPT/TOC/TOD/DEST) contributed its altitude above but is
-        // never shown as a fix. The departure marker's *position* is worth keeping even so:
-        // it sits at the runway end, which is where the departure leg is actually flown from.
+        // never shown as a fix. A compound runway marker's *runway* and *position* are worth
+        // keeping even so: it names the runway explicitly, and it sits at the runway end,
+        // which is where the departure leg is actually flown from.
         guard !isPseudoWaypoint(name) else {
-            if departureRunway == nil, let coord, isDepartureRunwayMarker(name) {
-                departureRunway = coord
-            }
+            markers.note(name, coordinate: coord)
             return
         }
 
@@ -601,18 +639,42 @@ enum IFFlightPlanParser {
         return false
     }
 
-    /// A compound **departure** marker pairing a departure word with a runway as one
-    /// identifier — `DPT RW26L`, `DEP RW09`. SimBrief files these and Infinite Flight serves
-    /// them located at the runway end. `isPseudoWaypoint` already recognises them, on purpose:
-    /// left in the route the runway end becomes the first "waypoint" and, sitting straight
-    /// down the runway from the aircraft, collapses the takeoff clearance to "fly runway
-    /// heading". This narrower test picks out the departure ones specifically, so their
-    /// position can be kept as the origin of the departure leg while the fix itself stays out
-    /// of the route. Arrival markers (`ARR RW09`) are deliberately excluded.
-    static func isDepartureRunwayMarker(_ token: String) -> Bool {
+    /// Which end of the flight a compound display marker belongs to.
+    enum RouteEnd { case departure, arrival }
+
+    /// The runway a compound display marker names, and the end of the flight it belongs to:
+    /// `"DPT RW26L"` → `(.departure, "26L")`, `"ARR RW09"` → `(.arrival, "09")`. Nil for
+    /// anything that isn't one.
+    ///
+    /// SimBrief files these markers and Infinite Flight serves them located at the runway
+    /// threshold/end. `isPseudoWaypoint` already recognises them, on purpose: left in the route
+    /// the runway end becomes the first "waypoint" and, sitting straight down the runway from
+    /// the aircraft, collapses the takeoff clearance to "fly runway heading". This reads the two
+    /// things worth keeping out of a fix that is otherwise dropped — **which runway it names**
+    /// and (via `appendFix`) where it sits.
+    ///
+    /// The ident matters as much as the position. A detailed plan whose only runway evidence is
+    /// this marker used to leave `departureRunway` empty, because the marker is filtered out
+    /// before `captureRunways` — the only thing that set it — ever sees the fix list. An empty
+    /// departure runway sends `resolvedRunway` all the way down to its last resort, a runway
+    /// number *derived from the wind direction*: the clearance then names a runway the field may
+    /// not even have, and the "within 10° of runway heading" test in the takeoff clearance is
+    /// measured against the wind rather than against the runway — so a departure vector that
+    /// happens to lie near the wind collapses to "fly runway heading" with the turn thrown away.
+    static func markerRunway(from token: String) -> (end: RouteEnd, ident: String)? {
         let parts = token.uppercased().split(separator: " ")
-        guard parts.count == 2, isRunwayToken(String(parts[1])) else { return false }
-        return ["DPT", "DEP", "DEPARTURE"].contains(String(parts[0]))
+        guard parts.count == 2, let ident = runwayIdent(from: String(parts[1])) else { return nil }
+        switch String(parts[0]) {
+        case "DPT", "DEP", "DEPARTURE": return (.departure, ident)
+        case "ARR", "ARRIVAL": return (.arrival, ident)
+        default: return nil
+        }
+    }
+
+    /// Whether a token is a compound **departure** marker (`DPT RW26L`, `DEP RW09`).
+    /// Arrival markers (`ARR RW09`) are deliberately excluded.
+    static func isDepartureRunwayMarker(_ token: String) -> Bool {
+        markerRunway(from: token)?.end == .departure
     }
 
     /// A runway token such as `RW14`, `14`, `30L`, `09C` — these appear at the

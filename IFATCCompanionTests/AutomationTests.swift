@@ -156,6 +156,30 @@ final class AutomationTests: XCTestCase {
         XCTAssertFalse(tx.displayText.contains("fly heading 172"))
     }
 
+    /// "Fly runway heading" is only ever a substitution for the vector, and it is only sound
+    /// when the ident named a real runway. When nothing in the plan named one the app rounds
+    /// the *wind direction* to the nearest ten and calls it a runway — comparing the departure
+    /// vector against that asks whether the departure lies near the wind, and answering "yes"
+    /// by discarding the turn is how a 20° departure turn came out as "fly runway heading".
+    func testTakeoffClearanceKeepsTheVectorWhenTheRunwayWasGuessedFromTheWind() {
+        let e = engine()
+        let cs = e.callsign(airline: "United", flightNumber: "598", fallback: "")
+        // Runway "15" here is the wind (150°) rounded, not a runway KMCO has; the departure
+        // vector to the first fix is 152°, which sits 2° from it and 23° off runway 17R.
+        let guessed = e.clearedForTakeoff(cs: cs, runway: "15", windDir: 150, windSpeed: 8,
+                                          departureHeading: 152, initialAltitude: 5000,
+                                          runwayIsKnown: false)
+        XCTAssertTrue(guessed.displayText.contains("fly heading 152"), guessed.displayText)
+        XCTAssertFalse(guessed.displayText.contains("fly runway heading"))
+
+        // A real runway that genuinely is aligned still collapses — the substitution itself
+        // is not what changed.
+        let known = e.clearedForTakeoff(cs: cs, runway: "15", windDir: 150, windSpeed: 8,
+                                        departureHeading: 152, initialAltitude: 5000,
+                                        runwayIsKnown: true)
+        XCTAssertTrue(known.displayText.contains("fly runway heading"), known.displayText)
+    }
+
     func testRunwayHeadingAndAngularDiff() {
         XCTAssertEqual(PhraseologyEngine.runwayHeading("17R"), 170)
         XCTAssertEqual(PhraseologyEngine.runwayHeading("09"), 90)
@@ -235,6 +259,19 @@ final class AutomationTests: XCTestCase {
         XCTAssertTrue(tx?.displayText.contains("fly heading 090") ?? false)
     }
 
+    /// The "this runway is a guess" flag has to reach the phraseology, or the guard added
+    /// for it never runs on a real clearance.
+    func testTowerDepartureCarriesTheGuessedRunwayFlagIntoTheClearance() {
+        var m = ATCStateMachine(engine: engine())
+        m.setConnected()
+        var ctx = TestSupport.context(runway: "15")
+        ctx.departureHeading = 152
+        ctx.initialClimbAltitude = 5000
+        ctx.runwayIsKnown = false
+        let tx = m.advance(to: .towerDeparture, context: ctx)
+        XCTAssertTrue(tx?.displayText.contains("fly heading 152") ?? false, tx?.displayText ?? "nil")
+    }
+
     func testInitialClimbUsesTraconCeiling() {
         var m = ATCStateMachine(engine: engine())
         m.setConnected()
@@ -274,6 +311,18 @@ final class AutomationTests: XCTestCase {
         plan.waypoints = [wp("NORTH", 30.60, -95.20), wp("FARN", 31.50, -95.10)]
         let fix = plan.initialDepartureFix(sidFixes: [], origin: iah)
         XCTAssertEqual(fix?.name, "NORTH")
+    }
+
+    /// The same skip applies to the **SID** branch. A published SID commonly names a
+    /// fly-over fix at the runway end as its first fix; taking that one leaves the caller
+    /// measuring a bearing across a few hundred feet, which it rejects — and the whole
+    /// takeoff clearance collapses to "runway heading" with no vector and no climb.
+    func testInitialDepartureFixSkipsASIDFixOnTheField() {
+        var plan = FlightPlan()
+        plan.waypoints = [wp("RW15", 29.9846, -95.3416), wp("WAGON", 30.40, -95.30)]
+        plan.sidFixNames = ["RW15", "WAGON"]
+        let fix = plan.initialDepartureFix(sidFixes: [], origin: iah)
+        XCTAssertEqual(fix?.name, "WAGON", "the SID's first fix off the field, not the one on it")
     }
 
     /// A fix sitting on the field (no meaningful bearing) is skipped in favor of the
@@ -337,7 +386,9 @@ final class AutomationTests: XCTestCase {
 
         // Lined up at the field, with the sim reporting a 12° east variation between its
         // two headings for the same nose. On the ground the wind triangle isn't solved,
-        // so this isolates the variation half of the conversion.
+        // so this isolates the variation half of the conversion. Ingested twice because a
+        // variation is only adopted once a second reading corroborates it — one torn pair of
+        // headings must never reach the departure vector (`HeadingSolver.VariationEstimate`).
         var s = AircraftState()
         s.onGround = true
         s.groundSpeed = 0
@@ -345,6 +396,7 @@ final class AutomationTests: XCTestCase {
         s.longitude = iah.longitude
         s.trueHeading = 170
         s.heading = 170 - variationEast
+        model.ingestStateForTesting(s)
         model.ingestStateForTesting(s)
 
         guard let fixCoord = eastFix.coordinate else { return XCTFail("the fixture fix must be located") }

@@ -50,6 +50,11 @@ struct WeatherProviderDiagnostics {
     /// The true course of the leg last assigned, and the magnetic heading actually spoken.
     var lastAssignedTrueCourse: Double?
     var lastAssignedHeading: Int?
+    /// How the initial departure heading was arrived at — the runway the "fly runway
+    /// heading" test measures against (flagged when it was guessed from the wind), the
+    /// origin the bearing was taken from, the fix it targeted, and the true→magnetic step.
+    /// Composed by `AppModel`; the panel prints it verbatim.
+    var departureHeadingSummary: String?
 
     static let empty = WeatherProviderDiagnostics()
 

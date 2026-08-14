@@ -258,10 +258,19 @@ struct PhraseologyEngine {
     // Tower — cleared for takeoff with departure instructions (initial heading +
     // climb). The heading is the bearing to the first fix / route intercept; when
     // it is within 10° of the runway heading we say "fly runway heading".
+    //
+    // `runwayIsKnown` gates that substitution. The runway's heading here is its ident × 10,
+    // which is only a heading at all when the ident names a real runway. When nothing in the
+    // plan named one, `AppModel` falls back to rounding the *wind direction* to the nearest
+    // ten and calling that the runway — and comparing the departure vector against that
+    // number asks whether the departure lies near the wind, which is not a question anyone
+    // wants answered by discarding the turn. In that case the heading is always spoken: a
+    // heading is never wrong, only wordier than "runway heading" would have been.
     func clearedForTakeoff(cs: Callsign, runway: String, windDir: Int, windSpeed: Int,
-                           departureHeading: Int, initialAltitude: Int) -> ATCTransmission {
+                           departureHeading: Int, initialAltitude: Int,
+                           runwayIsKnown: Bool = true) -> ATCTransmission {
         let phrase = icao ? "cleared for take-off" : "cleared for takeoff"
-        let rwyHeading = PhraseologyEngine.runwayHeading(runway)
+        let rwyHeading = runwayIsKnown ? PhraseologyEngine.runwayHeading(runway) : nil
         let aligned = rwyHeading.map { Self.angularDiff(Double(departureHeading), Double($0)) <= 10 } ?? false
         let hdgDisplay: String
         let hdgSpoken: String

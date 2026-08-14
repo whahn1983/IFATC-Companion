@@ -554,6 +554,88 @@ final class FlightPlanParserTests: XCTestCase {
         }
     }
 
+    /// A compound marker names its runway, and which end of the flight it belongs to.
+    func testMarkerRunwayReadsBothEnds() {
+        XCTAssertEqual(IFFlightPlanParser.markerRunway(from: "DPT RW17R")?.ident, "17R")
+        XCTAssertEqual(IFFlightPlanParser.markerRunway(from: "DPT RW17R")?.end, .departure)
+        XCTAssertEqual(IFFlightPlanParser.markerRunway(from: "dep rw09")?.ident, "09")
+        XCTAssertEqual(IFFlightPlanParser.markerRunway(from: "ARR RW18C")?.ident, "18C")
+        XCTAssertEqual(IFFlightPlanParser.markerRunway(from: "ARR RW18C")?.end, .arrival)
+        for other in ["DPT", "RW17R", "DPT ABCDE", "TOC", "MERIT"] {
+            XCTAssertNil(IFFlightPlanParser.markerRunway(from: other), "\(other) names no runway")
+        }
+    }
+
+    /// Regression for the reported KMCO departure: a detailed plan whose only runway
+    /// evidence is the compound `DPT RW17R` marker must still come out naming runway 17R.
+    ///
+    /// The marker is filtered out of the fix list as a display marker before `captureRunways`
+    /// — the only thing that set `departureRunway` — ever sees it, so it used to contribute a
+    /// position and nothing else. An empty departure runway sends `resolvedRunway` past the
+    /// runway inventory (KMCO isn't in it) down to its last resort: the wind direction rounded
+    /// to the nearest ten, called a runway. The clearance then names a runway the field does
+    /// not have, and — the part that loses the turn — the takeoff clearance's "within 10° of
+    /// runway heading" test is measured against the wind, so a departure vector that happens
+    /// to lie near it collapses to "fly runway heading".
+    func testCompoundMarkersNameTheDepartureAndArrivalRunways() {
+        let json = """
+        {
+          "flightPlanItems": [
+            { "name": "KMCO", "type": 0, "children": [],
+              "location": { "Latitude": 28.4294, "Longitude": -81.3089 } },
+            { "name": "DPT RW17R", "type": 0, "children": [],
+              "location": { "Latitude": 28.4147, "Longitude": -81.3161 } },
+            { "name": "KAAPE", "type": 0, "children": [],
+              "location": { "Latitude": 28.3600, "Longitude": -81.2700 } },
+            { "name": "ARR RW18C", "type": 0, "children": [],
+              "location": { "Latitude": 32.8900, "Longitude": -97.0400 } },
+            { "name": "KDFW", "type": 0, "children": [],
+              "location": { "Latitude": 32.8968, "Longitude": -97.0380 } }
+          ]
+        }
+        """
+        guard let plan = IFFlightPlanParser.parse(json) else {
+            return XCTFail("expected a parsed plan")
+        }
+        XCTAssertEqual(plan.departure, "KMCO")
+        XCTAssertEqual(plan.destination, "KDFW")
+        // Neither marker is a fix …
+        XCTAssertEqual(plan.waypoints.map(\.name), ["KAAPE"])
+        // … but both name their runway, with no bare runway token anywhere in the plan.
+        XCTAssertEqual(plan.departureRunway, "17R")
+        XCTAssertEqual(plan.arrivalRunway, "18C")
+        // The departure marker's position is still kept as the origin of the departure leg.
+        XCTAssertNotNil(plan.departureRunwayCoordinate)
+    }
+
+    /// With both sources present they agree on the ident, and the marker still supplies the
+    /// origin — it sits at the runway end, which is where the departure leg is flown from.
+    func testMarkerAndBareTokenAgreeOnTheDepartureRunway() {
+        let json = """
+        {
+          "flightPlanItems": [
+            { "name": "KMCO", "type": 0, "children": [],
+              "location": { "Latitude": 28.4294, "Longitude": -81.3089 } },
+            { "name": "RW17L", "type": 0, "children": [],
+              "location": { "Latitude": 28.4494, "Longitude": -81.3053 } },
+            { "name": "DPT RW17L", "type": 0, "children": [],
+              "location": { "Latitude": 28.4189, "Longitude": -81.3053 } },
+            { "name": "KAAPE", "type": 0, "children": [],
+              "location": { "Latitude": 28.3600, "Longitude": -81.2700 } },
+            { "name": "KDFW", "type": 0, "children": [],
+              "location": { "Latitude": 32.8968, "Longitude": -97.0380 } }
+          ]
+        }
+        """
+        guard let plan = IFFlightPlanParser.parse(json) else {
+            return XCTFail("expected a parsed plan")
+        }
+        XCTAssertEqual(plan.departureRunway, "17L")
+        // The marker still supplies the origin: it sits at the runway *end*, the bare token at
+        // the threshold, and the marker is read first.
+        XCTAssertEqual(plan.departureRunwayCoordinate?.latitude ?? 0, 28.4189, accuracy: 0.0001)
+    }
+
     /// Infinite Flight's detailed JSON carries a "DPT RW__" marker at the departure end
     /// of the runway as a single identifier (unlike the route string, where the space
     /// splits it apart). It is a non-navigational display marker, not a fix. Left in, it

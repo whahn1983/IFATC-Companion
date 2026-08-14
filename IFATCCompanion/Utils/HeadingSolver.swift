@@ -75,9 +75,72 @@ enum HeadingSolver {
     /// the same nose direction in both frames, and the difference between them *is* the
     /// local variation. `nil` when the sim exposes only one of the two, in which case
     /// callers leave the heading in the true frame (today's behaviour).
+    ///
+    /// This is a *sample*, not an estimate — see `VariationEstimate`, which is what callers
+    /// should hold. The subtraction is only as good as the two readings behind it, and both
+    /// are read in separate round-trips over one socket: a reply that lands in the wrong read
+    /// makes a perfectly clean-looking `float` out of some other state, and the difference
+    /// between a real heading and someone else's number is tens of degrees of "variation".
     static func variationDegreesEast(from state: AircraftState) -> Double? {
         guard let trueHeading = state.trueHeading, let magnetic = state.heading else { return nil }
         return signedDifference(trueHeading - magnetic)
+    }
+
+    /// The largest magnetic variation treated as a real reading. Declination stays inside
+    /// ~30° across the whole flyable world outside the high Arctic, so a sample past this is
+    /// not a place — it is a bad pair of headings. Generous on purpose: the corroboration in
+    /// `VariationEstimate` is the load-bearing guard, and rejecting a real high-latitude
+    /// variation would only degrade to "no correction", which is worse than a large-but-true
+    /// number.
+    static let maxPlausibleVariationDegrees: Double = 45
+
+    /// How far a fresh variation sample may sit from the one in use and still be taken for the
+    /// same place. Declination moves about a degree per hundred miles; a telemetry tick is
+    /// seconds. Anything past this is a different reading, not a different location.
+    static let variationAgreementDegrees: Double = 3
+
+    /// A running magnetic-variation estimate that a single bad reading cannot move.
+    ///
+    /// The variation goes straight into every heading derived from great-circle geometry —
+    /// the initial departure vector most visibly, where being wrong by twenty degrees is the
+    /// difference between a turn and "fly runway heading". It used to be latched from whatever
+    /// the last usable snapshot said, so one torn read poisoned every heading until the next
+    /// tick overwrote it, and a *repeatably* torn read poisoned them all.
+    ///
+    /// Two guards, matching how the units decision is settled in `IFStateMappingStore`:
+    ///
+    ///  * a sample past `maxPlausibleVariationDegrees` is not a variation at all, and
+    ///  * a sample that disagrees with the value in use by more than
+    ///    `variationAgreementDegrees` has to be **corroborated by the next sample** before it
+    ///    displaces it. A real variation drifts; it never jumps. So does the first value:
+    ///    nothing is used until two consecutive readings agree, which a healthy link produces
+    ///    within a second or so, and until then callers assign the plain true bearing — the
+    ///    documented degrade path, unchanged.
+    struct VariationEstimate: Equatable {
+        /// The variation to correct headings by, or nil until two readings have agreed.
+        private(set) var degreesEast: Double?
+        /// The last sample that disagreed with `degreesEast`, awaiting corroboration.
+        private var candidate: Double?
+
+        init(degreesEast: Double? = nil) { self.degreesEast = degreesEast }
+
+        /// Fold in a fresh sample. Ignores implausible ones outright.
+        mutating func note(_ sample: Double) {
+            guard sample.isFinite, abs(sample) <= maxPlausibleVariationDegrees else { return }
+            if let held = degreesEast, abs(signedDifference(sample - held)) <= variationAgreementDegrees {
+                degreesEast = sample                 // same place, drifting — take it.
+                candidate = nil
+                return
+            }
+            // Disagrees with what is in use (or nothing is in use yet): it only counts once a
+            // second reading says the same thing.
+            if let candidate, abs(signedDifference(sample - candidate)) <= variationAgreementDegrees {
+                degreesEast = sample
+                self.candidate = nil
+            } else {
+                candidate = sample
+            }
+        }
     }
 
     // MARK: - Wind
