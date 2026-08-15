@@ -1150,6 +1150,67 @@ final class WeatherDeviationFlowTests: XCTestCase {
         XCTAssertNotNil(model.weatherRejoinMarker)
     }
 
+    /// Reported from the field: a deviation that solved onto the flight path still raised the
+    /// banner and had ATC announce a deviation — for a maneuver with no line to turn onto —
+    /// and, being the selected conflict, stood in front of the next one, so a good line drawn
+    /// faint 20 NM further on could not be committed to.
+    ///
+    /// Nothing may prompt off a line the map isn't drawing.
+    func testConflictThatNeverLeavesTheRouteRaisesNoBannerOrAdvisory() async {
+        let model = makeModel()
+        await driveToCruiseConflict(model)     // airborne, enroute, alerts on
+        model.continueThroughWeather()         // settle the mock's auto-advisory back to idle
+        guard let pos = model.aircraftState.coordinate else {
+            return XCTFail("expected an aircraft position at cruise")
+        }
+        let apex = Geo.destination(from: pos, bearingDegrees: 20, distanceNM: 40)
+        let end = Geo.destination(from: pos, bearingDegrees: 0, distanceNM: 120)
+        let hazard = WeatherHazard(source: .noaaRadar, phenomenon: .precipitation, intensity: .heavy,
+                                   geometry: .polygon(box(around: apex, half: 0.3)), confidence: .high)
+        model.weatherHazards = [hazard]
+        func conflict(excursionNM: Double) -> RouteWeatherConflict {
+            RouteWeatherConflict(
+                hazard: hazard, distanceAheadNM: 30, relativeBearingDegrees: 0,
+                leftClock: 12, centerClock: 12, rightClock: 12, estimatedTimeMinutes: nil,
+                severity: .heavy, leftBypassScore: 0, rightBypassScore: 0,
+                recommendedDirection: .right, recommendedDeviationDegrees: 20,
+                rejoinFix: nil, originalSegment: nil, shouldPrompt: true, withinTacticalRange: true,
+                withinDrawRange: true, intersectionArea: [], deviationPath: [pos, apex, end],
+                maxRouteExcursionNM: excursionNM)
+        }
+
+        model.activeWeatherConflict = conflict(excursionNM: 1.5)
+        XCTAssertFalse(model.weatherBannerVisible,
+                       "an undrawable reroute must not raise the contact-ATC banner")
+        // Asking anyway (the card's own path) gets the honest "nothing significant" reply,
+        // never an advisory describing a deviation with no line to turn onto.
+        model.askCenterAboutWeather()
+        XCTAssertTrue(atcContains(model, "no significant precipitation"),
+                      "ATC must not announce a deviation there is no line for")
+        XCTAssertFalse(atcContains(model, "say intentions"),
+                       "and must not open the deviation decision")
+
+        // The same conflict with a line that goes somewhere prompts exactly as before.
+        model.activeWeatherConflict = conflict(excursionNM: 24)
+        XCTAssertTrue(model.weatherBannerVisible, "a drawable reroute still raises the banner")
+    }
+
+    /// The blocking half of the same report: a deviation that solves onto the flight path is
+    /// thrown out of the locked set rather than held in it, so it cannot be selected as the
+    /// active conflict and cannot stand in front of the next system's line. Whatever the walk
+    /// keeps is drawable, and the weather itself is still reported.
+    func testLockedDeviationsNeverHoldALineThatLiesOnTheRoute() async {
+        let model = makeModel()
+        await model.refreshWeather()           // mock seeds several systems down the route
+        XCTAssertFalse(model.lockedDeviations.isEmpty, "the mock route has deviations to lock")
+        // The model's detector is left at its defaults, so the shared floor is the same one.
+        let floor = RouteWeatherConflictDetector().config.minRouteExcursionNM
+        for dev in model.lockedDeviations {
+            XCTAssertGreaterThanOrEqual(dev.maxRouteExcursionNM, floor,
+                                        "a line lying on the route must never be locked in")
+        }
+    }
+
     // MARK: - Strategic preview (faint lines for each system ahead, incl. from the gate)
 
     /// The whole route's deviations can be eyeballed at once: a faint preview reroute is

@@ -635,19 +635,35 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      - **The zero-offset fallback** taken when no candidate could be built at all — now
        reached only when the widened last-resort search also comes up empty.
 
-     Suppression is **display-only and total**: the solid
-     line, the faint preview, and the rejoin marker are all withheld, and a withheld line is
-     never frozen as a committed path either (which would put it back on the map ahead of every
-     guard) — but the conflict stays in the locked set, so the weather is still detected, still
-     raises the banner and the advisory, and the pilot can still request vectors. Diagnostics
-     says so explicitly rather than reporting a conflict the map shows no line for — and says
-     it in the terms the guard actually measures: *"— reroute lies on the flight path, not
-     drawn (solved 1.8 NM off it, floor 5 NM)"*. The number is the diagnosis: a small one is a
-     line solved along the route (the skirt case), `0.0` is the zero-offset fallback with no
-     candidate built. The earlier wording, *"no lateral deviation available"*, claimed
-     something the branch never establishes — that no lateral way around exists — and sent the
-     first reading of a live report to the width of the *search* rather than the width of the
-     *line it settled on*.
+     A deviation that still comes out on the route is **discarded, not merely left undrawn**
+     (`computeDeviations`). It used to stay in the locked set on the reasoning that the weather
+     was real and worth prompting about — but that set is what the aircraft *works from*, and a
+     maneuver nobody can fly poisons every stage downstream of it. It is selected as the active
+     conflict (the first whose rejoin is still ahead), so it raises the banner, issues the
+     advisory and puts up the response card for a turn with no line to turn onto; and, being
+     selected, it stands in front of the **next** deviation — which may be a perfectly good line
+     20 NM further on, drawn faint, that the pilot can see and cannot commit to. Throwing it out
+     lets the walk's next system become the active one and be flown.
+     - The weather itself is **not** forgotten: it is still sampled, still on the route, and
+       Diagnostics still reports it — as monitored, carrying the discarded line's excursion:
+       *"Heavy radar on route, 38 NM — monitoring (reroute solved 1.8 NM off the route, floor
+       5 NM — discarded)"*. Only the un-flyable maneuver goes away, and the reason it went is
+       on the record.
+     - Nothing prompts off a line the map isn't drawing. The banner, the ATC advisory (tapped,
+       auto-issued near the turn, or auto-issued in Mock Mode) and the response card all key off
+       `flyableWeatherConflict` — the active conflict *and* `pathLeavesRoute` — so the other
+       routes that set a conflict directly (the re-plan while already deviating, chiefly) cannot
+       announce a maneuver with no line either.
+     - Display suppression remains total for anything that does reach the map: the solid line,
+       the faint preview and the rejoin marker are all withheld, and a withheld line is never
+       frozen as a committed path (which would put it back on the map ahead of every guard).
+     - Where a conflict *is* active with an undrawn line, Diagnostics names the measurement
+       rather than a verdict: *"— reroute lies on the flight path, not drawn (solved 1.8 NM off
+       it, floor 5 NM)"*. A small number is a line solved along the route (the skirt case),
+       `0.0` is the zero-offset fallback with no candidate built. The earlier wording, *"no
+       lateral deviation available"*, claimed something the branch never establishes — that no
+       lateral way around exists — and sent the first reading of a live report to the width of
+       the *search* rather than the width of the *line it settled on*.
    It also computes distance, clock position(s), estimated time, severity, the spoken
    deviation amount (the actual initial turn onto the threading path), and a
    downstream rejoin fix.
