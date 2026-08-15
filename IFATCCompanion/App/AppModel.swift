@@ -5234,6 +5234,17 @@ final class AppModel: ObservableObject {
         d.lastRadarUpdate = radarOverlay.lastUpdated
         d.lastAviationUpdate = lastAviationWeatherUpdate
         d.hazardCount = weatherHazards.count
+        // A deviation the walk threw out for solving onto the flight path, reported wherever
+        // the readout lands. It is *not* only the "nothing is active" case: discarding one
+        // hands the flow to the next system down the route, so the usual outcome is a
+        // perfectly ordinary conflict line for that next deviation — with the discard, and
+        // the weather it was for, invisible. This is the sentence that keeps it on the record
+        // either way.
+        let discardFloor = conflictDetector.config.minRouteExcursionNM
+        let discardNote = discardedOnRouteExcursionNM.map {
+            String(format: " (an earlier reroute solved %.1f NM off the route, floor %.0f NM — discarded)",
+                   $0, discardFloor)
+        } ?? ""
         if let c = conflict {
             // Distinguish an on-path conflict being monitored ahead (the reroute may be
             // drawn once within draw range, but the banner has not yet been raised) from
@@ -5256,7 +5267,7 @@ final class AppModel: ObservableObject {
             let measured = excursion < .greatestFiniteMagnitude
                 ? String(format: " (solved %.1f NM off it, floor %.0f NM)", excursion, floor) : ""
             let noLine = deviationLeavesRoute(c) ? "" : " — reroute lies on the flight path, not drawn\(measured)"
-            d.routeConflictStatus = "\(c.severity.displayLabel) \(c.hazard.source.label), \(Int(c.distanceAheadNM.rounded())) NM\(stage)\(noLine)"
+            d.routeConflictStatus = "\(c.severity.displayLabel) \(c.hazard.source.label), \(Int(c.distanceAheadNM.rounded())) NM\(stage)\(noLine)\(discardNote)"
         } else if let pos = aircraftState.coordinate ?? resolvedDepartureCoordinate(),
                   let onRoute = conflictDetector.nearestRouteHazard(
                     route: upcomingRouteCoordinates(from: pos), from: pos, hazards: weatherHazards) {
@@ -5264,14 +5275,9 @@ final class AppModel: ObservableObject {
             // somewhere ahead (e.g. a system with no drawable reroute, or one being flown
             // past). Report it as monitored rather than falsely claiming "No conflict".
             //
-            // When the walk solved a reroute here and threw it out for lying on the flight
-            // path, say so with the excursion that failed the floor: that weather is
-            // deliberately not being prompted, and this is the only place that records why.
-            let floor = conflictDetector.config.minRouteExcursionNM
-            let discarded = discardedOnRouteExcursionNM.map {
-                String(format: " (reroute solved %.1f NM off the route, floor %.0f NM — discarded)", $0, floor)
-            } ?? ""
-            d.routeConflictStatus = "\(onRoute.hazard.intensity.displayLabel) \(onRoute.hazard.source.label) on route, \(Int(onRoute.distanceNM.rounded())) NM — monitoring\(discarded)"
+            // With nothing active, a discard note here is the whole explanation: this weather
+            // is deliberately not being prompted because the reroute for it was thrown out.
+            d.routeConflictStatus = "\(onRoute.hazard.intensity.displayLabel) \(onRoute.hazard.source.label) on route, \(Int(onRoute.distanceNM.rounded())) NM — monitoring\(discardNote)"
         } else {
             d.routeConflictStatus = "No conflict"
         }
