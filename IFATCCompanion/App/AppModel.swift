@@ -343,6 +343,12 @@ final class AppModel: ObservableObject {
     /// from the departure again and re-produce the very line drawn behind the aircraft. Only
     /// ever moves forward along the route; cleared on a route change.
     private var deviationWalkFloor: CLLocationCoordinate2D?
+    /// The lateral excursion (NM) of the nearest deviation the last walk **discarded** for
+    /// solving onto the flight path, or nil when none was. Diagnostics only: the discarded
+    /// deviation is gone from `lockedDeviations` — it raises no banner, no advisory, and no
+    /// response card — so without this the readout would fall back to a bare "on route —
+    /// monitoring" and lose the one number that says a reroute was solved and thrown out.
+    private var discardedOnRouteExcursionNM: Double?
     /// The radar sample (`lastPrecipSampleAt`) the current locked set was last solved against.
     /// While a live solve comes up empty the set is left unlocked (see
     /// `ensureLockedDeviationsComputed`) and re-solved only when a *fresher* sample lands —
@@ -4477,6 +4483,9 @@ final class AppModel: ObservableObject {
     /// so every deviation on the whole plan is produced in one pass. The result is stored in
     /// `lockedDeviations` and held until the next refresh. Bounded so it can't run away.
     private func recomputeLockedDeviations() {
+        // Belongs to the walk about to run — a stale one would explain away weather this
+        // recompute never even looked at.
+        discardedOnRouteExcursionNM = nil
         guard radarOverlay.isEnabled, radarOverlay.coverageAvailable, !weatherHazards.isEmpty else {
             lockedDeviations = []
             return
@@ -4590,16 +4599,34 @@ final class AppModel: ObservableObject {
         }
         // Measure each line's lateral excursion from the filed route now that it is finally
         // shaped — the merge and the gentle rejoin above both move vertices, so anything
-        // measured earlier would describe a path that no longer exists. A line that never
-        // leaves the route isn't drawn (`deviationLeavesRoute`); the conflict itself stays in
-        // the locked set so the weather is still detected, prompted, and reported.
+        // measured earlier would describe a path that no longer exists.
+        //
+        // A line that never leaves the route is **discarded here**, not merely left undrawn.
+        // It used to stay in the locked set on the reasoning that the weather was still real
+        // and worth prompting about — but the set is what the aircraft works from, and a
+        // deviation nobody can fly poisons every stage downstream of it: it is selected as the
+        // active conflict (the first one whose rejoin is still ahead), so it raises the banner,
+        // issues the advisory, and puts up the response card for a maneuver with no line to
+        // turn onto — and, being selected, it stands in front of the *next* deviation, which
+        // may be a perfectly good line 20 NM further on that the pilot can see drawn faint and
+        // cannot commit to. Throwing it out lets the walk's next system become the active one
+        // and be flown. The weather itself is not forgotten: it is still sampled, still on the
+        // route, and Diagnostics still reports it (as monitored, with the discarded line's
+        // excursion), so nothing about it goes silent — only the un-flyable maneuver does.
         let filedRoute = ([origin] + upcomingRouteCoordinates(from: origin)).filter { $0.isValid }
-        return softened.map { deviation in
+        var discarded: Double?
+        let measured = softened.compactMap { deviation -> RouteWeatherConflict? in
             var deviation = deviation
             deviation.maxRouteExcursionNM = conflictDetector.routeExcursionNM(deviation.deviationPath,
                                                                               route: filedRoute)
+            guard deviation.maxRouteExcursionNM >= conflictDetector.config.minRouteExcursionNM else {
+                if discarded == nil { discarded = deviation.maxRouteExcursionNM }
+                return nil
+            }
             return deviation
         }
+        discardedOnRouteExcursionNM = discarded
+        return measured
     }
 
     /// Re-run the whole-route deviation search now and re-lock the result. Samples fresh
@@ -5236,7 +5263,15 @@ final class AppModel: ObservableObject {
             // No active deviation selected, but qualifying radar still sits on the route
             // somewhere ahead (e.g. a system with no drawable reroute, or one being flown
             // past). Report it as monitored rather than falsely claiming "No conflict".
-            d.routeConflictStatus = "\(onRoute.hazard.intensity.displayLabel) \(onRoute.hazard.source.label) on route, \(Int(onRoute.distanceNM.rounded())) NM — monitoring"
+            //
+            // When the walk solved a reroute here and threw it out for lying on the flight
+            // path, say so with the excursion that failed the floor: that weather is
+            // deliberately not being prompted, and this is the only place that records why.
+            let floor = conflictDetector.config.minRouteExcursionNM
+            let discarded = discardedOnRouteExcursionNM.map {
+                String(format: " (reroute solved %.1f NM off the route, floor %.0f NM — discarded)", $0, floor)
+            } ?? ""
+            d.routeConflictStatus = "\(onRoute.hazard.intensity.displayLabel) \(onRoute.hazard.source.label) on route, \(Int(onRoute.distanceNM.rounded())) NM — monitoring\(discarded)"
         } else {
             d.routeConflictStatus = "No conflict"
         }
@@ -5279,6 +5314,22 @@ final class AppModel: ObservableObject {
         atcState == .final || atcState == .landing
     }
 
+    /// The active precipitation conflict **the pilot can actually act on**: one whose solved
+    /// line leaves the flight path and is therefore drawn. A conflict whose line lies on the
+    /// route has nothing to turn onto, so prompting for it offers a deviation that cannot be
+    /// flown — the banner, the advisory, and the response card all key off this rather than
+    /// `activeWeatherConflict` directly.
+    ///
+    /// The walk already discards such a deviation before it can be selected
+    /// (`computeDeviations`), so in the normal path this is simply the active conflict. It is
+    /// the guard for every *other* way one is set — the re-plan while already deviating
+    /// (`recomputeConflictFrom`) chief among them — so no route into the flow can announce a
+    /// maneuver the map is not drawing.
+    private var flyableWeatherConflict: RouteWeatherConflict? {
+        guard let c = activeWeatherConflict, deviationLeavesRoute(c) else { return nil }
+        return c
+    }
+
     /// The most significant turbulence / icing SIGMET along the route, when there is
     /// no precipitation conflict to thread. A turbulence or icing SIGMET has nothing
     /// to laterally route around, so — as ATC does — it drives an *altitude-change*
@@ -5317,7 +5368,7 @@ final class AppModel: ObservableObject {
     /// worked, the deviation card (not the banner) carries the controls.
     var weatherBannerVisible: Bool {
         guard settings.weatherDeviationAlerts.alertsEnabled, weatherFlowAllowed else { return false }
-        let hasPrecip = activeWeatherConflict?.shouldPrompt ?? false
+        let hasPrecip = flyableWeatherConflict?.shouldPrompt ?? false
         guard hasPrecip || activeRideSigmet != nil else { return false }
         return weatherDeviation.state == .none || weatherDeviation.state == .weatherAheadDetected
     }
@@ -5562,7 +5613,7 @@ final class AppModel: ObservableObject {
 
     /// The weather situation to advise on, or nil when nothing significant applies.
     private func currentWeatherSituation() -> WeatherDeviationEngine.Situation? {
-        if let conflict = activeWeatherConflict {
+        if let conflict = flyableWeatherConflict {
             switch conflict.source {
             case .sigmet:
                 return .sigmet(label: conflict.hazard.notes ?? "significant weather",
@@ -5595,6 +5646,7 @@ final class AppModel: ObservableObject {
     /// Auto-issue the advisory once for a fresh conflict in Mock Mode (the demo).
     private func maybeAutoIssueMockAdvisory(conflict: RouteWeatherConflict?) {
         guard settings.mockMode, let conflict, conflict.shouldPrompt,
+              deviationLeavesRoute(conflict),
               settings.weatherDeviationAlerts.alertsEnabled, weatherFlowAllowed,
               !companionStandby, !mockWeatherAdvisoryIssued,
               weatherDeviation.state == .none,
@@ -5619,7 +5671,7 @@ final class AppModel: ObservableObject {
         guard settings.weatherDeviationAlerts.alertsEnabled, weatherFlowAllowed,
               !companionStandby, !establishedOnFinal,
               weatherDeviation.state == .none, !weatherHandled,
-              let conflict = activeWeatherConflict, conflict.shouldPrompt,
+              let conflict = flyableWeatherConflict, conflict.shouldPrompt,
               let turnOut = conflict.deviationPath.first, turnOut.isValid,
               let pos = aircraftState.coordinate, pos.isValid else { return }
         // Measured as a distance *ahead*, so a turn-out the aircraft has already passed abeam
