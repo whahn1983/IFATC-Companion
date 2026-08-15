@@ -619,20 +619,35 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      shaped — after the adjacent-deviation merge and the gentle-rejoin softening, both of which
      move vertices) must reach `minRouteExcursionNM` (5 NM, the excursion below which
      `previewApexHugsWeather` stops looking for an apex, so the guards meet without a gap).
-     Two constructions produce the degenerate shape: a threadable gap centered on the course
-     (the single-apex dogleg is exempt from `minParallelOffsetNM`, so nothing widens it) and
-     the zero-offset fallback taken when no candidate could be built at all. The first is fixed
-     at the source — a thread landing within the floor is slid to the roomier side of its gap
-     (`nudgedOffRoute`), kept only when the slid path still clears every cell, and taken *in
-     place of* the centered one, since the shortest-path selector would otherwise always prefer
-     the zero-offset original. Where the slot is too tight to hold the floor, the centered
-     thread is kept and simply not drawn. Suppression is **display-only and total**: the solid
+     Three constructions produce the degenerate shape, and each is fixed at the source so the
+     guard rarely has to fire:
+     - **A threadable gap centered on the course** (the single-apex dogleg is exempt from
+       `minParallelOffsetNM`, so nothing widens it). A thread landing within the floor is slid
+       to the roomier side of its gap (`nudgedOffRoute`) and **offered alongside** the centered
+       one; the selection tiers prefer whichever clears and leaves the route, and fall back to
+       the centered thread only when nothing else clears. (It used to *replace* the centered
+       thread, and only when the slid path cleared every cell — so scattered lighter precip
+       deleted the drawable variant outright.)
+     - **A line the route merely skirts.** The weather's padded edge sits on the flight path,
+       so the tightest clearing hug is a couple of NM off course: the shortest clear path
+       there is, and undrawable. `atLeastMinOffset` opens it out to the floor whenever the
+       wider leg still clears, after trying the full 20 NM separation first.
+     - **The zero-offset fallback** taken when no candidate could be built at all — now
+       reached only when the widened last-resort search also comes up empty.
+
+     Suppression is **display-only and total**: the solid
      line, the faint preview, and the rejoin marker are all withheld, and a withheld line is
      never frozen as a committed path either (which would put it back on the map ahead of every
      guard) — but the conflict stays in the locked set, so the weather is still detected, still
      raises the banner and the advisory, and the pilot can still request vectors. Diagnostics
-     says so explicitly ("… — no lateral deviation available") rather than reporting a conflict
-     the map shows no line for.
+     says so explicitly rather than reporting a conflict the map shows no line for — and says
+     it in the terms the guard actually measures: *"— reroute lies on the flight path, not
+     drawn (solved 1.8 NM off it, floor 5 NM)"*. The number is the diagnosis: a small one is a
+     line solved along the route (the skirt case), `0.0` is the zero-offset fallback with no
+     candidate built. The earlier wording, *"no lateral deviation available"*, claimed
+     something the branch never establishes — that no lateral way around exists — and sent the
+     first reading of a live report to the width of the *search* rather than the width of the
+     *line it settled on*.
    It also computes distance, clock position(s), estimated time, severity, the spoken
    deviation amount (the actual initial turn onto the threading path), and a
    downstream rejoin fix.
