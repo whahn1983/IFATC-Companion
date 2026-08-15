@@ -453,11 +453,32 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
         cores** while skirting lighter (moderate) precip — again preferring the parallel
         hug — so a broad area of moderate returns is passed close rather than looped
         around wholesale;
-     3. else, **only as an absolute last resort**, the shortest *wide* detour (out to
-        `maxDetourOffsetNM`) that clears every cell — taken solely when nothing tight can
-        even dodge the intense cores;
-     4. else (genuinely boxed in) the routine path that keeps the **most room from the
-        intense cores** — never the straight-through least-deviation dogleg.
+     3. else, **only as an absolute last resort, the search widens** — the *same* candidate
+        shapes (the gap / around-the-end doglegs and the side-edge hugs that were dropped
+        for sitting beyond the routine bound, the tightest clearing hug on each side, and
+        the edge-following hulls) rebuilt out to `maxDetourOffsetNM`, taking the shortest
+        wide path clear of every cell and then the shortest that clears the intense cores.
+        The wide tier relaxes in the **same two steps as the routine one**: it used to
+        demand a path clear of *every* cell, so a system broader than the routine bound
+        with light returns scattered around it failed outright and the solver fell through
+        to the degenerate on-route line — detected weather with *"no lateral deviation
+        available"* and no mint line, even though a wider berth was plainly flyable;
+     4. else a clear routine path that does **not** leave the route (an on-route gap
+        thread — drawn nowhere, but still the closest thing to a solution);
+     5. else (genuinely boxed in) the path — routine or wide — that keeps the **most room
+        from the intense cores** — never the straight-through least-deviation dogleg.
+
+     Tiers 1–3 additionally require the candidate to **go somewhere** (its offset reaches
+     `minRouteExcursionNM`). A clear line drawn on top of the filed route is suppressed at
+     draw time, so letting one win here would end the search at a reroute the pilot never
+     sees; preferring an off-route candidate — and widening before settling for the
+     on-route one — is what keeps a flyable line on the map. It stays a *preference*: where
+     nothing else clears, the on-route thread is still chosen (and still not drawn).
+
+     `maxDetourOffsetNM` is the ceiling for **every** drawn line, the whole-system hull
+     rescue below included — rounding a continent-wide area of returns is not a deviation
+     any controller would issue, and the tiers above have already picked the best line
+     available within the bound.
 
      Preferring the parallel hug matches how real weather deviations are flown — turn out
      ~30°, parallel the weather, turn ~30° back — rather than cutting a single wide turn
