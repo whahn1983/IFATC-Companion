@@ -108,7 +108,15 @@ struct RouteWeatherConflictDetector {
         /// The absolute maximum lateral offset for a **last-resort** detour (NM), taken
         /// only when no path within `searchHalfWidthNM` can even avoid the heavy/extreme
         /// cores. Bounds how far out of the way the line may ever go, so a broad system
-        /// never produces a runaway loop far from the route.
+        /// never produces a runaway loop far from the route — it caps every drawn
+        /// candidate, the whole-system hull rescue included.
+        ///
+        /// The wide search that uses it relaxes in the **same two steps** as the routine
+        /// one: clear of every cell first, then clear of the intense cores alone. Demanding
+        /// an everywhere-clear path was what made a system broader than `searchHalfWidthNM`
+        /// fail outright — no routine candidate could be built, nothing wide was clear of
+        /// every last light return, and the solver fell through to the degenerate on-route
+        /// line ("no lateral deviation available" with a plainly flyable berth available).
         var maxDetourOffsetNM: Double = 150
         /// Cells whose along-track position is within this margin of the blocking
         /// band are treated as part of the same line for gap analysis (NM).
@@ -707,10 +715,22 @@ struct RouteWeatherConflictDetector {
             -> (path: [CLLocationCoordinate2D], target: Double) {
             let tightPath = finalize(hugPath(offset: tightTarget, minLead: gentle ? gentleLead(tightTarget) : 0))
             guard abs(tightTarget) < config.minParallelOffsetNM else { return (tightPath, tightTarget) }
-            let widened = (tightTarget < 0 ? -1.0 : 1.0) * config.minParallelOffsetNM
-            let widePath = finalize(hugPath(offset: widened, minLead: gentle ? gentleLead(widened) : 0))
-            return pathIsClear(widePath, cells: cells, origin: position) ? (widePath, widened)
-                                                                         : (tightPath, tightTarget)
+            let sign = tightTarget < 0 ? -1.0 : 1.0
+            // The offset to try, widest first: the full minimum separation, and — when even
+            // that can't be held — at least clear of the excursion floor. The second step is
+            // what saves a hug that clears at a couple of miles off course, which happens
+            // wherever the route merely *skirts* a line: tight enough to be the shortest
+            // clear path, too tight to be drawn as a deviation at all, so without it the
+            // maneuver either vanished from the map or jumped to a needless detour down the
+            // far side. A hug already clear of the floor is left where it is.
+            var steps = [config.minParallelOffsetNM]
+            if abs(tightTarget) < config.minRouteExcursionNM { steps.append(config.minRouteExcursionNM * 1.5) }
+            for widened in steps where abs(tightTarget) < widened {
+                let target = sign * widened
+                let path = finalize(hugPath(offset: target, minLead: gentle ? gentleLead(target) : 0))
+                if pathIsClear(path, cells: cells, origin: position) { return (path, target) }
+            }
+            return (tightPath, tightTarget)
         }
 
         // The tightest parallel-offset hug on one side (+1 right / −1 left) that stays
@@ -753,23 +773,21 @@ struct RouteWeatherConflictDetector {
         // wide turn around it.
         var candidates: [(path: [CLLocationCoordinate2D], target: Double, parallel: Bool)] = []
         for t in solution.targets where abs(t.center) <= config.searchHalfWidthNM {
-            var target = t.center
-            var path = finalize(apexPath(for: target))
-            // A gap straddling the course threads straight down the flight path — a mint
-            // line drawn on top of the magenta one. Slide the thread to the roomier side
-            // of its gap so the drawn deviation leaves the route, and take the slid line
-            // *instead of* the centered one (kept only when the slide still clears every
-            // cell — the shortest-path selector would otherwise always prefer the
-            // zero-offset original). Too tight a slot to hold the floor keeps the centered
-            // thread, which `pathLeavesRoute` then declines to draw.
+            candidates.append((path: finalize(apexPath(for: t.center)), target: t.center, parallel: false))
+            // A target within the excursion floor threads straight down the flight path — a
+            // mint line drawn on top of the magenta one. That happens to a gap straddling the
+            // course, and to the outboard edge of a line the route merely *skirts*: the
+            // padded edge sits a mile or two off course, so the least-deviation candidate is
+            // a jog that deviates nowhere. Offer the same thread slid clear of the floor as
+            // well, and let the selection tiers judge both — the slid one is preferred
+            // wherever it clears (`leavesRoute`), and the centered one is still available as
+            // the last clear resort. Offering it (rather than substituting it only when it
+            // clears every cell, as before) is what keeps a drawable thread on the table when
+            // the slid line is merely clear of the intense cores — scattered lighter precip
+            // used to delete it outright, leaving nothing drawable at all.
             if let nudged = nudgedOffRoute(t) {
-                let slid = finalize(apexPath(for: nudged))
-                if pathIsClear(slid, cells: cellBerths, origin: position) {
-                    target = nudged
-                    path = slid
-                }
+                candidates.append((path: finalize(apexPath(for: nudged)), target: nudged, parallel: false))
             }
-            candidates.append((path: path, target: target, parallel: false))
         }
         for edge in [solution.leftEdge, solution.rightEdge] where abs(edge) <= config.searchHalfWidthNM {
             let hug = atLeastMinOffset(tightTarget: edge, gentle: false, cells: cellBerths)
@@ -816,21 +834,67 @@ struct RouteWeatherConflictDetector {
             -> (path: [CLLocationCoordinate2D], target: Double, parallel: Bool)? {
             shortest(set.filter { $0.parallel }) ?? shortest(set)
         }
-        // Last resort: the shortest *wide* hug (out to maxDetourOffsetNM) that clears
-        // every cell — used only when nothing routine-width can even dodge the intense
-        // cores, so a big detour is taken solely when there is no closer clear path.
-        func wideDetourClearingAll() -> (path: [CLLocationCoordinate2D], target: Double)? {
-            var best: (path: [CLLocationCoordinate2D], target: Double)?
+        // Last resort: the same candidate shapes searched **wide** — out to
+        // `maxDetourOffsetNM` instead of the routine `searchHalfWidthNM` bound. Built only
+        // when nothing routine-width clears, so the tight line is always preferred; when
+        // the storm is simply broader than the routine bound this is what keeps a reroute
+        // available instead of collapsing to the degenerate on-route fallback. It is the
+        // routine set widened, not a different set: the gap / around-the-end doglegs and
+        // side-edge hugs that were dropped for sitting beyond the bound, the tightest
+        // clearing hug on each side searched all the way out, and the edge-following hulls
+        // (single-system and whole-system) at whatever offset their shape needs.
+        func wideCandidates() -> [(path: [CLLocationCoordinate2D], target: Double, parallel: Bool)] {
+            var wide: [(path: [CLLocationCoordinate2D], target: Double, parallel: Bool)] = []
+            // Beyond the routine bound but within the wide one — the offsets the routine
+            // pass dropped for being too far off course.
+            func isWide(_ offset: Double) -> Bool {
+                abs(offset) > config.searchHalfWidthNM && abs(offset) <= config.maxDetourOffsetNM
+            }
+            for t in solution.targets where isWide(t.center) {
+                wide.append((path: finalize(apexPath(for: t.center)), target: t.center, parallel: false))
+            }
+            for edge in [solution.leftEdge, solution.rightEdge] where isWide(edge) {
+                let hug = atLeastMinOffset(tightTarget: edge, gentle: false, cells: cellBerths)
+                wide.append((path: hug.path, target: hug.target, parallel: true))
+            }
+            // The tightest clearing hug on each side, searched out to the wide bound —
+            // against every cell (the ideal) and against the intense cores alone (skirting
+            // lighter precip), mirroring the routine tier's two options.
             for gentle in [true, false] {
                 for side in [1.0, -1.0] {
-                    if let tight = tightHug(side: side, gentle: gentle, cells: cellBerths,
-                                            maxOffset: config.maxDetourOffsetNM),
-                       best == nil || pathLengthNM(tight.path) < pathLengthNM(best!.path) {
-                        best = tight
+                    for cells in [cellBerths, intenseBerths] {
+                        if let tight = tightHug(side: side, gentle: gentle, cells: cells,
+                                                maxOffset: config.maxDetourOffsetNM) {
+                            wide.append((path: tight.path, target: tight.target, parallel: true))
+                        }
                     }
                 }
             }
-            return best
+            for side in [1.0, -1.0] {
+                if let hull = hullHugPath(side: side), abs(hull.target) <= config.maxDetourOffsetNM {
+                    wide.append((path: finalize(hull.path), target: hull.target, parallel: true))
+                }
+                // The whole-system silhouette — not tied to the clustered line or the fixed
+                // rejoin, so it can round a storm that wraps the route through several turns.
+                if let multi = wideHullHug(side: side), multi.count >= 2 {
+                    let path = finalize(multi)
+                    let offset = path.map { abs(project($0, from: position, course: course).cross) }.max() ?? 0
+                    if offset <= config.maxDetourOffsetNM {
+                        wide.append((path: path, target: side * offset, parallel: true))
+                    }
+                }
+            }
+            return wide
+        }
+
+        // A candidate that goes somewhere. One steered to within the excursion floor of the
+        // course — a gap centered on the route whose slot was too tight to slide out of — is
+        // drawn on top of the filed route and therefore suppressed, so preferring one that
+        // leaves the route is what turns "no lateral deviation available" into a line the
+        // pilot can fly. It is a *preference*, not a filter: an on-route thread is still
+        // taken below if nothing else, tight or wide, clears at all.
+        func leavesRoute(_ c: (path: [CLLocationCoordinate2D], target: Double, parallel: Bool)) -> Bool {
+            abs(c.target) >= config.minRouteExcursionNM
         }
 
         // Choose the reroute the pilot actually flies, in priority order that keeps it
@@ -841,19 +905,38 @@ struct RouteWeatherConflictDetector {
         //   2. else the shortest routine-width path that clears the intense (heavy /
         //      extreme) cores — again preferring the parallel hug — skirting lighter
         //      precip to stay close, not looping;
-        //   3. else, last resort, the shortest *wide* detour that clears every cell —
-        //      taken only when nothing tight can dodge the intense cores;
-        //   4. else (genuinely boxed in) the routine path that keeps the most room from
-        //      the intense cores — never the straight-through least-deviation one.
+        //   3. else, last resort, widen the search to `maxDetourOffsetNM` and take the
+        //      shortest *wide* path clear of every cell, then the shortest wide path that
+        //      clears the intense cores — the same two-step relaxation as the routine tier,
+        //      so a storm broader than the routine bound still yields a reroute instead of
+        //      failing outright the moment nothing wide is clear of every last light cell;
+        //   4. else a clear routine path that doesn't leave the route (an on-route thread,
+        //      drawn nowhere but still the closest thing to a solution);
+        //   5. else (genuinely boxed in) the path — routine or wide — that keeps the most
+        //      room from the intense cores, never the straight-through least-deviation one.
+        // Tiers 1–3 additionally require the path to *go somewhere* (`leavesRoute`), so a
+        // clear-but-undrawable line never pre-empts a wider one that can actually be flown.
+        // Only a total failure to build any candidate at all falls through to the
+        // degenerate zero-offset line, which `pathLeavesRoute` then declines to draw.
         let clearAll = candidates.filter { pathIsClear($0.path, cells: cellBerths, origin: position) }
         let clearIntense = candidates.filter { pathIsClear($0.path, cells: intenseBerths, origin: position) }
+        var picked = shortestPreferringParallel(clearAll.filter(leavesRoute))
+            ?? shortestPreferringParallel(clearIntense.filter(leavesRoute))
+        if picked == nil {
+            // Nothing routine-width both clears and goes anywhere — widen the search rather
+            // than give up, and only then settle for a clear-but-undrawable tight thread.
+            let wide = wideCandidates()
+            let wideAll = wide.filter { pathIsClear($0.path, cells: cellBerths, origin: position) }
+            let wideIntense = wide.filter { pathIsClear($0.path, cells: intenseBerths, origin: position) }
+            picked = shortestPreferringParallel(wideAll.filter(leavesRoute))
+                ?? shortestPreferringParallel(wideIntense.filter(leavesRoute))
+                ?? shortestPreferringParallel(clearAll)
+                ?? shortestPreferringParallel(clearIntense)
+                ?? (candidates + wide).max { pathBerthMarginNM($0.path, cells: intenseBerths, origin: position)
+                                             < pathBerthMarginNM($1.path, cells: intenseBerths, origin: position) }
+        }
         let chosen: (path: [CLLocationCoordinate2D], target: Double) =
-            shortestPreferringParallel(clearAll).map { (path: $0.path, target: $0.target) }
-            ?? shortestPreferringParallel(clearIntense).map { (path: $0.path, target: $0.target) }
-            ?? wideDetourClearingAll()
-            ?? candidates.max { pathBerthMarginNM($0.path, cells: intenseBerths, origin: position)
-                                < pathBerthMarginNM($1.path, cells: intenseBerths, origin: position) }
-                        .map { (path: $0.path, target: $0.target) }
+            picked.map { (path: $0.path, target: $0.target) }
             ?? (path: finalize(apexPath(for: 0)), target: 0)
         let target = chosen.target
         let direction: DeviationDirection = target >= 0 ? .right : .left
@@ -885,10 +968,17 @@ struct RouteWeatherConflictDetector {
         // Still cutting weather? The storm wraps the route through several turns and no
         // single-jog hug can thread it. Route around the WHOLE system with a multi-leg hug
         // down each side and take the shortest that actually clears every cell — so a line
-        // is drawn (over the top / around the end) instead of none at all.
+        // is drawn (over the top / around the end) instead of none at all. Bounded by
+        // `maxDetourOffsetNM` like every other candidate: rounding a continent-wide area of
+        // returns is not a deviation any controller would issue, and the tiered selection
+        // above has already found the best line available within that bound.
         if !pathIsClear(deviationPath, cells: cellBerths, origin: position) {
             let multi = [1.0, -1.0].compactMap { wideHullHug(side: $0) }
                 .filter { $0.count >= 2 && pathIsClear($0, cells: cellBerths, origin: position) }
+                .filter { path in
+                    path.allSatisfy { abs(project($0, from: position, course: course).cross)
+                                        <= config.maxDetourOffsetNM }
+                }
                 .min { pathLengthNM($0) < pathLengthNM($1) }
             if let multi { deviationPath = multi }
         }

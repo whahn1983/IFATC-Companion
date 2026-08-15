@@ -5214,8 +5214,21 @@ final class AppModel: ObservableObject {
             let stage = c.withinTacticalRange ? "" : " — monitoring"
             // Say so when the solved reroute never leaves the route and so isn't drawn —
             // otherwise Diagnostics reports a conflict the map shows no mint line for, and
-            // the missing line reads as a bug rather than "there is no lateral way around".
-            let noLine = deviationLeavesRoute(c) ? "" : " — no lateral deviation available"
+            // the missing line reads as a bug rather than a suppressed line.
+            //
+            // Say it *accurately*. This branch has exactly one meaning: a reroute was
+            // solved and came out inside the excursion floor. It never means no lateral
+            // way around exists — which is what the old wording ("no lateral deviation
+            // available") claimed, and it sent the first read of a live report of this
+            // message hunting through the width of the search rather than the width of the
+            // line it settled on. So name the measurement and the floor it missed: a small
+            // number is a line solved along the flight path (the route skirting a line's
+            // edge), 0.0 is the degenerate fallback taken when no candidate was built.
+            let excursion = c.maxRouteExcursionNM
+            let floor = conflictDetector.config.minRouteExcursionNM
+            let measured = excursion < .greatestFiniteMagnitude
+                ? String(format: " (solved %.1f NM off it, floor %.0f NM)", excursion, floor) : ""
+            let noLine = deviationLeavesRoute(c) ? "" : " — reroute lies on the flight path, not drawn\(measured)"
             d.routeConflictStatus = "\(c.severity.displayLabel) \(c.hazard.source.label), \(Int(c.distanceAheadNM.rounded())) NM\(stage)\(noLine)"
         } else if let pos = aircraftState.coordinate ?? resolvedDepartureCoordinate(),
                   let onRoute = conflictDetector.nearestRouteHazard(

@@ -453,11 +453,32 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
         cores** while skirting lighter (moderate) precip — again preferring the parallel
         hug — so a broad area of moderate returns is passed close rather than looped
         around wholesale;
-     3. else, **only as an absolute last resort**, the shortest *wide* detour (out to
-        `maxDetourOffsetNM`) that clears every cell — taken solely when nothing tight can
-        even dodge the intense cores;
-     4. else (genuinely boxed in) the routine path that keeps the **most room from the
-        intense cores** — never the straight-through least-deviation dogleg.
+     3. else, **only as an absolute last resort, the search widens** — the *same* candidate
+        shapes (the gap / around-the-end doglegs and the side-edge hugs that were dropped
+        for sitting beyond the routine bound, the tightest clearing hug on each side, and
+        the edge-following hulls) rebuilt out to `maxDetourOffsetNM`, taking the shortest
+        wide path clear of every cell and then the shortest that clears the intense cores.
+        The wide tier relaxes in the **same two steps as the routine one**: it used to
+        demand a path clear of *every* cell, so a system broader than the routine bound
+        with light returns scattered around it failed outright and the solver fell through
+        to the degenerate on-route line — detected weather with *"no lateral deviation
+        available"* and no mint line, even though a wider berth was plainly flyable;
+     4. else a clear routine path that does **not** leave the route (an on-route gap
+        thread — drawn nowhere, but still the closest thing to a solution);
+     5. else (genuinely boxed in) the path — routine or wide — that keeps the **most room
+        from the intense cores** — never the straight-through least-deviation dogleg.
+
+     Tiers 1–3 additionally require the candidate to **go somewhere** (its offset reaches
+     `minRouteExcursionNM`). A clear line drawn on top of the filed route is suppressed at
+     draw time, so letting one win here would end the search at a reroute the pilot never
+     sees; preferring an off-route candidate — and widening before settling for the
+     on-route one — is what keeps a flyable line on the map. It stays a *preference*: where
+     nothing else clears, the on-route thread is still chosen (and still not drawn).
+
+     `maxDetourOffsetNM` is the ceiling for **every** drawn line, the whole-system hull
+     rescue below included — rounding a continent-wide area of returns is not a deviation
+     any controller would issue, and the tiers above have already picked the best line
+     available within the bound.
 
      Preferring the parallel hug matches how real weather deviations are flown — turn out
      ~30°, parallel the weather, turn ~30° back — rather than cutting a single wide turn
@@ -598,20 +619,35 @@ OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* la
      shaped — after the adjacent-deviation merge and the gentle-rejoin softening, both of which
      move vertices) must reach `minRouteExcursionNM` (5 NM, the excursion below which
      `previewApexHugsWeather` stops looking for an apex, so the guards meet without a gap).
-     Two constructions produce the degenerate shape: a threadable gap centered on the course
-     (the single-apex dogleg is exempt from `minParallelOffsetNM`, so nothing widens it) and
-     the zero-offset fallback taken when no candidate could be built at all. The first is fixed
-     at the source — a thread landing within the floor is slid to the roomier side of its gap
-     (`nudgedOffRoute`), kept only when the slid path still clears every cell, and taken *in
-     place of* the centered one, since the shortest-path selector would otherwise always prefer
-     the zero-offset original. Where the slot is too tight to hold the floor, the centered
-     thread is kept and simply not drawn. Suppression is **display-only and total**: the solid
+     Three constructions produce the degenerate shape, and each is fixed at the source so the
+     guard rarely has to fire:
+     - **A threadable gap centered on the course** (the single-apex dogleg is exempt from
+       `minParallelOffsetNM`, so nothing widens it). A thread landing within the floor is slid
+       to the roomier side of its gap (`nudgedOffRoute`) and **offered alongside** the centered
+       one; the selection tiers prefer whichever clears and leaves the route, and fall back to
+       the centered thread only when nothing else clears. (It used to *replace* the centered
+       thread, and only when the slid path cleared every cell — so scattered lighter precip
+       deleted the drawable variant outright.)
+     - **A line the route merely skirts.** The weather's padded edge sits on the flight path,
+       so the tightest clearing hug is a couple of NM off course: the shortest clear path
+       there is, and undrawable. `atLeastMinOffset` opens it out to the floor whenever the
+       wider leg still clears, after trying the full 20 NM separation first.
+     - **The zero-offset fallback** taken when no candidate could be built at all — now
+       reached only when the widened last-resort search also comes up empty.
+
+     Suppression is **display-only and total**: the solid
      line, the faint preview, and the rejoin marker are all withheld, and a withheld line is
      never frozen as a committed path either (which would put it back on the map ahead of every
      guard) — but the conflict stays in the locked set, so the weather is still detected, still
      raises the banner and the advisory, and the pilot can still request vectors. Diagnostics
-     says so explicitly ("… — no lateral deviation available") rather than reporting a conflict
-     the map shows no line for.
+     says so explicitly rather than reporting a conflict the map shows no line for — and says
+     it in the terms the guard actually measures: *"— reroute lies on the flight path, not
+     drawn (solved 1.8 NM off it, floor 5 NM)"*. The number is the diagnosis: a small one is a
+     line solved along the route (the skirt case), `0.0` is the zero-offset fallback with no
+     candidate built. The earlier wording, *"no lateral deviation available"*, claimed
+     something the branch never establishes — that no lateral way around exists — and sent the
+     first reading of a live report to the width of the *search* rather than the width of the
+     *line it settled on*.
    It also computes distance, clock position(s), estimated time, severity, the spoken
    deviation amount (the actual initial turn onto the threading path), and a
    downstream rejoin fix.

@@ -726,6 +726,81 @@ final class WeatherDeviationTests: XCTestCase {
                                                      rightCell.geometry.polygonPoints ?? []])
     }
 
+    // MARK: - Widening the search rather than giving up
+
+    /// The reported anomaly: Diagnostics said *"no lateral deviation available"* and no mint
+    /// line was drawn, for weather that could plainly be flown around with a wider berth.
+    /// The routine search is bounded to `searchHalfWidthNM` (60 NM), so a system broader than
+    /// that produces no routine candidate at all; the wide last-resort pass then demanded a
+    /// path clear of **every** cell, which lighter precip scattered outboard denied — and the
+    /// solver fell through to the degenerate zero-offset line, drawn on top of the route and
+    /// therefore suppressed. The wide pass now relaxes in the same two steps as the routine
+    /// one, so it goes wider instead of giving up.
+    func testWidensBeyondTheRoutineBoundInsteadOfGivingUp() throws {
+        // A heavy core 40 NM ahead spanning ±74 NM of course: clearing it needs ~77 NM of
+        // offset, well beyond the 60 NM routine bound, so nothing routine-width is built.
+        let core = cell(alongNM: 40, crossNM: 0, halfCross: 74, from: usPosition)
+        // Moderate precip abutting each end and running out to ~200 NM — past the 150 NM wide
+        // bound — so no reachable path is clear of *every* cell, only of the core.
+        let moderateRight = cell(alongNM: 40, crossNM: 138, halfCross: 62, from: usPosition)
+        let moderateLeft = cell(alongNM: 40, crossNM: -138, halfCross: 62, from: usPosition)
+        let route = [usPosition, Geo.destination(from: usPosition, bearingDegrees: course, distanceNM: 300)]
+        let hazards = [radarHazard(core, intensity: .heavy),
+                       radarHazard(moderateRight, intensity: .moderate),
+                       radarHazard(moderateLeft, intensity: .moderate)]
+        let conflict = try XCTUnwrap(detector.detectConflict(
+            position: usPosition, course: course, groundspeedKnots: 450, phase: .cruise,
+            hazards: hazards, waypoints: [], routeAhead: route))
+
+        XCTAssertTrue(detector.pathLeavesRoute(conflict.deviationPath, route: route),
+                      "a wider berth is flyable, so a line must be drawn — not the on-route fallback")
+        // Wide, but still bounded: it rounds the core rather than looping out past the
+        // moderate returns (which would exceed the last-resort maximum).
+        let maxOffset = conflict.deviationPath.map { abs(offsetFromCourse($0)) }.max() ?? 0
+        XCTAssertGreaterThan(maxOffset, 60, "clearing the core requires more than the routine bound")
+        XCTAssertLessThanOrEqual(maxOffset, detector.config.maxDetourOffsetNM,
+                                 "the widened search stays inside the last-resort maximum")
+        // The intense core is what must never be cut; the lighter precip may be skirted.
+        assertPathClear(conflict.deviationPath, of: [core])
+    }
+
+    /// The route merely *skirts* a line — the weather's edge sits a mile or two off course,
+    /// not across it. The tightest clearing hug is then only a few NM off the flight path:
+    /// the shortest clear path there is, and too tight to be drawn as a deviation at all
+    /// (`minRouteExcursionNM`), so it used to win the ranking and then be suppressed —
+    /// "no lateral deviation available" with open air a short turn away. The hug is now
+    /// opened up to clear the floor whenever the wider leg still clears.
+    func testSkirtedLineIsStillGivenADrawableTurnOut() throws {
+        // Left cell whose right edge sits 6 NM left of course, right cell out at 14 NM: the
+        // clear slot runs from ~3 NM left of course to ~11 NM right of it, so the tightest
+        // clearing hug lands ~4 NM right — inside the excursion floor.
+        let left = cell(alongNM: 40, crossNM: -20, halfCross: 14, from: usPosition)
+        let right = cell(alongNM: 40, crossNM: 26, halfCross: 12, from: usPosition)
+        let route = [usPosition, Geo.destination(from: usPosition, bearingDegrees: course, distanceNM: 200)]
+        let conflict = try XCTUnwrap(detector.detectConflict(
+            position: usPosition, course: course, groundspeedKnots: 450, phase: .cruise,
+            hazards: [radarHazard(left), radarHazard(right)], waypoints: [], routeAhead: route))
+
+        let maxOffset = conflict.deviationPath.map { abs(offsetFromCourse($0)) }.max() ?? 0
+        XCTAssertGreaterThanOrEqual(maxOffset, detector.config.minRouteExcursionNM,
+                                    "the turn-out must clear the excursion floor, not hug the route")
+        XCTAssertTrue(detector.pathLeavesRoute(conflict.deviationPath, route: route),
+                      "so the deviation is actually drawn")
+        // Opening it up must not push it into either cell — the slot is what bounds it.
+        assertPathClear(conflict.deviationPath, of: [left, right])
+    }
+
+    /// The tight line still wins when one exists — widening is a last resort, not a default.
+    func testStaysTightWhenARoutineWidthPathClears() throws {
+        let cellPoly = cell(alongNM: 50, crossNM: 0, halfCross: 8, from: usPosition)
+        let conflict = try XCTUnwrap(detector.detectConflict(
+            position: usPosition, course: course, groundspeedKnots: 450, phase: .cruise,
+            hazards: [radarHazard(cellPoly, intensity: .moderate)], waypoints: []))
+        let maxOffset = conflict.deviationPath.map { abs(offsetFromCourse($0)) }.max() ?? 0
+        XCTAssertLessThanOrEqual(maxOffset, detector.config.searchHalfWidthNM,
+                                 "a compact cell is still hugged close, never widened out")
+    }
+
     // MARK: - Prefer the parallel hug over a single-apex triangle
 
     /// A cell biased to one side of course can be dodged either by a single-apex
