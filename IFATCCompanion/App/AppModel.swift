@@ -5215,7 +5215,14 @@ final class AppModel: ObservableObject {
             // Say so when the solved reroute never leaves the route and so isn't drawn —
             // otherwise Diagnostics reports a conflict the map shows no mint line for, and
             // the missing line reads as a bug rather than "there is no lateral way around".
-            let noLine = deviationLeavesRoute(c) ? "" : " — no lateral deviation available"
+            // Report the excursion that failed the floor with it: "available" is a claim
+            // about the whole solver, and the number is what distinguishes a line that
+            // solved to a 2 NM jog along the route from one that was never built at all
+            // (excursion 0) — the first question asked of every report of this message.
+            let excursion = c.maxRouteExcursionNM
+            let measured = excursion < .greatestFiniteMagnitude
+                ? String(format: " (solved line stays %.1f NM off the route)", excursion) : ""
+            let noLine = deviationLeavesRoute(c) ? "" : " — no lateral deviation available\(measured)"
             d.routeConflictStatus = "\(c.severity.displayLabel) \(c.hazard.source.label), \(Int(c.distanceAheadNM.rounded())) NM\(stage)\(noLine)"
         } else if let pos = aircraftState.coordinate ?? resolvedDepartureCoordinate(),
                   let onRoute = conflictDetector.nearestRouteHazard(

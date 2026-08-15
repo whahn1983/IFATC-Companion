@@ -715,10 +715,22 @@ struct RouteWeatherConflictDetector {
             -> (path: [CLLocationCoordinate2D], target: Double) {
             let tightPath = finalize(hugPath(offset: tightTarget, minLead: gentle ? gentleLead(tightTarget) : 0))
             guard abs(tightTarget) < config.minParallelOffsetNM else { return (tightPath, tightTarget) }
-            let widened = (tightTarget < 0 ? -1.0 : 1.0) * config.minParallelOffsetNM
-            let widePath = finalize(hugPath(offset: widened, minLead: gentle ? gentleLead(widened) : 0))
-            return pathIsClear(widePath, cells: cells, origin: position) ? (widePath, widened)
-                                                                         : (tightPath, tightTarget)
+            let sign = tightTarget < 0 ? -1.0 : 1.0
+            // The offset to try, widest first: the full minimum separation, and — when even
+            // that can't be held — at least clear of the excursion floor. The second step is
+            // what saves a hug that clears at a couple of miles off course, which happens
+            // wherever the route merely *skirts* a line: tight enough to be the shortest
+            // clear path, too tight to be drawn as a deviation at all, so without it the
+            // maneuver either vanished from the map or jumped to a needless detour down the
+            // far side. A hug already clear of the floor is left where it is.
+            var steps = [config.minParallelOffsetNM]
+            if abs(tightTarget) < config.minRouteExcursionNM { steps.append(config.minRouteExcursionNM * 1.5) }
+            for widened in steps where abs(tightTarget) < widened {
+                let target = sign * widened
+                let path = finalize(hugPath(offset: target, minLead: gentle ? gentleLead(target) : 0))
+                if pathIsClear(path, cells: cells, origin: position) { return (path, target) }
+            }
+            return (tightPath, tightTarget)
         }
 
         // The tightest parallel-offset hug on one side (+1 right / −1 left) that stays
@@ -761,23 +773,21 @@ struct RouteWeatherConflictDetector {
         // wide turn around it.
         var candidates: [(path: [CLLocationCoordinate2D], target: Double, parallel: Bool)] = []
         for t in solution.targets where abs(t.center) <= config.searchHalfWidthNM {
-            var target = t.center
-            var path = finalize(apexPath(for: target))
-            // A gap straddling the course threads straight down the flight path — a mint
-            // line drawn on top of the magenta one. Slide the thread to the roomier side
-            // of its gap so the drawn deviation leaves the route, and take the slid line
-            // *instead of* the centered one (kept only when the slide still clears every
-            // cell — the shortest-path selector would otherwise always prefer the
-            // zero-offset original). Too tight a slot to hold the floor keeps the centered
-            // thread, which `pathLeavesRoute` then declines to draw.
+            candidates.append((path: finalize(apexPath(for: t.center)), target: t.center, parallel: false))
+            // A target within the excursion floor threads straight down the flight path — a
+            // mint line drawn on top of the magenta one. That happens to a gap straddling the
+            // course, and to the outboard edge of a line the route merely *skirts*: the
+            // padded edge sits a mile or two off course, so the least-deviation candidate is
+            // a jog that deviates nowhere. Offer the same thread slid clear of the floor as
+            // well, and let the selection tiers judge both — the slid one is preferred
+            // wherever it clears (`leavesRoute`), and the centered one is still available as
+            // the last clear resort. Offering it (rather than substituting it only when it
+            // clears every cell, as before) is what keeps a drawable thread on the table when
+            // the slid line is merely clear of the intense cores — scattered lighter precip
+            // used to delete it outright, leaving nothing drawable at all.
             if let nudged = nudgedOffRoute(t) {
-                let slid = finalize(apexPath(for: nudged))
-                if pathIsClear(slid, cells: cellBerths, origin: position) {
-                    target = nudged
-                    path = slid
-                }
+                candidates.append((path: finalize(apexPath(for: nudged)), target: nudged, parallel: false))
             }
-            candidates.append((path: path, target: target, parallel: false))
         }
         for edge in [solution.leftEdge, solution.rightEdge] where abs(edge) <= config.searchHalfWidthNM {
             let hug = atLeastMinOffset(tightTarget: edge, gentle: false, cells: cellBerths)
