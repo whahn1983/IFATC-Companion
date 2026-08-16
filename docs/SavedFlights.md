@@ -68,9 +68,10 @@ Everything that describes the *flight*:
 Anything that describes the *world* rather than the flight, because it would be stale:
 
 - **Telemetry.** Position, altitude and ground state come from the next Infinite Flight
-  reading, a second or so after loading. The last fix is cleared on load so nothing —
-  arrival-ATIS range, the weather corridor, which airport surface to pre-cache — is
-  measured from the previous flight's position.
+  reading, a second or so after loading — over a **freshly re-established link** (see
+  below). The last fix is cleared on load so nothing — arrival-ATIS range, the weather
+  corridor, which airport surface to pre-cache — is measured from the previous flight's
+  position.
 - **Weather observations.** METARs, the TAF, PIREPs, SIGMETs and the radar sample are
   re-fetched on load. Restoring hours-old cells would draw a deviation around weather
   that has since moved. The *interaction* state (what the pilot has already dealt with)
@@ -82,6 +83,33 @@ Anything that describes the *world* rather than the flight, because it would be 
   host/port are yours, not the flight's — loading a flight from last week never changes
   your audio setup or connection.
 - **The connection manifest.** Republished by Infinite Flight on every connect.
+
+## Swapping flights forces a fresh link
+
+Both Clear/New Flight and loading a saved flight call `refreshConnection()`, which drops
+the Infinite Flight socket and immediately opens a new one.
+
+This is not belt-and-braces. The Connect link is bound to the flight that was live when
+it opened: after switching flights in the sim it keeps serving the **old aircraft's
+position and the old flight plan**, so the app shows the previous flight's telemetry,
+route and map until the socket is re-established. It is the same reason returning from
+the background forces a reconnect, and the same thing the Settings **Reconnect** button
+does — which is what pilots were having to press by hand after every swap.
+
+Two details make it safe:
+
+- It does **not** go through `startLive()`. The session has just been set up deliberately
+  — cleared, or restored from a saved flight — and `startLive()` would re-derive it from
+  the auto-resume snapshot on top of that. Only the link is re-established; the
+  conversation is left exactly as it is.
+- `IFConnectManager.disconnect()` now clears `liveFlightPlanRaw`. The manager emits a
+  flight plan only when it *changes*, so a cache that outlived its socket made the next
+  connection's handshake read silently do nothing — precisely when the app most needs the
+  sim to re-state the plan.
+
+The reconnect also marks the next fix as a telemetry discontinuity, so position-driven
+weather decisions stand down for that tick rather than treating a jump between two
+different aircraft as continuous flight.
 
 ## Auto-save
 
