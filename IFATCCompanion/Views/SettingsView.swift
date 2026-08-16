@@ -25,6 +25,7 @@ struct SettingsView: View {
                 pilotVoiceSection
                 phraseologySection
                 automationSection
+                savedFlightsSection
                 backgroundAudioSection
                 sigmetPirepSection
                 weatherDataSection
@@ -243,6 +244,18 @@ struct SettingsView: View {
             Text("ATC Automation")
         } footer: {
             Text("You make your own calls with the buttons (clearance through ready); the controller's position-based calls play automatically — takeoff once you line up, the Departure hand-off after you're airborne, and the en-route and arrival sequence. Read backs and check-ins stay manual. Auto-tune moves the active frequency to the next controller only after you read the hand-off back; turn it off to tune by hand. Initial climb is set above the field and raised to a valid MSL altitude at high-elevation airports (e.g. Denver).")
+        }
+    }
+
+    // MARK: - Saved flights
+
+    private var savedFlightsSection: some View {
+        Section {
+            Toggle("Keep saved flights up to date", isOn: $settings.autoSaveFlights)
+        } header: {
+            Text("Saved Flights")
+        } footer: {
+            Text("While a saved flight is loaded, keep writing your progress back into it as you fly, so switching to another flight and back picks up exactly where you left off. Turn this off to treat a saved flight as a fixed snapshot that only changes when you tap Save.")
         }
     }
 
