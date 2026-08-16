@@ -6,7 +6,7 @@ import Combine
 @MainActor
 final class DiagnosticsStore: ObservableObject {
 
-    enum Category: String {
+    enum Category: String, Codable {
         case connect = "CONNECT"
         case manifest = "MANIFEST"
         case state = "STATE"
@@ -17,8 +17,10 @@ final class DiagnosticsStore: ObservableObject {
         case app = "APP"
     }
 
-    struct Entry: Identifiable {
-        let id = UUID()
+    /// `id` is a `var` (not a `let` with an initial value) so the synthesized
+    /// `Decodable` can restore it — a saved flight carries its diagnostics log.
+    struct Entry: Identifiable, Codable {
+        var id = UUID()
         let timestamp: Date
         let category: Category
         let message: String
@@ -62,6 +64,28 @@ final class DiagnosticsStore: ObservableObject {
         entries.removeAll()
     }
 
+    // MARK: - Persistence
+
+    /// Capture the log for a saved flight. `discoveredStates` is deliberately left
+    /// out: it is a property of the *connection*, not the flight (Infinite Flight
+    /// republishes the whole manifest on every connect), and it is by far the largest
+    /// thing in the store — persisting it would bloat every saved flight with data
+    /// that is replaced seconds after loading anyway.
+    func captureSnapshot() -> DiagnosticsSnapshot {
+        DiagnosticsSnapshot(entries: entries,
+                            weatherEndpointStatus: weatherEndpointStatus,
+                            atisEndpointStatus: atisEndpointStatus,
+                            lastRawMessage: lastRawMessage)
+    }
+
+    /// Restore a saved flight's log, replacing whatever the current session had.
+    func restore(_ snapshot: DiagnosticsSnapshot) {
+        entries = Array(snapshot.entries.suffix(maxEntries))
+        weatherEndpointStatus = snapshot.weatherEndpointStatus
+        atisEndpointStatus = snapshot.atisEndpointStatus
+        lastRawMessage = snapshot.lastRawMessage
+    }
+
     /// Render the full diagnostics buffer as shareable plain text.
     func exportText() -> String {
         var lines: [String] = []
@@ -85,4 +109,15 @@ final class DiagnosticsStore: ObservableObject {
         }
         return lines.joined(separator: "\n")
     }
+}
+
+/// The persistable half of `DiagnosticsStore`, carried inside a saved flight so the
+/// Diagnostics tab reads as it did when the flight was put away. Declared at file
+/// scope (rather than nested in the `@MainActor` store) so its `Codable` conformance
+/// is plainly free of actor isolation.
+struct DiagnosticsSnapshot: Codable {
+    var entries: [DiagnosticsStore.Entry] = []
+    var weatherEndpointStatus: String = "Not checked"
+    var atisEndpointStatus: String = "Not checked"
+    var lastRawMessage: String = ""
 }

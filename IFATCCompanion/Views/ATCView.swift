@@ -1,6 +1,11 @@
 import SwiftUI
 import Speech
 
+/// Screens pushed from the ATC tab.
+enum ATCRoute: Hashable {
+    case flights
+}
+
 struct ATCView: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var settings: AppSettings
@@ -48,14 +53,38 @@ struct ATCView: View {
                         Button { speech.stop() } label: { Image(systemName: "stop.circle.fill") }
                     }
                 }
+                ToolbarItem(placement: .topBarTrailing) {
+                    NavigationLink(value: ATCRoute.flights) {
+                        Image(systemName: "list.bullet")
+                    }
+                    .buttonStyle(.bordered)
+                    .buttonBorderShape(.circle)
+                    .accessibilityLabel("Flights")
+                }
+            }
+            .navigationDestination(for: ATCRoute.self) { route in
+                switch route {
+                case .flights:
+                    FlightsListView(store: model.savedFlights)
+                }
             }
             .confirmationDialog("Clear this flight?",
                                 isPresented: $showClearFlightConfirm,
                                 titleVisibility: .visible) {
+                // Offered first when the flight in progress isn't in the saved list, so
+                // clearing can't quietly throw away a leg the pilot wanted to keep.
+                if model.hasUnsavedFlight, model.canSaveCurrentFlight {
+                    Button("Save & Clear") {
+                        model.saveCurrentFlight()
+                        model.clearFlight()
+                    }
+                }
                 Button("Clear Flight", role: .destructive) { model.clearFlight() }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Resets the conversation and starts a new flight from the gate. Your settings and flight plan are kept.")
+                Text(model.hasUnsavedFlight
+                     ? "This flight hasn't been saved and will be lost. Clearing resets the conversation and starts again from the gate; your settings and flight plan are kept."
+                     : "Resets the conversation and starts a new flight from the gate. Your settings and flight plan are kept.")
             }
             .sheet(isPresented: $showSubscription) {
                 SubscriptionView().environmentObject(entitlements)

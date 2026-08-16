@@ -229,6 +229,13 @@ final class AppSettings: ObservableObject {
     /// buttons.
     @Published var autoTuneOnHandoff: Bool { didSet { save(autoTuneOnHandoff, .autoTuneOnHandoff) } }
 
+    // Saved flights
+    /// Keep a loaded saved flight up to date as it is flown, so switching away to
+    /// another flight (or being killed by the OS) never loses the leg you just flew.
+    /// On by default; turn it off to treat a saved flight as a fixed point-in-time
+    /// snapshot that only changes when you tap Save.
+    @Published var autoSaveFlights: Bool { didSet { save(autoSaveFlights, .autoSaveFlights) } }
+
     // Weather
     @Published var routeCorridorNM: Double { didSet { save(routeCorridorNM, .routeCorridorNM) } }
     @Published var altitudeBandFt: Double { didSet { save(altitudeBandFt, .altitudeBandFt) } }
@@ -320,6 +327,7 @@ final class AppSettings: ObservableObject {
         initialClimbAltitudeFt = defaults.object(forKey: Key.initialClimbAltitudeFt.rawValue) as? Int ?? 5000
         traconCeilingFL = defaults.object(forKey: Key.traconCeilingFL.rawValue) as? Int ?? 180
         autoTuneOnHandoff = defaults.object(forKey: Key.autoTuneOnHandoff.rawValue) as? Bool ?? true
+        autoSaveFlights = defaults.object(forKey: Key.autoSaveFlights.rawValue) as? Bool ?? true
 
         routeCorridorNM = defaults.object(forKey: Key.routeCorridorNM.rawValue) as? Double ?? 100
         altitudeBandFt = defaults.object(forKey: Key.altitudeBandFt.rawValue) as? Double ?? 5000
@@ -384,6 +392,7 @@ final class AppSettings: ObservableObject {
         initialClimbAltitudeFt = other.initialClimbAltitudeFt
         traconCeilingFL = other.traconCeilingFL
         autoTuneOnHandoff = other.autoTuneOnHandoff
+        autoSaveFlights = other.autoSaveFlights
         routeCorridorNM = other.routeCorridorNM; altitudeBandFt = other.altitudeBandFt
         weatherBaseURL = other.weatherBaseURL
         noaaRadarOverlay = other.noaaRadarOverlay; radarOpacity = other.radarOpacity
@@ -409,6 +418,7 @@ final class AppSettings: ObservableObject {
         case backgroundChatterEnabled, liveActivityEnabled, chatterVolume, chatterDensity, transmissionStaticEnabled
         case radioEffectDefaultMigration
         case initialClimbAltitudeFt, traconCeilingFL, autoTuneOnHandoff
+        case autoSaveFlights
         case routeCorridorNM, altitudeBandFt, weatherBaseURL
         case noaaRadarOverlay, radarOpacity, weatherDeviationAlerts, satelliteDeviationsEnabled
         case showWeatherDataSourceLabels, showWeatherCoverageWarnings, reduceCellularData

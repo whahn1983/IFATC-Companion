@@ -556,6 +556,10 @@ final class AppModel: ObservableObject {
     /// relaunch) resumes where the flight left off instead of re-deriving the
     /// conversation from raw telemetry — which would jump a parked aircraft to cruise.
     private let sessionStore = SessionStateStore()
+    /// The pilot's library of named, saved flights — the deliberate counterpart to the
+    /// single auto-resume snapshot above. Both hold the same `SessionSnapshot`, so a
+    /// saved flight restores everything a reconnect does and then some.
+    let savedFlights: SavedFlightStore
     /// Signature of the last persisted state, so we only write when something
     /// meaningful changed (or the heartbeat below is due).
     private var lastPersistSignature: String?
@@ -686,7 +690,10 @@ final class AppModel: ObservableObject {
     /// flow does not run away; the pilot can still act via the buttons/PTT).
     var readbackMaxPrompts = 3
 
-    init() {
+    /// - Parameter savedFlights: the flight library. Injectable so tests get their own
+    ///   temporary directory instead of writing into the real one.
+    init(savedFlights: SavedFlightStore? = nil) {
+        self.savedFlights = savedFlights ?? SavedFlightStore()
         let settings = AppSettings()
         self.settings = settings
         let diagnostics = DiagnosticsStore()
@@ -1410,6 +1417,12 @@ final class AppModel: ObservableObject {
         // otherwise start the conversation fresh. Restoring is what keeps a parked
         // aircraft from being re-derived straight to cruise after a dropped link.
         if !restoreSession() {
+            // Nothing to resume, so this is a brand-new conversation — not the saved
+            // flight that may still be bound (e.g. the pilot was away past the
+            // auto-resume window). Unbind before anything is written, or the fresh empty
+            // session would auto-save straight over that saved flight. The flight itself
+            // is untouched and can be loaded again from the list.
+            savedFlights.setActive(nil)
             manualTuning = false
             pendingTaxiMapRestore = .none
             stateMachine.reset()
@@ -2909,7 +2922,10 @@ final class AppModel: ObservableObject {
 
     // MARK: - Session persistence
 
-    /// Build a snapshot of the live ATC session for persistence.
+    /// Build a snapshot of the live ATC session for persistence. The same snapshot
+    /// serves the auto-resume store and a saved flight, so it captures the whole
+    /// session — conversation, flight plan, manual overrides, radio, gates and log —
+    /// not just the state machine's cursor.
     private func currentSnapshot() -> SessionSnapshot {
         SessionSnapshot(
             atcState: atcState,
@@ -2933,7 +2949,38 @@ final class AppModel: ObservableObject {
             departure: flightPlan.departure,
             destination: flightPlan.destination,
             mockMode: settings.mockMode,
-            savedAt: Date())
+            savedAt: Date(),
+            flightPlan: flightPlan,
+            overrides: FlightOverrides(settings: settings),
+            tunedFacility: tunedFacility,
+            pendingCheckInFacility: pendingCheckInFacility,
+            awaitingReadback: awaitingReadback,
+            pendingReadbackTx: pendingReadbackTx,
+            readbackPrompts: readbackPrompts,
+            goAroundInProgress: goAroundInProgress,
+            gateMonitored: gateMonitored,
+            arrivalGateLatitude: arrivalGatePosition?.latitude,
+            arrivalGateLongitude: arrivalGatePosition?.longitude,
+            departureFieldElevationMSL: departureFieldElevationMSL,
+            liftoffAltitudeMSL: liftoffAltitudeMSL,
+            atcCommunicationStarted: atcCommunicationStarted,
+            departureATIS: departureATIS,
+            arrivalATIS: arrivalATIS,
+            lastArrivalATISAttempt: lastArrivalATISAttempt,
+            weatherHandled: weatherHandled,
+            mockWeatherAdvisoryIssued: mockWeatherAdvisoryIssued)
+    }
+
+    /// The same snapshot with the Diagnostics log attached, for a saved flight.
+    ///
+    /// The log rides along only here, never in the auto-resume snapshot: that one lives
+    /// in `UserDefaults`, which iOS reads wholesale at launch, and five hundred log lines
+    /// re-encoded into it on every state change is a cost with no reader — a reconnect
+    /// keeps the log it already has in memory.
+    private func snapshotForSaving() -> SessionSnapshot {
+        var snapshot = currentSnapshot()
+        snapshot.diagnostics = diagnostics.captureSnapshot()
+        return snapshot
     }
 
     /// Persist the current session when something meaningful changed (or the
@@ -2945,15 +2992,26 @@ final class AppModel: ObservableObject {
         let sig = [stateMachine.current.rawValue, atcState.rawValue, currentFacility.rawValue,
                    phase.rawValue, String(assignedAltitude), String(hasDeparted),
                    String(arrivalAnnounced), String(awaitingGateArrival), String(manualTuning),
-                   String(monitoringTower),
+                   String(monitoringTower), tunedFacility?.rawValue ?? "-",
+                   String(awaitingReadback),
                    weatherDeviation.state.rawValue, String(transcript.count),
                    reportedDepartureInfo ?? "-", reportedArrivalInfo ?? "-"].joined(separator: "|")
         let now = Date()
+        let changed = sig != lastPersistSignature
         let heartbeatDue = lastPersistedAt.map { now.timeIntervalSince($0) >= persistHeartbeat } ?? true
-        guard sig != lastPersistSignature || heartbeatDue else { return }
+        guard changed || heartbeatDue else { return }
         lastPersistSignature = sig
         lastPersistedAt = now
-        sessionStore.save(currentSnapshot())
+        let snapshot = currentSnapshot()
+        sessionStore.save(snapshot)
+        // Keep a loaded saved flight current as it is flown, so switching to another
+        // flight and back resumes exactly here rather than at the last manual save.
+        // Only on a real change: the heartbeat exists to keep the auto-resume snapshot
+        // inside its six-hour window, and a saved flight has no such expiry, so pumping
+        // the whole library to disk every couple of minutes would buy nothing.
+        if changed, settings.autoSaveFlights, let id = savedFlights.activeFlightID {
+            savedFlights.update(id: id, snapshot: snapshotForSaving())
+        }
     }
 
     /// Restore a recent in-progress session, if one was saved, so a reconnect or
@@ -2974,8 +3032,21 @@ final class AppModel: ObservableObject {
         return true
     }
 
+    /// How a snapshot is being applied.
+    private enum SnapshotRestore {
+        /// A dropped link or a relaunch: the conversation and its bookkeeping resume,
+        /// but the flight plan, the pilot's Settings fields and the running diagnostics
+        /// log are left alone — they belong to the session still in progress, and may
+        /// well be newer than the snapshot (a plan edited while disconnected never
+        /// re-persists a snapshot of its own).
+        case reconnect
+        /// The pilot picked this flight out of the library: everything comes back,
+        /// including the plan, the manual overrides and the diagnostics log.
+        case savedFlight
+    }
+
     /// Apply a snapshot's state to the live model so the conversation resumes from it.
-    private func apply(snapshot snap: SessionSnapshot) {
+    private func apply(snapshot snap: SessionSnapshot, mode: SnapshotRestore = .reconnect) {
         stateMachine.restore(to: snap.stateMachineCurrent)
         atcState = snap.atcState
         currentFacility = snap.currentFacility
@@ -3007,8 +3078,87 @@ final class AppModel: ObservableObject {
         }
         // A resumed flight has already been talking to ATC if its transcript holds any
         // controller/pilot exchange — keep the ambient chatter going rather than waiting for
-        // the next call.
-        atcCommunicationStarted = transcript.contains { $0.isControllerExchange }
+        // the next call. Snapshots written before the flag existed fall back to the derivation.
+        atcCommunicationStarted = snap.atcCommunicationStarted
+            ?? transcript.contains(where: { $0.isControllerExchange })
+
+        // The radio: the frequency the pilot was actually on, and any controller they had
+        // tuned but not yet checked in with.
+        tunedFacility = snap.tunedFacility
+        pendingCheckInFacility = snap.pendingCheckInFacility
+        goAroundInProgress = snap.goAroundInProgress ?? false
+        // Arrival-to-gate staging, so a flight put away on the taxi-in blocks in at the
+        // gate rather than completing on the first full stop.
+        gateMonitored = snap.gateMonitored ?? false
+        arrivalGatePosition = snap.arrivalGateCoordinate
+        // Ground references later altitude decisions are measured against.
+        departureFieldElevationMSL = snap.departureFieldElevationMSL ?? 0
+        liftoffAltitudeMSL = snap.liftoffAltitudeMSL ?? 0
+        // ATIS reports already copied, so the card is populated rather than blank until the
+        // next refresh (the info *codes* and dismissal flags were restored above).
+        if let atis = snap.departureATIS { departureATIS = atis }
+        if let atis = snap.arrivalATIS { arrivalATIS = atis }
+        lastArrivalATISAttempt = snap.lastArrivalATISAttempt
+        updateATISDiagnostics()
+        // Weather-interaction bookkeeping. The observations themselves are re-fetched.
+        weatherHandled = snap.weatherHandled ?? false
+        mockWeatherAdvisoryIssued = snap.mockWeatherAdvisoryIssued ?? false
+
+        // The read-back gate: a controller was waiting on the pilot, so the flow must stay
+        // held — and the idle "how do you read?" loop re-armed — rather than coming back
+        // with a gate that is closed forever or one that has silently opened.
+        readbackTimer?.cancel()
+        readbackTimer = nil
+        if snap.awaitingReadback == true, let pending = snap.pendingReadbackTx {
+            awaitingReadback = true
+            pendingReadbackTx = pending
+            readbackPrompts = snap.readbackPrompts ?? 0
+            armReadbackTimer()
+        } else {
+            awaitingReadback = false
+            pendingReadbackTx = nil
+            readbackPrompts = 0
+        }
+
+        // Only a deliberate load replaces the flight itself. On a reconnect the plan in
+        // memory is the live one (and the Settings fields are already the pilot's), so
+        // overwriting either from a snapshot could undo an edit made while disconnected.
+        guard mode == .savedFlight else {
+            seedRouteIfMissing(from: snap)
+            return
+        }
+        snap.overrides?.apply(to: settings)
+        // Assign the plan directly rather than re-deriving it from Settings —
+        // `syncFlightPlanFromSettings` builds a fresh plan and would drop the saved
+        // route, its fixes and its endpoint coordinates.
+        if let plan = snap.flightPlan { flightPlan = plan }
+        if let log = snap.diagnostics { diagnostics.restore(log) }
+    }
+
+    /// Fill in a resumed session's route from its snapshot when the plan in memory has
+    /// none — the cold-relaunch case, where `onAppear` rebuilds the plan from Settings
+    /// alone and the route is blank until Infinite Flight republishes it a second or two
+    /// after connecting. Seeding it makes the map, the departure heading and the
+    /// route-based weather work from the first tick instead of the third.
+    ///
+    /// Deliberately additive and narrow: it never touches a plan that already has a
+    /// route (which may be newer than the snapshot), and only adopts one saved for the
+    /// same endpoints, so a plan re-pointed in Settings while the app was closed can't
+    /// inherit the previous flight's fixes.
+    private func seedRouteIfMissing(from snap: SessionSnapshot) {
+        guard flightPlan.waypoints.isEmpty,
+              let saved = snap.flightPlan, !saved.waypoints.isEmpty,
+              saved.departure == flightPlan.departure,
+              saved.destination == flightPlan.destination else { return }
+        flightPlan.waypoints = saved.waypoints
+        flightPlan.sidFixNames = saved.sidFixNames
+        flightPlan.approachStartFixName = saved.approachStartFixName
+        flightPlan.departureLatitude = saved.departureLatitude
+        flightPlan.departureLongitude = saved.departureLongitude
+        flightPlan.destinationLatitude = saved.destinationLatitude
+        flightPlan.destinationLongitude = saved.destinationLongitude
+        flightPlan.departureRunwayLatitude = saved.departureRunwayLatitude
+        flightPlan.departureRunwayLongitude = saved.departureRunwayLongitude
     }
 
     /// If the restored session was mid-taxi, arm the taxi-map restore. The map itself is
@@ -3029,8 +3179,12 @@ final class AppModel: ObservableObject {
         } else if snap.atcState == .groundArrival || snap.stateMachineCurrent == .groundArrival {
             // Only the gate-bound arrival taxi drives a map; a generic "taxi to parking"
             // with no entered gate has nothing to route to (mirrors the arrival-taxi gate
-            // check on the normal path).
-            pendingTaxiMapRestore = hasArrivalGate ? .arrival : .none
+            // check on the normal path). The gate comes from the snapshot's own plan when
+            // it carries one — loading a saved flight arms this *before* applying its plan,
+            // so reading the live plan here would ask the wrong flight about its gate.
+            let gate = snap.flightPlan?.arrivalGate ?? flightPlan.arrivalGate
+            let snapshotHasArrivalGate = !gate.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            pendingTaxiMapRestore = snapshotHasArrivalGate ? .arrival : .none
         } else {
             pendingTaxiMapRestore = .none
         }
@@ -3063,6 +3217,125 @@ final class AppModel: ObservableObject {
         sessionStore.clear()
         lastPersistSignature = nil
         lastPersistedAt = nil
+    }
+
+    // MARK: - Saved flights
+
+    /// The saved flight the live session is currently flying, if any.
+    var activeSavedFlight: SavedFlight? { savedFlights.activeFlight }
+
+    /// Whether there is a flight worth saving: Live Mode, and either a conversation
+    /// already under way or a plan with somewhere to go (so a flight can be set up and
+    /// put in the list before pushback).
+    var canSaveCurrentFlight: Bool {
+        guard !settings.mockMode else { return false }
+        return !transcript.isEmpty || hasDeparted
+            || !flightPlan.departure.isEmpty || !flightPlan.destination.isEmpty
+    }
+
+    /// Whether the session in progress would be lost by starting a new flight or
+    /// loading a different one — so the UI can offer to save it first. A session bound
+    /// to a slot that auto-save keeps current has nothing to lose; one that isn't (or
+    /// whose auto-save is switched off) does, as soon as it has any history at all.
+    var hasUnsavedFlight: Bool {
+        guard !settings.mockMode else { return false }
+        guard !transcript.isEmpty || hasDeparted else { return false }
+        if settings.autoSaveFlights, let id = savedFlights.activeFlightID,
+           savedFlights.flight(id: id) != nil { return false }
+        return true
+    }
+
+    /// Save the session in progress. When it was already loaded from (or saved into)
+    /// the library, that slot is updated in place rather than duplicated — tapping Save
+    /// twice on one flight must not leave "KIAH-KORD" and "KIAH-KORD-1" side by side.
+    /// Mock sessions are never saved: the mock feed is a scripted demo that always
+    /// starts from the gate, so there is nothing about it worth resuming.
+    @discardableResult
+    func saveCurrentFlight() -> SavedFlight? {
+        guard !settings.mockMode else { return nil }
+        let snapshot = snapshotForSaving()
+        if let id = savedFlights.activeFlightID, let existing = savedFlights.flight(id: id) {
+            savedFlights.update(id: id, snapshot: snapshot)
+            diagnostics.log(.app, "Updated saved flight \"\(existing.name)\".")
+            return savedFlights.flight(id: id)
+        }
+        let flight = savedFlights.save(snapshot)
+        diagnostics.log(.app, "Saved flight \"\(flight.name)\" at \(snapshot.atcState.title).")
+        return flight
+    }
+
+    /// Whether a saved flight's endpoints disagree with the flight Infinite Flight is
+    /// currently reporting, described for the confirmation prompt. Nil when they match
+    /// (or when there is nothing live to compare against yet), in which case the flight
+    /// can be loaded without asking. The pilot can always load anyway — this is a
+    /// warning, not a gate.
+    func endpointMismatch(with flight: SavedFlight) -> String? {
+        let liveRoute = SessionSnapshot.routeLabel(departure: flightPlan.departure,
+                                                   destination: flightPlan.destination)
+        let savedRoute = flight.snapshot.routeName
+        guard liveRoute != "Flight", savedRoute != "Flight", liveRoute != savedRoute else { return nil }
+        return "Infinite Flight is reporting \(liveRoute), but this saved flight is \(savedRoute)."
+    }
+
+    /// Load a saved flight, replacing the session in progress.
+    ///
+    /// The session is reset first and the snapshot applied to the clean state — never
+    /// layered over the live one (see `resetSession`). Everything that describes the
+    /// flight comes back: the plan, the manual overrides, the transcript, the radio and
+    /// the read-back gate. Everything that describes the *world* — telemetry, weather,
+    /// ATIS, the taxi map — is re-derived, because the aircraft's real position and the
+    /// weather on the route are whatever they are right now, not what they were when
+    /// the flight was put away.
+    func loadSavedFlight(_ flight: SavedFlight) {
+        guard !settings.mockMode else { return }
+        resetSession()
+        // Decide the taxi-map restore before applying: `apply` re-fires the arrival-taxi
+        // setup through the `$atcState` observer, which would flip the coordinator off
+        // `.none` and defeat the "idle coordinator only" guard.
+        armTaxiMapRestore(from: flight.snapshot)
+        apply(snapshot: flight.snapshot, mode: .savedFlight)
+        savedFlights.setActive(flight.id)
+
+        // The next live fix is a different aircraft in a different place, so it must not
+        // be read as continuous flight — position-driven weather decisions stand down for
+        // that tick exactly as they do after a background gap.
+        telemetryResyncPending = true
+
+        // Re-persist straight away so the auto-resume snapshot is this flight too: if the
+        // app is killed right after the swap, the relaunch comes back to the flight the
+        // pilot just chose rather than the one they left.
+        lastPersistSignature = nil
+        lastPersistedAt = nil
+        persistSession()
+
+        // The loaded flight's own route, weather and ATIS. The saved plan is on screen
+        // immediately; the re-read from Infinite Flight then merges over it (bypassing
+        // the change guard, so it always reports) in case the route was edited in the sim
+        // since the flight was saved — rare, but the sim is the authority on the route.
+        prefetchAirportSurfaces()
+        recomputeWeatherHazards()
+        Task {
+            await connect.refreshFlightPlan()
+            await refreshWeather()
+            await refreshATIS()
+        }
+        // Chatter follows the restored transcript (a flight already talking to ATC keeps
+        // its background traffic), and the notification banner is still showing the
+        // previous flight's callsign and route until it is pushed — force it now rather
+        // than waiting out the throttle, so the card never names the wrong flight. The
+        // altitude/heading it carries are momentarily zero (the last fix was dropped with
+        // the old session) and fill in on the next telemetry tick a second later; showing
+        // the right flight with stale numbers beats the wrong flight with fresh ones.
+        updateChatterRunState()
+        updateLiveActivityRunState()
+        diagnostics.log(.app, "Loaded saved flight \"\(flight.name)\" at \(flight.snapshot.atcState.title).")
+    }
+
+    /// Delete a saved flight. Deleting the one being flown only unbinds it — the
+    /// session in progress carries on, it simply stops auto-saving anywhere.
+    func deleteSavedFlight(_ flight: SavedFlight) {
+        savedFlights.delete(id: flight.id)
+        diagnostics.log(.app, "Deleted saved flight \"\(flight.name)\".")
     }
 
     // MARK: - Context
@@ -7100,6 +7373,10 @@ final class AppModel: ObservableObject {
         latestTransmission = nil
         atcCommunicationStarted = false
         clearSavedSession()
+        // Unbind, don't delete: the confirmation offers to reset settings and the
+        // transcript, so the pilot's saved flights — their own content — survive. The
+        // binding has to go, though, or the emptied session would auto-save over one.
+        savedFlights.setActive(nil)
         resetWeatherDeviation()
         radarOverlay.mockCells = []
         radarOverlay.sampledCells = []
@@ -7115,20 +7392,47 @@ final class AppModel: ObservableObject {
     /// plan, then restarts the active feed. Use this between flights so the new
     /// flight does not inherit the previous chat history.
     func clearFlight() {
+        resetSession()
+        clearSavedSession()
+        // A brand-new flight is no longer the saved one, so the auto-save must stop
+        // writing into that slot — otherwise clearing would quietly overwrite a saved
+        // flight with an empty session.
+        savedFlights.setActive(nil)
+        if settings.mockMode {
+            // Restart the mock feed from the gate.
+            mock.stop()
+            mock.setPhase(.preflight)
+            startMock()
+        } else {
+            // Keep the live IF connection; the conversation rebuilds from the next
+            // telemetry update.
+            stateMachine.setConnected()
+        }
+        diagnostics.log(.app, "Flight cleared — ready for a new flight.")
+    }
+
+    /// Wipe the in-memory session back to a clean, pre-departure state. Purely local —
+    /// it writes to no store and touches no feed — so it can serve both "clear this
+    /// flight" and the reset that must precede loading a saved flight.
+    ///
+    /// Loading *must* reset first rather than applying a snapshot over the live session:
+    /// an arrival state applied on top of a flight sitting at the gate would leave
+    /// `hasDeparted` true (the pre-departure ground flow is then skipped forever) while
+    /// the forward-only flow guard refuses to walk the state machine back.
+    private func resetSession() {
         manualTuning = false
         tunedFacility = nil
         pendingCheckInFacility = nil
         goAroundInProgress = false
         clearReadbackGate()
         cancelTakeoffClearanceTimer()
-        clearSavedSession()
         resetWeatherDeviation()
         resetATISState(clearReported: true)
         airportSurface.clear()
         pendingTaxiMapRestore = .none
         speech.stop()
         // End the ambient chatter with the flight; it restarts on the new flight's first ATC
-        // call (the mock feed below re-begins the conversation).
+        // call (a loaded flight resumes it from the restored transcript instead).
         atcCommunicationStarted = false
         updateChatterRunState()
         transcript.removeAll()
@@ -7143,24 +7447,22 @@ final class AppModel: ObservableObject {
         arrivalRouteWaitStartedAt = nil
         pendingArrivalTaxiClearance = nil
         gateMonitored = false
+        // Ground references belong to the departure just left behind. (The weather
+        // bookkeeping and the last-fix trackers are cleared by `resetWeatherDeviation`.)
+        departureFieldElevationMSL = 0
+        liftoffAltitudeMSL = 0
         lastSpokenText = ""
         lastSpokenIntent = nil
         phase = .preflight
         phaseDetector = PhaseDetector()
+        // Forget the last fix as well. It belongs to the flight being put down, and
+        // distance-based decisions — arrival-ATIS range, the weather corridor, which
+        // airport surface to pre-cache — would otherwise be measured from another
+        // aircraft's position until the next telemetry tick lands.
+        aircraftState = .empty
         stateMachine.reset()
         atcState = .connectedIdle
         currentFacility = .clearance
-        if settings.mockMode {
-            // Restart the mock feed from the gate.
-            mock.stop()
-            mock.setPhase(.preflight)
-            startMock()
-        } else {
-            // Keep the live IF connection; the conversation rebuilds from the next
-            // telemetry update.
-            stateMachine.setConnected()
-        }
-        diagnostics.log(.app, "Flight cleared — ready for a new flight.")
     }
 }
 
