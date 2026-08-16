@@ -3238,11 +3238,16 @@ final class AppModel: ObservableObject {
     /// what the session calls one can never disagree.
     var flightIsComplete: Bool { atcState == .parked && arrivalAnnounced }
 
-    /// Whether there is a flight worth saving: Live Mode, and either a conversation
-    /// already under way or a plan with somewhere to go (so a flight can be set up and
-    /// put in the list before pushback).
+    /// Whether there is a flight worth saving: Live Mode, not already finished, and
+    /// either a conversation under way or a plan with somewhere to go (so a flight can
+    /// be set up and put in the list before pushback).
+    ///
+    /// A completed flight is excluded deliberately. There is nothing to come back to
+    /// once the aircraft has blocked in, and clearing retires such a flight from the
+    /// list anyway — so offering to save one would only set up the contradiction of
+    /// saving a flight the next tap deletes.
     var canSaveCurrentFlight: Bool {
-        guard !settings.mockMode else { return false }
+        guard !settings.mockMode, !flightIsComplete else { return false }
         return !transcript.isEmpty || hasDeparted
             || !flightPlan.departure.isEmpty || !flightPlan.destination.isEmpty
     }
@@ -3253,6 +3258,9 @@ final class AppModel: ObservableObject {
     /// whose auto-save is switched off) does, as soon as it has any history at all.
     var hasUnsavedFlight: Bool {
         guard !settings.mockMode else { return false }
+        // A finished flight isn't "unsaved" — it is done, and cannot be saved at all.
+        // Warning that it will be lost would offer the pilot a rescue that isn't there.
+        guard !flightIsComplete else { return false }
         guard !transcript.isEmpty || hasDeparted else { return false }
         if settings.autoSaveFlights, let id = savedFlights.activeFlightID,
            savedFlights.flight(id: id) != nil { return false }
@@ -3262,11 +3270,14 @@ final class AppModel: ObservableObject {
     /// Save the session in progress. When it was already loaded from (or saved into)
     /// the library, that slot is updated in place rather than duplicated — tapping Save
     /// twice on one flight must not leave "KIAH-KORD" and "KIAH-KORD-1" side by side.
-    /// Mock sessions are never saved: the mock feed is a scripted demo that always
-    /// starts from the gate, so there is nothing about it worth resuming.
+    ///
+    /// Refuses whatever `canSaveCurrentFlight` refuses — a mock session (a scripted demo
+    /// that always starts at the gate), a flight already finished, and an empty one with
+    /// nowhere to go — so the rule lives here rather than only in the button that is
+    /// disabled by it.
     @discardableResult
     func saveCurrentFlight() -> SavedFlight? {
-        guard !settings.mockMode else { return nil }
+        guard canSaveCurrentFlight else { return nil }
         let snapshot = snapshotForSaving()
         if let id = savedFlights.activeFlightID, let existing = savedFlights.flight(id: id) {
             savedFlights.update(id: id, snapshot: snapshot)

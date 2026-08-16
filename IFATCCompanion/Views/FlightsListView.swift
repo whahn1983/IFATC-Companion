@@ -137,10 +137,9 @@ struct FlightsListView: View {
     @ViewBuilder
     private func dialogButtons(for action: PendingAction) -> some View {
         // Saving first is offered — and listed first — whenever the session in progress
-        // would otherwise be lost, so the safe choice is the easy one. Not offered when
-        // starting a new flight after a finished one: that retires it either way.
-        if model.hasUnsavedFlight, model.canSaveCurrentFlight,
-           !(action == .newFlight && model.flightIsComplete) {
+        // would otherwise be lost, so the safe choice is the easy one. Never for a
+        // finished flight: it cannot be saved, and clearing retires it either way.
+        if model.hasUnsavedFlight, model.canSaveCurrentFlight {
             Button(action == .newFlight ? "Save & Start New" : "Save & Load") {
                 model.saveCurrentFlight()
                 perform(action)

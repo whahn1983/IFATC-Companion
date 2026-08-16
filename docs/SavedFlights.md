@@ -27,7 +27,7 @@ The round **list** button at the top right of the ATC tab pushes the Flights scr
   retired from it (see below). It asks first, offering to save the flight in progress.
 - **Save** (top right) puts the session in the list. A flight already in the list is
   updated in place, so tapping Save twice never leaves `KIAH-KORD` beside
-  `KIAH-KORD-1`.
+  `KIAH-KORD-1`. Disabled for a flight that has already finished at the gate.
 - **Rows** are named for the route (`KIAH-KORD`), with `-1`, `-2` … for repeats of the
   same route. Each shows where the flight had got to and when it was last saved, and the
   one being flown is badged **Flying**. Tap to load, swipe to delete.
@@ -113,8 +113,14 @@ with the session. "Finished" is `flightIsComplete` — parked with the arrival a
 deliberately the same rule as `SessionSnapshot.isCompleted`, so what the library calls a
 finished flight and what the session calls one can never disagree.
 
-Both confirmations say which of the two is about to happen, and the "save it first"
-option is dropped when the flight is finished, since clearing retires it either way.
+Both confirmations say which of the two is about to happen. **Save is disabled once a
+flight is finished** — `canSaveCurrentFlight` refuses it and so does `saveCurrentFlight()`
+itself, so the rule holds whoever calls it — and the "save it first" option disappears
+from both dialogs with it. A finished flight also stops counting as unsaved, since
+warning that it will be lost would offer a rescue that isn't there. A flight already in
+the list still tracks itself to the gate through the auto-save; it is simply retired when
+the pilot clears.
+
 Nothing else deletes a flight: loading a different one, Reset App Data and the auto-save
 all leave the list as it is. Deleting by hand is always available with a swipe.
 

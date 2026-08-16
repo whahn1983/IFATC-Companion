@@ -341,8 +341,10 @@ final class SavedFlightSessionTests: XCTestCase {
     func testClearingAFinishedFlightRetiresItFromTheList() throws {
         let store = makeStore()
         let model = makeLiveModel(store: store)
-        model.applySnapshotForTesting(completedSnapshot())
+        // Saved while it was still being flown, then flown to the gate.
+        model.applySnapshotForTesting(gateSnapshot())
         let saved = try XCTUnwrap(model.saveCurrentFlight())
+        model.applySnapshotForTesting(completedSnapshot())
         XCTAssertTrue(model.flightIsComplete, "sanity: parked with the arrival announced")
         XCTAssertEqual(model.savedFlightRetiredByClearing, saved.name)
 
@@ -351,6 +353,19 @@ final class SavedFlightSessionTests: XCTestCase {
         XCTAssertNil(store.flight(id: saved.id), "there is nothing to come back to")
         XCTAssertTrue(store.flights.isEmpty)
         XCTAssertNil(store.activeFlightID)
+    }
+
+    /// A finished flight cannot be saved: there is nothing to come back to, and clearing
+    /// retires it anyway, so saving one would only set up a flight the next tap deletes.
+    func testAFinishedFlightCannotBeSaved() {
+        let store = makeStore()
+        let model = makeLiveModel(store: store)
+        model.applySnapshotForTesting(completedSnapshot())
+
+        XCTAssertFalse(model.canSaveCurrentFlight, "the Save button is disabled")
+        XCTAssertNil(model.saveCurrentFlight(), "and the model refuses it, not just the button")
+        XCTAssertTrue(store.flights.isEmpty)
+        XCTAssertFalse(model.hasUnsavedFlight, "nothing to warn about losing — it is done")
     }
 
     /// Only the flight being flown is retired — a finished session that was never saved

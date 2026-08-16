@@ -72,9 +72,9 @@ struct ATCView: View {
                                 isPresented: $showClearFlightConfirm,
                                 titleVisibility: .visible) {
                 // Offered first when the flight in progress isn't in the saved list, so
-                // clearing can't quietly throw away a leg the pilot wanted to keep. A
-                // finished flight is not offered — clearing retires it either way.
-                if model.hasUnsavedFlight, model.canSaveCurrentFlight, !model.flightIsComplete {
+                // clearing can't quietly throw away a leg the pilot wanted to keep.
+                // Neither condition holds for a finished flight, which cannot be saved.
+                if model.hasUnsavedFlight, model.canSaveCurrentFlight {
                     Button("Save & Clear") {
                         model.saveCurrentFlight()
                         model.clearFlight()
