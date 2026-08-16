@@ -23,7 +23,8 @@ The round **list** button at the top right of the ATC tab pushes the Flights scr
 - **New Flight** (circle-plus, beside the back button) does what Clear Flight does —
   wipes the conversation and starts again from the gate, keeping settings and the flight
   plan — and additionally unbinds the saved flight so the fresh session cannot
-  auto-save over it. It asks first, offering to save the flight in progress.
+  auto-save over it. A flight still in progress stays in the list; a finished one is
+  retired from it (see below). It asks first, offering to save the flight in progress.
 - **Save** (top right) puts the session in the list. A flight already in the list is
   updated in place, so tapping Save twice never leaves `KIAH-KORD` beside
   `KIAH-KORD-1`.
@@ -98,7 +99,24 @@ The binding is released whenever the session stops being that flight: Clear Flig
 Flight, Reset App Data, deleting the flight, or a `startLive()` that finds nothing to
 resume (for instance the pilot was away past the six-hour auto-resume window). That last
 one matters — without it a fresh empty session would auto-save straight over the saved
-flight. The flight itself is never touched by any of these; it stays in the list.
+flight.
+
+## Clearing keeps a flight in progress, and retires a finished one
+
+Clear Flight and New Flight are how the pilot switches to another flight, so a flight
+**still under way stays in the list** — only the binding is released. Nothing about
+clearing the screen means the leg is over.
+
+A flight that has **blocked in at the destination gate** is the opposite case: it is
+finished, there is nothing to come back to, and clearing removes it from the list along
+with the session. "Finished" is `flightIsComplete` — parked with the arrival announced —
+deliberately the same rule as `SessionSnapshot.isCompleted`, so what the library calls a
+finished flight and what the session calls one can never disagree.
+
+Both confirmations say which of the two is about to happen, and the "save it first"
+option is dropped when the flight is finished, since clearing retires it either way.
+Nothing else deletes a flight: loading a different one, Reset App Data and the auto-save
+all leave the list as it is. Deleting by hand is always available with a swipe.
 
 ## Loading is a reset, then a restore
 

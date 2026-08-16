@@ -3224,6 +3224,20 @@ final class AppModel: ObservableObject {
     /// The saved flight the live session is currently flying, if any.
     var activeSavedFlight: SavedFlight? { savedFlights.activeFlight }
 
+    /// The name of the saved flight that clearing (or starting a new flight) would
+    /// retire, so the confirmation can say so. Nil unless the flight in progress is
+    /// finished *and* in the library — a flight still under way is always kept.
+    var savedFlightRetiredByClearing: String? {
+        guard flightIsComplete else { return nil }
+        return savedFlights.activeFlight?.name
+    }
+
+    /// Whether the flight in progress is finished — blocked in at the destination gate
+    /// with the arrival announced. Deliberately the same rule as
+    /// `SessionSnapshot.isCompleted`, so what the library calls a finished flight and
+    /// what the session calls one can never disagree.
+    var flightIsComplete: Bool { atcState == .parked && arrivalAnnounced }
+
     /// Whether there is a flight worth saving: Live Mode, and either a conversation
     /// already under way or a plan with somewhere to go (so a flight can be set up and
     /// put in the list before pushback).
@@ -7392,6 +7406,15 @@ final class AppModel: ObservableObject {
     /// plan, then restarts the active feed. Use this between flights so the new
     /// flight does not inherit the previous chat history.
     func clearFlight() {
+        // Retire a *finished* flight from the library along with its session: it is over,
+        // and a flight that has blocked in at the destination gate is not something to
+        // pick up again. A flight still in progress is the opposite — clearing is how the
+        // pilot switches to another one — so it stays in the list and is only unbound.
+        // Read before the reset, which wipes the state this is judged on.
+        if flightIsComplete, let finished = savedFlights.activeFlight {
+            savedFlights.delete(id: finished.id)
+            diagnostics.log(.app, "Removed completed flight \"\(finished.name)\" from the saved list.")
+        }
         resetSession()
         clearSavedSession()
         // A brand-new flight is no longer the saved one, so the auto-save must stop

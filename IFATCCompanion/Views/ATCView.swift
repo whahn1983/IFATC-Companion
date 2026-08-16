@@ -72,8 +72,9 @@ struct ATCView: View {
                                 isPresented: $showClearFlightConfirm,
                                 titleVisibility: .visible) {
                 // Offered first when the flight in progress isn't in the saved list, so
-                // clearing can't quietly throw away a leg the pilot wanted to keep.
-                if model.hasUnsavedFlight, model.canSaveCurrentFlight {
+                // clearing can't quietly throw away a leg the pilot wanted to keep. A
+                // finished flight is not offered — clearing retires it either way.
+                if model.hasUnsavedFlight, model.canSaveCurrentFlight, !model.flightIsComplete {
                     Button("Save & Clear") {
                         model.saveCurrentFlight()
                         model.clearFlight()
@@ -82,14 +83,25 @@ struct ATCView: View {
                 Button("Clear Flight", role: .destructive) { model.clearFlight() }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text(model.hasUnsavedFlight
-                     ? "This flight hasn't been saved and will be lost. Clearing resets the conversation and starts again from the gate; your settings and flight plan are kept."
-                     : "Resets the conversation and starts a new flight from the gate. Your settings and flight plan are kept.")
+                Text(clearFlightMessage)
             }
             .sheet(isPresented: $showSubscription) {
                 SubscriptionView().environmentObject(entitlements)
             }
         }
+    }
+
+    /// What clearing will actually do to this flight, which depends on whether it has
+    /// finished and whether it is in the saved list.
+    private var clearFlightMessage: String {
+        let reset = "Resets the conversation and starts a new flight from the gate. Your settings and flight plan are kept."
+        if let retired = model.savedFlightRetiredByClearing {
+            return "This flight is complete, so “\(retired)” will be removed from your saved flights. \(reset)"
+        }
+        if model.hasUnsavedFlight {
+            return "This flight hasn't been saved and will be lost. \(reset)"
+        }
+        return reset
     }
 
     // MARK: - Subscribe banner

@@ -130,11 +130,17 @@ struct FlightsListView: View {
         return store.flight(id: id)
     }
 
+    /// Whether starting a new flight would retire the finished one from the list, and
+    /// under what name.
+    private var retiredByNewFlight: String? { model.savedFlightRetiredByClearing }
+
     @ViewBuilder
     private func dialogButtons(for action: PendingAction) -> some View {
         // Saving first is offered — and listed first — whenever the session in progress
-        // would otherwise be lost, so the safe choice is the easy one.
-        if model.hasUnsavedFlight, model.canSaveCurrentFlight {
+        // would otherwise be lost, so the safe choice is the easy one. Not offered when
+        // starting a new flight after a finished one: that retires it either way.
+        if model.hasUnsavedFlight, model.canSaveCurrentFlight,
+           !(action == .newFlight && model.flightIsComplete) {
             Button(action == .newFlight ? "Save & Start New" : "Save & Load") {
                 model.saveCurrentFlight()
                 perform(action)
@@ -155,7 +161,9 @@ struct FlightsListView: View {
         if let flight = flight(for: action), let mismatch = model.endpointMismatch(with: flight) {
             parts.append(mismatch)
         }
-        if model.hasUnsavedFlight {
+        if action == .newFlight, let retired = retiredByNewFlight {
+            parts.append("The flight you're on is complete, so “\(retired)” will be removed from your saved flights.")
+        } else if model.hasUnsavedFlight {
             parts.append("The flight you're on now hasn't been saved and will be lost.")
         }
         switch action {

@@ -80,6 +80,18 @@ final class SavedFlightSessionTests: XCTestCase {
         return snap
     }
 
+    /// A session finished at the destination gate — blocked in, arrival announced.
+    private func completedSnapshot() -> SessionSnapshot {
+        var snap = gateSnapshot()
+        snap.atcState = .parked
+        snap.stateMachineCurrent = .parked
+        snap.currentFacility = .ground
+        snap.phase = .parked
+        snap.hasDeparted = true
+        snap.arrivalAnnounced = true
+        return snap
+    }
+
     /// A level fix at cruise, enough to drive the flow airborne.
     private func cruiseState() -> AircraftState {
         AircraftState(latitude: 33.0, longitude: -95.0, altitudeMSL: 35000,
@@ -318,8 +330,42 @@ final class SavedFlightSessionTests: XCTestCase {
         model.ingestStateForTesting(cruiseState())
 
         XCTAssertNil(store.activeFlightID)
+        XCTAssertNotNil(store.flight(id: flight.id),
+                        "a flight still under way is kept — clearing is how you switch to another one")
         XCTAssertEqual(store.flight(id: flight.id)?.snapshot.atcState, .clearance,
                        "the saved flight is untouched by the new one")
+    }
+
+    /// A flight that has blocked in at the destination gate is over. Clearing retires it
+    /// from the list rather than leaving a finished flight there to be picked up.
+    func testClearingAFinishedFlightRetiresItFromTheList() throws {
+        let store = makeStore()
+        let model = makeLiveModel(store: store)
+        model.applySnapshotForTesting(completedSnapshot())
+        let saved = try XCTUnwrap(model.saveCurrentFlight())
+        XCTAssertTrue(model.flightIsComplete, "sanity: parked with the arrival announced")
+        XCTAssertEqual(model.savedFlightRetiredByClearing, saved.name)
+
+        model.clearFlight()
+
+        XCTAssertNil(store.flight(id: saved.id), "there is nothing to come back to")
+        XCTAssertTrue(store.flights.isEmpty)
+        XCTAssertNil(store.activeFlightID)
+    }
+
+    /// Only the flight being flown is retired — a finished session that was never saved
+    /// must not take someone else's saved flight down with it.
+    func testClearingAFinishedFlightLeavesOtherSavedFlightsAlone() {
+        let store = makeStore()
+        let model = makeLiveModel(store: store)
+        let other = store.save(gateSnapshot())
+        store.setActive(nil)
+        model.applySnapshotForTesting(completedSnapshot())
+        XCTAssertNil(model.savedFlightRetiredByClearing, "nothing bound, nothing to retire")
+
+        model.clearFlight()
+
+        XCTAssertNotNil(store.flight(id: other.id))
     }
 
     // MARK: - Warnings
