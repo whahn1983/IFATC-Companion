@@ -1453,6 +1453,13 @@ final class AppModel: ObservableObject {
         // Reflect the new/restored flight in the chatter: stopped for a fresh flight (awaiting
         // the first ATC call), resumed when a mid-flight session was restored.
         updateChatterRunState()
+        connectToInfiniteFlight()
+    }
+
+    /// Bring the Infinite Flight link up: auto-discover when enabled and no host is set,
+    /// otherwise connect to the configured host. Split out of `startLive()` so a flight
+    /// swap can force a fresh link without also re-running the session restore.
+    private func connectToInfiniteFlight() {
         if settings.autoDiscover && settings.host.isEmpty {
             connect.startAutoDiscover { [weak self] device in
                 guard let self else { return }
@@ -1467,6 +1474,31 @@ final class AppModel: ObservableObject {
         } else {
             diagnostics.log(.app, "No host set and auto-discover off — staying idle. Enter an IP in Settings.")
         }
+    }
+
+    /// Tear the Infinite Flight link down and bring it straight back up, leaving the
+    /// conversation exactly as it is.
+    ///
+    /// Every flight swap needs this. The Connect link is bound to the flight that was
+    /// live when it opened: after switching flights in the sim it keeps serving the old
+    /// aircraft's position and the old flight plan, so the app shows the previous flight
+    /// until the socket is re-established. It is the same reason returning from the
+    /// background forces a reconnect, and the same thing the Settings Reconnect button
+    /// does by hand — which is what pilots were having to do after clearing or loading a
+    /// flight. Unlike that button this does *not* go through `startLive()`: the session
+    /// has just been set up deliberately (cleared, or restored from a saved flight) and
+    /// must not be re-derived from the auto-resume snapshot on top of that.
+    private func refreshConnection() {
+        guard !settings.mockMode else { return }
+        connect.disconnect()
+        // The first fix after the gap belongs to a different aircraft in a different
+        // place, so it must not be read as continuous flight — position-driven weather
+        // decisions stand down for that tick, exactly as after a background gap.
+        lastTelemetryCoordinate = nil
+        lastTelemetryAt = nil
+        telemetryResyncPending = true
+        diagnostics.log(.app, "Reconnecting to Infinite Flight for the new flight.")
+        connectToInfiniteFlight()
     }
 
     private func afterConnect() {
@@ -3321,11 +3353,6 @@ final class AppModel: ObservableObject {
         apply(snapshot: flight.snapshot, mode: .savedFlight)
         savedFlights.setActive(flight.id)
 
-        // The next live fix is a different aircraft in a different place, so it must not
-        // be read as continuous flight — position-driven weather decisions stand down for
-        // that tick exactly as they do after a background gap.
-        telemetryResyncPending = true
-
         // Re-persist straight away so the auto-resume snapshot is this flight too: if the
         // app is killed right after the swap, the relaunch comes back to the flight the
         // pilot just chose rather than the one they left.
@@ -3333,14 +3360,17 @@ final class AppModel: ObservableObject {
         lastPersistedAt = nil
         persistSession()
 
-        // The loaded flight's own route, weather and ATIS. The saved plan is on screen
-        // immediately; the re-read from Infinite Flight then merges over it (bypassing
-        // the change guard, so it always reports) in case the route was edited in the sim
-        // since the flight was saved — rare, but the sim is the authority on the route.
+        // Force the link fresh, so the position, plan and map come from the flight the
+        // pilot has actually switched to in the sim rather than the one the socket was
+        // opened on. The reconnect re-reads the flight plan as part of its handshake, so
+        // the saved plan shown instantly is corrected from the sim moments later — which
+        // also covers a route edited there since the flight was saved.
+        refreshConnection()
+
+        // The loaded flight's own airport surfaces, weather and ATIS.
         prefetchAirportSurfaces()
         recomputeWeatherHazards()
         Task {
-            await connect.refreshFlightPlan()
             await refreshWeather()
             await refreshATIS()
         }
@@ -7432,17 +7462,19 @@ final class AppModel: ObservableObject {
         // writing into that slot — otherwise clearing would quietly overwrite a saved
         // flight with an empty session.
         savedFlights.setActive(nil)
+        diagnostics.log(.app, "Flight cleared — ready for a new flight.")
         if settings.mockMode {
             // Restart the mock feed from the gate.
             mock.stop()
             mock.setPhase(.preflight)
             startMock()
         } else {
-            // Keep the live IF connection; the conversation rebuilds from the next
-            // telemetry update.
             stateMachine.setConnected()
+            // Force the link fresh. The new flight is a different aircraft in a different
+            // place with a different plan, and the existing socket keeps serving the old
+            // one's telemetry and route until it is re-established.
+            refreshConnection()
         }
-        diagnostics.log(.app, "Flight cleared — ready for a new flight.")
     }
 
     /// Wipe the in-memory session back to a clean, pre-departure state. Purely local —

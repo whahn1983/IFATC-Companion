@@ -36,6 +36,10 @@ final class SavedFlightSessionTests: XCTestCase {
         model.settings.voiceEnabled = false
         model.settings.mockMode = false
         model.settings.autoSaveFlights = true
+        // No host and auto-discover off, so the forced reconnect on a flight swap idles
+        // instead of touching the network.
+        model.settings.autoDiscover = false
+        model.settings.host = ""
         model.settings.initialClimbAltitudeFt = 5000
         model.settings.traconCeilingFL = 180
 
@@ -247,6 +251,41 @@ final class SavedFlightSessionTests: XCTestCase {
         model.loadSavedFlight(flight)
 
         XCTAssertEqual(model.atcState, .cruise, "the mock session is left alone")
+    }
+
+    // MARK: - Flight swaps force a fresh link
+
+    /// Both ways of swapping flights re-establish the Infinite Flight link. The socket is
+    /// bound to the flight that was live when it opened, so without this the app keeps
+    /// showing the previous aircraft's position, plan and map — which is why pilots were
+    /// having to hit Reconnect in Settings by hand after clearing or loading.
+    func testSwappingFlightsForcesAFreshConnection() {
+        let store = makeStore()
+        let model = makeLiveModel(store: store)
+        let flight = store.save(gateSnapshot())
+
+        model.loadSavedFlight(flight)
+        XCTAssertTrue(didReconnect(model), "loading a saved flight re-establishes the link")
+
+        model.diagnostics.clear()
+        model.clearFlight()
+        XCTAssertTrue(didReconnect(model), "starting a new flight re-establishes the link")
+    }
+
+    /// Mock Mode owns its own scripted feed and has no link to re-establish.
+    func testMockModeDoesNotReconnectOnClear() {
+        let store = makeStore()
+        let model = makeLiveModel(store: store)
+        model.settings.mockMode = true
+        model.diagnostics.clear()
+
+        model.clearFlight()
+
+        XCTAssertFalse(didReconnect(model))
+    }
+
+    private func didReconnect(_ model: AppModel) -> Bool {
+        model.diagnostics.entries.contains { $0.message.contains("Reconnecting to Infinite Flight") }
     }
 
     // MARK: - Reconnect is not a load

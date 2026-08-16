@@ -210,6 +210,11 @@ final class IFConnectManager: ObservableObject {
         pollTask = nil
         Task { await client.disconnect() }
         connectionState = .disconnected
+        // Forget the last plan read with the link that read it. `readFlightPlan` emits
+        // only on change, so a cache outliving its socket makes the next connection's
+        // handshake read silently do nothing — and a reconnect is exactly when the app
+        // most needs the sim to re-state the plan (the pilot may have swapped flights).
+        liveFlightPlanRaw = nil
         diagnostics?.log(.connect, "Disconnected.")
     }
 
