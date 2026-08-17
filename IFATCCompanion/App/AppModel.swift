@@ -1083,7 +1083,9 @@ final class AppModel: ObservableObject {
         } else if hasLiveAccess && settings.mockMode {
             diagnostics.log(.app, "Live subscription active — switching to Live Connected Mode.")
             settings.mockMode = false
-            startLive()
+            // The same exit the Mock Mode toggle takes, so a subscription confirmed at
+            // launch leaves the demo's plan behind exactly as switching by hand does.
+            enterLiveMode()
         }
     }
 
@@ -1537,15 +1539,32 @@ final class AppModel: ObservableObject {
             return
         }
         settings.mockMode = on
-        airportSurface.clear()
         if on {
+            airportSurface.clear()
             // Rebuild the plan from the mock route so its realistic default gates apply and
             // both airports are pre-cached for a realistic taxi demo.
             syncFlightPlanFromSettings()
             startMock()
         } else {
-            startLive()
+            enterLiveMode()
         }
+    }
+
+    /// Bring the app up in Live Connected Mode, coming out of the demo. `settings.mockMode`
+    /// must already be false.
+    ///
+    /// The demo's stand-ins have to be dropped on the way out: its simulated airport
+    /// surfaces, and above all its flight plan — the United 598 identity, the scripted
+    /// route and its gates. The identity is the one that bites, because the controller
+    /// builds every call from the plan's airline/flight-number pair and only falls back to
+    /// the raw callsign when that pair is empty: left in place, the live flight kept
+    /// flying as United 598 however the Callsign field read, until the pilot re-entered it
+    /// by hand. Infinite Flight's own plan merges over the rebuilt one on the first read
+    /// after the link comes up.
+    private func enterLiveMode() {
+        airportSurface.clear()
+        syncFlightPlanFromSettings()
+        startLive()
     }
 
     func reconnect() {
@@ -2710,29 +2729,51 @@ final class AppModel: ObservableObject {
     /// Flight's Connect API exposes no callsign for the user's own aircraft, so the
     /// pilot sets it here and it becomes the source of truth.
     func applyManualCallsign() {
-        let trimmed = settings.callsign.trimmingCharacters(in: .whitespacesAndNewlines)
-        flightPlan.callsign = trimmed
-
-        // An empty field clears only the callsign — leave any airline/flight number
-        // already supplied by the mock feed, a live read, or the Airline/Flight #
-        // overrides untouched, so blurring an empty field never wipes them.
-        guard !trimmed.isEmpty else {
+        applyFlightIdentity(to: &flightPlan)
+        if flightPlan.callsign.isEmpty {
             diagnostics.log(.app, "Callsign cleared.")
+        } else if !flightPlan.airline.isEmpty, !flightPlan.flightNumber.isEmpty {
+            diagnostics.log(.app, "Callsign \(flightPlan.callsign) resolved to "
+                + "\(flightPlan.airline) \(flightPlan.flightNumber).")
+        } else {
+            diagnostics.log(.app, "Callsign set to \(flightPlan.callsign).")
+        }
+    }
+
+    /// Resolve who the flight is — callsign, airline, flight number — from the pilot's
+    /// own fields and write the answer into a plan.
+    ///
+    /// These three have to be kept in step, because every call the controller makes is
+    /// built from the *airline/flight-number pair*; the raw callsign is only the fallback
+    /// used when that pair is empty. A plan carrying a stale pair therefore ignores the
+    /// callsign the pilot can plainly see in the Flight tab — which is exactly what a
+    /// restored flight used to do until the field was re-entered by hand.
+    ///
+    ///   • An Airline / Flight # the pilot pinned wins outright, each independently: pinning
+    ///     only one leaves the other as it stands (it may have come from a live read or the
+    ///     mock feed).
+    ///   • Otherwise the callsign itself is resolved — "UAL598" → United 598 — so the
+    ///     companion uses the proper telephony name instead of spelling it out. A callsign
+    ///     naming no known airline (a tail number like "N123AB") clears the pair, so the
+    ///     controller spells the tail number out rather than keeping a leftover airline.
+    ///   • An empty callsign with nothing pinned leaves the pair alone: blurring an empty
+    ///     field must never wipe an identity that came from somewhere else.
+    private func applyFlightIdentity(to plan: inout FlightPlan) {
+        plan.callsign = settings.callsign.trimmingCharacters(in: .whitespacesAndNewlines)
+        let airline = settings.airline.trimmingCharacters(in: .whitespacesAndNewlines)
+        let flightNumber = settings.flightNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard airline.isEmpty, flightNumber.isEmpty else {
+            if !airline.isEmpty { plan.airline = airline }
+            if !flightNumber.isEmpty { plan.flightNumber = flightNumber }
             return
         }
-        // Derive an airline/flight number from the callsign only when the pilot has
-        // not pinned those separately. Resolve an airline prefix (e.g. "UA598" /
-        // "UAL598" -> United 598) so the companion uses the proper telephony name
-        // instead of spelling it out.
-        guard settings.airline.isEmpty, settings.flightNumber.isEmpty else { return }
-        if let parsed = AirlineDatabase.parse(trimmed) {
-            flightPlan.airline = parsed.telephony
-            flightPlan.flightNumber = parsed.flightNumber
-            diagnostics.log(.app, "Callsign \(trimmed) resolved to \(parsed.telephony) \(parsed.flightNumber).")
+        guard !plan.callsign.isEmpty else { return }
+        if let parsed = AirlineDatabase.parse(plan.callsign) {
+            plan.airline = parsed.telephony
+            plan.flightNumber = parsed.flightNumber
         } else {
-            flightPlan.airline = ""
-            flightPlan.flightNumber = ""
-            diagnostics.log(.app, "Callsign set to \(trimmed).")
+            plan.airline = ""
+            plan.flightNumber = ""
         }
     }
 
@@ -3181,6 +3222,16 @@ final class AppModel: ObservableObject {
         // `syncFlightPlanFromSettings` builds a fresh plan and would drop the saved
         // route, its fixes and its endpoint coordinates.
         if let plan = snap.flightPlan { flightPlan = plan }
+        // The restored plan and the restored override fields must name the same flight.
+        // They can disagree — a plan captured before the callsign was entered, one carrying
+        // an identity that came from somewhere else, or (an older snapshot) no plan at all,
+        // leaving the previous flight's in place. The controller reads the plan, not the
+        // fields, so the pilot would see their callsign in the Flight tab while ATC went on
+        // calling them something else until the field was re-entered by hand. The pilot's
+        // own fields are the only source of truth for both — Infinite Flight publishes
+        // neither a callsign nor a gate — so they win.
+        applyFlightIdentity(to: &flightPlan)
+        applyManualGates()
         if let log = snap.diagnostics { diagnostics.restore(log) }
     }
 
@@ -3652,15 +3703,18 @@ final class AppModel: ObservableObject {
 
     func syncFlightPlanFromSettings() {
         var plan = FlightPlan()
-        plan.callsign = settings.callsign
-        plan.airline = settings.airline.isEmpty && settings.mockMode ? "United" : settings.airline
-        plan.flightNumber = settings.flightNumber.isEmpty && settings.mockMode ? "598" : settings.flightNumber
-        // Resolve an airline prefix typed into the Callsign field (e.g. "UAL598")
-        // into a telephony name + flight number when not otherwise specified.
-        if plan.airline.isEmpty, plan.flightNumber.isEmpty,
-           let parsed = AirlineDatabase.parse(plan.callsign) {
-            plan.airline = parsed.telephony
-            plan.flightNumber = parsed.flightNumber
+        // Who the flight is, resolved from the pilot's fields the same way every other
+        // path resolves it (a "UAL598" typed into the Callsign field becomes United 598).
+        applyFlightIdentity(to: &plan)
+        // Mock Mode flies the demo as United 598 — but only when the pilot has said
+        // nothing at all about who they are. A callsign entered for the demo used to lose
+        // to this default, and because the controller prefers the airline/flight-number
+        // pair over the raw callsign, the flight then flew as United 598 no matter what
+        // the Callsign field said — including after switching back to Live Mode, which
+        // left the demo's identity on the live plan.
+        if settings.mockMode, plan.callsign.isEmpty {
+            if plan.airline.isEmpty { plan.airline = "United" }
+            if plan.flightNumber.isEmpty { plan.flightNumber = "598" }
         }
         plan.departure = settings.departure.isEmpty && settings.mockMode ? mock.route.departure : settings.departure
         plan.destination = settings.destination.isEmpty && settings.mockMode ? mock.route.destination : settings.destination

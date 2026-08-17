@@ -162,6 +162,18 @@ good — while the forward-only flow guard refuses to walk the state machine bac
 `.approach` to `.clearance`. Reset-then-apply makes a backwards swap as safe as a forwards
 one.
 
+The restored plan and the restored override fields are then reconciled, because the
+controller reads the *plan*: every call is built from its airline/flight-number pair, and
+the raw callsign is only the fallback used when that pair is empty. A saved plan can carry
+a pair that disagrees with the callsign the flight was saved under — it was captured
+before the callsign was entered, or it inherited an identity from elsewhere, or (an older
+snapshot) there is no saved plan at all and the previous flight's is still in memory.
+Left alone, the Flight tab showed the loaded flight's callsign while ATC went on calling
+it something else, and the only way out was to edit the callsign field by hand. The
+pilot's own fields win: Infinite Flight publishes neither a callsign nor a gate, so they
+are the only source of truth for both, and `applyFlightIdentity` / `applyManualGates`
+push them into the plan on every load.
+
 Two warnings guard the load, both advisory — the pilot can always continue:
 
 - **Endpoint mismatch.** The saved flight's route is compared with what Infinite Flight
