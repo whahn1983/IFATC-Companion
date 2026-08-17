@@ -274,8 +274,13 @@ it re‑plans from the current position and, when that changes the instruction, 
 ## Manual overrides
 
 The pilot can override the departure/arrival runway, gates, runway entry, automatic crossing
-calls, and data refresh (Settings and the taxi map). Infinite Flight Connect provides only
-runtime aircraft state (position, heading, groundspeed, on‑ground, type, airports, assigned
+calls, and data refresh (Settings and the taxi map). The two Settings toggles for the surface —
+**Automatic runway‑crossing calls** (on by default) and **Auto‑recalculate when off route** (off
+by default) — are stored in `AppSettings` (`taxiAutoCrossingCalls` / `taxiAutoRecalculate`), so a
+change sticks across app launches; `AppModel` observes them and applies each to
+`AirportSurfaceCoordinator`, whose own properties are session state.
+
+Infinite Flight Connect provides only runtime aircraft state (position, heading, groundspeed, on‑ground, type, airports, assigned
 runway/facility) — never taxiway geometry, names, holds, gates, crossing geometry, or a
 preferred route.
 

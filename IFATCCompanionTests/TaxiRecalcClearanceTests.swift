@@ -100,4 +100,46 @@ final class TaxiRecalcClearanceTests: XCTestCase {
         XCTAssertEqual(taxiClearances(emitted).count, 1, "no new clearance is issued while the pilot decides")
         XCTAssertFalse(coord.awaitingTaxiReadback, "no read-back is armed while the banner is shown")
     }
+
+    // MARK: - Settings persistence
+
+    /// The Settings toggles for the surface coordinator live in `AppSettings`, so a pilot's
+    /// choice survives a relaunch. The coordinator's own properties are session state.
+    func testTaxiSurfaceTogglesPersistAcrossLaunches() {
+        let suiteName = "taxi.surface.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let settings = AppSettings(defaults: defaults)
+        XCTAssertFalse(settings.taxiAutoRecalculate, "auto-recalculate is off on a fresh install")
+        XCTAssertTrue(settings.taxiAutoCrossingCalls, "automatic crossing calls are on on a fresh install")
+
+        settings.taxiAutoRecalculate = true
+        settings.taxiAutoCrossingCalls = false
+
+        // A fresh AppSettings over the same defaults is what the next app launch builds.
+        let relaunched = AppSettings(defaults: defaults)
+        XCTAssertTrue(relaunched.taxiAutoRecalculate, "auto-recalculate stays on for the next session")
+        XCTAssertFalse(relaunched.taxiAutoCrossingCalls, "automatic crossing calls stay off for the next session")
+    }
+
+    /// `AppModel` applies the persisted preferences to the live coordinator — at launch and
+    /// whenever the toggle changes.
+    func testAppModelAppliesPersistedTaxiSurfaceToggles() {
+        let model = AppModel()
+        let originalRecalc = model.settings.taxiAutoRecalculate
+        let originalCrossing = model.settings.taxiAutoCrossingCalls
+        defer {
+            model.settings.taxiAutoRecalculate = originalRecalc
+            model.settings.taxiAutoCrossingCalls = originalCrossing
+        }
+
+        model.settings.taxiAutoRecalculate = true
+        model.settings.taxiAutoCrossingCalls = false
+        XCTAssertTrue(model.airportSurface.autoRecalculate, "the coordinator follows the setting")
+        XCTAssertFalse(model.airportSurface.autoCrossingCalls, "the coordinator follows the setting")
+
+        model.settings.taxiAutoRecalculate = false
+        XCTAssertFalse(model.airportSurface.autoRecalculate, "turning it back off follows too")
+    }
 }
