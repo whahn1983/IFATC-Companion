@@ -4539,9 +4539,13 @@ final class AppModel: ObservableObject {
     // MARK: - Radar precipitation + weather deviation
     //
     // Simulation/training/entertainment only — never real-world flight safety
-    // guidance. Radar precipitation comes from the approved NOAA/NWS source where
-    // NOAA provides coverage; outside coverage the overlay reports unavailable and
-    // only existing aviation advisories (SIGMET etc.) drive the deviation flow.
+    // guidance. True radar comes from NOAA/NWS (and OPERA, where enabled) inside their
+    // coverage; elsewhere the overlay falls through to the NASA satellite *estimate*,
+    // always labeled as such, and where nothing covers the region it reports unavailable
+    // and only existing aviation advisories (SIGMET etc.) drive the deviation flow. The
+    // source is selected for `precipitationRegion()` — the route still ahead — so it
+    // follows the aircraft across a coverage boundary instead of staying pinned to the
+    // departure, and the label always names the provider that produced the data.
 
     /// Use the mock precipitation provider in Mock Mode, or the live NOAA → OPERA →
     /// NASA selection otherwise.
@@ -4611,11 +4615,15 @@ final class AppModel: ObservableObject {
         // telemetry path passes `true`; the manual refresh / route-change callers don't.
         telemetryDiscontinuity = telemetryJumped
         defer { telemetryDiscontinuity = false }
-        let positions = [aircraftState.coordinate,
-                         resolvedDepartureCoordinate(),
-                         resolvedDestinationCoordinate()].compactMap { $0 }
+        // Select from the region still ahead (`precipitationRegion`) — the same box the
+        // sampler fetches from — not one anchored to the filed departure. Coverage is a
+        // bounding-box overlap, so a departure-anchored box kept NOAA selected for an entire
+        // KIAH→EGLL flight and labeled the NASA satellite estimate over England as
+        // "Radar precipitation / NOAA/NWS".
         let enabled = settings.noaaRadarOverlay == .autoWhereAvailable
-        let provider = enabled ? precipService.selectedProvider(for: positions) : nil
+        let provider = enabled
+            ? precipitationRegion().flatMap { precipService.selectedProvider(for: $0) }
+            : nil
         let coverage = enabled && provider != nil
 
         radarOverlay.isEnabled = enabled
@@ -5354,6 +5362,45 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// The region the precipitation **source is chosen for**: the aircraft (or the departure
+    /// before it moves) plus the route still ahead, widened by the corridor pad — exactly the
+    /// box `sampleLivePrecipitation` fetches its image for. Nil when nothing is located.
+    ///
+    /// It is deliberately **not** anchored to the filed departure for the whole flight.
+    /// Provider selection tests a bounding-box *overlap* (`RadarPrecipitationProvider.covers`),
+    /// so a box pinned to the departure keeps overlapping NOAA's CONUS box gate to gate: on a
+    /// KIAH→EGLL flight the Weather card read *"Radar precipitation / NOAA/NWS radar
+    /// precipitation"* on short final at Heathrow, while the map beneath it was drawing the
+    /// NASA satellite estimate that had actually taken over mid-Atlantic — a satellite
+    /// estimate labeled as radar, the one thing this layer must never do. Selecting from the
+    /// route still ahead moves the source with the aircraft, so the label always names the
+    /// provider that produced the data the deviation flow is running on.
+    private func precipitationRegion() -> MKCoordinateRegion? {
+        var focus: [CLLocationCoordinate2D] = []
+        if let pos = aircraftState.coordinate ?? resolvedDepartureCoordinate(), pos.isValid {
+            focus.append(pos)
+            focus.append(contentsOf: upcomingRouteCoordinates(from: pos).filter { $0.isValid })
+        } else if let dest = resolvedDestinationCoordinate(), dest.isValid {
+            // Neither an aircraft position nor a located departure — fall back to the
+            // destination so a plan with only a known arrival field still resolves a source.
+            focus.append(dest)
+        }
+        guard var region = PrecipitationOverlayService.region(enclosing: focus) else { return nil }
+        // Widen the box by ~`corridorPadNM` on every side so weather whose body sits off
+        // the centerline (but whose edge crosses the route) is still captured.
+        let corridorPadNM = 60.0
+        let padLat = corridorPadNM / 60.0
+        let padLon = corridorPadNM / (60.0 * max(0.2, cos(region.center.latitude * .pi / 180)))
+        region.span.latitudeDelta += 2 * padLat
+        region.span.longitudeDelta += 2 * padLon
+        return region
+    }
+
+    /// Test hook: the region the precipitation provider is selected for, so a test can
+    /// verify the source follows the aircraft across a region boundary instead of staying
+    /// pinned to the departure.
+    func precipitationRegionForTesting() -> MKCoordinateRegion? { precipitationRegion() }
+
     /// Sample the live radar image into moderate-or-greater precipitation cells over the
     /// **whole flight-plan corridor** (the aircraft and every fix ahead through the
     /// destination — the entire route from the gate, the remaining route in flight —
@@ -5388,28 +5435,19 @@ final class AppModel: ObservableObject {
         guard let pos = aircraftState.coordinate ?? resolvedDepartureCoordinate(),
               pos.isValid else { return }   // no position — keep the last good cells
 
-        // The whole flight plan ahead: the aircraft plus every located fix still in front
-        // of it, through the destination. At the gate this is the entire route; in flight
-        // it's the remaining route (so resolution isn't spent on the leg already flown).
-        // `region(enclosing:)` boxes it; the box is widened below so the corridor — not
-        // just the route centerline — is captured.
-        var focus: [CLLocationCoordinate2D] = [pos]
-        focus.append(contentsOf: upcomingRouteCoordinates(from: pos).filter { $0.isValid })
-
         lastPrecipSampleAt = Date()
         lastPrecipSamplePos = pos
 
-        guard var region = PrecipitationOverlayService.region(enclosing: focus) else {
+        // The whole flight plan ahead — the aircraft plus every located fix still in front
+        // of it, through the destination — widened to the corridor. At the gate this is the
+        // entire route; in flight it's the remaining route (so resolution isn't spent on the
+        // leg already flown). `recomputeWeatherHazards` selects its provider from the very
+        // same region, so the Source/Layer labels can never name a provider other than the
+        // one that produced these cells.
+        guard let region = precipitationRegion() else {
             radarOverlay.sampledCells = []
             return
         }
-        // Widen the box by ~`corridorPadNM` on every side so weather whose body sits off
-        // the centerline (but whose edge crosses the route) is still captured.
-        let corridorPadNM = 60.0
-        let padLat = corridorPadNM / 60.0
-        let padLon = corridorPadNM / (60.0 * max(0.2, cos(region.center.latitude * .pi / 180)))
-        region.span.latitudeDelta += 2 * padLat
-        region.span.longitudeDelta += 2 * padLon
 
         guard let provider = precipService.selectedProvider(for: region) else {
             radarOverlay.sampledCells = []

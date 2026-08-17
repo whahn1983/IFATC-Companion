@@ -166,6 +166,82 @@ final class PrecipitationProviderSelectionTests: XCTestCase {
     }
 }
 
+/// The displayed source must follow the aircraft across a coverage boundary.
+///
+/// Regression guard for a KIAH→EGLL flight: provider selection is a bounding-box
+/// *overlap*, and the label used to be selected from a box that always contained the
+/// filed departure — so NOAA's CONUS box was overlapped gate to gate and the Weather
+/// card read "Radar precipitation / NOAA/NWS radar precipitation" on arrival into
+/// Heathrow, while the map beneath it was drawing the NASA satellite estimate that had
+/// taken over mid-Atlantic. Labeling a satellite estimate as radar is the one thing this
+/// layer must never do.
+@MainActor
+final class PrecipitationSourceFollowsRouteTests: XCTestCase {
+
+    /// KIAH → EGLL, live (not Mock Mode, whose provider covers everywhere).
+    private func transatlanticModel() -> AppModel {
+        let model = AppModel()
+        model.settings.mockMode = false
+        model.settings.noaaRadarOverlay = .autoWhereAvailable
+
+        var plan = FlightPlan()
+        plan.departure = "KIAH"
+        plan.destination = "EGLL"
+        plan.departureLatitude = 29.98
+        plan.departureLongitude = -95.34
+        plan.destinationLatitude = 51.47
+        plan.destinationLongitude = -0.46
+        model.flightPlan = plan
+        return model
+    }
+
+    func testAtTheGateInHoustonTheSourceIsNOAARadar() {
+        let model = transatlanticModel()
+        model.recomputeWeatherHazards()
+
+        XCTAssertTrue(model.radarOverlay.coverageAvailable)
+        XCTAssertFalse(model.radarOverlay.isSatelliteEstimate)
+        XCTAssertEqual(model.radarOverlay.layerLabel, "Radar precipitation")
+        XCTAssertEqual(model.radarOverlay.sourceDescription, "NOAA/NWS radar precipitation")
+    }
+
+    func testOverEnglandTheSourceIsTheSatelliteEstimateNotNOAARadar() {
+        let model = transatlanticModel()
+        var state = AircraftState()
+        state.latitude = 52.5          // English Midlands, short of Heathrow
+        state.longitude = -1.5
+        model.aircraftState = state
+        model.recomputeWeatherHazards()
+
+        XCTAssertTrue(model.radarOverlay.coverageAvailable)
+        XCTAssertTrue(model.radarOverlay.isSatelliteEstimate,
+                      "NOAA does not cover England — the departure must not keep it selected")
+        XCTAssertEqual(model.radarOverlay.layerLabel, "Satellite precipitation estimate")
+        XCTAssertEqual(model.radarOverlay.sourceDescription,
+                       "NASA global satellite precipitation estimate")
+        XCTAssertEqual(model.weatherDeviation.radarSourceDescription,
+                       "NASA global satellite precipitation estimate",
+                       "the deviation flow must name the source that actually feeds it")
+    }
+
+    /// The selection region is the route *still ahead*, so it stops overlapping NOAA's
+    /// CONUS box once the aircraft is well east of it — it is not pinned to the departure.
+    func testSelectionRegionTracksTheRemainingRouteNotTheDeparture() {
+        let model = transatlanticModel()
+        var state = AircraftState()
+        state.latitude = 52.5
+        state.longitude = -1.5
+        model.aircraftState = state
+
+        guard let region = model.precipitationRegionForTesting() else {
+            return XCTFail("expected a precipitation region for a located route")
+        }
+        let west = region.center.longitude - region.span.longitudeDelta / 2
+        XCTAssertGreaterThan(west, -60,
+                             "the region must not still reach NOAA's CONUS box (east edge -60°)")
+    }
+}
+
 /// The visible-region → overlay bounding box must register to what MapKit draws.
 /// MapKit projects in Web Mercator (EPSG:3857) with `region.center` at the view's
 /// centre, so the box's north/south edges have to be symmetric about the centre

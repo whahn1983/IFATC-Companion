@@ -105,12 +105,13 @@ final class PrecipitationOverlayService {
         return false
     }
 
-    /// The provider selected for the region enclosing the given route positions.
-    func selectedProvider(for positions: [CLLocationCoordinate2D]) -> RadarPrecipitationProvider? {
-        if useMock { return mockProvider }
-        guard let region = Self.region(enclosing: positions.filter { $0.isValid }) else { return nil }
-        return selectedProvider(for: region)
-    }
+    // There is deliberately no `selectedProvider(for positions:)` convenience that boxes an
+    // arbitrary set of coordinates. Coverage is a bounding-box *overlap*, so folding a fixed
+    // point (a filed departure) into the box pins the selection there for a whole flight:
+    // KIAH→EGLL stayed on NOAA gate to gate and labeled the NASA satellite estimate over
+    // England as radar. Callers build the region they actually mean — see
+    // `AppModel.precipitationRegion()`, the single region both the sampler and the
+    // Source/Layer labels select from.
 
     // MARK: - Rendering
 
