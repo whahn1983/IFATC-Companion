@@ -715,6 +715,23 @@ final class AppModel: ObservableObject {
         self.rampEngine = RampPhraseologyEngine(engine: engine)
         self.rideEngine = RideReportEngine(engine: engine)
         self.deviationEngine = WeatherDeviationEngine(phraseology: WeatherDeviationPhraseology(engine: engine))
+
+        observeSurfaceSettings()
+    }
+
+    /// Drive the surface coordinator's two user-facing toggles from the persisted
+    /// preferences — the stored value at launch (a `@Published` publisher delivers its
+    /// current value on subscription) and every later change, including Reset All. The
+    /// coordinator's own properties are session state, so without this the Settings toggles
+    /// reverted to their compiled-in defaults on every launch. Wired in `init` rather than
+    /// `onAppear` so the persisted choice is in force before any taxi can begin.
+    private func observeSurfaceSettings() {
+        settings.$taxiAutoCrossingCalls
+            .sink { [weak self] on in self?.airportSurface.autoCrossingCalls = on }
+            .store(in: &cancellables)
+        settings.$taxiAutoRecalculate
+            .sink { [weak self] on in self?.airportSurface.autoRecalculate = on }
+            .store(in: &cancellables)
     }
 
     /// Apply the current settings + active profile to the engine and rebuild the

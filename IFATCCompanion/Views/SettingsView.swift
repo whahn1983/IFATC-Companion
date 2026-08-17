@@ -355,13 +355,15 @@ struct SettingsView: View {
 
     // MARK: - Data Sources (OpenStreetMap airport surface)
 
+    // Both toggles are stored in `AppSettings` (so they persist across launches) and applied
+    // to the live coordinator by `AppModel`, which observes them.
     private var osmCrossingBinding: Binding<Bool> {
-        Binding(get: { model.airportSurface.autoCrossingCalls },
-                set: { model.airportSurface.autoCrossingCalls = $0 })
+        Binding(get: { settings.taxiAutoCrossingCalls },
+                set: { settings.taxiAutoCrossingCalls = $0 })
     }
     private var osmRecalcBinding: Binding<Bool> {
-        Binding(get: { model.airportSurface.autoRecalculate },
-                set: { model.airportSurface.autoRecalculate = $0 })
+        Binding(get: { settings.taxiAutoRecalculate },
+                set: { settings.taxiAutoRecalculate = $0 })
     }
     private var osmCacheSuffix: String {
         osmCacheICAOs.isEmpty ? "" : " (\(osmCacheICAOs.count), \(osmCacheBytes / 1024) KB)"

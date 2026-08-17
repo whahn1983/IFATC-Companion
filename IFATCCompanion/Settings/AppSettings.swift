@@ -229,6 +229,16 @@ final class AppSettings: ObservableObject {
     /// buttons.
     @Published var autoTuneOnHandoff: Bool { didSet { save(autoTuneOnHandoff, .autoTuneOnHandoff) } }
 
+    // Airport surface (OpenStreetMap taxi routing)
+    /// Issue the runway-crossing clearances automatically as an OSM taxi route reaches each
+    /// hold-short, rather than waiting for the pilot to tap Request Crossing. On by default.
+    /// Applied to `AirportSurfaceCoordinator.autoCrossingCalls` by `AppModel`.
+    @Published var taxiAutoCrossingCalls: Bool { didSet { save(taxiAutoCrossingCalls, .taxiAutoCrossingCalls) } }
+    /// Re-plan the taxi route automatically when the aircraft leaves it, instead of latching
+    /// the off-route banner for the pilot to decide. Off by default. Applied to
+    /// `AirportSurfaceCoordinator.autoRecalculate` by `AppModel`.
+    @Published var taxiAutoRecalculate: Bool { didSet { save(taxiAutoRecalculate, .taxiAutoRecalculate) } }
+
     // Saved flights
     /// Keep a loaded saved flight up to date as it is flown, so switching away to
     /// another flight (or being killed by the OS) never loses the leg you just flew.
@@ -327,6 +337,10 @@ final class AppSettings: ObservableObject {
         initialClimbAltitudeFt = defaults.object(forKey: Key.initialClimbAltitudeFt.rawValue) as? Int ?? 5000
         traconCeilingFL = defaults.object(forKey: Key.traconCeilingFL.rawValue) as? Int ?? 180
         autoTuneOnHandoff = defaults.object(forKey: Key.autoTuneOnHandoff.rawValue) as? Bool ?? true
+
+        taxiAutoCrossingCalls = defaults.object(forKey: Key.taxiAutoCrossingCalls.rawValue) as? Bool ?? true
+        taxiAutoRecalculate = defaults.object(forKey: Key.taxiAutoRecalculate.rawValue) as? Bool ?? false
+
         autoSaveFlights = defaults.object(forKey: Key.autoSaveFlights.rawValue) as? Bool ?? true
 
         routeCorridorNM = defaults.object(forKey: Key.routeCorridorNM.rawValue) as? Double ?? 100
@@ -392,6 +406,8 @@ final class AppSettings: ObservableObject {
         initialClimbAltitudeFt = other.initialClimbAltitudeFt
         traconCeilingFL = other.traconCeilingFL
         autoTuneOnHandoff = other.autoTuneOnHandoff
+        taxiAutoCrossingCalls = other.taxiAutoCrossingCalls
+        taxiAutoRecalculate = other.taxiAutoRecalculate
         autoSaveFlights = other.autoSaveFlights
         routeCorridorNM = other.routeCorridorNM; altitudeBandFt = other.altitudeBandFt
         weatherBaseURL = other.weatherBaseURL
@@ -418,6 +434,7 @@ final class AppSettings: ObservableObject {
         case backgroundChatterEnabled, liveActivityEnabled, chatterVolume, chatterDensity, transmissionStaticEnabled
         case radioEffectDefaultMigration
         case initialClimbAltitudeFt, traconCeilingFL, autoTuneOnHandoff
+        case taxiAutoCrossingCalls, taxiAutoRecalculate
         case autoSaveFlights
         case routeCorridorNM, altitudeBandFt, weatherBaseURL
         case noaaRadarOverlay, radarOpacity, weatherDeviationAlerts, satelliteDeviationsEnabled
