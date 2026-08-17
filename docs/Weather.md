@@ -175,6 +175,44 @@ UI labels: NOAA and OPERA both show *"Radar precipitation"*; NASA shows
 *"Satellite precipitation estimate"*. The app **never** shows "global radar". While
 OPERA is disabled, Europe shows the NASA *"Satellite precipitation estimate"* label.
 
+### Which region the source is selected for — the route still ahead
+
+Coverage is a bounding-box **overlap**, not containment (`RadarPrecipitationProvider
+.covers`), so *which box you hand it* decides the answer on any route that crosses a
+coverage boundary. There is one box, `AppModel.precipitationRegion()`: the **aircraft
+(or the departure before it moves) plus the route still ahead**, widened ~60 NM on
+every side. Both the sampler (`sampleLivePrecipitation`) and the Source/Layer labels
+(`recomputeWeatherHazards`) select from it, so **the label can never name a provider
+other than the one that produced the cells** the deviation flow is running on.
+
+It is deliberately *not* anchored to the filed departure. A box that always contained
+the departure kept overlapping NOAA's CONUS box gate to gate: on **KIAH→EGLL** the
+Weather card read *"Radar precipitation / NOAA/NWS radar precipitation"* on arrival
+into Heathrow, while the map beneath it drew the NASA satellite estimate that had
+taken over mid-Atlantic — a satellite estimate presented as radar.
+
+On that route the handoff now works out as:
+
+- **KIAH to roughly 53° W** — the remaining-route box still overlaps CONUS
+  (20–52 N, −130…−60 W), so the source is **NOAA**. One ArcGIS render covers the whole
+  corridor; returns exist only inside US radar coverage, so the oceanic and European
+  part of the image is transparent and yields no cells.
+- **East of roughly 53° W** — NOAA no longer overlaps; OPERA covers Europe but cannot
+  render (§2), so the source becomes the **NASA satellite estimate**, and the card
+  relabels to *"Satellite precipitation estimate"* with the lower-confidence note. From
+  here cells are sampled only if *"Deviations from satellite estimate"* is on (off by
+  default) — otherwise the overlay still draws but no deviation is offered.
+
+The handoff is silent (no ATC call); the relabeled card is what surfaces it.
+
+**Known limitation.** The overlay *image* is still fetched for the map's **visible**
+region (`radarImageURL` → `imageURL(for:)`), which the user can pan independently of
+the route. Panning far from the remaining route — to the U.S. mid-crossing, say — can
+therefore draw a picture from a different provider than the card names. Coverage,
+hazards, and the deviation flow deliberately stay on the route region: they gate
+`radarOverlay.coverageAvailable`, and letting a pan drive them would blank the overlay
+and drop the mint line whenever the map wandered outside coverage.
+
 ## Coverage limitations (read this)
 
 - **True radar precipitation** is available only where the free **NOAA/NWS** (U.S.)
