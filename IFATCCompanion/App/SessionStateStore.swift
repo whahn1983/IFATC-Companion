@@ -18,6 +18,12 @@ struct SessionSnapshot: Codable {
     var arrivalAnnounced: Bool
     var awaitingGateArrival: Bool
     var manualTuning: Bool
+    /// Identifier of the enroute Center sector working the flight ("KZHU", "EGTT") when
+    /// the snapshot was taken, so a reconnect mid-cruise resumes with the sector the
+    /// pilot is already talking to instead of silently adopting whichever one is under
+    /// the aircraft — or, worse, re-announcing a hand-off they already read back.
+    /// Optional so snapshots written before this field decode cleanly.
+    var centerSectorID: String? = nil
     /// Whether Ground has already handed the departing aircraft to Tower to *monitor*
     /// (the "monitor Tower on …" hand-off short of the runway), so a reconnect mid-taxi
     /// doesn't re-issue it. Optional so snapshots written before this field decode cleanly

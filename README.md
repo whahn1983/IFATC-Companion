@@ -31,6 +31,7 @@ IFATC Companion is organized into five tabs:
 - **Call sign recognition.** Enter a call sign like `UA598` or `UAL598` and it's spoken as its real radio name ("United five niner eight") using a built-in airline database; tail numbers like `N123AB` are spelled out phonetically.
 - **Procedure-aware.** SID, STAR, and approach names are recognized and referenced in your clearances.
 - **OpenStreetMap taxi map, routing & runway crossings.** A dedicated MapKit taxi map animates into the ATC view after you read back your taxi clearance, showing your assigned route, aircraft, gates, holding positions, and upcoming runway crossings drawn from **OpenStreetMap** airport‑surface data. It calculates a best‑effort taxi route to the correct runway end (and taxi‑to‑gate after landing), tracks you along it, and runs a simulated Ground **runway‑crossing** workflow — crossings are cleared automatically a generous distance before the runway (a separate crossing clearance you read back before it's authorized), so you're never held short, plus an off‑route recalculation prompt. The map stays up through the hand‑off to Tower and the final roll to the runway — so you can still see the route to the hold‑short — and retires when you read back the line‑up‑and‑wait (or the takeoff clearance); on arrival it stays up all the way in to the gate and retires once you're parked. See [docs/AirportSurfaceData.md](docs/AirportSurfaceData.md), [docs/TaxiRouting.md](docs/TaxiRouting.md), and [docs/RunwayCrossingAutomation.md](docs/RunwayCrossingAutomation.md).
+- **Center sectors and en-route hand-offs.** Above the TRACON ceiling the companion knows which Center's airspace you are actually in, and hands you along as you cross the boundaries — Houston Center to Fort Worth Center to Memphis Center — naming the sector in the hand-off, your read-back, and your check-in. Coverage is worldwide (every ARTCC, FIR and UIR), bundled with the app, so it works offline and applies only between the Departure hand-off and Approach. Turn it off in Settings for a single generic Center. See [docs/CenterSectors.md](docs/CenterSectors.md).
 - **Ramp handling** as a first-class facility — pushback, engine-start coordination, and the hand-off to Ground — modeled separately from ATC ground control.
 - **Push-to-talk.** Hold to talk and speak your read-backs and requests. Recognition runs entirely on your device.
 - **Distinct voices** for each controller position and a separate pilot voice, all spoken offline.
@@ -139,3 +140,13 @@ Airport surface maps, taxi routes, and runway‑crossing instructions are derive
 **Surface data © OpenStreetMap contributors.** OpenStreetMap, the OpenStreetMap Foundation, and Overpass operators do not endorse and are not affiliated with IFATC Companion.
 
 > **Simulation only.** Airport surface maps, taxi routes, and runway‑crossing instructions are for flight simulation only and must not be used for real‑world aviation.
+
+### En-route sector data
+
+En-route Center sector boundaries (ARTCC, FIR, and UIR) are adapted from the **VATSIM VATSpy Data Project**, licensed under **CC BY-SA 4.0**. The adapted dataset is bundled with the app and redistributed under the same licence; see [docs/CenterSectors.md](docs/CenterSectors.md) for the attribution, ShareAlike notice, and how the dataset is derived.
+
+**Sector boundaries © VATSIM VATSpy Data Project.** VATSIM does not endorse and is not affiliated with IFATC Companion.
+
+Sector frequencies are **simulated** — real per-sector ARTCC/FIR frequencies are not published as open data.
+
+> **Simulation only.** Sector boundaries and the hand-offs derived from them are for flight simulation only and must not be used for real-world aviation.

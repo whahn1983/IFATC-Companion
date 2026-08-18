@@ -240,10 +240,19 @@ struct SettingsView: View {
                 Text("Departure → Center at FL\(settings.traconCeilingFL)")
             }
             Toggle("Auto-tune on hand-off", isOn: $settings.autoTuneOnHandoff)
+            Toggle("Center sector hand-offs", isOn: $settings.centerSectorHandoffs)
+            if settings.centerSectorHandoffs, let sector = model.centerSector {
+                HStack {
+                    Text("Working sector")
+                    Spacer()
+                    Text("\(sector.radioName) · \(String(format: "%.3f", sector.frequency))")
+                        .foregroundStyle(.secondary)
+                }
+            }
         } header: {
             Text("ATC Automation")
         } footer: {
-            Text("You make your own calls with the buttons (clearance through ready); the controller's position-based calls play automatically — takeoff once you line up, the Departure hand-off after you're airborne, and the en-route and arrival sequence. Read backs and check-ins stay manual. Auto-tune moves the active frequency to the next controller only after you read the hand-off back; turn it off to tune by hand. Initial climb is set above the field and raised to a valid MSL altitude at high-elevation airports (e.g. Denver).")
+            Text("You make your own calls with the buttons (clearance through ready); the controller's position-based calls play automatically — takeoff once you line up, the Departure hand-off after you're airborne, and the en-route and arrival sequence. Read backs and check-ins stay manual. Auto-tune moves the active frequency to the next controller only after you read the hand-off back; turn it off to tune by hand. Initial climb is set above the field and raised to a valid MSL altitude at high-elevation airports (e.g. Denver). Center sector hand-offs pass you from one en-route sector to the next as you cross the boundaries — Houston Center to Fort Worth Center to Memphis Center — between the Departure hand-off and Approach; turn it off for a single generic Center.")
         }
     }
 
@@ -397,6 +406,21 @@ struct SettingsView: View {
                     .font(.caption2).foregroundStyle(.secondary)
                     .lineLimit(1).truncationMode(.middle)
             }
+            HStack {
+                Text("Center sectors")
+                Spacer()
+                Text(CenterSectorData.providerName)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.middle)
+            }
+            HStack {
+                Text("License")
+                Spacer()
+                Text(CenterSectorData.licenseShortName).foregroundStyle(.secondary)
+            }
+            Link(destination: CenterSectorData.sourceURL) {
+                Label(CenterSectorData.attributionText, systemImage: "link")
+            }
             Toggle("Automatic runway-crossing calls", isOn: osmCrossingBinding)
             Toggle("Auto-recalculate when off route", isOn: osmRecalcBinding)
             Button {
@@ -413,7 +437,7 @@ struct SettingsView: View {
         } header: {
             Text("Data Sources")
         } footer: {
-            Text("Airport surface geometry and taxi routes are derived from OpenStreetMap (\(OSMSurface.licenseName)) via a public Overpass API. Community-sourced and best-effort — cached locally (~75 days) and refreshed on demand. Not authoritative and not guaranteed to match Infinite Flight scenery. Simulation only.")
+            Text("Airport surface geometry and taxi routes are derived from OpenStreetMap (\(OSMSurface.licenseName)) via a public Overpass API. Community-sourced and best-effort — cached locally (~75 days) and refreshed on demand. Not authoritative and not guaranteed to match Infinite Flight scenery. En-route Center sector boundaries are adapted from the \(CenterSectorData.providerName) (\(CenterSectorData.licenseShortName)) and bundled with the app. \(CenterSectorData.frequencyDisclaimer) Simulation only.")
         }
     }
 
@@ -429,6 +453,15 @@ struct SettingsView: View {
             }
             Link(destination: OSMSurface.publicDocumentationURL) {
                 Label("Airport data & licensing documentation", systemImage: "book")
+            }
+            Link(destination: CenterSectorData.sourceURL) {
+                Label(CenterSectorData.attributionText, systemImage: "globe.americas")
+            }
+            Link(destination: CenterSectorData.licenseURL) {
+                Label(CenterSectorData.licenseName, systemImage: "doc.text")
+            }
+            Link(destination: CenterSectorData.publicDocumentationURL) {
+                Label("Center sector data & licensing documentation", systemImage: "book")
             }
         } header: {
             Text("About & Legal")

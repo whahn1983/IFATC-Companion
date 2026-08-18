@@ -99,7 +99,7 @@ final class MockScenarioTests: XCTestCase {
 
         // Facility hand-offs in both directions.
         XCTAssertTrue(contains(model, "contact Departure", sender: .atc))
-        XCTAssertTrue(contains(model, "contact Center", sender: .atc))
+        XCTAssertTrue(contains(model, "Center on ", sender: .atc))   // sector-named or generic
         XCTAssertTrue(contains(model, "contact Approach", sender: .atc))
         XCTAssertTrue(contains(model, "contact Tower", sender: .atc))
 

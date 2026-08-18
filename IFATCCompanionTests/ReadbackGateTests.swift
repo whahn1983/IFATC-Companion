@@ -140,7 +140,9 @@ final class ReadbackGateTests: XCTestCase {
             model.ingestStateForTesting(model.mock.state(for: .climb))
             if model.awaitingReadback { model.readBack() }
         }
-        XCTAssertTrue(contains(model, "contact Center", sender: .atc),
+        // Matches both the generic "contact Center on …" and the sector-named
+        // "contact Houston Center on …" the enroute sector map produces.
+        XCTAssertTrue(contains(model, "Center on ", sender: .atc),
                       "Departure should hand off to Center through the climb")
     }
 

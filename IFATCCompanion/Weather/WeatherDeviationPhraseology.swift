@@ -118,7 +118,7 @@ struct WeatherDeviationPhraseology {
                                facility: ATCFacility = .center) -> ATCTransmission {
         let degD = String(degrees)
         let degS = Phonetic.spellDigits(degD, icao: icao)
-        let f = facility.spokenName
+        let f = engine.spokenName(for: facility)
         return pilot("\(f), \(cs.display) requests \(degD) degrees \(direction.word) for weather.",
                      "\(f), \(cs.spoken) requests \(degS) degrees \(direction.word) for weather.",
                      facility: facility)
@@ -126,14 +126,14 @@ struct WeatherDeviationPhraseology {
 
     func pilotRequestDirectDeviation(cs: Callsign, direction: DeviationDirection,
                                      facility: ATCFacility = .center) -> ATCTransmission {
-        let f = facility.spokenName
+        let f = engine.spokenName(for: facility)
         return pilot("\(f), \(cs.display) requests deviation \(direction.word) of course for weather.",
               "\(f), \(cs.spoken) requests deviation \(direction.word) of course for weather.",
               facility: facility)
     }
 
     func pilotRequestVectors(cs: Callsign, facility: ATCFacility = .center) -> ATCTransmission {
-        let f = facility.spokenName
+        let f = engine.spokenName(for: facility)
         return pilot("\(f), \(cs.display) requests vectors around weather.",
               "\(f), \(cs.spoken) requests vectors around weather.",
               facility: facility)
@@ -141,7 +141,7 @@ struct WeatherDeviationPhraseology {
 
     func pilotRequestAltitude(cs: Callsign, higher: Bool, facility: ATCFacility = .center) -> ATCTransmission {
         let word = higher ? "higher" : "lower"
-        let f = facility.spokenName
+        let f = engine.spokenName(for: facility)
         return pilot("\(f), \(cs.display) requests \(word) for weather.",
                      "\(f), \(cs.spoken) requests \(word) for weather.",
                      facility: facility)

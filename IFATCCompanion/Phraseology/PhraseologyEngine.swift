@@ -18,6 +18,23 @@ struct PhraseologyEngine {
     /// Optional user-defined overrides (templates + airline call sets).
     var profile: PhraseologyProfile?
 
+    /// Radio name of the enroute sector currently working the flight — "Houston
+    /// Center", "Fort Worth Center", "London Control". Center is the one facility
+    /// whose spoken name is not fixed: the flight is handed from one sector to the
+    /// next across the enroute leg, and every call that names the controller has to
+    /// follow. Nil (the default) falls back to the generic "Center", which is what a
+    /// flight with no position fix — or with sector hand-offs switched off — gets.
+    var centerSectorName: String?
+
+    /// What a facility is called on the radio right now. Identical to
+    /// `facility.spokenName` for every facility except Center, which takes the name of
+    /// the sector currently working the flight when one is known.
+    func spokenName(for facility: ATCFacility) -> String {
+        guard facility == .center else { return facility.spokenName }
+        let sector = (centerSectorName ?? "").trimmingCharacters(in: .whitespaces)
+        return sector.isEmpty ? facility.spokenName : sector
+    }
+
     /// Convenience: whether the ICAO pack is selected.
     var icao: Bool { mode == .icao }
 
@@ -480,8 +497,8 @@ struct PhraseologyEngine {
     // Generic handoff.
     func handoff(cs: Callsign, to facility: ATCFacility, frequency: Double) -> ATCTransmission {
         var t = tx(facility,
-           display: "\(cs.display), contact \(facility.spokenName) on \(String(format: "%.3f", frequency)).",
-           spoken: "\(cs.spoken), contact \(facility.spokenName) on \(Phonetic.frequency(frequency, icao: icao)).")
+           display: "\(cs.display), contact \(spokenName(for: facility)) on \(String(format: "%.3f", frequency)).",
+           spoken: "\(cs.spoken), contact \(spokenName(for: facility)) on \(Phonetic.frequency(frequency, icao: icao)).")
         t.readback = handoffReadback(cs: cs, to: facility, frequency: frequency)
         return t
     }
@@ -491,8 +508,8 @@ struct PhraseologyEngine {
     /// `from` facility so the transcript shows who is releasing you.
     func handoff(cs: Callsign, from: ATCFacility, to: ATCFacility, frequency: Double) -> ATCTransmission {
         var t = tx(from,
-           display: "\(cs.display), contact \(to.spokenName) on \(String(format: "%.3f", frequency)).",
-           spoken: "\(cs.spoken), contact \(to.spokenName) on \(Phonetic.frequency(frequency, icao: icao)).")
+           display: "\(cs.display), contact \(spokenName(for: to)) on \(String(format: "%.3f", frequency)).",
+           spoken: "\(cs.spoken), contact \(spokenName(for: to)) on \(Phonetic.frequency(frequency, icao: icao)).")
         t.readback = handoffReadback(cs: cs, to: to, frequency: frequency)
         return t
     }
@@ -501,8 +518,8 @@ struct PhraseologyEngine {
     /// carrying the facility to tune to once read back.
     private func handoffReadback(cs: Callsign, to: ATCFacility, frequency: Double) -> ATCTransmission.Readback {
         ATCTransmission.Readback(
-            displayText: "Contacting \(to.spokenName) on \(String(format: "%.3f", frequency)), \(cs.display).",
-            spokenText: "Contacting \(to.spokenName) on \(Phonetic.frequency(frequency, icao: icao)), \(cs.spoken).",
+            displayText: "Contacting \(spokenName(for: to)) on \(String(format: "%.3f", frequency)), \(cs.display).",
+            spokenText: "Contacting \(spokenName(for: to)) on \(Phonetic.frequency(frequency, icao: icao)), \(cs.spoken).",
             facility: to,
             tuneTo: to)
     }
@@ -530,8 +547,8 @@ struct PhraseologyEngine {
 
     func radarContact(cs: Callsign, facility: ATCFacility) -> ATCTransmission {
         tx(facility,
-           display: "\(cs.display), \(facility.spokenName), radar contact.",
-           spoken: "\(cs.spoken), \(facility.spokenName), radar contact.")
+           display: "\(cs.display), \(spokenName(for: facility)), radar contact.",
+           spoken: "\(cs.spoken), \(spokenName(for: facility)), radar contact.")
     }
 
     // MARK: - Helpers

@@ -228,6 +228,12 @@ final class AppSettings: ObservableObject {
     /// nothing tunes on its own; the pilot changes every frequency by hand with the tune
     /// buttons.
     @Published var autoTuneOnHandoff: Bool { didSet { save(autoTuneOnHandoff, .autoTuneOnHandoff) } }
+    /// Hand the flight from one enroute Center sector to the next as it crosses the
+    /// boundaries — "contact Fort Worth Center on 133.425" leaving Houston's airspace.
+    /// On by default. Only ever applies to the enroute leg (from the Departure hand-off
+    /// at the TRACON ceiling until Approach takes over); with it off, one generic
+    /// "Center" works the whole flight, as before.
+    @Published var centerSectorHandoffs: Bool { didSet { save(centerSectorHandoffs, .centerSectorHandoffs) } }
 
     // Airport surface (OpenStreetMap taxi routing)
     /// Issue the runway-crossing clearances automatically as an OSM taxi route reaches each
@@ -337,6 +343,7 @@ final class AppSettings: ObservableObject {
         initialClimbAltitudeFt = defaults.object(forKey: Key.initialClimbAltitudeFt.rawValue) as? Int ?? 5000
         traconCeilingFL = defaults.object(forKey: Key.traconCeilingFL.rawValue) as? Int ?? 180
         autoTuneOnHandoff = defaults.object(forKey: Key.autoTuneOnHandoff.rawValue) as? Bool ?? true
+        centerSectorHandoffs = defaults.object(forKey: Key.centerSectorHandoffs.rawValue) as? Bool ?? true
 
         taxiAutoCrossingCalls = defaults.object(forKey: Key.taxiAutoCrossingCalls.rawValue) as? Bool ?? true
         taxiAutoRecalculate = defaults.object(forKey: Key.taxiAutoRecalculate.rawValue) as? Bool ?? false
@@ -406,6 +413,7 @@ final class AppSettings: ObservableObject {
         initialClimbAltitudeFt = other.initialClimbAltitudeFt
         traconCeilingFL = other.traconCeilingFL
         autoTuneOnHandoff = other.autoTuneOnHandoff
+        centerSectorHandoffs = other.centerSectorHandoffs
         taxiAutoCrossingCalls = other.taxiAutoCrossingCalls
         taxiAutoRecalculate = other.taxiAutoRecalculate
         autoSaveFlights = other.autoSaveFlights
@@ -433,7 +441,7 @@ final class AppSettings: ObservableObject {
         case phraseologyMode, digitStyle
         case backgroundChatterEnabled, liveActivityEnabled, chatterVolume, chatterDensity, transmissionStaticEnabled
         case radioEffectDefaultMigration
-        case initialClimbAltitudeFt, traconCeilingFL, autoTuneOnHandoff
+        case initialClimbAltitudeFt, traconCeilingFL, autoTuneOnHandoff, centerSectorHandoffs
         case taxiAutoCrossingCalls, taxiAutoRecalculate
         case autoSaveFlights
         case routeCorridorNM, altitudeBandFt, weatherBaseURL

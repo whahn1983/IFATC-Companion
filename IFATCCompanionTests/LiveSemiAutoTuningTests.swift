@@ -74,7 +74,9 @@ final class LiveSemiAutoTuningTests: XCTestCase {
 
         // Passing the TRACON ceiling, Departure hands off to Center automatically.
         feed(model, .climb, times: 2)
-        XCTAssertTrue(contains(model, "contact Center", sender: .atc),
+        // "Center on …" rather than "contact Center": once the enroute sector map has
+        // resolved a sector, the hand-off names it ("contact Houston Center on …").
+        XCTAssertTrue(contains(model, "Center on ", sender: .atc),
                       "Departure should automatically hand off to Center through the ceiling")
         model.tuneTo(.center); model.requestHandoff(); model.readBack()
 

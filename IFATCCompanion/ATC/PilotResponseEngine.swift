@@ -287,30 +287,30 @@ struct PilotResponseEngine {
                 approachD = "the ILS"; approachS = "the I L S"
             }
             guard !rwy.isEmpty else {
-                return pilot("\(facility.spokenName), \(c.callsign.display), inbound for landing.",
-                             "\(facility.spokenName), \(c.callsign.spoken), inbound for landing.",
+                return pilot("\(engine.spokenName(for: facility)), \(c.callsign.display), inbound for landing.",
+                             "\(engine.spokenName(for: facility)), \(c.callsign.spoken), inbound for landing.",
                              facility: facility)
             }
-            return pilot("\(facility.spokenName), \(c.callsign.display), inbound on \(approachD) runway \(rwy).",
-                         "\(facility.spokenName), \(c.callsign.spoken), inbound on \(approachS) runway \(Phonetic.runway(rwy, icao: icao)).",
+            return pilot("\(engine.spokenName(for: facility)), \(c.callsign.display), inbound on \(approachD) runway \(rwy).",
+                         "\(engine.spokenName(for: facility)), \(c.callsign.spoken), inbound on \(approachS) runway \(Phonetic.runway(rwy, icao: icao)).",
                          facility: facility)
         }
         // Ground positions and any on-ground / altitude-unknown check-in: "checking in".
         let groundFacility = facility == .ramp || facility == .ground || facility == .clearance
         guard !onGround, !groundFacility, let cur = currentAltitude else {
-            return pilot("\(facility.spokenName), \(c.callsign.display), checking in.",
-                         "\(facility.spokenName), \(c.callsign.spoken), checking in.",
+            return pilot("\(engine.spokenName(for: facility)), \(c.callsign.display), checking in.",
+                         "\(engine.spokenName(for: facility)), \(c.callsign.spoken), checking in.",
                          facility: facility)
         }
         // Climbing/descending toward a different assigned altitude: report both.
         if targetAltitude > 0, abs(targetAltitude - cur) >= 200 {
-            return pilot("\(facility.spokenName), \(c.callsign.display), with you at \(engine.formatAltDisplay(cur)) for \(engine.formatAltDisplay(targetAltitude)).",
-                         "\(facility.spokenName), \(c.callsign.spoken), with you at \(Phonetic.altitude(cur, icao: icao)) for \(Phonetic.altitude(targetAltitude, icao: icao)).",
+            return pilot("\(engine.spokenName(for: facility)), \(c.callsign.display), with you at \(engine.formatAltDisplay(cur)) for \(engine.formatAltDisplay(targetAltitude)).",
+                         "\(engine.spokenName(for: facility)), \(c.callsign.spoken), with you at \(Phonetic.altitude(cur, icao: icao)) for \(Phonetic.altitude(targetAltitude, icao: icao)).",
                          facility: facility)
         }
         // Level: report the current altitude.
-        return pilot("\(facility.spokenName), \(c.callsign.display), with you at \(engine.formatAltDisplay(cur)).",
-                     "\(facility.spokenName), \(c.callsign.spoken), with you at \(Phonetic.altitude(cur, icao: icao)).",
+        return pilot("\(engine.spokenName(for: facility)), \(c.callsign.display), with you at \(engine.formatAltDisplay(cur)).",
+                     "\(engine.spokenName(for: facility)), \(c.callsign.spoken), with you at \(Phonetic.altitude(cur, icao: icao)).",
                      facility: facility)
     }
 }
