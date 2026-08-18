@@ -846,6 +846,11 @@ final class AppModel: ObservableObject {
     /// never disturb an active taxi.
     private func prefetchAirportSurfaces() {
         guard !flightPlan.departure.isEmpty || !flightPlan.destination.isEmpty else { return }
+        // The flight's endpoints are established, so this is also the moment to fill a blank
+        // gate field from the field's stand data (opt-in; see `autoAssignGatesIfNeeded`). It
+        // reads the same extracts this prefetch warms, and the provider coalesces the two
+        // requests into one.
+        autoAssignGatesIfNeeded()
         if settings.mockMode {
             // Pre-cache the whole origin and destination airports so the mock demo taxis the
             // real fields (with a synthetic fallback when offline / no OSM data).
@@ -2921,6 +2926,10 @@ final class AppModel: ObservableObject {
     func applyManualGates() {
         flightPlan.departureGate = settings.departureGate.trimmingCharacters(in: .whitespacesAndNewlines)
         flightPlan.arrivalGate = settings.arrivalGate.trimmingCharacters(in: .whitespacesAndNewlines)
+        // A gate field the pilot has just *cleared* is blank again, so it is the automatic
+        // assignment's to fill (when that is switched on). Everything else about the field
+        // leaves the assignment a no-op, so this is safe to call on every edit.
+        autoAssignGatesIfNeeded()
     }
 
     /// Swap the departure and arrival gate fields — handy when the pilot is flying
@@ -2929,7 +2938,145 @@ final class AppModel: ObservableObject {
         let dep = settings.departureGate
         settings.departureGate = settings.arrivalGate
         settings.arrivalGate = dep
+        // The "this gate was assigned by the app" markers travel with their values, so a
+        // swapped automatic gate stays the app's to replace at the next airport and a
+        // swapped hand-typed one stays the pilot's.
+        let depStamp = settings.autoAssignedDepartureGate
+        settings.autoAssignedDepartureGate = settings.autoAssignedArrivalGate
+        settings.autoAssignedArrivalGate = depStamp
         applyManualGates()
+    }
+
+    // MARK: - Automatic gate assignment
+    //
+    // Optional, off by default, and strictly additive: it fills a gate field the pilot left
+    // BLANK with a real stand from the airport's OpenStreetMap extract, so the taxi route
+    // has somewhere real to start from / end at without the pilot having to look a gate up.
+    // It never overwrites a gate the pilot typed. `GateAssigner` chooses the stand — the
+    // airline's own stand and an aircraft-size match where OSM carries those tags, otherwise
+    // a random plausible stand.
+
+    /// Roles whose assignment is already in flight, keyed `"departure:KIAH"`, so a second
+    /// flight-plan read moments later doesn't queue a duplicate fetch.
+    private var autoGateRequests: Set<String> = []
+
+    /// Fill any blank gate field from its airport's stand data. Called whenever the flight's
+    /// endpoints are (re)established — the same moment the surfaces are prefetched — and when
+    /// the Settings toggle is switched on. A no-op when the feature is off.
+    func autoAssignGatesIfNeeded() {
+        guard settings.autoAssignGates else { return }
+        for role in GateRole.allCases { autoAssignGate(role: role) }
+    }
+
+    /// React to the Settings toggle: assign straight away when it is switched on, and give
+    /// the fields back when it is switched off — a gate the app filled in is the app's to
+    /// withdraw, while one the pilot typed always stays.
+    func applyAutoGateSettingChange() {
+        if settings.autoAssignGates {
+            autoAssignGatesIfNeeded()
+        } else {
+            clearAutoAssignedGates()
+        }
+    }
+
+    /// Clear the gates the app assigned itself, leaving anything the pilot typed alone.
+    func clearAutoAssignedGates() {
+        if GateAssigner.isAppAssigned(current: settings.departureGate,
+                                      stamp: settings.autoAssignedDepartureGate) {
+            settings.departureGate = ""
+        }
+        if GateAssigner.isAppAssigned(current: settings.arrivalGate,
+                                      stamp: settings.autoAssignedArrivalGate) {
+            settings.arrivalGate = ""
+        }
+        settings.autoAssignedDepartureGate = ""
+        settings.autoAssignedArrivalGate = ""
+        autoGateRequests.removeAll()
+        // Mock Mode re-syncs rather than just mirroring the fields, so the demo falls back to
+        // its own realistic default gate instead of being left with no gate at all.
+        if settings.mockMode { syncFlightPlanFromSettings() } else { applyManualGates() }
+    }
+
+    /// Whether a gate may be assigned for a role at an airport right now. Three things have
+    /// to hold:
+    ///   • the editable field is the app's to write — blank, or still holding the app's own
+    ///     value from a *different* airport (see `GateAssigner.mayAssign`);
+    ///   • the gate the active plan is already flying is too, so a saved flight reloaded with
+    ///     a gate keeps it even though the field it was typed into may since have been
+    ///     cleared;
+    ///   • for a departure, the taxi has not begun — the gate is then where the aircraft
+    ///     actually is, and moving it would re-route the pilot mid-push.
+    func mayAutoAssignGate(role: GateRole, icao: String) -> Bool {
+        if role == .departure, airportSurface.kind != .none { return false }
+        let field = role == .departure ? settings.departureGate : settings.arrivalGate
+        let stamp = role == .departure ? settings.autoAssignedDepartureGate
+                                       : settings.autoAssignedArrivalGate
+        return GateAssigner.mayAssign(current: field, stamp: stamp, icao: icao)
+            && GateAssigner.mayAssign(current: planGateBlockingAutoAssign(role: role),
+                                      stamp: stamp, icao: icao)
+    }
+
+    /// The gate the active plan is flying that the pilot did not type into the field — a
+    /// saved flight carries its gates in the plan, and those are not the app's to replace.
+    /// Mock Mode's own default gate is *not* one of them: it stands in for a blank field so
+    /// the demo exercises the assignment the same way a live flight does.
+    private func planGateBlockingAutoAssign(role: GateRole) -> String {
+        let planGate = role == .departure ? flightPlan.departureGate : flightPlan.arrivalGate
+        guard settings.mockMode else { return planGate }
+        let mockGate = role == .departure ? mock.route.departureGate : mock.route.arrivalGate
+        return planGate.caseInsensitiveCompare(mockGate) == .orderedSame ? "" : planGate
+    }
+
+    /// The flight details the stand picker matches against: the callsign (for the airline's
+    /// own stands) and the aircraft Infinite Flight reports (for the stand's size).
+    func gateFlightContext() -> GateAssigner.FlightContext {
+        GateAssigner.FlightContext(callsign: flightPlan.callsign,
+                                   airline: flightPlan.airline,
+                                   aircraftName: aircraftState.aircraftName)
+    }
+
+    /// Write an automatic assignment into its gate field and stamp it as the app's own, so a
+    /// later assignment knows it may replace it and a pilot edit takes it back.
+    func applyAutoAssignedGate(_ assignment: GateAssigner.Assignment, role: GateRole, icao: String) {
+        let stamp = AutoGateStamp(icao: icao, gate: assignment.gate).encoded
+        switch role {
+        case .departure:
+            settings.departureGate = assignment.gate
+            settings.autoAssignedDepartureGate = stamp
+        case .arrival:
+            settings.arrivalGate = assignment.gate
+            settings.autoAssignedArrivalGate = stamp
+        }
+        applyManualGates()
+        diagnostics.log(.app, "Auto-assigned \(role.title) gate \(assignment.gate) at \(icao) — "
+            + "\(assignment.reason); \(assignment.totalCandidates) usable stands in the OSM extract.")
+    }
+
+    private func autoAssignGate(role: GateRole) {
+        let icao = (role == .departure ? flightPlan.departure : flightPlan.destination)
+            .trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard icao.count >= 3, mayAutoAssignGate(role: role, icao: icao) else { return }
+        let reference = role == .departure ? resolvedDepartureCoordinate() : resolvedDestinationCoordinate()
+        guard let reference, reference.isValid else { return }
+        let requestKey = "\(role.rawValue):\(icao)"
+        guard autoGateRequests.insert(requestKey).inserted else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            let surface = await self.airportSurface.surfaceModel(icao: icao, reference: reference)
+            self.autoGateRequests.remove(requestKey)
+            guard let surface else { return }
+            // Re-check the field: the pilot may have typed a gate (or the taxi may have
+            // started) while the extract was downloading.
+            guard self.mayAutoAssignGate(role: role, icao: icao) else { return }
+            guard let assignment = GateAssigner.assign(surface: surface,
+                                                       flight: self.gateFlightContext(),
+                                                       role: role) else {
+                self.diagnostics.log(.app, "No assignable stand at \(icao) for the \(role.title) gate "
+                    + "(\(surface.parkingPositions.count) parking features in the extract).")
+                return
+            }
+            self.applyAutoAssignedGate(assignment, role: role, icao: icao)
+        }
     }
 
     /// Merge a flight plan read from Infinite Flight into the active plan. Manual
@@ -3920,6 +4067,9 @@ final class AppModel: ObservableObject {
         settings.approach = ""
         settings.departureGate = ""
         settings.arrivalGate = ""
+        settings.autoAssignedDepartureGate = ""
+        settings.autoAssignedArrivalGate = ""
+        autoGateRequests.removeAll()
         // Re-sync drops manualOverride (both endpoints are now empty) so Connect data
         // is no longer pinned back by the override flag.
         syncFlightPlanFromSettings()

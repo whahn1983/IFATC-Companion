@@ -374,6 +374,12 @@ struct SettingsView: View {
         Binding(get: { settings.taxiAutoRecalculate },
                 set: { settings.taxiAutoRecalculate = $0 })
     }
+    /// Off by default. Switching it on assigns straight away for the flight already loaded;
+    /// switching it off hands back the fields the app filled in (never a gate the pilot typed).
+    private var autoAssignGatesBinding: Binding<Bool> {
+        Binding(get: { settings.autoAssignGates },
+                set: { settings.autoAssignGates = $0; model.applyAutoGateSettingChange() })
+    }
     private var osmCacheSuffix: String {
         osmCacheICAOs.isEmpty ? "" : " (\(osmCacheICAOs.count), \(osmCacheBytes / 1024) KB)"
     }
@@ -423,6 +429,14 @@ struct SettingsView: View {
             }
             Toggle("Automatic runway-crossing calls", isOn: osmCrossingBinding)
             Toggle("Auto-recalculate when off route", isOn: osmRecalcBinding)
+            Toggle(isOn: autoAssignGatesBinding) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Auto-assign gates")
+                    Text("Fill a **blank** Dep Gate / Arr Gate with a real stand from the airport's OpenStreetMap data — the airline's own stand and one sized for your aircraft where OSM carries those tags, otherwise a random plausible stand. A gate you type is never changed; turning this off gives back only the gates it filled in.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
             Button {
                 model.airportSurface.refreshData()
             } label: {

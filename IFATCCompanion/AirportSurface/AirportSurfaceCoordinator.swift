@@ -299,6 +299,31 @@ final class AirportSurfaceCoordinator: ObservableObject {
         return runwayIdentsByICAO[key] ?? []
     }
 
+    /// The best available surface for an airport, for callers that need to **read** its data
+    /// rather than taxi on it — today the automatic gate assignment, which needs the field's
+    /// stand list and their OSM tags.
+    ///
+    /// Never disturbs the active taxi: the coordinator's own loaded surface is returned when
+    /// it happens to be the same field, then a pre-cached simulated (demo) surface, then the
+    /// provider's memory/disk cache or a fetch. The provider coalesces identical requests, so
+    /// when this runs alongside the flight-load prefetch it joins that request rather than
+    /// making a second one. Returns nil when the field has no usable data (offline first run,
+    /// no OSM coverage) — the caller then simply leaves the gate as it is.
+    func surfaceModel(icao: String, reference: CLLocationCoordinate2D) async -> AirportSurfaceModel? {
+        let key = icao.uppercased().trimmingCharacters(in: .whitespaces)
+        guard key.count >= 3 else { return nil }
+        if let loaded = surface, loaded.icao == key, !syntheticSurface { return loaded }
+        if let simulated = simulatedSurfaces[key] { return simulated }
+        guard reference.isValid else { return nil }
+        do {
+            return try await provider.surface(for: key, reference: reference, forceRefresh: false)
+        } catch {
+            let message = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+            diagnostics?.log(.app, "No airport surface data for \(key): \(message)")
+            return nil
+        }
+    }
+
     /// Warm the disk/memory surface cache for an airport without disturbing the active
     /// taxi surface. Used to pre-cache the arrival field while the departure surface stays
     /// loaded in the coordinator, so the arrival's later load is instant and offline.

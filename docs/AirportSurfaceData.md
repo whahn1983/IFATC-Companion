@@ -36,8 +36,8 @@ Relevant OSM tags consumed:
 | Taxiway | `aeroway=taxiway`, `ref`/`name`, `oneway`, `access`, `width` | routable edges, names |
 | Taxilane | `aeroway=taxilane` | apron lead‑in edges (lower preference) |
 | Holding position | `aeroway=holding_position`, `ref` | hold‑short points, confidence |
-| Gate | `aeroway=gate`, `ref`/`name` | taxi start/end |
-| Parking position | `aeroway=parking_position`, `ref`/`name` | taxi start/end |
+| Gate | `aeroway=gate`, `ref`/`name`, `aircraft:type`, `operator`, `access` | taxi start/end; optional automatic gate assignment |
+| Parking position | `aeroway=parking_position`, `ref`/`name`, `aircraft:type`, `operator`, `access` | taxi start/end; optional automatic gate assignment |
 | Apron | `aeroway=apron` | context rendering |
 | Building / terminal | `building=*`, `aeroway=terminal` | keep gate lead‑ins from crossing a concourse (not routable) |
 | Aerodrome | `aeroway=aerodrome` | airport reference point |
@@ -76,6 +76,10 @@ Relevant OSM tags consumed:
   elsewhere as a *crossing*.
 - **Holding positions** are preferred; where none is mapped, an **inferred** hold may be created
   for simulation and is marked inferred / lower confidence.
+Every stand keeps its **full original tag set** (`SurfaceParking.tags`), which is what lets the
+optional automatic gate assignment read a stand's size (`aircraft:type`), airline (`operator`) and
+availability (`access`) — see [TaxiRouting.md](TaxiRouting.md).
+
 - **Gates/parking** connect to the taxi network via an **inferred connector** (lower confidence),
   so routing can start/end at a stand without routing *through* stands. The connector attaches to
   the nearest taxi node whose straight lead‑in does **not** cross a building/terminal footprint and
