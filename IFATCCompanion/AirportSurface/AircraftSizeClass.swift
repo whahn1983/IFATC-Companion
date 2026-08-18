@@ -21,6 +21,18 @@ enum AircraftSizeClass: String, Codable, CaseIterable {
         }
     }
 
+    /// Ordering rank, smallest airframe to largest. Used where one class has to be compared
+    /// with another — e.g. deciding whether a stand sized for an A320 can take the aircraft.
+    var rank: Int {
+        switch self {
+        case .light: return 0
+        case .small: return 1
+        case .medium: return 2
+        case .large: return 3
+        case .heavy: return 4
+        }
+    }
+
     /// Approximate minimum taxiway width (meters) the class is comfortable on. Used
     /// only when OSM tags a taxiway/taxilane width; unknown widths never penalize.
     var minComfortableTaxiwayWidthMeters: Double {
@@ -44,7 +56,15 @@ enum AircraftSizeClass: String, Codable, CaseIterable {
     /// Best-effort classification from an Infinite Flight aircraft name. Conservative:
     /// anything unrecognised is `medium`.
     static func classify(aircraftName: String?) -> AircraftSizeClass {
-        guard let raw = aircraftName?.uppercased(), !raw.isEmpty else { return .medium }
+        classifyStrict(aircraftName: aircraftName) ?? .medium
+    }
+
+    /// The same classification as `classify`, but it reports "not recognised" instead of
+    /// defaulting to `medium`. Used where an unknown must stay unknown — an OSM
+    /// `aircraft:type` token that matches no airframe says nothing about how big the stand
+    /// is, and reading it as a 737 stand would invent data that isn't in the extract.
+    static func classifyStrict(aircraftName: String?) -> AircraftSizeClass? {
+        guard let raw = aircraftName?.uppercased(), !raw.isEmpty else { return nil }
         let n = raw.replacingOccurrences(of: "-", with: "").replacingOccurrences(of: " ", with: "")
 
         // Heavy widebodies.
@@ -67,6 +87,6 @@ enum AircraftSizeClass: String, Codable, CaseIterable {
         for token in ["C172", "C152", "CESSNA", "SR22", "TBM", "PIPER", "PA28", "DA40", "DA42", "SPITFIRE", "XCUB", "CUB"] {
             if n.contains(token) { return .light }
         }
-        return .medium
+        return nil
     }
 }

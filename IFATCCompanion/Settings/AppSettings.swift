@@ -126,6 +126,12 @@ final class AppSettings: ObservableObject {
     @Published var departureGate: String { didSet { save(departureGate, .departureGate) } }
     /// Arrival gate / stand to taxi to (manual-override only; IF doesn't expose it).
     @Published var arrivalGate: String { didSet { save(arrivalGate, .arrivalGate) } }
+    /// Marker (`ICAO:GATE`) recording the departure gate the app assigned itself, so the
+    /// automatic assignment can tell its own value apart from one the pilot typed. Not a
+    /// user-facing preference — see `GateAssigner.mayAssign`.
+    @Published var autoAssignedDepartureGate: String { didSet { save(autoAssignedDepartureGate, .autoAssignedDepartureGate) } }
+    /// Marker for the arrival gate the app assigned itself (see above).
+    @Published var autoAssignedArrivalGate: String { didSet { save(autoAssignedArrivalGate, .autoAssignedArrivalGate) } }
 
     // Voice
     @Published var voiceEnabled: Bool { didSet { save(voiceEnabled, .voiceEnabled) } }
@@ -244,6 +250,12 @@ final class AppSettings: ObservableObject {
     /// the off-route banner for the pilot to decide. Off by default. Applied to
     /// `AirportSurfaceCoordinator.autoRecalculate` by `AppModel`.
     @Published var taxiAutoRecalculate: Bool { didSet { save(taxiAutoRecalculate, .taxiAutoRecalculate) } }
+    /// Fill a **blank** departure/arrival gate field with a realistic stand taken from the
+    /// airport's OpenStreetMap stand data — the airline's own stand and an aircraft-size
+    /// match where OSM carries those tags, otherwise a random plausible stand, so the taxi
+    /// route always has somewhere real to take the flight. Off by default, and it never
+    /// touches a gate the pilot typed (see `GateAssigner.mayAssign`).
+    @Published var autoAssignGates: Bool { didSet { save(autoAssignGates, .autoAssignGates) } }
 
     // Saved flights
     /// Keep a loaded saved flight up to date as it is flown, so switching away to
@@ -314,6 +326,8 @@ final class AppSettings: ObservableObject {
         // Migrate the pre-split single "gate" key into the arrival gate.
         arrivalGate = defaults.string(forKey: Key.arrivalGate.rawValue)
             ?? defaults.string(forKey: "gate") ?? ""
+        autoAssignedDepartureGate = defaults.string(forKey: Key.autoAssignedDepartureGate.rawValue) ?? ""
+        autoAssignedArrivalGate = defaults.string(forKey: Key.autoAssignedArrivalGate.rawValue) ?? ""
 
         voiceEnabled = defaults.object(forKey: Key.voiceEnabled.rawValue) as? Bool ?? true
         defaultVoiceID = defaults.string(forKey: Key.defaultVoiceID.rawValue) ?? ""
@@ -347,6 +361,7 @@ final class AppSettings: ObservableObject {
 
         taxiAutoCrossingCalls = defaults.object(forKey: Key.taxiAutoCrossingCalls.rawValue) as? Bool ?? true
         taxiAutoRecalculate = defaults.object(forKey: Key.taxiAutoRecalculate.rawValue) as? Bool ?? false
+        autoAssignGates = defaults.object(forKey: Key.autoAssignGates.rawValue) as? Bool ?? false
 
         autoSaveFlights = defaults.object(forKey: Key.autoSaveFlights.rawValue) as? Bool ?? true
 
@@ -396,6 +411,8 @@ final class AppSettings: ObservableObject {
         cruiseAltitude = other.cruiseAltitude; runway = other.runway
         sid = other.sid; star = other.star; approach = other.approach
         departureGate = other.departureGate; arrivalGate = other.arrivalGate
+        autoAssignedDepartureGate = other.autoAssignedDepartureGate
+        autoAssignedArrivalGate = other.autoAssignedArrivalGate
         voiceEnabled = other.voiceEnabled; defaultVoiceID = other.defaultVoiceID
         speechRate = other.speechRate; speechPitch = other.speechPitch
         voiceVolume = other.voiceVolume
@@ -416,6 +433,7 @@ final class AppSettings: ObservableObject {
         centerSectorHandoffs = other.centerSectorHandoffs
         taxiAutoCrossingCalls = other.taxiAutoCrossingCalls
         taxiAutoRecalculate = other.taxiAutoRecalculate
+        autoAssignGates = other.autoAssignGates
         autoSaveFlights = other.autoSaveFlights
         routeCorridorNM = other.routeCorridorNM; altitudeBandFt = other.altitudeBandFt
         weatherBaseURL = other.weatherBaseURL
@@ -435,6 +453,7 @@ final class AppSettings: ObservableObject {
         case host, port, autoDiscover, keepScreenAwake
         case callsign, airline, flightNumber, departure, destination, alternate
         case cruiseAltitude, runway, sid, star, approach, departureGate, arrivalGate
+        case autoAssignedDepartureGate, autoAssignedArrivalGate
         case voiceEnabled, defaultVoiceID, speechRate, speechPitch, voiceVolume, respectSilentSwitch
         case voiceGround, voiceTower, voiceDeparture, voiceCenter, voiceApproach, voiceATIS
         case voicePilot, speakPilot, holdToTalkEnabled
@@ -442,7 +461,7 @@ final class AppSettings: ObservableObject {
         case backgroundChatterEnabled, liveActivityEnabled, chatterVolume, chatterDensity, transmissionStaticEnabled
         case radioEffectDefaultMigration
         case initialClimbAltitudeFt, traconCeilingFL, autoTuneOnHandoff, centerSectorHandoffs
-        case taxiAutoCrossingCalls, taxiAutoRecalculate
+        case taxiAutoCrossingCalls, taxiAutoRecalculate, autoAssignGates
         case autoSaveFlights
         case routeCorridorNM, altitudeBandFt, weatherBaseURL
         case noaaRadarOverlay, radarOpacity, weatherDeviationAlerts, satelliteDeviationsEnabled

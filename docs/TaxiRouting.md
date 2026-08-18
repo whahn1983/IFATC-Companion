@@ -271,12 +271,62 @@ spoken instruction, so a route whose geometry shifts slightly but whose taxiways
 unchanged is not re‑issued. An automatic recalculation therefore keeps the ATC exchange honest:
 it re‑plans from the current position and, when that changes the instruction, tells the pilot.
 
+## Automatic gate assignment (optional, off by default)
+
+A pilot who leaves **Dep Gate** / **Arr Gate** blank has nowhere for the taxi route to start from
+or end at, so the route falls back to the nearest reachable stand. The **Auto‑assign gates**
+toggle (Settings → Data Sources, `AppSettings.autoAssignGates`, off by default) instead fills a
+blank field with a named stand taken from the airport's own OSM extract, so the clearance and the
+map name a real gate.
+
+`GateAssigner` (`AirportSurface/GateAssignment.swift`) makes the choice from the stand tags the
+normalizer already keeps on every `SurfaceParking`:
+
+| OSM tag | Used for |
+| --- | --- |
+| `aircraft:type` (also `aircraft`, `aircraft:size`) | The stand's size, from an airframe (`A320`, `B738;B77W`), a size band (`heavy`, `wide_body`), or an ICAO reference code (`code_c`). A stand that can't take the aircraft is a last resort; among those that can, the snuggest fit wins. `helicopter` marks a rotorcraft pad. |
+| `operator`, `operator:en`, `operator:short`, `network`, `owner` | The airline working the stand. Matched against the callsign's designator via `StandOperators.brandNames` (OSM says "British Airways" where the radio says "Speedbird"), the resolved telephony name, and the plan's airline. |
+| `access` | `no` / `private` — used only when the field offers nothing else. |
+| `ref` / `name` | The identifier the controller says. **Required**: a stand with no identifier can't be named in a clearance, so it is never assigned. |
+| `name`, `description`, `parking_position`, `usage` (purpose tags only) | Cargo positions — matched to freight flights and only to freight flights — and de‑icing / maintenance / hangar positions, which are never assigned. Operator text is searched for cargo words but never for purpose words, so an airport authority's name never disqualifies a real stand. |
+
+Everything except "must be named" and "not a service position" is a *soft* preference expressed as
+a penalty, so a sparsely tagged field still gets a stand rather than none. Where the tags say
+nothing — the common case — the pick is random among the plausible stands, which is the point: a
+real stand at the real airport that the router can reach. Nothing here is authoritative; a real
+gate assignment comes from the airline, not from a map.
+
+### Only when the pilot left it blank
+
+The assignment writes the visible field, so it has to be able to tell its own value apart from a
+pilot's. It stamps what it wrote as `ICAO:GATE` (`AppSettings.autoAssignedDepartureGate` /
+`…ArrivalGate`), and `GateAssigner.mayAssign` then allows a write only when the field is blank, or
+still holds the app's own stamp **for a different airport** (the last flight's gate is stale). A
+gate the pilot typed — or typed over an automatic one — is never touched. `AppModel` adds two more
+conditions: the gate the active plan is already flying must be the app's too (a reloaded saved
+flight keeps its gates; Mock Mode's own default gate counts as blank so the demo exercises the
+feature), and a departure gate is off limits once the taxi has begun, since the gate is then where
+the aircraft actually is. Switching the toggle off withdraws only the gates the app filled in.
+
+The assignment runs where the surfaces are prefetched — whenever the flight's endpoints are
+established — and again on every gate-field edit (`applyManualGates`), so a field the pilot has just
+*cleared* is blank again and gets filled. It reads its extract through
+`AirportSurfaceCoordinator.surfaceModel(icao:reference:)`, which never disturbs an active taxi and
+coalesces with the prefetch already in flight, so it costs no extra Overpass request. Every
+assignment is logged with its rationale, so Diagnostics explains why a gate was chosen.
+
+The stamps are deliberately **not** part of a saved flight's `FlightOverrides` (adding a key there
+would break decoding of snapshots written by earlier builds). A reloaded saved flight therefore
+comes back with its gates and a stamp that no longer matches them, which reads as "the pilot's" —
+the conservative direction, and the behavior a saved flight wants anyway.
+
 ## Manual overrides
 
 The pilot can override the departure/arrival runway, gates, runway entry, automatic crossing
 calls, and data refresh (Settings and the taxi map). The two Settings toggles for the surface —
 **Automatic runway‑crossing calls** (on by default) and **Auto‑recalculate when off route** (off
-by default) — are stored in `AppSettings` (`taxiAutoCrossingCalls` / `taxiAutoRecalculate`), so a
+by default) — plus **Auto‑assign gates** (off by default, above) are stored in `AppSettings`
+(`taxiAutoCrossingCalls` / `taxiAutoRecalculate` / `autoAssignGates`), so a
 change sticks across app launches; `AppModel` observes them and applies each to
 `AirportSurfaceCoordinator`, whose own properties are session state.
 
