@@ -105,7 +105,9 @@ final class ManualTuningTests: XCTestCase {
 
         // Because the pilot tuned the frequency, the controller never tells them to
         // "contact …" the next facility.
-        for handoff in ["contact Departure", "contact Center", "contact Approach", "contact Tower"] {
+        // Center is matched as "Center on " so a sector-named hand-off ("contact Fort
+        // Worth Center on …") can't slip past the check.
+        for handoff in ["contact Departure", "Center on ", "contact Approach", "contact Tower"] {
             XCTAssertFalse(contains(model, handoff, sender: .atc),
                            "manual tuning should not insert an automatic '\(handoff)' hand-off")
         }

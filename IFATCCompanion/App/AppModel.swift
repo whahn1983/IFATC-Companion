@@ -66,6 +66,10 @@ final class AppModel: ObservableObject {
     /// top of StoreKit's own three-per-year cap.
     let review = ReviewRequestManager()
 
+    /// The bundled enroute sector map (ARTCC / FIR boundaries). Injectable so tests can
+    /// drive a small set of known boundaries instead of the shipped global dataset.
+    let centerSectors: CenterSectorDatabase
+
     private let weatherService: AviationWeatherService
     /// Fetches real-world FAA D-ATIS (datis.clowd.io). Independent of the weather
     /// service; the whole ATIS feature degrades to "absent" whenever it returns nothing.
@@ -634,6 +638,36 @@ final class AppModel: ObservableObject {
     /// the pilot hasn't switched to. Nil when no hand-off is pending.
     private var pendingCheckInFacility: ATCFacility?
 
+    /// The enroute sector working the flight — "Houston Center", "Fort Worth Center",
+    /// "London Control". Tracked across the whole flight (so the Departure hand-off can
+    /// already name the right sector), but only *spoken to* on the enroute leg. Nil
+    /// until the bundled sector map has loaded and a position fix has landed, and
+    /// whenever sector hand-offs are switched off — the conversation then falls back to
+    /// one generic "Center", exactly as before this feature existed.
+    @Published private(set) var centerSector: CenterSector?
+
+    /// Follows the aircraft across the sector map and reports a crossing once it is
+    /// well inside the next sector.
+    private var centerSectorTracker = CenterSectorTracker()
+
+    /// Set when one Center hands the flight to the next sector, so the pilot's next
+    /// check-in is treated as a call-up on the new sector's frequency rather than a
+    /// request for the next clearance. Without it, checking in with the new sector at
+    /// cruise would be answered with the top-of-descent call: the next Center state
+    /// after `.cruise` in the gate-to-gate order is `.descent`, and a plain check-in
+    /// advances to whatever that facility works next.
+    private var awaitingCenterSectorCheckIn = false
+
+    /// A confirmed sector crossing waiting for a free radio — the pilot still owes a
+    /// read-back, or a hand-off they haven't checked in on is outstanding. Held rather
+    /// than dropped so the hand-off is issued as soon as the frequency is clear.
+    private var pendingCenterCrossing: CenterSectorTracker.Crossing?
+
+    /// Sector id carried by a restored session, resolved to a sector on the first
+    /// position fix after the sector map finishes loading (a restore runs at launch,
+    /// before the background load completes).
+    private var pendingCenterSectorID: String?
+
     /// True from the moment the pilot taps Go Around until they re-establish with
     /// Approach on the missed-approach leg. While set, the automatic flow holds (the
     /// conversation is deliberately being flown back around the pattern) and the
@@ -692,8 +726,11 @@ final class AppModel: ObservableObject {
 
     /// - Parameter savedFlights: the flight library. Injectable so tests get their own
     ///   temporary directory instead of writing into the real one.
-    init(savedFlights: SavedFlightStore? = nil) {
+    /// - Parameter centerSectors: the enroute sector map. Injectable for the same reason.
+    init(savedFlights: SavedFlightStore? = nil,
+         centerSectors: CenterSectorDatabase = .shared) {
         self.savedFlights = savedFlights ?? SavedFlightStore()
+        self.centerSectors = centerSectors
         let settings = AppSettings()
         self.settings = settings
         let diagnostics = DiagnosticsStore()
@@ -1383,6 +1420,12 @@ final class AppModel: ObservableObject {
         tunedFacility = nil
         pendingCheckInFacility = nil
         goAroundInProgress = false
+        // The enroute sector belongs to the flight being put down.
+        centerSectorTracker.reset()
+        awaitingCenterSectorCheckIn = false
+        pendingCenterCrossing = nil
+        pendingCenterSectorID = nil
+        applyCenterSector(nil)
         clearReadbackGate()
         cancelTakeoffClearanceTimer()
         stateMachine.reset()
@@ -1928,6 +1971,12 @@ final class AppModel: ObservableObject {
             return
         }
 
+        // Track the enroute sector under the aircraft and, once Center is working the
+        // flight, hand it from one sector to the next as it crosses. Runs before the
+        // mode-specific flow below so it fires the same way on the automatic and the
+        // manual (semi-auto) tuning path. No-op until the sector map has loaded.
+        updateCenterSector(state: state)
+
         // --- Airborne / arrival ---
         // When the pilot is changing controllers manually with the frequency buttons:
         //  • In Mock Mode there is no live telemetry, so the conversation advances only
@@ -2067,6 +2116,9 @@ final class AppModel: ObservableObject {
         // it (they're already there).
         let wasTuned = tunedFacility
         tunedFacility = nil
+        // A new controller call supersedes a sector call-up the pilot never made: the
+        // next check-in belongs to whatever was just said, not to the sector hand-off.
+        awaitingCenterSectorCheckIn = false
         guard let stateTx = stateMachine.advance(to: target, context: c) else {
             atcState = stateMachine.current
             currentFacility = controller(for: stateMachine.current)
@@ -2300,6 +2352,83 @@ final class AppModel: ObservableObject {
                             frequency: frequency(for: to, context: c)), speak: true)
     }
 
+    // MARK: - Enroute Center sectors
+
+    /// Follow the aircraft across the enroute sector map and, while Center is working
+    /// it, hand it off from one sector to the next — Houston Center to Fort Worth
+    /// Center to Memphis Center — as it crosses the boundaries.
+    ///
+    /// The tracker runs for the whole airborne flight, not just the enroute leg: the
+    /// sector under the aircraft is what lets Departure's hand-off at the TRACON
+    /// ceiling name the right Center in the first place. Only crossings that happen
+    /// while Center actually has the aircraft reach the radio.
+    private func updateCenterSector(state: AircraftState) {
+        guard settings.centerSectorHandoffs else { return }
+        guard let coordinate = state.coordinate, coordinate.isValid else { return }
+        // Lazy first-use load (~0.5 MB of boundaries, off the main thread). Idempotent;
+        // every query before it completes simply reports no sector.
+        centerSectors.prepare()
+        // A restored session names the sector the pilot was working; adopt it as soon as
+        // the map can resolve it, so the next crossing is measured from there.
+        if let restored = pendingCenterSectorID, let sector = centerSectors.sector(id: restored) {
+            pendingCenterSectorID = nil
+            centerSectorTracker.adopt(sector)
+            applyCenterSector(sector)
+        }
+
+        // Every fix goes to the tracker, whoever is working the flight: it needs an
+        // unbroken track to tell a flown boundary crossing from a position jump.
+        let crossing = centerSectorTracker.update(coordinate: coordinate, at: Date(),
+                                                  database: centerSectors)
+        applyCenterSector(centerSectorTracker.current)
+
+        guard controller(for: stateMachine.current) == .center else {
+            // Departure and Approach own the radio at either end of the enroute leg. The
+            // sector still moves under the aircraft, but nobody says so — and a crossing
+            // made under another controller is never announced late: whoever hands the
+            // flight to Center names the sector it is in at that moment.
+            pendingCenterCrossing = nil
+            return
+        }
+        if let crossing {
+            // Keep the sector the pilot was last told to contact as the origin, so a
+            // second crossing while the radio is busy still reads as one hand-off.
+            pendingCenterCrossing = CenterSectorTracker.Crossing(
+                from: pendingCenterCrossing?.from ?? crossing.from, to: crossing.to)
+        }
+        // Wait for the radio: the last instruction read back, no hand-off outstanding,
+        // and no go-around being flown. The crossing is held, never dropped.
+        guard let pending = pendingCenterCrossing,
+              !readbackGateClosed, pendingCheckInFacility == nil, !goAroundInProgress else { return }
+        pendingCenterCrossing = nil
+        announceCenterSectorHandoff(pending)
+    }
+
+    /// Publish the working sector and make every engine that names a controller speak
+    /// it. The state machine deliberately keeps its own engine copy: rebuilding it here
+    /// would reset the gate-to-gate cursor mid-flight, and none of its calls name the
+    /// facility anyway.
+    private func applyCenterSector(_ sector: CenterSector?) {
+        guard sector?.id != centerSector?.id else { return }
+        centerSector = sector
+        engine.centerSectorName = sector?.radioName
+        pilotEngine = PilotResponseEngine(engine: engine)
+        rideEngine = RideReportEngine(engine: engine)
+        deviationEngine = WeatherDeviationEngine(phraseology: WeatherDeviationPhraseology(engine: engine))
+    }
+
+    /// The sector being left hands the flight to the next one. The call is a plain
+    /// frequency hand-off — "United 598, contact Memphis Center on 133.425" — attributed
+    /// to Center, with the read-back that tunes the new sector's frequency. No state
+    /// advance: the same facility keeps working the aircraft, only the sector changes.
+    private func announceCenterSectorHandoff(_ crossing: CenterSectorTracker.Crossing) {
+        let c = buildContext(for: stateMachine.current)
+        post(engine.handoff(cs: c.callsign, from: .center, to: .center,
+                            frequency: crossing.to.frequency), speak: true)
+        awaitingCenterSectorCheckIn = true
+        diagnostics.log(.atc, "Center sector hand-off: \(crossing.from.id) → \(crossing.to.id)")
+    }
+
     // MARK: - Readback gate
 
     /// Whether the automatic flow is currently holding for a pilot read-back. Only
@@ -2418,6 +2547,14 @@ final class AppModel: ObservableObject {
     /// The frequency (MHz) a facility is reached on, for display on its button.
     func frequency(for facility: ATCFacility) -> Double {
         frequency(for: facility, context: buildContext(for: stateMachine.current))
+    }
+
+    /// Label for a facility in the UI. Identical to `facility.title` for every facility
+    /// except Center, which reads as the enroute sector currently working the flight
+    /// ("Fort Worth Center") whenever one is known.
+    func facilityLabel(for facility: ATCFacility) -> String {
+        guard facility == .center, let sector = centerSector else { return facility.title }
+        return sector.radioName
     }
 
     /// Formatted frequency for a facility's tune button, e.g. "118.300".
@@ -3027,6 +3164,7 @@ final class AppModel: ObservableObject {
             arrivalAnnounced: arrivalAnnounced,
             awaitingGateArrival: awaitingGateArrival,
             manualTuning: manualTuning,
+            centerSectorID: centerSector?.id,
             monitoringTower: monitoringTower,
             weatherDeviation: weatherDeviation,
             reportedDepartureInfo: reportedDepartureInfo,
@@ -3147,6 +3285,10 @@ final class AppModel: ObservableObject {
         awaitingGateArrival = snap.awaitingGateArrival
         manualTuning = snap.manualTuning
         monitoringTower = snap.monitoringTower ?? false
+        // Resume the enroute sector the pilot was working. Resolved on the next position
+        // fix rather than here: a restore runs at launch, ahead of the background sector
+        // load. Adopted, never announced — the pilot is already on that frequency.
+        pendingCenterSectorID = snap.centerSectorID
         // Resume an in-progress weather diversion so the deviation card (and its
         // "clear of weather" button) survives the reconnect. A subsequent telemetry
         // tick may still clear a non-committed lifecycle if the weather is gone, but
@@ -3625,7 +3767,7 @@ final class AppModel: ObservableObject {
             parkingTaxiway: taxiPlan.parkingTaxiway,
             approachName: approachName,
             departureFrequency: 124.300,
-            centerFrequency: 132.450,
+            centerFrequency: currentCenterFrequency,
             approachFrequency: 119.700,
             towerFrequency: 118.300,
             groundFrequency: 121.800,
@@ -3643,6 +3785,13 @@ final class AppModel: ObservableObject {
             sidProcedure: sidProc,
             starProcedure: starProc,
             approachProcedure: approachProc)
+    }
+
+    /// The frequency Center is worked on: the sector currently under the aircraft when
+    /// sector hand-offs are on and the sector map has resolved one, otherwise the single
+    /// generic Center frequency the app used before sectors existed.
+    private var currentCenterFrequency: Double {
+        centerSector?.frequency ?? 132.450
     }
 
     private func deterministicSquawk() -> String {
@@ -4160,6 +4309,22 @@ final class AppModel: ObservableObject {
                                                  targetAltitude: assignedAltitude,
                                                  onGround: aircraftState.onGround ?? true))
             post(engine.numberOneForTakeoff(cs: c.callsign, runway: c.runway), speak: true)
+            return
+        }
+        // Checking in with the next enroute sector after a Center-to-Center hand-off:
+        // the pilot is calling up a new controller on a new frequency, not asking for
+        // the next clearance, so the conversation must not advance. (Falling through
+        // would answer a cruise check-in with the top-of-descent call, because
+        // `.descent` is the next Center state after `.cruise`.)
+        if awaitingCenterSectorCheckIn, facility == .center {
+            awaitingCenterSectorCheckIn = false
+            pendingCheckInFacility = nil
+            let c = buildContext(for: atcState)
+            postPilot(pilotEngine.requestHandoff(context: c, facility: .center,
+                                                 currentAltitude: checkInAltitude(),
+                                                 targetAltitude: assignedAltitude,
+                                                 onGround: aircraftState.onGround ?? false))
+            post(engine.radarContact(cs: c.callsign, facility: .center), speak: true)
             return
         }
         // Checking in satisfies any pending hand-off the controller prompted: the new
@@ -6145,8 +6310,8 @@ final class AppModel: ObservableObject {
         if let situation = currentWeatherSituation() {
             // A brief pilot query, then the controller's advisory.
             postPilot(ATCTransmission(sender: .pilot, facility: facility,
-                displayText: "\(facility.spokenName), \(cs.display), weather ahead, requesting advisory.",
-                spokenText: "\(facility.spokenName), \(cs.spoken), weather ahead, requesting advisory."))
+                displayText: "\(engine.spokenName(for: facility)), \(cs.display), weather ahead, requesting advisory.",
+                spokenText: "\(engine.spokenName(for: facility)), \(cs.spoken), weather ahead, requesting advisory."))
             applyDeviationResult(deviationEngine.issueAdvisory(cs: cs, situation: situation,
                                                               context: weatherDeviation,
                                                               facility: facility))
@@ -7599,6 +7764,12 @@ final class AppModel: ObservableObject {
         tunedFacility = nil
         pendingCheckInFacility = nil
         goAroundInProgress = false
+        // The enroute sector belongs to the flight being put down.
+        centerSectorTracker.reset()
+        awaitingCenterSectorCheckIn = false
+        pendingCenterCrossing = nil
+        pendingCenterSectorID = nil
+        applyCenterSector(nil)
         clearReadbackGate()
         cancelTakeoffClearanceTimer()
         resetWeatherDeviation()

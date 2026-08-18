@@ -87,7 +87,7 @@ final class ReconnectStateTests: XCTestCase {
                        "a snapshot with no ground reference must hold the taxi phase")
         XCTAssertFalse(model.hasDeparted,
                        "a half-read snapshot must not mark a taxiing flight departed")
-        XCTAssertFalse(contains(model, "contact Center"),
+        XCTAssertFalse(contains(model, "Center on "),
                        "a taxiing aircraft must never be handed to Center on a reconnect tick")
         XCTAssertFalse(contains(model, "Climb and maintain"))
         XCTAssertNotEqual(model.currentFacility, .center)

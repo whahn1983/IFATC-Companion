@@ -96,7 +96,7 @@ fix it has already passed. Center's first call after the Departure hand-off (ste
 11) leads with **"radar contact"** before the climb to the cruise level.
 | 8 | Airborne | **Tower → Departure** | "Contact Departure on *freq*." | `handoff(from:to:)` | IF hand-off |
 | 9 | Initial climb | **Departure (TRACON)** | "Radar contact, climb and maintain *FL180*, resume own navigation direct *fix*." | `departureClimb` | IF Departure; vectors/own-nav are real-world |
-| 10 | Passing FL180 | **Departure → Center** | "Contact Center on *freq*." | `handoff(from:to:)` | IF hand-off |
+| 10 | Passing FL180 | **Departure → Center** | "Contact *Houston* Center on *freq*." (the sector the aircraft is in) | `handoff(from:to:)` | IF hand-off |
 | 11 | Climb | **Center (ARTCC)** | "Climb and maintain *cruise*." | `climbMaintain` | IF Center |
 
 The **initial climb altitude** (default 5,000 ft) and the **TRACON ceiling**
@@ -213,11 +213,21 @@ hold-short. Runs in both live mode and Mock Mode.
 
 | # | Phase | Facility | Controller call | Companion source |
 |---|-------|----------|-----------------|------------------|
-| 12 | Cruise | **Center** | "*callsign*, Center, radar contact." (sector check-ins) | `radarContact` |
+| 12 | Cruise | **Center → Center** | "Contact *Fort Worth* Center on *freq*." at each sector boundary, then "*callsign*, *Fort Worth* Center, radar contact." on the pilot's check-in | `handoff(from:to:)` + `CenterSectorTracker`, `radarContact` |
 | 13 | Cruise | **Center** | Step climbs / "request higher/lower", ride reports, weather | `climbMaintain`, `descendPilotsDiscretion`, ride/weather replies |
 
-Real ATC hands off between many Center sectors enroute; the companion models this
-as periodic Center check-ins (additional sector frequencies are not simulated).
+Enroute the companion knows **which Center sector** the aircraft is in and hands it
+along as it crosses the boundaries — Houston Center to Fort Worth Center to Memphis
+Center — from a bundled worldwide ARTCC/FIR boundary set. Every call that names the
+controller follows the sector: the hand-off, the read-back, the check-in call-up, and
+the radar-contact reply. Sector hand-offs only ever happen between the Departure
+hand-off at the TRACON ceiling and the hand-off to Approach; a crossing while another
+facility is working the flight is tracked but never spoken. Checking in after one is a
+**call-up, not a request**, so it never advances the conversation. Sector granularity is
+the whole ARTCC/FIR (not the internal high/low sectors), and the frequencies are
+simulated except where the source data publishes real ones. See
+[CenterSectors.md](CenterSectors.md); switch it off with **Settings → ATC Automation →
+Center sector hand-offs**.
 
 ## 3. Arrival
 
@@ -313,7 +323,7 @@ frequency. Defaults (deterministic; overridable later):
 | Clearance / Ground | 121.800 |
 | Tower | 118.300 |
 | Departure | 124.300 |
-| Center | 132.450 |
+| Center | 132.450 (replaced by the working sector's frequency when sector hand-offs are on) |
 | Approach | 119.700 |
 
 ## Notes on real ATC vs Infinite Flight

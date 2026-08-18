@@ -155,7 +155,10 @@ struct ATCView: View {
                 HStack {
                     StatusPill(text: connectionText, level: connectionLevel, systemImage: "dot.radiowaves.left.and.right")
                     Spacer()
-                    StatusPill(text: model.currentFacility.title, level: .neutral, systemImage: model.currentFacility.symbol)
+                    // Center reads as the sector actually working the flight ("Fort Worth
+                    // Center"); every other facility keeps its plain title.
+                    StatusPill(text: model.facilityLabel(for: model.currentFacility),
+                               level: .neutral, systemImage: model.currentFacility.symbol)
                 }
                 HStack {
                     callsignField
