@@ -22,9 +22,20 @@ enum SurfaceGraphBuilder {
 
     /// Added to a candidate gate connector's score when its straight lead-in would pass
     /// through a building/terminal. Large enough that any clear node inside the attach
-    /// radius always beats a concourse-crossing one; when every candidate crosses (a stand
-    /// fully enclosed by a footprint) the nearest still wins on distance.
+    /// radius always beats a concourse-crossing one.
     static let buildingConnectorPenaltyMeters = 5_000.0
+    /// Added per meter the lead-in actually spends *inside* a footprint, on top of the flat
+    /// penalty. The flat term keeps every clear candidate ahead of every crossing one; this
+    /// term orders the crossing candidates among themselves, which is what a stand mapped on
+    /// the concourse itself needs. KIAD tags each gate node as a vertex of the Concourse C/D
+    /// outline, so *every* candidate lead-in touches the footprint and a flat penalty alone
+    /// leaves the choice to raw distance — which at a 33 m-wide concourse is as likely to be
+    /// a node on the far side as one on the stand's own.
+    static let buildingIntrusionPenaltyPerMeter = 20.0
+    /// A lead-in running less than this far inside a footprint is not treated as crossing it:
+    /// a stand *on* the outline starts exactly on the boundary, and one heading away from the
+    /// building should read as clear rather than as cutting through it.
+    static let buildingIntrusionToleranceMeters = 0.5
     /// Added when continuing off the connector onto the taxi network would require a
     /// near-reversal (the lead-in doubles back across the ramp) — a gentle tiebreak toward
     /// a node the stand can leave naturally, deliberately small so it only decides between
@@ -214,18 +225,30 @@ enum SurfaceGraphBuilder {
             nodeToEdges[e.to, default: []].append(idx)
         }
 
-        /// Whether the straight connector a→b passes through any building footprint.
-        func connectorCrossesBuilding(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D) -> Bool {
-            guard !buildingPolys.isEmpty else { return false }
+        /// How far the straight connector a→b runs inside a building footprint, in meters —
+        /// the deepest single footprint it passes through rather than the sum, since OSM
+        /// routinely maps overlapping `building` and `building:part` outlines over one
+        /// structure and summing them would charge the same concourse several times.
+        func connectorIntrusionMeters(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D) -> Double {
+            guard !buildingPolys.isEmpty else { return 0 }
             let loLat = min(a.latitude, b.latitude), hiLat = max(a.latitude, b.latitude)
             let loLon = min(a.longitude, b.longitude), hiLon = max(a.longitude, b.longitude)
+            var deepest = 0.0
             for bp in buildingPolys {
                 // AABB reject: skip a building whose box can't overlap the connector's.
                 if bp.box.maxLat < loLat || bp.box.minLat > hiLat
                     || bp.box.maxLon < loLon || bp.box.minLon > hiLon { continue }
-                if SurfaceGeometry.segmentIntersectsPolygon(a, b, bp.poly) { return true }
+                deepest = max(deepest, SurfaceGeometry.segmentIntrusionMeters(a, b, bp.poly))
             }
-            return false
+            return deepest
+        }
+
+        /// The building term of a candidate's score: nothing when the lead-in stays clear,
+        /// otherwise the flat penalty plus what the intrusion itself costs.
+        func buildingPenalty(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D) -> (penalty: Double, crosses: Bool) {
+            let intrusion = connectorIntrusionMeters(a, b)
+            guard intrusion > buildingIntrusionToleranceMeters else { return (0, false) }
+            return (buildingConnectorPenaltyMeters + intrusion * buildingIntrusionPenaltyPerMeter, true)
         }
 
         /// Penalty when leaving the stand onto the taxi network at `node` would require a
@@ -306,18 +329,14 @@ enum SurfaceGraphBuilder {
         }
 
         func nodeAttachScore(_ gate: CLLocationCoordinate2D, _ c: (id: Int, distance: Double)) -> (score: Double, crosses: Bool) {
-            let crosses = connectorCrossesBuilding(gate, nodes[c.id].clLocation)
-            var s = c.distance
-            if crosses { s += buildingConnectorPenaltyMeters }
-            s += reversalPenalty(from: gate, to: c.id)
-            return (s, crosses)
+            let building = buildingPenalty(gate, nodes[c.id].clLocation)
+            let s = c.distance + building.penalty + reversalPenalty(from: gate, to: c.id)
+            return (s, building.crosses)
         }
         func edgeAttachScore(_ gate: CLLocationCoordinate2D, _ c: EdgeAttach) -> (score: Double, crosses: Bool) {
-            let crosses = connectorCrossesBuilding(gate, c.projection)
-            var s = c.perpMeters
-            if crosses { s += buildingConnectorPenaltyMeters }
-            s += edgeReversalPenalty(from: gate, c)
-            return (s, crosses)
+            let building = buildingPenalty(gate, c.projection)
+            let s = c.perpMeters + building.penalty + edgeReversalPenalty(from: gate, c)
+            return (s, building.crosses)
         }
 
         /// Split real edge `eIdx` at `along` metres from its `from`, inserting a routable node at
@@ -365,8 +384,11 @@ enum SurfaceGraphBuilder {
         // can reach without crossing a concourse or doubling back — and, when no node is in range
         // (or the only node lead-in crosses a terminal), a point projected onto a nearby taxiway
         // edge so a stand beside a long, sparsely-noded apron taxilane still connects.
+        // `routableStands`, not `parkingPositions`: a field that maps one stand twice — KIAD's
+        // `gate` C24 is a vertex of the Concourse C/D outline, `parking_position` C24 the stand
+        // 75 m south of it — contributes one stand node, the one an aircraft can park on.
         var inferredConnectors = 0
-        for parking in model.parkingPositions {
+        for parking in model.routableStands {
             let gateCoord = parking.coordinate.clLocation
 
             let bestNode = connectorCandidates(to: gateCoord)
@@ -415,7 +437,7 @@ enum SurfaceGraphBuilder {
             let dist = SurfaceGeometry.distanceMeters(a.clLocation, b.clLocation)
             // Even the best available lead-in may still clip a footprint (a stand ringed by
             // building). Flag it so routing penalizes it and confidence reflects it.
-            let crosses = connectorCrossesBuilding(a.clLocation, b.clLocation)
+            let crosses = buildingPenalty(a.clLocation, b.clLocation).crosses
             edges.append(SurfaceEdge(id: edges.count, from: gateNodeID, to: taxiIdx,
                                      geometry: [a, b], distanceMeters: dist,
                                      taxiwayName: "", hasName: false, isTaxilane: false,
