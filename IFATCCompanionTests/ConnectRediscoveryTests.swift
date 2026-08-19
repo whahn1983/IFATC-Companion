@@ -49,6 +49,40 @@ final class ConnectRediscoveryTests: XCTestCase {
         XCTAssertTrue(searching, "an unreachable address must start a new search, not just fail")
     }
 
+    /// An address that neither connects nor fails — a route to a network this device
+    /// has left leaves the socket sitting in `.waiting` — must not hold the app at
+    /// "Connecting…". The deadline gives up on it and starts the search.
+    func testAddressThatNeverAnswersHitsTheDeadline() async {
+        let manager = IFConnectManager()
+        // Well below the socket's own six-second timeout, so the deadline is provably
+        // what fires here rather than the connect failing on its own.
+        manager.rediscoverAfter = 1
+        manager.discoveryTimeout = 1
+        defer { manager.stopAutoDiscover() }
+
+        // TEST-NET-1 (RFC 5737): reserved for documentation, so nothing answers and
+        // nothing refuses.
+        manager.connect(host: "192.0.2.1", port: 10112, rediscoverOnFailure: true)
+
+        let searching = await eventually { if case .discovering = manager.connectionState { return true }; return false }
+        XCTAssertTrue(searching, "an address that never answers must be abandoned for a search")
+    }
+
+    /// A deliberate disconnect retires the attempt with it — the search its deadline
+    /// would have started must not surface moments after the pilot pulled the link down.
+    func testDisconnectCancelsThePendingDeadline() async {
+        let manager = IFConnectManager()
+        manager.rediscoverAfter = 1
+        manager.discoveryTimeout = 1
+        defer { manager.stopAutoDiscover() }
+
+        manager.connect(host: "192.0.2.1", port: 10112, rediscoverOnFailure: true)
+        manager.disconnect()
+
+        let searched = await eventually(timeout: 3) { if case .discovering = manager.connectionState { return true }; return false }
+        XCTAssertFalse(searched, "a disconnected link must stay down, not start searching")
+    }
+
     /// Without the fallback the same failure is surfaced as-is — a manually entered
     /// address is the pilot's own and is never second-guessed or overwritten.
     func testUnreachableHostWithoutFallbackFails() async {
