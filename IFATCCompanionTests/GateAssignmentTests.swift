@@ -225,6 +225,96 @@ final class GateAssignmentTests: XCTestCase {
                       "the log line explains the choice: \(assignment.reason)")
     }
 
+    // MARK: - The gate the aircraft is parked on
+
+    /// A coordinate `metersEast` east of the field reference, so a test can park the aircraft a
+    /// known distance from a stand built with the same offset convention.
+    private func offset(dLat: Double, dLon: Double) -> GeoCoordinate {
+        GeoCoordinate(latitude: ref.latitude + dLat, longitude: ref.longitude + dLon)
+    }
+
+    func testAStandTheAircraftIsParkedOnBeatsEverySignal() {
+        // B12 is the airline's own stand *and* sized for the aircraft — it would win on the
+        // tags alone. The aircraft is sitting on F3, so F3 is the gate.
+        let stands = [
+            stand("B12", tags: ["operator": "United Airlines", "aircraft:type": "B738"],
+                  dLat: 0.001, dLon: 0.001),
+            stand("F3", dLat: 0.010, dLon: 0.010)
+        ]
+        let flight = GateAssigner.FlightContext(callsign: "UAL598", airline: "United",
+                                               aircraftName: "Boeing 737-800",
+                                               parkedPosition: offset(dLat: 0.010, dLon: 0.010))
+        guard let assignment = assign(stands, flight: flight) else {
+            return XCTFail("a parked aircraft on a mapped stand must be assigned that stand")
+        }
+        XCTAssertEqual(assignment.gate, "F3")
+        XCTAssertTrue(assignment.fromAircraftPosition, "it was read, not chosen")
+        XCTAssertTrue(assignment.reason.contains("parked on it"),
+                      "the log says where it came from: \(assignment.reason)")
+    }
+
+    func testTheNearestStandWinsWhenSeveralAreInRange() {
+        let stands = [stand("A1", dLat: 0.0000, dLon: 0.0000),
+                      stand("A2", dLat: 0.0003, dLon: 0.0000),
+                      stand("A3", dLat: 0.0006, dLon: 0.0000)]
+        // ~0.0003° of latitude is ~33 m, so all three sit inside the 80 m radius; the aircraft
+        // is parked on A2's node exactly.
+        let flight = GateAssigner.FlightContext(callsign: "UAL598", aircraftName: "Boeing 737-800",
+                                               parkedPosition: offset(dLat: 0.0003, dLon: 0.0000))
+        XCTAssertEqual(assign(stands, flight: flight)?.gate, "A2")
+    }
+
+    func testAPositionNowhereNearAStandFallsBackToChoosingOne() {
+        let stands = [stand("B12", tags: ["operator": "United Airlines"], dLat: 0.001, dLon: 0.001)]
+        // Parked a long way from the only stand — out on a taxiway, or a field whose stands
+        // aren't mapped where the aircraft is.
+        let flight = GateAssigner.FlightContext(callsign: "UAL598", airline: "United",
+                                               aircraftName: "Boeing 737-800",
+                                               parkedPosition: offset(dLat: 0.050, dLon: 0.050))
+        guard let assignment = assign(stands, flight: flight) else {
+            return XCTFail("it still assigns a stand, just not a position-derived one")
+        }
+        XCTAssertEqual(assignment.gate, "B12")
+        XCTAssertFalse(assignment.fromAircraftPosition, "this one was chosen, not read")
+    }
+
+    func testNoPositionAtAllStillChoosesAStand() {
+        let stands = [stand("B12")]
+        let flight = GateAssigner.FlightContext(callsign: "UAL598", aircraftName: "Boeing 737-800")
+        let assignment = assign(stands, flight: flight)
+        XCTAssertEqual(assignment?.gate, "B12")
+        XCTAssertEqual(assignment?.fromAircraftPosition, false)
+    }
+
+    func testTheArrivalGateIsNeverReadOffTheAircraftsPosition() {
+        // Origin and destination are the same field (a there-and-back leg), so the aircraft is
+        // parked on a stand of the *arrival* surface too. Reading it would hand back the stand
+        // the flight is leaving.
+        let stands = [stand("F3", dLat: 0.010, dLon: 0.010), stand("B12", dLat: 0.001, dLon: 0.001)]
+        let flight = GateAssigner.FlightContext(callsign: "UAL598", aircraftName: "Boeing 737-800",
+                                               parkedPosition: offset(dLat: 0.010, dLon: 0.010))
+        let arrival = assign(stands, flight: flight, role: .arrival)
+        XCTAssertEqual(arrival?.fromAircraftPosition, false,
+                       "the arrival gate is chosen from the stand data, never from where we are")
+        XCTAssertEqual(assign(stands, flight: flight, role: .departure)?.gate, "F3",
+                       "while the departure gate at the same field is read off the position")
+    }
+
+    func testParkingOnAServiceOrUnnamedStandIsStillNotAGate() {
+        let deicing = stand("D1", tags: ["name": "De-icing pad"], dLat: 0.010, dLon: 0.010)
+        let unnamed = stand("", tags: ["ref": ""], dLat: 0.010, dLon: 0.010)
+        let realGate = stand("B12", dLat: 0.001, dLon: 0.001)
+        let flight = GateAssigner.FlightContext(callsign: "UAL598", aircraftName: "Boeing 737-800",
+                                               parkedPosition: offset(dLat: 0.010, dLon: 0.010))
+        // Sitting on the de-icing pad (or an unidentified stand) names neither — the real gate
+        // is chosen instead, because neither can be said in a clearance.
+        guard let assignment = assign([deicing, unnamed, realGate], flight: flight) else {
+            return XCTFail("the real gate is still assignable")
+        }
+        XCTAssertEqual(assignment.gate, "B12")
+        XCTAssertFalse(assignment.fromAircraftPosition)
+    }
+
     // MARK: - "Only when the pilot left it blank"
 
     func testStampRoundTrips() {
@@ -236,6 +326,44 @@ final class GateAssignmentTests: XCTestCase {
         XCTAssertNil(AutoGateStamp(encoded: ":C24"))
         XCTAssertEqual(AutoGateStamp(icao: "KIAH", gate: "").encoded, "",
                        "there is nothing to remember without a gate")
+    }
+
+    func testStampRemembersWhetherTheGateWasReadOffThePosition() {
+        let read = AutoGateStamp(icao: "KIAH", gate: "C24", fromAircraftPosition: true)
+        XCTAssertEqual(read.encoded, "KIAH:C24:P")
+        XCTAssertEqual(AutoGateStamp(encoded: "KIAH:C24:P"), read)
+        XCTAssertEqual(AutoGateStamp(encoded: "KIAH:C24:P")?.gate, "C24",
+                       "the flag is not folded into the gate name")
+        XCTAssertEqual(AutoGateStamp(encoded: "KIAH:C24")?.fromAircraftPosition, false,
+                       "a marker written before the flag existed decodes as a chosen gate")
+    }
+
+    func testAChosenGateIsUpgradedByTheOneTheAircraftIsParkedOn() {
+        let chosen = AutoGateStamp(icao: "KIAH", gate: "C24").encoded
+        let parkedAssignment = GateAssigner.Assignment(
+            gate: "F3", osmID: "node/F3", coordinate: GeoCoordinate(ref),
+            matchedOperator: false, matchedAircraftType: false, fromAircraftPosition: true,
+            tiedCandidates: 1, totalCandidates: 12, reason: "aircraft is parked on it")
+
+        XCTAssertTrue(GateAssigner.couldUpgrade(current: "C24", stamp: chosen, icao: "KIAH"),
+                      "a gate the app chose for this field is worth a second look")
+        XCTAssertTrue(GateAssigner.mayUpgrade(current: "C24", stamp: chosen, icao: "KIAH",
+                                              to: parkedAssignment))
+
+        // Not a pilot's gate, not a re-roll, and not once the gate already came from the position.
+        XCTAssertFalse(GateAssigner.couldUpgrade(current: "E7", stamp: chosen, icao: "KIAH"),
+                       "a gate the pilot typed over ours is theirs")
+        XCTAssertFalse(GateAssigner.couldUpgrade(current: "C24", stamp: chosen, icao: "KMSP"),
+                       "a different airport is a fresh assignment, not an upgrade")
+        let alreadyRead = AutoGateStamp(icao: "KIAH", gate: "C24", fromAircraftPosition: true).encoded
+        XCTAssertFalse(GateAssigner.couldUpgrade(current: "C24", stamp: alreadyRead, icao: "KIAH"),
+                       "a gate already read off the position is the truth — never re-picked")
+
+        var chosenAssignment = parkedAssignment
+        chosenAssignment.fromAircraftPosition = false
+        XCTAssertFalse(GateAssigner.mayUpgrade(current: "C24", stamp: chosen, icao: "KIAH",
+                                               to: chosenAssignment),
+                       "a second *chosen* gate would just re-roll the dice on the pilot")
     }
 
     func testABlankFieldMayBeAssignedAndATypedGateMayNot() {
