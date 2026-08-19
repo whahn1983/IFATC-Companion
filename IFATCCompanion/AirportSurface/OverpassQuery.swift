@@ -79,7 +79,7 @@ struct OverpassQuery {
         let box = boundingBox.overpassClause
         let buildingBox = buildingBoundingBox.overpassClause
         return """
-        [out:json][timeout:30];
+        [out:json][timeout:\(OSMSurface.overpassQueryTimeoutSeconds)];
         (
           way["aeroway"](\(box));
           node["aeroway"](\(box));
