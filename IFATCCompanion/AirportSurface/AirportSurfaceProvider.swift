@@ -23,6 +23,12 @@ actor AirportSurfaceProvider {
         case http(Int)
         case throttled
         case emptyExtract
+        /// Overpass answered `200 OK` with one of its own error pages — "too busy", rate
+        /// limited, query timed out — instead of the extract. Distinct from `emptyExtract`
+        /// on purpose: one says the server could not answer, the other says the airport
+        /// has nothing mapped, and telling a pilot the second when the first is true sends
+        /// them hunting the wrong problem.
+        case serverBusy(String?)
         case decoding
         case unreachable
 
@@ -32,6 +38,9 @@ actor AirportSurfaceProvider {
             case .http(let code): return "Overpass returned HTTP \(code)."
             case .throttled: return "Overpass requests are backing off after repeated errors."
             case .emptyExtract: return "OpenStreetMap returned no airport surface features for this area."
+            case .serverBusy(let reason):
+                let detail = reason.map { " — \($0)." } ?? "."
+                return "The OpenStreetMap Overpass servers could not answer right now\(detail) Airport data will be retried automatically."
             case .decoding: return "Could not decode the Overpass response."
             case .unreachable: return "The airport surface data service is temporarily unavailable."
             }
@@ -154,6 +163,13 @@ actor AirportSurfaceProvider {
         diagnostics?.logAsync(.app, "OSM Overpass GET \(icao) bbox \(query.boundingBox.overpassClause)")
 
         var lastStatus: Int?
+        // What each endpoint actually said, kept apart so the failure reported at the end is
+        // the true one. An empty extract is a real answer from a working server; an Overpass
+        // error page served with HTTP 200 is not.
+        var sawEmptyExtract = false
+        var sawUndecodableBody = false
+        var sawRateLimit = false
+        var errorPage: OverpassErrorPage?
         for endpoint in endpoints {
             guard let url = URL(string: endpoint) else { continue }
             var request = URLRequest(url: url)
@@ -169,7 +185,9 @@ actor AirportSurfaceProvider {
                 if let http = response as? HTTPURLResponse {
                     lastStatus = http.statusCode
                     if AppHTTP.isRetryableStatus(http.statusCode) {
-                        // Try the next endpoint before giving up.
+                        // Try the next endpoint before giving up. A 429 is the same "we are
+                        // busy" answer the error page gives, just said with a status code.
+                        if http.statusCode == 429 { sawRateLimit = true }
                         continue
                     }
                     guard (200...299).contains(http.statusCode) else {
@@ -177,11 +195,21 @@ actor AirportSurfaceProvider {
                     }
                 }
                 guard let decoded = try? JSONDecoder().decode(OverpassResponse.self, from: data) else {
+                    // Overpass reports overload as an HTML page served with HTTP 200, so a
+                    // body that isn't the JSON extract is the *server* answering, never an
+                    // airport with nothing mapped.
+                    if let page = OverpassErrorPage.detect(in: data) {
+                        errorPage = errorPage ?? page
+                        diagnostics?.logAsync(.app, "OSM \(icao): \(endpoint) returned an Overpass error page — \(page.summary)")
+                        throw SurfaceError.serverBusy(page.reason)
+                    }
+                    sawUndecodableBody = true
                     throw SurfaceError.decoding
                 }
                 guard !decoded.elements.isEmpty else {
                     // No aeroway features here; a real "no data" answer — try the next
                     // endpoint in case it's a transient partial, else surface empty.
+                    sawEmptyExtract = true
                     lastStatus = 200
                     continue
                 }
@@ -203,11 +231,25 @@ actor AirportSurfaceProvider {
             }
         }
 
-        // Every endpoint failed or returned empty.
+        // Every endpoint failed or returned empty. Report what actually happened, most
+        // specific first: a server that answered "nothing here" is the only one of these
+        // that is really about the airport.
         registerFailure(icao: icao, retryAfter: nil)
-        if let status = lastStatus, status == 200 {
+        if sawEmptyExtract {
             diagnostics?.logAsync(.app, "OSM \(icao): no airport surface features returned")
             throw SurfaceError.emptyExtract
+        }
+        if let errorPage {
+            diagnostics?.logAsync(.app, "OSM \(icao): every Overpass endpoint answered with an error page (\(errorPage.reason ?? "unclassified"))")
+            throw SurfaceError.serverBusy(errorPage.reason)
+        }
+        if sawUndecodableBody {
+            diagnostics?.logAsync(.app, "OSM \(icao): Overpass response could not be decoded")
+            throw SurfaceError.decoding
+        }
+        if sawRateLimit {
+            diagnostics?.logAsync(.app, "OSM \(icao): every Overpass endpoint rate-limited the request (HTTP 429)")
+            throw SurfaceError.serverBusy("the request rate limit is in force")
         }
         diagnostics?.logAsync(.app, "OSM \(icao): all Overpass endpoints unavailable (last HTTP \(lastStatus.map(String.init) ?? "—"))")
         throw SurfaceError.unreachable

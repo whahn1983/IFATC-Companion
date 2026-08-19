@@ -228,8 +228,9 @@ struct TaxiRouteEngine {
 
     private func resolveStart(_ req: Request) -> StartAnchor? {
         if req.isDeparture, let gate = req.startGateName, !gate.isEmpty,
+           let target = standNameSought(for: gate),
            let node = graph.nodes.first(where: { ($0.kind == .gate || $0.kind == .parking)
-               && ($0.name?.uppercased() == gate.uppercased()) }) {
+               && ($0.name?.uppercased() == target) }) {
             let d = SurfaceGeometry.distanceMeters(req.startCoordinate, node.clLocation)
             // Anchor at the stand only while the aircraft is still parked there. After
             // pushback it has moved off the gate, so fall through to snap the route to
@@ -437,6 +438,7 @@ struct TaxiRouteEngine {
             let stands = graph.nodes.filter { $0.kind == .gate || $0.kind == .parking }
             guard !stands.isEmpty else { return [] }
             let gate = (req.arrivalGateName ?? "").trimmingCharacters(in: .whitespaces)
+            let target = standNameSought(for: gate)
             let letter = gate.prefix { $0.isLetter }.uppercased()
 
             func distanceToStart(_ node: SurfaceNode) -> Double {
@@ -449,8 +451,8 @@ struct TaxiRouteEngine {
             }
 
             // 1) The exact named stand.
-            if !gate.isEmpty {
-                for node in stands where node.name?.uppercased() == gate.uppercased() { add(node.id, 0) }
+            if let target {
+                for node in stands where node.name?.uppercased() == target { add(node.id, 0) }
                 // 2) Other stands on the same concourse (same leading letter), nearest first.
                 if !letter.isEmpty {
                     for node in stands
@@ -831,10 +833,11 @@ struct TaxiRouteEngine {
         }
 
         let destinationLabel: String
+        let arrivalGate = request.isDeparture ? nil : arrivalGateName(goalNode: goalNode, request: request)
         if request.isDeparture {
             destinationLabel = "runway \(request.assignedRunwayIdent ?? "")"
         } else {
-            let gate = graph.node(goalNode)?.name ?? request.arrivalGateName ?? ""
+            let gate = arrivalGate ?? ""
             destinationLabel = gate.isEmpty ? "parking" : "gate \(gate)"
         }
 
@@ -849,12 +852,37 @@ struct TaxiRouteEngine {
                                 confidenceScore: score,
                                 destinationLabel: destinationLabel,
                                 holdShortRunway: request.isDeparture ? request.assignedRunwayIdent : nil,
-                                arrivalGate: request.isDeparture ? nil : graph.node(goalNode)?.name,
+                                arrivalGate: arrivalGate,
                                 startCoordinate: geometry.first ?? GeoCoordinate(request.startCoordinate),
                                 endCoordinate: geometry.last ?? GeoCoordinate(nodeCoord(goalNode)),
                                 usedInferredConnectorMidRoute: midInferred,
                                 unnamedSegmentCount: unnamed,
                                 notes: notes)
+    }
+
+    /// The graph name to look for when the pilot enters a gate, upper-cased for comparison:
+    /// the stand's own name when the entry is one of its *other* identifiers (a pilot filing
+    /// "A2" means the stand tagged `A1;A2`, which the graph knows as "A1"), else the entry
+    /// itself so an unmapped gate behaves exactly as before. Nil for a blank entry.
+    private func standNameSought(for entered: String) -> String? {
+        let key = entered.trimmingCharacters(in: .whitespaces)
+        guard !key.isEmpty else { return nil }
+        return (model.parking(named: key)?.name ?? key).uppercased()
+    }
+
+    /// What to call the stand an arrival route ends at.
+    ///
+    /// The stand as the map names it, except when the pilot's own entry names that same
+    /// stand under another of its identifiers: a stand tagged `A1;A2` is named "A1", but a
+    /// pilot who filed "A2" is going to the same place and should be cleared to the gate
+    /// they filed. Falls back to the filed name when the goal stand is unnamed, and to nil
+    /// when there is neither — the caller then says "parking".
+    private func arrivalGateName(goalNode: Int, request: Request) -> String? {
+        let mapped = graph.node(goalNode)?.name
+        let filed = (request.arrivalGateName ?? "").trimmingCharacters(in: .whitespaces)
+        guard let mapped, !mapped.isEmpty else { return filed.isEmpty ? nil : filed }
+        if !filed.isEmpty, let stand = model.parking(named: filed), stand.name == mapped { return filed }
+        return mapped
     }
 
     /// The de-duplicated named taxiway sequence for a list of routed edges, with the lead-in

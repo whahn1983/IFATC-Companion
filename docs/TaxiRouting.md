@@ -335,6 +335,27 @@ nothing — the common case — the pick is random among the plausible stands, w
 real stand at the real airport that the router can reach. Nothing here is authoritative; a real
 gate assignment comes from the airline, not from a map.
 
+**How common is "the common case"?** Nearly universal. A sample of the app's own extracts for
+KEWR (346 stands), KMSP (316), EGLL (522) and EDDF (547) carried `operator` or `aircraft:type` on
+**not one** of those ~1,700 stands — Heathrow and Frankfurt included. So today the airline match,
+the size fit, the snug-fit preference and the cargo separation never fire, and the one
+discriminator that does is `aeroway=gate` vs `aeroway=parking_position` — which works: the real
+passenger gates are consistently the gate-tagged share of each extract. The tag logic is kept
+because it is written, tested, and starts working the day a mapper adds the tags; it is described
+here as what the app *would* read, not as something it is doing at your airport right now.
+
+### A stand mapped under several identifiers
+
+A stand that can be worked under more than one number is frequently mapped as one node carrying
+all of them — `A1;A2` at KEWR, `A54/A56` and `C16/C16A + C16B` at EDDF, some 8–10% of the stands
+at those fields. The normalizer splits that tag (see
+[AirportSurfaceData.md](AirportSurfaceData.md)): the stand is *named* by the first identifier and
+*answers to* the rest. That matters as much for manual entry as for the automatic assignment — a
+pilot typing `A2` used to match nothing at all, because the stand was called `A1;A2` and every
+lookup is exact, so the taxi silently routed to the nearest stand instead. Now the entry finds the
+stand, the route anchors on it, and the clearance names the gate **as the pilot filed it** when
+their entry is one of that stand's identifiers.
+
 ### Only when the pilot left it blank
 
 The assignment writes the visible field, so it has to be able to tell its own value apart from a
@@ -378,6 +399,16 @@ That is only safe because the replacement now reliably turns up:
 * A failed read is **retried on the telemetry tick**, at most every 90 s and at most four times per
   airport (`autoGateMaxReadFailures`), then left alone rather than re-requesting from a shared public
   endpoint for the rest of the flight.
+* A **busy Overpass server is reported as busy**. Overpass answers overload with `200 OK` and its own
+  HTML error page ("the server is probably too busy…", "runtime error: Query timed out…") rather than
+  the JSON extract — both large fields in one recent sample, KATL and EHAM, came back exactly that
+  way. That page fails JSON decoding, and the fetch used to fall through to the *empty extract* path
+  on the strength of the 200, telling the pilot there were "no airport surface features for this
+  area" — a data problem at their airport, when a shared public server had simply shed their request.
+  `OverpassErrorPage` now recognizes any body that isn't the JSON extract as the server talking, names
+  the reason where it can (too busy, rate limited, query timed out), and the fetch reports
+  `SurfaceError.serverBusy`; HTTP 429 lands in the same bucket. A genuinely empty answer from a
+  working server is still reported as an empty extract, because that one really is about the airport.
 
 ### When it runs
 
