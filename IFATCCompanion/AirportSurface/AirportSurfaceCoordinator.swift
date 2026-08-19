@@ -714,11 +714,14 @@ final class AirportSurfaceCoordinator: ObservableObject {
         let key = name.trimmingCharacters(in: .whitespaces)
         if !key.isEmpty, let exact = surface.parking(named: key) { return exact }
         let letter = key.prefix { $0.isLetter }.uppercased()
+        // Restricted to `routableStands`: a gate node superseded by its own `parking_position`
+        // has no node in the graph, so falling back to one would strand the simulated route.
+        let stands = surface.routableStands
         if !letter.isEmpty,
-           let sameConcourse = surface.gates.first(where: { $0.name.uppercased().hasPrefix(letter) }) {
+           let sameConcourse = stands.first(where: { $0.name.uppercased().hasPrefix(letter) }) {
             return sameConcourse
         }
-        return surface.gates.first ?? surface.parkingPositions.first
+        return stands.first ?? surface.parkingPositions.first
     }
 
     /// Where the simulated arrival rollout begins on a real surface: the far end of the

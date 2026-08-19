@@ -159,6 +159,53 @@ enum SurfaceGeometry {
         return polygonContains(mid, polygon)
     }
 
+    /// How much of segment a–b lies **inside** `polygon`, in meters.
+    ///
+    /// `segmentIntersectsPolygon` answers only whether the two meet, which cannot separate a
+    /// lead-in that merely starts on the outline from one that runs the building's whole
+    /// width: a stand mapped *as a vertex of the concourse* — how KIAD tags every gate node,
+    /// each one a member of the Concourse C/D way — touches the boundary in every direction,
+    /// so a boolean test flags all of them equally and whatever penalty it carries stops
+    /// discriminating. The intruded length is what tells those cases apart: it is ~0 for a
+    /// lead-in leaving the building and the full span for one crossing to the far side.
+    static func segmentIntrusionMeters(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D,
+                                       _ polygon: [CLLocationCoordinate2D]) -> Double {
+        guard polygon.count >= 3 else { return 0 }
+        let total = distanceMeters(a, b)
+        guard total > 0 else { return 0 }
+        // Split a–b at every boundary crossing; each resulting span is wholly in or wholly
+        // out, so its midpoint classifies it.
+        var cuts: [Double] = [0, 1]
+        let n = polygon.count
+        for i in 0..<n {
+            guard let hit = segmentIntersection(a, b, polygon[i], polygon[(i + 1) % n]) else { continue }
+            cuts.append(min(1, max(0, parameter(of: hit, from: a, to: b))))
+        }
+        cuts.sort()
+        var inside = 0.0
+        for i in 1..<cuts.count {
+            let span = cuts[i] - cuts[i - 1]
+            guard span > 1e-9 else { continue }
+            let t = (cuts[i] + cuts[i - 1]) / 2
+            let mid = CLLocationCoordinate2D(latitude: a.latitude + (b.latitude - a.latitude) * t,
+                                             longitude: a.longitude + (b.longitude - a.longitude) * t)
+            if polygonContains(mid, polygon) { inside += span * total }
+        }
+        return inside
+    }
+
+    /// Fractional position of `p` along a–b (planar, longitude scaled by cos(lat) to match
+    /// `nearestPointOnSegment`). Used to order boundary crossings along a segment.
+    private static func parameter(of p: CLLocationCoordinate2D,
+                                  from a: CLLocationCoordinate2D,
+                                  to b: CLLocationCoordinate2D) -> Double {
+        let cosLat = max(0.2, cos(a.latitude * .pi / 180))
+        let dx = (b.longitude - a.longitude) * cosLat, dy = b.latitude - a.latitude
+        let lenSq = dx * dx + dy * dy
+        guard lenSq > 1e-18 else { return 0 }
+        return ((p.longitude - a.longitude) * cosLat * dx + (p.latitude - a.latitude) * dy) / lenSq
+    }
+
     /// Sub-sample a polyline into segments no longer than `maxMeters`, so a long
     /// straight taxiway/runway segment is still tested finely for crossings.
     static func densify(_ path: [CLLocationCoordinate2D], maxMeters: Double = 40) -> [CLLocationCoordinate2D] {

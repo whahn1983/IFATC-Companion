@@ -133,6 +133,30 @@ still made — routing never fails for this reason — but it is flagged as cros
 penalizes it in the router and lowers route confidence (with the note *"gate lead‑in passes through
 a building footprint"*). Footprints are **not routable**; they only shape stand attachment.
 
+A footprint penalty that is merely a flag stops working for a stand mapped **on the concourse
+itself**. KIAD tags each C‑row gate node as a *vertex of the Concourse C/D way*, so every candidate
+lead‑in — north, south, all of them — touches the footprint, all score alike, and the attachment
+falls back to nearest‑overall: across a 33 m concourse that is as easily the far side as the stand's
+own, and a few metres of taxilane geometry decide which. So the penalty is charged on **how far the
+lead‑in actually runs inside** a footprint, not on whether it meets one. A flat term still keeps
+every clear candidate ahead of every crossing one; the per‑metre term orders the crossing candidates
+among themselves, and a lead‑in that only starts on the outline and heads away reads as clear.
+
+### One stand, mapped twice
+
+A field may map the same stand **twice**: the boarding gate as an `aeroway=gate` node on the
+concourse, and the aircraft stand as an `aeroway=parking_position` out on the apron, both carrying
+the one identifier. KIAD does exactly this — `gate` C24 is a vertex of the Concourse C/D outline,
+`parking_position` C24 is the stand 75 m south of it — and with nothing to choose between them the
+taxi target became whichever the extract happened to list first. Routing to the gate node ends the
+route *inside* the terminal.
+
+`AirportSurfaceModel.routableStands` resolves it: a `gate` with a same‑named `parking_position`
+within 250 m contributes no stand node to the graph, and `parking(named:)` prefers the
+`parking_position` among matches. Both OSM features stay in the model with their tags intact — this
+only decides which one a route, a map marker, or a gate assignment uses. A field that maps only gate
+nodes (the common case) is unchanged.
+
 ### Attaching to a taxiway edge, not just its nodes
 
 A stand attaches to the nearest routable **node** within a fixed radius. That works where OSM maps a

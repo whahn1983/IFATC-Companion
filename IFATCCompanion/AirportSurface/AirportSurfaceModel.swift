@@ -300,6 +300,45 @@ struct AirportSurfaceModel: Codable, Equatable {
     var gates: [SurfaceParking] { parkingPositions.filter { $0.kind == .gate } }
     var standCount: Int { parkingPositions.count }
 
+    /// How close a `parking_position` must be to a same-named `gate` for the two to be one
+    /// physical stand mapped twice — comfortably more than a jet bridge, far less than the
+    /// spacing between stands that merely share a number in different parts of a field.
+    static let standSupersedeMeters = 250.0
+
+    /// One entry per physical stand: every `parking_position`, plus the `gate` nodes that
+    /// aren't already covered by one.
+    ///
+    /// A field may map a stand twice — the boarding gate as a node on the concourse and the
+    /// aircraft stand as a `parking_position` out on the apron, both carrying the one
+    /// identifier. KIAD does exactly that: `gate` C24 is a *vertex of the Concourse C/D
+    /// outline*, with `parking_position` C24 the stand 75 m south of it. With nothing to
+    /// choose between them, the taxi target became whichever the extract happened to list
+    /// first, and picking the gate ends the route inside the terminal — from a point *on* the
+    /// footprint no lead-in can avoid a building either, so the concourse-crossing penalty
+    /// applies to every candidate equally and the stand attaches to whatever is nearest,
+    /// which at a 33 m-wide concourse is as often the far side as its own.
+    ///
+    /// Both features stay in `parkingPositions` with their tags intact — this only decides
+    /// which one a route, a map marker, or a gate assignment should use.
+    var routableStands: [SurfaceParking] {
+        let stands = parkingPositions.filter { $0.kind == .parkingPosition }
+        guard !stands.isEmpty else { return parkingPositions }
+        let byName = Dictionary(grouping: stands, by: { Self.standKey($0.name) })
+        return parkingPositions.filter { candidate in
+            guard candidate.kind == .gate else { return true }
+            let key = Self.standKey(candidate.name)
+            guard !key.isEmpty, let sameName = byName[key] else { return true }
+            return !sameName.contains {
+                SurfaceGeometry.distanceMeters(candidate.coordinate.clLocation,
+                                               $0.coordinate.clLocation) <= Self.standSupersedeMeters
+            }
+        }
+    }
+
+    private static func standKey(_ s: String) -> String {
+        s.trimmingCharacters(in: .whitespaces).uppercased()
+    }
+
     /// Whether there is enough geometry to attempt any routing at all.
     var hasUsableGeometry: Bool { !runways.isEmpty && !taxiways.isEmpty }
 
@@ -318,8 +357,18 @@ struct AirportSurfaceModel: Codable, Equatable {
     func parking(named name: String) -> SurfaceParking? {
         let key = name.trimmingCharacters(in: .whitespaces)
         guard !key.isEmpty else { return nil }
-        if let exact = parkingPositions.first(where: { $0.isNamed(key) }) { return exact }
-        return parkingPositions.first { $0.matches(key) }
+        if let exact = preferredStand(among: parkingPositions.filter { $0.isNamed(key) }) { return exact }
+        return preferredStand(among: parkingPositions.filter { $0.matches(key) })
+    }
+
+    /// The stand to use when one identifier matches more than one mapped feature. A field
+    /// that maps both the boarding gate and the aircraft stand under a single identifier —
+    /// KIAD tags `gate` C24 on the Concourse C/D outline and `parking_position` C24 on the
+    /// apron 75 m away — would otherwise resolve to whichever the extract happened to list
+    /// first. The aircraft parks on the `parking_position`, so that is the one every caller
+    /// means. Falls back to the first match, leaving a field that maps only gates unchanged.
+    private func preferredStand(among matches: [SurfaceParking]) -> SurfaceParking? {
+        matches.first { $0.kind == .parkingPosition } ?? matches.first
     }
 }
 

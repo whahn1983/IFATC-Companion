@@ -98,12 +98,25 @@ identifier inherits its letters (`A54/56` → A54, A56). A stand's own name alwa
 stand's alias. The raw `ref` is never discarded — it stays in `SurfaceParking.tags` like every other
 OSM tag.
 
+### One stand mapped as both a gate and a parking position
+
+A field may tag the same stand twice — the boarding gate as an `aeroway=gate` node and the aircraft
+stand as an `aeroway=parking_position`, both with the one `ref`. At KIAD every C‑row gate node is a
+**vertex of the Concourse C/D building way** itself, with the matching `parking_position` 75 m out
+on the apron. `AirportSurfaceModel.routableStands` keeps one entry per physical stand — a `gate`
+superseded by a same‑named `parking_position` within 250 m is not a taxi target — so a route ends on
+the apron rather than inside the terminal. Neither feature is discarded: both stay in
+`parkingPositions` with their tags, as every OSM feature does.
+
 - **Gates/parking** connect to the taxi network via an **inferred connector** (lower confidence),
   so routing can start/end at a stand without routing *through* stands. The connector attaches to
   the nearest taxi node whose straight lead‑in does **not** cross a building/terminal footprint and
   does not double back across the ramp — so a stand on a thin concourse connects to the taxiway on
-  its own side rather than one drawn through the building. A connector that unavoidably clips a
-  footprint is flagged and penalized (see [TaxiRouting.md](TaxiRouting.md)).
+  its own side rather than one drawn through the building. The footprint penalty is charged on the
+  **length the lead-in runs inside** a footprint, not merely on whether it meets one, so a stand
+  mapped *on* a concourse outline — where every candidate touches the building — still attaches on
+  its own side. A connector that unavoidably clips a footprint is flagged and penalized (see
+  [TaxiRouting.md](TaxiRouting.md)).
 
 ## Caching
 

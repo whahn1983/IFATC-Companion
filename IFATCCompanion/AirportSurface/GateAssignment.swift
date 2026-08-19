@@ -563,7 +563,9 @@ enum GateAssigner {
                                    flight: FlightContext) -> [Candidate] {
         let fragments = flight.operatorFragments
         var out: [Candidate] = []
-        for stand in surface.parkingPositions {
+        // `routableStands` so a field that maps one stand as both a `gate` node and a
+        // `parking_position` (KIAD) offers it once, as the stand an aircraft can park on.
+        for stand in surface.routableStands {
             let name = stand.name.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !name.isEmpty else { continue }
             let profile = StandProfile.from(tags: stand.tags, standName: name)
