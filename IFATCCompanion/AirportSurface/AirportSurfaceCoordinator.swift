@@ -110,6 +110,16 @@ final class AirportSurfaceCoordinator: ObservableObject {
     var emitATC: ((ATCTransmission) -> Void)?
     /// Provides the current callsign for crossing/hold phraseology.
     var callsignProvider: (() -> PhraseologyEngine.Callsign)?
+    /// Called with an airport's ICAO whenever its extract becomes available — loaded into the
+    /// coordinator, pre-cached for the simulated demo, or warmed for the arrival field.
+    ///
+    /// Anything that needs the extract but isn't the taxi itself (today: the automatic gate
+    /// assignment) hangs off this rather than off the prefetch happening to finish first. A
+    /// large field can take a minute to arrive, and before this the gate assignment simply
+    /// raced the download and kept whatever it had if it lost. Deliberately fired only from
+    /// the *prefetch/load* paths, never from `surfaceModel`, so a listener that reads the
+    /// surface in response can't re-trigger itself.
+    var onSurfaceAvailable: ((String) -> Void)?
 
     // MARK: - Internal state
 
@@ -279,6 +289,7 @@ final class AirportSurfaceCoordinator: ObservableObject {
         simulatedSurfaces[key] = model
         recordRunwayIdents(model)
         diagnostics?.log(.app, "Mock demo surface pre-cached for \(key): \(model.runways.count) rwy, \(model.taxiways.count) twy, \(model.confidence.title)")
+        onSurfaceAvailable?(key)
     }
 
     /// Remember an airport's real runway-end idents so the ambient chatter can reference them
@@ -335,6 +346,7 @@ final class AirportSurfaceCoordinator: ObservableObject {
                 let model = try await provider.surface(for: key, reference: reference, forceRefresh: false)
                 recordRunwayIdents(model)
                 diagnostics?.log(.app, "OSM surface pre-cached for \(key)")
+                onSurfaceAvailable?(key)
             } catch {
                 let message = (error as? LocalizedError)?.errorDescription ?? "\(error)"
                 diagnostics?.log(.app, "OSM pre-cache failed for \(key): \(message)")
@@ -386,6 +398,7 @@ final class AirportSurfaceCoordinator: ObservableObject {
         lastError = nil
         status = m.hasUsableGeometry ? .ready : .unavailable("No usable airport surface geometry.")
         diagnostics?.log(.app, "OSM surface ready \(m.icao): \(builtGraph.nodes.count) nodes, \(builtGraph.edges.count) edges, \(m.confidence.title)")
+        if m.hasUsableGeometry { onSurfaceAvailable?(m.icao) }
         recomputeRoute()
     }
 

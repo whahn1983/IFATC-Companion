@@ -340,21 +340,59 @@ gate assignment comes from the airline, not from a map.
 The assignment writes the visible field, so it has to be able to tell its own value apart from a
 pilot's. It stamps what it wrote as `ICAO:GATE` — or `ICAO:GATE:P` for a gate read off the aircraft's
 position (`AppSettings.autoAssignedDepartureGate` / `…ArrivalGate`; a two-part marker written before
-the flag existed decodes as a chosen gate). `GateAssigner.mayAssign` then allows a write only when the field is blank, or
-still holds the app's own stamp **for a different airport** (the last flight's gate is stale). A
-gate the pilot typed — or typed over an automatic one — is never touched. `AppModel` adds two more
-conditions: the gate the active plan is already flying must be the app's too (a reloaded saved
+the flag existed decodes as a chosen gate). `GateAssigner.mayAssign` then allows a write only when the
+field is blank, or still holds the app's own stamp **for a different airport** (the last flight's gate
+is stale). A gate the pilot typed — or typed over an automatic one — is never touched. `AppModel` adds
+two more conditions: the gate the active plan is already flying must be the app's too (a reloaded saved
 flight keeps its gates; Mock Mode's own default gate counts as blank so the demo exercises the
 feature), and a departure gate is off limits once the taxi has begun, since the gate is then where
 the aircraft actually is. Switching the toggle off withdraws only the gates the app filled in.
 
-The assignment runs where the surfaces are prefetched — whenever the flight's endpoints are
-established — again on every gate-field edit (`applyManualGates`), so a field the pilot has just
-*cleared* is blank again and gets filled, and again when the aircraft first reports itself parked (the
-upgrade above). It reads its extract through
+### A gate from another airport is dropped, not waited on
+
+Being *willing* to replace the last flight's automatic gate is not enough: the replacement has to
+arrive. When it did not — an unreadable extract at the new field — the old airport's gate simply stayed
+in the field and read as though it had been assigned there. A KLAX arrival showed gate "F12", which
+exists at no terminal at LAX (it is a Minneapolis Concourse F gate); pulling the app's own KLAX bbox
+returns 539 stands and no F12, so it had never been picked for KLAX at all.
+
+So `AppModel.dropForeignAutoGates` runs first, **synchronously, before any fetch**: an automatic gate
+whose stamp names a different airport than the one now filed is dropped, and the field waits blank for
+real data. A blank gate is honest; a gate from the wrong airport is not. Mock Mode falls back to its
+own realistic default rather than being left with none, and a gate the pilot typed is never involved.
+
+That is only safe because the replacement now reliably turns up:
+
+* The **prefetch runs before the assignment**, so the prefetch owns the download of an airport neither
+  has seen and the assignment consumes it. `AirportSurfaceCoordinator.onSurfaceAvailable(icao)` fires
+  whenever an extract lands (loaded, warmed, or pre-cached) and re-runs the assignment for that
+  airport, so a gate waiting on a slow extract fills when it arrives instead of racing the download.
+* Overpass **backoff is per airport** (`AirportSurfaceProvider`). One counter for the whole provider
+  meant one field failing every endpoint denied every *other* uncached airport for 60–900 s, so a slow
+  monster on one end of the flight could starve the other end.
+* The Overpass budget is **90 s** (`OSMSurface.overpassQueryTimeoutSeconds`, client 95 s). KLAX answers
+  with ~540 stands plus every runway, taxiway and terminal building in the box; at the previous 30 s
+  those extracts could not finish, so the airport never cached and everything downstream silently got
+  nothing. Each fetch is a background task applied whenever it lands, so a long ceiling costs patience
+  at a big field rather than blocking anything.
+* A failed read is **retried on the telemetry tick**, at most every 90 s and at most four times per
+  airport (`autoGateMaxReadFailures`), then left alone rather than re-requesting from a shared public
+  endpoint for the rest of the flight.
+
+### When it runs
+
+Whenever the flight's endpoints are established (just after the surfaces are prefetched); when an
+airport's extract lands; on every gate-field edit (`applyManualGates`), so a field the pilot has just
+*cleared* is blank again and gets filled; when the aircraft first reports itself parked (the upgrade
+above); and on the periodic retry. It reads its extract through
 `AirportSurfaceCoordinator.surfaceModel(icao:reference:)`, which never disturbs an active taxi and
-coalesces with the prefetch already in flight, so it costs no extra Overpass request. Every
-assignment is logged with its rationale, so Diagnostics explains why a gate was chosen.
+coalesces with the prefetch already in flight, so it costs no extra Overpass request. Every assignment
+is logged with its rationale, so Diagnostics explains why a gate was chosen.
+
+The **gate-swap button hands both gates to the pilot** (clearing both markers) rather than carrying the
+markers with their values. Carrying them would leave each field holding a gate stamped for the *other*
+airport, which the rule above would then correctly throw away — so swapping would blank both fields and
+re-roll them.
 
 The stamps are deliberately **not** part of a saved flight's `FlightOverrides` (adding a key there
 would break decoding of snapshots written by earlier builds). A reloaded saved flight therefore

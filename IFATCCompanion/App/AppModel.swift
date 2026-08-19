@@ -769,6 +769,12 @@ final class AppModel: ObservableObject {
         settings.$taxiAutoRecalculate
             .sink { [weak self] on in self?.airportSurface.autoRecalculate = on }
             .store(in: &cancellables)
+        // An airport's extract has landed — fill any gate field still waiting on it. This is
+        // what makes a blank gate self-heal at a big field whose download outlives the flight
+        // load, instead of the assignment having to win a race with it.
+        airportSurface.onSurfaceAvailable = { [weak self] icao in
+            self?.autoAssignGatesIfNeeded(forAirport: icao)
+        }
     }
 
     /// Apply the current settings + active profile to the engine and rebuild the
@@ -846,11 +852,6 @@ final class AppModel: ObservableObject {
     /// never disturb an active taxi.
     private func prefetchAirportSurfaces() {
         guard !flightPlan.departure.isEmpty || !flightPlan.destination.isEmpty else { return }
-        // The flight's endpoints are established, so this is also the moment to fill a blank
-        // gate field from the field's stand data (opt-in; see `autoAssignGatesIfNeeded`). It
-        // reads the same extracts this prefetch warms, and the provider coalesces the two
-        // requests into one.
-        autoAssignGatesIfNeeded()
         if settings.mockMode {
             // Pre-cache the whole origin and destination airports so the mock demo taxis the
             // real fields (with a synthetic fallback when offline / no OSM data).
@@ -858,13 +859,21 @@ final class AppModel: ObservableObject {
                 (flightPlan.departure, resolvedDepartureCoordinate()),
                 (flightPlan.destination, resolvedDestinationCoordinate())
             ])
-            return
+        } else {
+            airportSurface.prefetchFlightSurfaces(
+                departure: flightPlan.departure,
+                departureReference: resolvedDepartureCoordinate(),
+                arrival: flightPlan.destination,
+                arrivalReference: resolvedDestinationCoordinate())
         }
-        airportSurface.prefetchFlightSurfaces(
-            departure: flightPlan.departure,
-            departureReference: resolvedDepartureCoordinate(),
-            arrival: flightPlan.destination,
-            arrivalReference: resolvedDestinationCoordinate())
+        // The flight's endpoints are established, so this is also the moment to fill a blank
+        // gate field from the field's stand data (opt-in; see `autoAssignGatesIfNeeded`).
+        // Deliberately *after* the prefetch above, so the prefetch owns the download of an
+        // airport neither of them has seen before and the assignment consumes it — the
+        // provider coalesces the two into one request either way, but this order is what makes
+        // `onSurfaceAvailable` the assignment's reliable second chance rather than leaving it
+        // to win a race with the download.
+        autoAssignGatesIfNeeded()
     }
 
     /// Begin the OSM departure taxi (loads/normalizes/routes; async when uncached).
@@ -1886,11 +1895,11 @@ final class AppModel: ObservableObject {
         // so the deviation line tracks the weather ahead instead of going stale and
         // dropping between manual refreshes.
         maybeResamplePrecipitation()
-        // A departure gate the app *chose* for a blank field becomes knowable the moment the
-        // aircraft reports itself stopped on the ground: whichever mapped stand it is sitting
-        // on is the gate. Hooked to that transition rather than the tick, so it costs one
-        // attempt per stop instead of one per fix.
-        updateAutoGateOnParkedChange(for: state)
+        // Two gate jobs ride on the telemetry fix: a departure gate the app *chose* becomes
+        // knowable the moment the aircraft reports itself stopped on the ground (whichever
+        // mapped stand it is sitting on is the gate), and a read that failed earlier gets a
+        // periodic second chance. Both are transition- or interval-gated, never per-fix work.
+        updateAutoGatesFromTelemetry(for: state)
         // Pull the destination ATIS the moment the aircraft comes within 100 NM, so the
         // arrival ATIS button appears promptly rather than waiting for the ~5-min timer.
         maybeFetchArrivalATIS()
@@ -2968,12 +2977,13 @@ final class AppModel: ObservableObject {
         let dep = settings.departureGate
         settings.departureGate = settings.arrivalGate
         settings.arrivalGate = dep
-        // The "this gate was assigned by the app" markers travel with their values, so a
-        // swapped automatic gate stays the app's to replace at the next airport and a
-        // swapped hand-typed one stays the pilot's.
-        let depStamp = settings.autoAssignedDepartureGate
-        settings.autoAssignedDepartureGate = settings.autoAssignedArrivalGate
-        settings.autoAssignedArrivalGate = depStamp
+        // Swapping is a deliberate act, so the swapped gates become the pilot's: both markers
+        // are dropped rather than travelling with their values. Carrying them across would leave
+        // each field holding a gate stamped for the *other* airport, which `dropForeignAutoGates`
+        // would then — correctly — throw away, so the swap would blank both fields and re-roll
+        // them. Handing them to the pilot is what the button appears to do.
+        settings.autoAssignedDepartureGate = ""
+        settings.autoAssignedArrivalGate = ""
         applyManualGates()
     }
 
@@ -2991,12 +3001,22 @@ final class AppModel: ObservableObject {
     // match where OSM carries those tags, otherwise a random plausible stand. Because the gate
     // is first filled at flight load — usually before any telemetry — a chosen gate is
     // upgraded to the parked one the moment the aircraft reports itself stopped on the ground
-    // (`updateAutoGateOnParkedChange`); that is the only case in which the app rewrites its
+    // (`updateAutoGatesFromTelemetry`); that is the only case in which the app rewrites its
     // own gate at the same airport.
 
     /// Roles whose assignment is already in flight, keyed `"departure:KIAH"`, so a second
     /// flight-plan read moments later doesn't queue a duplicate fetch.
     private var autoGateRequests: Set<String> = []
+
+    /// Unreadable surface reads per role+airport (same key). A field whose extract can't be
+    /// fetched is retried a few times across the flight and then left alone.
+    private var autoGateReadFailures: [String: Int] = [:]
+    /// How many failed reads for one airport before the assignment stops asking.
+    private static let autoGateMaxReadFailures = 4
+    /// Minimum gap between telemetry-driven retries, so a failed read is re-attempted on the
+    /// scale a download takes rather than once a second.
+    private static let autoGateRetryInterval: TimeInterval = 90
+    private var lastAutoGateRetryAt: Date?
 
     /// Whether the last telemetry fix had the aircraft stopped on the ground, so the automatic
     /// assignment can be re-run on the *transition* into that state rather than on every fix.
@@ -3004,16 +3024,48 @@ final class AppModel: ObservableObject {
     /// already parked still counts as a transition and gets its gate read off its position.
     private var aircraftWasParked: Bool?
 
-    /// Re-run the assignment when the aircraft first reports itself stopped on the ground. The
-    /// gate is chosen at flight load, which is typically before any telemetry has arrived — so
-    /// this is the moment a *chosen* departure gate can be replaced by the stand the aircraft
-    /// is actually parked on. A no-op when the feature is off, when the field isn't the app's,
-    /// or when the gate already came from the aircraft's position.
-    private func updateAutoGateOnParkedChange(for state: AircraftState) {
+    /// Called on every telemetry fix, with two jobs.
+    ///
+    /// **Becoming parked** re-runs the assignment: the gate is chosen at flight load, typically
+    /// before any telemetry has arrived, so this is the moment a *chosen* departure gate can be
+    /// replaced by the stand the aircraft is actually sitting on. A no-op when the feature is
+    /// off, when the field isn't the app's, or when the gate already came from the position.
+    ///
+    /// **Otherwise** a failed surface read gets a periodic retry (see `retryFailedAutoGatesIfDue`).
+    private func updateAutoGatesFromTelemetry(for state: AircraftState) {
         let parked = aircraftIsParked(state)
-        defer { aircraftWasParked = parked }
-        guard parked, aircraftWasParked != true else { return }
+        let becameParked = parked && aircraftWasParked != true
+        aircraftWasParked = parked
+        if becameParked {
+            autoAssignGatesIfNeeded()
+            return
+        }
+        retryFailedAutoGatesIfDue()
+    }
+
+    /// Re-attempt an assignment whose surface read failed, at most every
+    /// `autoGateRetryInterval`. Without this a cold-cache Overpass read that timed out at flight
+    /// load left the gate unfilled for the whole flight: the other triggers are the endpoint
+    /// change (already past), a gate-field edit, and becoming parked — which fires once at the
+    /// origin and then not again until after landing. Bounded by `autoGateMaxReadFailures`, and
+    /// a no-op once every field is settled, because the assignment's own guards refuse to write.
+    private func retryFailedAutoGatesIfDue() {
+        guard settings.autoAssignGates, !autoGateReadFailures.isEmpty else { return }
+        let now = Date()
+        guard now.timeIntervalSince(lastAutoGateRetryAt ?? .distantPast) >= Self.autoGateRetryInterval
+        else { return }
+        lastAutoGateRetryAt = now
         autoAssignGatesIfNeeded()
+    }
+
+    /// Note an unreadable extract, and say so once — the first failure is the one worth a log
+    /// line, and the pilot's visible symptom (a blank gate) is explained by it.
+    private func recordAutoGateReadFailure(_ key: String, role: GateRole, icao: String) {
+        let count = (autoGateReadFailures[key] ?? 0) + 1
+        autoGateReadFailures[key] = count
+        guard count == 1 else { return }
+        diagnostics.log(.app, "No airport surface data for \(icao) yet — the \(role.title) gate "
+            + "stays blank until its extract arrives.")
     }
 
     /// Whether telemetry has the aircraft sitting still on the ground at a known position —
@@ -3032,11 +3084,81 @@ final class AppModel: ObservableObject {
     }
 
     /// Fill any blank gate field from its airport's stand data. Called whenever the flight's
-    /// endpoints are (re)established — the same moment the surfaces are prefetched — and when
-    /// the Settings toggle is switched on. A no-op when the feature is off.
-    func autoAssignGatesIfNeeded() {
+    /// endpoints are (re)established — just after the surfaces are prefetched — when an
+    /// airport's extract lands, on a gate-field edit, and when the Settings toggle is switched
+    /// on. A no-op when the feature is off.
+    ///
+    /// - Parameter forAirport: when given, only the role(s) filed for that ICAO are considered.
+    ///   Used by the `onSurfaceAvailable` signal so a landing extract only stirs the gate that
+    ///   was waiting on it.
+    func autoAssignGatesIfNeeded(forAirport icao: String? = nil) {
         guard settings.autoAssignGates else { return }
-        for role in GateRole.allCases { autoAssignGate(role: role) }
+        let wanted = icao?.uppercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        // A gate the app assigned at a *different* airport is not this field's gate. Dropped
+        // before anything else, so it can never be displayed as though it belonged here — even
+        // if the new airport's extract turns out to be unreadable.
+        dropForeignAutoGates()
+        for role in GateRole.allCases {
+            guard wanted == nil || autoGateAirport(for: role) == wanted else { continue }
+            autoAssignGate(role: role)
+        }
+    }
+
+    /// The ICAO a role's gate belongs to, normalized. Empty when that endpoint isn't filed.
+    private func autoGateAirport(for role: GateRole) -> String {
+        (role == .departure ? flightPlan.departure : flightPlan.destination)
+            .trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    }
+
+    /// The gate currently in a role's editable field, and the marker recorded with it.
+    private func autoGateField(_ role: GateRole) -> String {
+        role == .departure ? settings.departureGate : settings.arrivalGate
+    }
+    private func autoGateStamp(_ role: GateRole) -> String {
+        role == .departure ? settings.autoAssignedDepartureGate : settings.autoAssignedArrivalGate
+    }
+
+    /// Drop any automatic gate belonging to a **different** airport than the one now filed.
+    ///
+    /// This is the rule that was missing: the app was willing to *replace* a previous flight's
+    /// automatic gate, but only if a replacement actually arrived. When the new airport's
+    /// extract couldn't be read, the old airport's gate simply stayed in the field and read as
+    /// though it had been assigned there — which is how a KLAX arrival came to show a gate that
+    /// exists at no terminal at LAX. A stale gate is worse than no gate, so it goes immediately
+    /// and the field waits (blank) for real data. A gate the pilot typed is never touched.
+    private func dropForeignAutoGates() {
+        for role in GateRole.allCases {
+            let icao = autoGateAirport(for: role)
+            guard icao.count >= 3,
+                  let stamp = AutoGateStamp(encoded: autoGateStamp(role)),
+                  GateAssigner.isAppAssigned(current: autoGateField(role),
+                                             stamp: autoGateStamp(role)),
+                  stamp.icao != icao else { continue }
+            switch role {
+            case .departure:
+                settings.departureGate = ""
+                settings.autoAssignedDepartureGate = ""
+            case .arrival:
+                settings.arrivalGate = ""
+                settings.autoAssignedArrivalGate = ""
+            }
+            mirrorClearedGateToPlan(role: role)
+            diagnostics.log(.app, "Dropped the automatic \(role.title) gate \(stamp.gate) — it was "
+                + "assigned at \(stamp.icao), and this flight's \(role.title) field is \(icao).")
+        }
+    }
+
+    /// Mirror a just-cleared gate field into the active plan, without going through
+    /// `applyManualGates` (which re-enters the assignment). Mock Mode falls back to its own
+    /// realistic default — the same rule `syncFlightPlanFromSettings` applies — so clearing a
+    /// stale gate never leaves the demo with no gate at all.
+    private func mirrorClearedGateToPlan(role: GateRole) {
+        switch role {
+        case .departure:
+            flightPlan.departureGate = settings.mockMode ? mock.route.departureGate : ""
+        case .arrival:
+            flightPlan.arrivalGate = settings.mockMode ? mock.route.arrivalGate : ""
+        }
     }
 
     /// React to the Settings toggle: assign straight away when it is switched on, and give
@@ -3063,6 +3185,7 @@ final class AppModel: ObservableObject {
         settings.autoAssignedDepartureGate = ""
         settings.autoAssignedArrivalGate = ""
         autoGateRequests.removeAll()
+        autoGateReadFailures.removeAll()
         // Mock Mode re-syncs rather than just mirroring the fields, so the demo falls back to
         // its own realistic default gate instead of being left with no gate at all.
         if settings.mockMode { syncFlightPlanFromSettings() } else { applyManualGates() }
@@ -3136,18 +3259,26 @@ final class AppModel: ObservableObject {
     }
 
     private func autoAssignGate(role: GateRole) {
-        let icao = (role == .departure ? flightPlan.departure : flightPlan.destination)
-            .trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let icao = autoGateAirport(for: role)
         guard icao.count >= 3, shouldRunAutoAssign(role: role, icao: icao) else { return }
         let reference = role == .departure ? resolvedDepartureCoordinate() : resolvedDestinationCoordinate()
         guard let reference, reference.isValid else { return }
         let requestKey = "\(role.rawValue):\(icao)"
+        // Give up after a few unreadable reads for the same airport rather than re-requesting
+        // from a shared public Overpass endpoint for the rest of the flight. The field stays
+        // blank, which is the honest answer, and `onSurfaceAvailable` still fills it if the
+        // extract arrives by some other route (the taxi load, or a manual refresh).
+        guard (autoGateReadFailures[requestKey] ?? 0) < Self.autoGateMaxReadFailures else { return }
         guard autoGateRequests.insert(requestKey).inserted else { return }
         Task { [weak self] in
             guard let self else { return }
             let surface = await self.airportSurface.surfaceModel(icao: icao, reference: reference)
             self.autoGateRequests.remove(requestKey)
-            guard let surface else { return }
+            guard let surface else {
+                self.recordAutoGateReadFailure(requestKey, role: role, icao: icao)
+                return
+            }
+            self.autoGateReadFailures[requestKey] = nil
             // Re-check the field: the pilot may have typed a gate (or the taxi may have
             // started) while the extract was downloading.
             guard self.shouldRunAutoAssign(role: role, icao: icao) else { return }
@@ -4186,6 +4317,7 @@ final class AppModel: ObservableObject {
         settings.autoAssignedDepartureGate = ""
         settings.autoAssignedArrivalGate = ""
         autoGateRequests.removeAll()
+        autoGateReadFailures.removeAll()
         // Re-sync drops manualOverride (both endpoints are now empty) so Connect data
         // is no longer pinned back by the override flag.
         syncFlightPlanFromSettings()

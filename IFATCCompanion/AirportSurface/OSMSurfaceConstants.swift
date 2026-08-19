@@ -64,6 +64,19 @@ enum OSMSurface {
     /// The primary endpoint, surfaced in diagnostics and the legal page.
     static var primaryOverpassEndpoint: String { overpassEndpoints.first ?? "" }
 
+    /// Server-side Overpass query budget (`[timeout:N]`) and the matching client-side request
+    /// timeout, in seconds.
+    ///
+    /// Sized for the biggest fields rather than the average one. A hub like KLAX answers with
+    /// ~540 stands plus every runway, taxiway and terminal building in the box; at the previous
+    /// 30 s budget those extracts could not finish, so the airport never cached — and anything
+    /// depending on the extract (the taxi route, the automatic gate assignment) silently got
+    /// nothing. Every fetch is a background task whose result is applied whenever it lands, so
+    /// a long ceiling costs patience at a big field rather than blocking anything; small fields
+    /// are unaffected because they answer in a second or two either way.
+    static let overpassQueryTimeoutSeconds = 90
+    static let overpassRequestTimeout: TimeInterval = 95
+
     /// A descriptive User-Agent identifying the app and the publisher, so Overpass
     /// operators can attribute traffic and reach the project. Reuses the shared
     /// contact URL from `AppHTTP`.

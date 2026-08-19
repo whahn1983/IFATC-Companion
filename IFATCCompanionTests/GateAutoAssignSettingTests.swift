@@ -280,7 +280,7 @@ final class GateAutoAssignSettingTests: XCTestCase {
                        "a gate read off the position isn't re-read on every reposition")
     }
 
-    func testSwappingGatesCarriesTheirMarkers() {
+    func testSwappingGatesHandsThemToThePilot() {
         let model = makeModel()
         model.settings.departureGate = "C24"
         model.settings.autoAssignedDepartureGate = "KIAH:C24"
@@ -290,9 +290,63 @@ final class GateAutoAssignSettingTests: XCTestCase {
 
         XCTAssertEqual(model.settings.departureGate, "B44")
         XCTAssertEqual(model.settings.arrivalGate, "C24")
-        XCTAssertEqual(model.settings.autoAssignedDepartureGate, "",
-                       "the hand-typed gate stays hand-typed after the swap")
-        XCTAssertEqual(model.settings.autoAssignedArrivalGate, "KIAH:C24",
-                       "and the automatic one stays the app's")
+        // Carrying the markers across would leave each field holding a gate stamped for the
+        // *other* airport, which the foreign-gate rule would then throw away — so the swap
+        // would blank both fields. A deliberate swap hands both gates to the pilot instead.
+        XCTAssertTrue(model.settings.autoAssignedDepartureGate.isEmpty)
+        XCTAssertTrue(model.settings.autoAssignedArrivalGate.isEmpty)
+    }
+
+    // MARK: - A gate belonging to another airport is never displayed
+
+    func testAnAutomaticGateFromAnotherAirportIsDropped() {
+        // The KLAX bug: an arrival gate auto-assigned at KMSP stayed in the field when the KLAX
+        // extract couldn't be read, and read as though it had been assigned at KLAX. The drop is
+        // synchronous — it does not wait on (or depend on) the new airport's extract arriving.
+        let model = makeModel()
+        model.settings.autoAssignGates = true
+        model.settings.arrivalGate = "F12"
+        model.settings.autoAssignedArrivalGate = "KMSP:F12"
+        model.settings.destination = "KLAX"
+        model.syncFlightPlanFromSettings()
+
+        XCTAssertTrue(model.settings.arrivalGate.isEmpty,
+                      "a gate assigned at KMSP is not a KLAX gate — it goes, blank beats wrong")
+        XCTAssertTrue(model.settings.autoAssignedArrivalGate.isEmpty, "and so does its marker")
+        XCTAssertTrue(model.flightPlan.arrivalGate.isEmpty, "the plan stops flying it too")
+    }
+
+    func testTheDropSparesAPilotsGateAndTheAppsOwnGateForThisAirport() {
+        let model = makeModel()
+        model.settings.autoAssignGates = true
+        // Typed by the pilot: no marker, so nothing about it is the app's to drop.
+        model.settings.arrivalGate = "F12"
+        model.settings.autoAssignedArrivalGate = ""
+        model.settings.destination = "KLAX"
+        model.syncFlightPlanFromSettings()
+        XCTAssertEqual(model.settings.arrivalGate, "F12", "the pilot's gate is never dropped")
+
+        // The app's own gate *for this airport* is not foreign and stays put.
+        let sameField = makeModel()
+        sameField.settings.autoAssignGates = true
+        sameField.settings.arrivalGate = "60"
+        sameField.settings.autoAssignedArrivalGate = "KLAX:60"
+        sameField.settings.destination = "KLAX"
+        sameField.syncFlightPlanFromSettings()
+        XCTAssertEqual(sameField.settings.arrivalGate, "60")
+        XCTAssertEqual(sameField.settings.autoAssignedArrivalGate, "KLAX:60")
+    }
+
+    func testDroppingAForeignGateLeavesMockModeItsOwnDefault() {
+        let model = makeModel()
+        model.settings.mockMode = true
+        model.settings.autoAssignGates = true
+        model.settings.arrivalGate = "F12"
+        model.settings.autoAssignedArrivalGate = "KLAX:F12"
+        model.syncFlightPlanFromSettings()
+
+        XCTAssertTrue(model.settings.arrivalGate.isEmpty, "the foreign gate is dropped")
+        XCTAssertEqual(model.flightPlan.arrivalGate, model.mock.route.arrivalGate,
+                       "and the demo falls back to its own realistic gate rather than none")
     }
 }

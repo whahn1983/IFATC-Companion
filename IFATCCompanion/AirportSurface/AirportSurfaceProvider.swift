@@ -46,14 +46,19 @@ actor AirportSurfaceProvider {
     /// In-memory hot cache so repeated same-session reads never touch disk/network.
     private var memory: [String: AirportSurfaceModel] = [:]
     private var inFlight: [String: Task<AirportSurfaceModel, Error>] = [:]
-    private var failureCount = 0
-    private var nextRetryAt: Date?
+    /// Backoff is tracked **per airport**. It used to be one counter for the whole provider,
+    /// which meant one field failing all its endpoints denied every *other* uncached airport
+    /// for the next 60–900 s — so a slow monster on one end of the flight could starve the
+    /// other end of its data entirely.
+    private var failureCounts: [String: Int] = [:]
+    private var nextRetryAt: [String: Date] = [:]
     private(set) var lastErrorMessage: String?
 
     init(cache: AirportSurfaceCache = AirportSurfaceCache(),
          endpoints: [String] = OSMSurface.overpassEndpoints,
          session: URLSession = AppHTTP.makeCachingSession(cacheName: "osm-overpass-cache",
-                                                          memoryMB: 4, diskMB: 16, timeout: 35)) {
+                                                          memoryMB: 4, diskMB: 16,
+                                                          timeout: OSMSurface.overpassRequestTimeout)) {
         self.cache = cache
         self.endpoints = endpoints
         self.session = session
@@ -79,12 +84,17 @@ actor AirportSurfaceProvider {
     func clearCache() {
         memory.removeAll()
         cache.deleteAll()
+        failureCounts.removeAll()
+        nextRetryAt.removeAll()
     }
 
     func deleteCache(icao: String) {
         let key = icao.uppercased()
         memory[key] = nil
         cache.delete(icao: key)
+        // Deleting an airport's cache is a deliberate "try again" — don't leave it serving a
+        // throttled error from a failure that happened before the pilot asked for a re-fetch.
+        clearBackoff(icao: key)
     }
 
     func cacheInfo() -> (icaos: [String], bytes: Int) {
@@ -111,8 +121,8 @@ actor AirportSurfaceProvider {
            !cached.source.isStale, !cached.source.isOutdatedSchema {
             return cached
         }
-        // Backing off → serve stale if we have it, else fail.
-        if !forceRefresh, let retry = nextRetryAt, Date() < retry {
+        // Backing off for *this airport* → serve stale if we have it, else fail.
+        if !forceRefresh, let retry = nextRetryAt[key], Date() < retry {
             if let cached = cachedSurface(icao: key) { return cached }
             throw SurfaceError.throttled
         }
@@ -149,7 +159,7 @@ actor AirportSurfaceProvider {
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.httpBody = body
-            request.timeoutInterval = 35
+            request.timeoutInterval = OSMSurface.overpassRequestTimeout
             request.setValue(OSMSurface.userAgent, forHTTPHeaderField: "User-Agent")
             request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
             request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -183,7 +193,7 @@ actor AirportSurfaceProvider {
                                                            fetchDate: Date())
                 memory[icao] = model
                 cache.save(model)
-                clearBackoff()
+                clearBackoff(icao: icao)
                 lastErrorMessage = nil
                 diagnostics?.logAsync(.app, "OSM \(icao): \(decoded.elements.count) elements → \(model.runways.count) rwy, \(model.taxiways.count) twy, \(model.confidence.title) confidence")
                 return model
@@ -194,7 +204,7 @@ actor AirportSurfaceProvider {
         }
 
         // Every endpoint failed or returned empty.
-        registerFailure(retryAfter: nil)
+        registerFailure(icao: icao, retryAfter: nil)
         if let status = lastStatus, status == 200 {
             diagnostics?.logAsync(.app, "OSM \(icao): no airport surface features returned")
             throw SurfaceError.emptyExtract
@@ -205,14 +215,15 @@ actor AirportSurfaceProvider {
 
     // MARK: - Backoff
 
-    private func registerFailure(retryAfter: TimeInterval?) {
-        failureCount += 1
-        let backoff = AppHTTP.backoffDelay(failureCount: failureCount, base: 60, cap: 900)
-        nextRetryAt = Date().addingTimeInterval(max(backoff, retryAfter ?? 0))
+    private func registerFailure(icao: String, retryAfter: TimeInterval?) {
+        let count = (failureCounts[icao] ?? 0) + 1
+        failureCounts[icao] = count
+        let backoff = AppHTTP.backoffDelay(failureCount: count, base: 60, cap: 900)
+        nextRetryAt[icao] = Date().addingTimeInterval(max(backoff, retryAfter ?? 0))
     }
 
-    private func clearBackoff() {
-        failureCount = 0
-        nextRetryAt = nil
+    private func clearBackoff(icao: String) {
+        failureCounts[icao] = nil
+        nextRetryAt[icao] = nil
     }
 }
