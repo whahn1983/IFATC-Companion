@@ -255,12 +255,15 @@ enum OSMSurfaceNormalizer {
     private static func makeParking(_ e: OSMElement, tags: [String: String], kind: SurfaceParking.Kind) -> SurfaceParking? {
         let coord = e.coordinate ?? centroid(of: e.polyline)
         guard let coord else { return nil }
-        let name = (tags["ref"] ?? tags["name"] ?? "").trimmingCharacters(in: .whitespaces)
+        // A stand's identifier tag may carry several identifiers for the one stand
+        // ("A1;A2", "A54/A56"): the first names it, the rest are aliases it answers to.
+        let identifier = StandIdentifier.parse(tags["ref"] ?? tags["name"] ?? "")
         return SurfaceParking(osmID: e.stableID,
                               tags: tags,
                               kind: kind,
-                              name: name,
-                              coordinate: GeoCoordinate(coord))
+                              name: identifier.name,
+                              coordinate: GeoCoordinate(coord),
+                              aliases: identifier.aliases)
     }
 
     private static func makeApron(_ e: OSMElement, tags: [String: String]) -> SurfaceApron? {

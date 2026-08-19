@@ -78,7 +78,25 @@ Relevant OSM tags consumed:
   for simulation and is marked inferred / lower confidence.
 Every stand keeps its **full original tag set** (`SurfaceParking.tags`), which is what lets the
 optional automatic gate assignment read a stand's size (`aircraft:type`), airline (`operator`) and
-availability (`access`) — see [TaxiRouting.md](TaxiRouting.md).
+availability (`access`) — see [TaxiRouting.md](TaxiRouting.md). In practice those two tags are
+almost never present: a sample of the app's own extracts for KEWR, KMSP, EGLL and EDDF found
+`operator` and `aircraft:type` on **none** of ~1,700 stands, Heathrow and Frankfurt included. The
+logic that reads them is kept because it starts working the day a mapper adds them, but it is not
+what the feature does today.
+
+### Stands mapped under several identifiers
+
+A stand that can be worked under more than one number is often mapped as a **single node carrying
+all of them**: `A1;A2` at KEWR, `A54/A56` and `C16/C16A + C16B` at EDDF — around 8–10% of the
+stands at those two fields. `StandIdentifier` splits such a tag on `;`, `/`, `+`, `,` and `&` (never
+on `-`, which reads as a range, or on spaces, which belong to names like "Gate 12"): the first
+identifier becomes `SurfaceParking.name` — what the map labels and the clearance says — and the
+rest, along with the tag exactly as written, become `SurfaceParking.aliases`, which
+`AirportSurfaceModel.parking(named:)` also matches. So a pilot who types either `A1` or `A2` reaches
+the stand tagged `A1;A2`, and is cleared to the gate they typed. A bare number following a lettered
+identifier inherits its letters (`A54/56` → A54, A56). A stand's own name always beats another
+stand's alias. The raw `ref` is never discarded — it stays in `SurfaceParking.tags` like every other
+OSM tag.
 
 - **Gates/parking** connect to the taxi network via an **inferred connector** (lower confidence),
   so routing can start/end at a stand without routing *through* stands. The connector attaches to

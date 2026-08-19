@@ -142,7 +142,10 @@ enum OSMSurface {
     ///  - 1: original schema (runways, taxiways, holds, gates, parking, aprons).
     ///  - 2: added building / terminal footprints (so gate lead-ins don't cut through a
     ///       concourse). A v1 cache has no buildings and is re-fetched on next load.
-    static let surfaceSchemaVersion = 2
+    ///  - 3: multi-identifier stands are split (`A1;A2` → name "A1", alias "A2"). A v2
+    ///       cache holds the raw tag as the stand's name, which is spoken as written and
+    ///       cannot be matched by a pilot typing either identifier, so it is re-fetched.
+    static let surfaceSchemaVersion = 3
 
     // MARK: - Disclaimers
 

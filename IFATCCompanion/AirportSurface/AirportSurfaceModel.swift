@@ -196,11 +196,54 @@ struct SurfaceParking: Codable, Equatable, Identifiable {
     var osmID: String
     var tags: [String: String]
     var kind: Kind
-    /// `ref` preferred, else `name` (e.g. "B44").
+    /// The identifier a controller says, from `ref` (else `name`) — e.g. "B44". When the
+    /// tag carries several identifiers for the one stand ("A1;A2"), this is the first of
+    /// them and the rest are in `aliases` (see `StandIdentifier`).
     var name: String
     var coordinate: GeoCoordinate
+    /// The other identifiers this same stand answers to, including the raw multi-value tag
+    /// as written. Empty for the ordinary single-`ref` stand. Used for *matching* only — a
+    /// stand is always displayed and spoken as its `name`.
+    var aliases: [String] = []
 
     var id: String { osmID }
+
+    /// Whether `candidate` is this stand's own name, case- and whitespace-insensitively.
+    func isNamed(_ candidate: String) -> Bool {
+        Self.key(candidate) == Self.key(name)
+    }
+
+    /// Whether this stand answers to `candidate` at all — its name or any of its aliases.
+    func matches(_ candidate: String) -> Bool {
+        let key = Self.key(candidate)
+        guard !key.isEmpty else { return false }
+        if key == Self.key(name) { return true }
+        return aliases.contains { Self.key($0) == key }
+    }
+
+    private static func key(_ s: String) -> String {
+        s.trimmingCharacters(in: .whitespaces).uppercased()
+    }
+}
+
+// Custom decoding so a cache written before `aliases` existed still decodes (the key is
+// simply absent → empty). Such a cache also predates the schema bump that introduced split
+// identifiers, so the provider re-fetches it anyway. Declared in an extension to preserve
+// the synthesized memberwise initializer; encoding stays synthesized.
+extension SurfaceParking {
+    enum CodingKeys: String, CodingKey {
+        case osmID, tags, kind, name, coordinate, aliases
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        osmID = try c.decode(String.self, forKey: .osmID)
+        tags = try c.decode([String: String].self, forKey: .tags)
+        kind = try c.decode(Kind.self, forKey: .kind)
+        name = try c.decode(String.self, forKey: .name)
+        coordinate = try c.decode(GeoCoordinate.self, forKey: .coordinate)
+        aliases = try c.decodeIfPresent([String].self, forKey: .aliases) ?? []
+    }
 }
 
 /// An apron area polygon.
@@ -269,11 +312,14 @@ struct AirportSurfaceModel: Codable, Equatable {
         return runwayEnds.first { $0.ident.uppercased() == key }
     }
 
-    /// Locate the parking position (gate/stand) whose name matches, case-insensitively.
+    /// Locate the parking position (gate/stand) answering to a name, case-insensitively.
+    /// A stand's own name wins over another stand's alias, so a field mapping both `C16`
+    /// and `C16/C16A` resolves "C16" to the stand actually called that.
     func parking(named name: String) -> SurfaceParking? {
-        let key = name.uppercased().trimmingCharacters(in: .whitespaces)
+        let key = name.trimmingCharacters(in: .whitespaces)
         guard !key.isEmpty else { return nil }
-        return parkingPositions.first { $0.name.uppercased() == key }
+        if let exact = parkingPositions.first(where: { $0.isNamed(key) }) { return exact }
+        return parkingPositions.first { $0.matches(key) }
     }
 }
 
