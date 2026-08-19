@@ -22,6 +22,12 @@ final class IFConnectManager: ObservableObject {
     private weak var diagnostics: DiagnosticsStore?
     private var pollTask: Task<Void, Never>?
     private var discoveryTimeoutTask: Task<Void, Never>?
+    /// The in-flight connect attempt, and the watchdog that gives up on its address.
+    private var connectTask: Task<Void, Never>?
+    private var rediscoverWatchdog: Task<Void, Never>?
+    /// Bumped for every connect attempt so a superseded one — one the watchdog has
+    /// already given up on — can't write state or start a second search behind it.
+    private var connectToken = 0
     /// Last angular conventions written to Diagnostics, so only the changes are logged.
     private struct AngleUnitsSnapshot: Equatable {
         let aircraftInDegrees: Bool
@@ -58,6 +64,14 @@ final class IFConnectManager: ObservableObject {
     /// A short settle (300–500 ms) avoids the partial/garbled first frame Infinite
     /// Flight sometimes serves the instant the connection is ready.
     var manifestSettleDelay: TimeInterval = 0.4
+    /// Hard deadline on *reaching* a configured address before the search for Infinite
+    /// Flight's current address takes over, when the caller allowed rediscovery. The
+    /// socket's own timeout normally trips first; this bounds the stalls it can't see —
+    /// a connection left sitting in `.waiting` behind a route that no longer exists, for
+    /// one. Only the reaching part is bounded: once Infinite Flight has answered and the
+    /// manifest is coming in, the address is proven right and is given as long as it
+    /// needs.
+    var rediscoverAfter: TimeInterval = 10
 
     func configure(diagnostics: DiagnosticsStore) {
         self.diagnostics = diagnostics
@@ -83,7 +97,10 @@ final class IFConnectManager: ObservableObject {
         lastError = nil
         diagnostics?.log(.connect, "Connecting to \(host):\(port)…")
 
-        Task {
+        connectToken &+= 1
+        let token = connectToken
+
+        let work = Task {
             var lastFailure: Error?
             for attempt in 1...max(1, connectMaxAttempts) {
                 do {
@@ -113,6 +130,10 @@ final class IFConnectManager: ObservableObject {
                     }
                 }
             }
+            // The watchdog may already have given up on this address and started the
+            // search. This attempt is then history: it must not report a failure over
+            // the search, nor start a second one.
+            guard connectToken == token else { return }
             let message = lastFailure.map(errorMessage) ?? "Connection failed."
             let detail = lastFailure.flatMap(errorDetail)
 
@@ -131,6 +152,30 @@ final class IFConnectManager: ObservableObject {
             connectionState = .failed(message, detail: detail)
             lastError = detail ?? message
             diagnostics?.log(.connect, "Connect failed after \(max(1, connectMaxAttempts)) attempt(s): \(detail ?? message)")
+        }
+        connectTask = work
+
+        guard rediscoverOnFailure else { return }
+        // Bound the *reaching* stage. The socket's own six-second timeout normally trips
+        // first and the loop above falls back on its own; this catches the attempt that
+        // simply never comes back — a connection parked in `.waiting` behind a route to a
+        // network this device has left — so a stale address can never hold the app at
+        // "Connecting…" indefinitely.
+        rediscoverWatchdog?.cancel()
+        let deadline = max(1, rediscoverAfter)
+        rediscoverWatchdog = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(deadline * 1_000_000_000))
+            guard let self, !Task.isCancelled, self.connectToken == token else { return }
+            // Only still-reaching counts. `.receivingManifest` means Infinite Flight
+            // answered — the address is right and a slow handshake deserves its time —
+            // and any other state means this attempt has already resolved.
+            guard case .connecting = self.connectionState else { return }
+            // Retire this attempt so its own tail can't also report or re-search.
+            self.connectToken &+= 1
+            work.cancel()
+            await self.client.disconnect()
+            self.diagnostics?.log(.connect, "Still nothing from \(host):\(port) after \(Int(deadline))s. Searching the local network for Infinite Flight's current address…")
+            self.rediscover(replacing: host, onRediscovered: onRediscovered)
         }
     }
 
@@ -268,6 +313,14 @@ final class IFConnectManager: ObservableObject {
     }
 
     func disconnect() {
+        // Retire any in-flight connect attempt: a deliberate disconnect must not be
+        // followed a moment later by that attempt's failure — or by the search its
+        // watchdog would have started.
+        connectToken &+= 1
+        rediscoverWatchdog?.cancel()
+        rediscoverWatchdog = nil
+        connectTask?.cancel()
+        connectTask = nil
         pollTask?.cancel()
         pollTask = nil
         Task { await client.disconnect() }
