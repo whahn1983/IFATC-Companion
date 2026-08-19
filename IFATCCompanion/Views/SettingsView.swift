@@ -112,6 +112,10 @@ struct SettingsView: View {
             .disabled(liveLocked)
             Toggle("Auto-discover on local network", isOn: $settings.autoDiscover)
                 .disabled(liveLocked)
+            if settings.autoDiscover {
+                Text("Finds Infinite Flight automatically and keeps the address above up to date — if nothing answers there (after changing Wi-Fi, say), the network is searched again and the address is replaced. Turn this off to keep an address you entered yourself.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Toggle("Keep screen awake", isOn: $settings.keepScreenAwake)
             if settings.keepScreenAwake {
                 Text("Prevents the screen from locking, which would drop the Infinite Flight connection.")

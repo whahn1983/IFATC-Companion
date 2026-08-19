@@ -1526,20 +1526,45 @@ final class AppModel: ObservableObject {
     /// Bring the Infinite Flight link up: auto-discover when enabled and no host is set,
     /// otherwise connect to the configured host. Split out of `startLive()` so a flight
     /// swap can force a fresh link without also re-running the session restore.
+    ///
+    /// A stored address is a starting point, not a fact. With auto-discover on, an
+    /// address nothing answers at is re-searched and overwritten with whatever the
+    /// network actually has — the iPad's IP changes with the Wi-Fi it joins, and the
+    /// address discovery wrote last time then points at nothing. Auto-discover off means
+    /// the address is the pilot's own and is left exactly as entered.
     private func connectToInfiniteFlight() {
-        if settings.autoDiscover && settings.host.isEmpty {
+        if settings.host.isEmpty {
+            guard settings.autoDiscover else {
+                diagnostics.log(.app, "No host set and auto-discover off — staying idle. Enter an IP in Settings.")
+                return
+            }
             connect.startAutoDiscover { [weak self] device in
                 guard let self else { return }
-                self.settings.host = device.address
-                self.settings.port = device.port
+                self.adoptDiscoveredDevice(device)
                 self.connect.connect(host: device.address, port: device.port)
                 self.afterConnect()
             }
-        } else if !settings.host.isEmpty {
-            connect.connect(host: settings.host, port: settings.port)
+        } else if settings.autoDiscover {
+            connect.connect(host: settings.host,
+                            port: settings.port,
+                            rediscoverOnFailure: true) { [weak self] device in
+                self?.adoptDiscoveredDevice(device)
+            }
             afterConnect()
         } else {
-            diagnostics.log(.app, "No host set and auto-discover off — staying idle. Enter an IP in Settings.")
+            connect.connect(host: settings.host, port: settings.port)
+            afterConnect()
+        }
+    }
+
+    /// Persist the endpoint auto-discovery found, replacing whatever was stored. Called
+    /// both for a first discovery and for a rediscovery that supersedes a stale address.
+    private func adoptDiscoveredDevice(_ device: IFDiscoveryService.Device) {
+        let previous = settings.host
+        settings.host = device.address
+        settings.port = device.port
+        if !previous.isEmpty && previous != device.address {
+            diagnostics.log(.app, "Infinite Flight address updated from \(previous) to \(device.address) — the network changed.")
         }
     }
 

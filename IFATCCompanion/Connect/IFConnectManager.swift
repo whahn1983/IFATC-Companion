@@ -65,7 +65,19 @@ final class IFConnectManager: ObservableObject {
 
     // MARK: - Connection
 
-    func connect(host: String, port: Int) {
+    /// Bring the link up against `host`.
+    ///
+    /// When `rediscoverOnFailure` is set and nothing answers at that address, the
+    /// stored address is treated as stale rather than authoritative: auto-discovery
+    /// runs again and the link is retried against whatever the search finds, with the
+    /// new endpoint handed back through `onRediscovered` so the caller can persist it.
+    /// This is what makes a saved address survive a change of network — the iPad's IP
+    /// moves with the Wi-Fi it's on, and the previously discovered one simply stops
+    /// existing.
+    func connect(host: String,
+                 port: Int,
+                 rediscoverOnFailure: Bool = false,
+                 onRediscovered: ((IFDiscoveryService.Device) -> Void)? = nil) {
         guard !connectionState.isActive else { return }
         connectionState = .connecting
         lastError = nil
@@ -87,6 +99,10 @@ final class IFConnectManager: ObservableObject {
                     lastFailure = error
                     // `.invalidHost` won't fix itself on a retry — give up immediately.
                     if case IFConnectError.invalidHost = error { break }
+                    // Nothing answered at this address at all. Retrying a dead address
+                    // only delays the search for the live one, so stop early and let the
+                    // rediscovery fallback below take over.
+                    if rediscoverOnFailure && Self.isUnreachable(error) { break }
                     let message = errorMessage(error)
                     if attempt < max(1, connectMaxAttempts) {
                         diagnostics?.log(.connect, "Connect attempt \(attempt) failed (\(message)). Retrying…")
@@ -99,9 +115,55 @@ final class IFConnectManager: ObservableObject {
             }
             let message = lastFailure.map(errorMessage) ?? "Connection failed."
             let detail = lastFailure.flatMap(errorDetail)
+
+            // Nothing is listening where we were told to look. If the caller allows it,
+            // go and find Infinite Flight's current address instead of failing on an
+            // address that may simply belong to an old network. A manifest failure is
+            // *not* this case — there, Infinite Flight answered, so the address is right
+            // and searching for another would only find the same device again.
+            if rediscoverOnFailure, let lastFailure, Self.isUnreachable(lastFailure) {
+                await client.disconnect()
+                diagnostics?.log(.connect, "No Infinite Flight at \(host):\(port) (\(message)). Searching the local network for its current address…")
+                rediscover(replacing: host, onRediscovered: onRediscovered)
+                return
+            }
+
             connectionState = .failed(message, detail: detail)
             lastError = detail ?? message
             diagnostics?.log(.connect, "Connect failed after \(max(1, connectMaxAttempts)) attempt(s): \(detail ?? message)")
+        }
+    }
+
+    /// Whether a connect failure means *nothing answered* at the address — as opposed
+    /// to Infinite Flight answering badly (a partial or garbled manifest), which a
+    /// retry against the same address fixes.
+    nonisolated static func isUnreachable(_ error: Error) -> Bool {
+        guard let error = error as? IFConnectError else { return false }
+        switch error {
+        case .invalidHost, .timeout, .connectionFailed, .notConnected:
+            return true
+        case .manifestUnavailable, .unknownState, .decodingFailed, .cancelled:
+            return false
+        }
+    }
+
+    /// Re-run auto-discovery after `previousHost` stopped answering, then connect to
+    /// whatever is found. The discovered endpoint is reported through `onRediscovered`
+    /// first so the caller can overwrite the address it had stored. The retry itself
+    /// does not fall back again — one search per connect attempt, so a network with no
+    /// Infinite Flight on it surfaces the normal "not found" failure instead of looping.
+    private func rediscover(replacing previousHost: String,
+                            onRediscovered: ((IFDiscoveryService.Device) -> Void)?) {
+        // Clear `.connecting` so `startAutoDiscover`'s own connect isn't short-circuited
+        // by the `guard !connectionState.isActive` at the top of `connect(host:port:)`.
+        connectionState = .disconnected
+        startAutoDiscover { [weak self] device in
+            guard let self else { return }
+            if device.address != previousHost {
+                self.diagnostics?.log(.connect, "Infinite Flight is now at \(device.address):\(device.port) — replacing the stored address \(previousHost).")
+            }
+            onRediscovered?(device)
+            self.connect(host: device.address, port: device.port)
         }
     }
 
