@@ -173,8 +173,6 @@ struct SettingsView: View {
             Toggle("Hold to Talk button", isOn: $settings.holdToTalkEnabled)
         } header: {
             Text("Pilot Voice")
-        } footer: {
-            Text("Speaks your readbacks and requests aloud when you use the buttons; spoken input is never repeated. \"Hold to Talk\" is the push-to-talk mic in the ATC responses — turn it off to hide it.")
         }
     }
 
@@ -255,8 +253,6 @@ struct SettingsView: View {
             }
         } header: {
             Text("ATC Automation")
-        } footer: {
-            Text("You make your own calls with the buttons (clearance through ready); the controller's position-based calls play automatically — takeoff once you line up, the Departure hand-off after you're airborne, and the en-route and arrival sequence. Read backs and check-ins stay manual. Auto-tune moves the active frequency to the next controller only after you read the hand-off back; turn it off to tune by hand. Initial climb is set above the field and raised to a valid MSL altitude at high-elevation airports (e.g. Denver). Center sector hand-offs pass you from one en-route sector to the next as you cross the boundaries — Houston Center to Fort Worth Center to Memphis Center — between the Departure hand-off and Approach; turn it off for a single generic Center.")
         }
     }
 
@@ -267,8 +263,6 @@ struct SettingsView: View {
             Toggle("Keep saved flights up to date", isOn: $settings.autoSaveFlights)
         } header: {
             Text("Saved Flights")
-        } footer: {
-            Text("While a saved flight is loaded, keep writing your progress back into it as you fly, so switching to another flight and back picks up exactly where you left off. Turn this off to treat a saved flight as a fixed snapshot that only changes when you tap Save.")
         }
     }
 
@@ -290,8 +284,6 @@ struct SettingsView: View {
             Toggle("Radio voice effect", isOn: $settings.transmissionStaticEnabled)
         } header: {
             Text("Background Radio & Notification")
-        } footer: {
-            Text("Background chatter plays quiet, static-wrapped traffic on your tuned frequency and keeps the app running when backgrounded (overriding the silent switch) so live calls don't stall. The Live flight notification adds a Lock Screen / Dynamic Island card with Read Back and Check In buttons, and needs chatter for its audio. \"Radio voice effect\" gives the voices a VHF-radio sound. Both use more battery.")
         }
     }
 
@@ -318,8 +310,6 @@ struct SettingsView: View {
             }
         } header: {
             Text("SIGMET / PIREP")
-        } footer: {
-            Text("Route corridor and altitude band set how close — laterally and by altitude — a PIREP must be to count toward the ride report. SIGMETs match by area and the radar reroute uses its own corridor, so neither is affected by these sliders. Endpoint is the aviation weather source (METAR, TAF, PIREP, SIGMET).")
         }
     }
 
@@ -339,16 +329,9 @@ struct SettingsView: View {
             Picker("Weather deviation alerts", selection: $settings.weatherDeviationAlerts) {
                 ForEach(WeatherDeviationAlertMode.allCases) { Text($0.title).tag($0) }
             }
-            Toggle(isOn: Binding(
+            Toggle("Deviations from satellite estimate", isOn: Binding(
                 get: { settings.satelliteDeviationsEnabled },
-                set: { settings.satelliteDeviationsEnabled = $0; model.applySatelliteDeviationSettingChange() })) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Deviations from satellite estimate")
-                    Text("Draw reroute lines around NASA global satellite precipitation where there's no radar (e.g. oceans, much of the world). Lower confidence, coarser and more latent than radar, and severity can't be graded reliably — always labeled “satellite estimate, not radar.”")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-            }
+                set: { settings.satelliteDeviationsEnabled = $0; model.applySatelliteDeviationSettingChange() }))
             Toggle("Show data-source labels", isOn: $settings.showWeatherDataSourceLabels)
             Toggle("Show coverage warnings", isOn: $settings.showWeatherCoverageWarnings)
             // The "Reduce cellular data" toggle is hidden while OPERA is disabled: its
@@ -433,14 +416,7 @@ struct SettingsView: View {
             }
             Toggle("Automatic runway-crossing calls", isOn: osmCrossingBinding)
             Toggle("Auto-recalculate when off route", isOn: osmRecalcBinding)
-            Toggle(isOn: autoAssignGatesBinding) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Auto-assign gates")
-                    Text("Fill a **blank** Dep Gate / Arr Gate with a real stand from the airport's OpenStreetMap data — the airline's own stand and one sized for your aircraft where OSM carries those tags, otherwise a random plausible stand. A gate you type is never changed; turning this off gives back only the gates it filled in.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-            }
+            Toggle("Auto-assign gates", isOn: autoAssignGatesBinding)
             Button {
                 model.airportSurface.refreshData()
             } label: {
