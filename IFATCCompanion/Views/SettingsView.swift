@@ -112,15 +112,7 @@ struct SettingsView: View {
             .disabled(liveLocked)
             Toggle("Auto-discover on local network", isOn: $settings.autoDiscover)
                 .disabled(liveLocked)
-            if settings.autoDiscover {
-                Text("Also replaces the address above when nothing answers there — after changing Wi-Fi, say. Turn off to keep an address you entered yourself.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
             Toggle("Keep screen awake", isOn: $settings.keepScreenAwake)
-            if settings.keepScreenAwake {
-                Text("Prevents the screen from locking, which would drop the Infinite Flight connection.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
             if !settings.mockMode && entitlements.hasLiveAccess {
                 Button {
                     model.reconnect()
