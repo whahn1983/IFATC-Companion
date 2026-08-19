@@ -1,4 +1,5 @@
 import Foundation
+import CoreLocation
 
 /// Which end of the flight an automatic stand assignment is being made for. The two ends
 /// are assigned independently — a blank departure gate is filled from the origin field's
@@ -26,30 +27,42 @@ enum GateRole: String, Equatable, CaseIterable {
 struct AutoGateStamp: Equatable {
     var icao: String
     var gate: String
+    /// Whether the gate was read off the aircraft's own position — it was parked on that
+    /// stand — rather than chosen from the field's stand list. A *chosen* gate is worth
+    /// replacing the moment the aircraft's position says which stand it is actually on; a
+    /// position-derived one is already the truth and is never re-picked.
+    var fromAircraftPosition: Bool
 
-    init(icao: String, gate: String) {
+    init(icao: String, gate: String, fromAircraftPosition: Bool = false) {
         self.icao = icao.uppercased().trimmingCharacters(in: .whitespacesAndNewlines)
         self.gate = gate.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.fromAircraftPosition = fromAircraftPosition
     }
 
-    /// `"KIAH:C24"`. Empty when either half is missing (nothing to remember).
+    /// `"KIAH:C24"`, or `"KIAH:C24:P"` for a gate read off the aircraft's position. Empty
+    /// when either of the first two halves is missing (nothing to remember).
     var encoded: String {
         guard !icao.isEmpty, !gate.isEmpty else { return "" }
-        return "\(icao):\(gate)"
+        return fromAircraftPosition ? "\(icao):\(gate):\(Self.positionFlag)" : "\(icao):\(gate)"
     }
 
     /// Decode a stored marker. Returns nil for an empty/garbled value, which reads as
     /// "the app has not assigned a gate" — the safe direction, because an unrecognised
-    /// marker leaves whatever is in the field alone.
+    /// marker leaves whatever is in the field alone. A two-part marker (everything written
+    /// before the position-derived gate existed) decodes as a chosen gate.
     init?(encoded: String) {
-        let parts = encoded.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
-        guard parts.count == 2 else { return nil }
+        let parts = encoded.split(separator: ":", maxSplits: 2, omittingEmptySubsequences: false)
+        guard parts.count == 2 || parts.count == 3 else { return nil }
         let icao = String(parts[0]).uppercased().trimmingCharacters(in: .whitespacesAndNewlines)
         let gate = String(parts[1]).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !icao.isEmpty, !gate.isEmpty else { return nil }
         self.icao = icao
         self.gate = gate
+        self.fromAircraftPosition = parts.count == 3
+            && String(parts[2]).trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == Self.positionFlag
     }
+
+    private static let positionFlag = "P"
 }
 
 /// What an OSM stand's tags say about the stand, normalized. Every field is best-effort:
@@ -293,8 +306,10 @@ enum StandOperators {
 
 /// Picks a realistic stand for a flight from an airport's OpenStreetMap stand data.
 ///
-/// The assignment is deliberately data-led rather than invented: the stand comes from the
-/// airport's own OSM extract, and the tags that extract carries are used for as much of the
+/// The assignment is deliberately data-led rather than invented. When the aircraft is already
+/// **parked on a mapped stand** at the departure field, that stand is the gate — nothing is
+/// chosen at all, it is simply read off the aircraft's position. Otherwise the stand comes from
+/// the airport's own OSM extract, and the tags that extract carries are used for as much of the
 /// choice as they support —
 ///   • the airline's **own** stands when `operator` names the carrier flying;
 ///   • a stand **sized for the aircraft** when `aircraft:type` says what fits, preferring
@@ -315,15 +330,23 @@ enum GateAssigner {
         var airline: String
         var aircraftName: String?
         var aircraftClass: AircraftSizeClass
+        /// Where the aircraft is **parked**, when it is: supplied only when telemetry says
+        /// the aircraft is stopped on the ground, so a non-nil value always means "this is
+        /// where the aircraft is sitting". Nil while airborne, taxiing, or before the first
+        /// fix. When it lands on a mapped stand, the departure gate stops being a guess.
+        var parkedPosition: GeoCoordinate?
 
         /// - Parameter aircraftClass: defaults to the class implied by `aircraftName`
         ///   (`medium` when Infinite Flight hasn't reported one).
+        /// - Parameter parkedPosition: the aircraft's position, and only when it is stopped
+        ///   on the ground there. The caller owns that test — see `AppModel`.
         init(callsign: String = "", airline: String = "", aircraftName: String? = nil,
-             aircraftClass: AircraftSizeClass? = nil) {
+             aircraftClass: AircraftSizeClass? = nil, parkedPosition: GeoCoordinate? = nil) {
             self.callsign = callsign
             self.airline = airline
             self.aircraftName = aircraftName
             self.aircraftClass = aircraftClass ?? AircraftSizeClass.classify(aircraftName: aircraftName)
+            self.parkedPosition = parkedPosition
         }
 
         /// The airline designator flown, from the callsign ("UAL598" → "UAL"). Empty for a
@@ -365,6 +388,9 @@ enum GateAssigner {
         var coordinate: GeoCoordinate
         var matchedOperator: Bool
         var matchedAircraftType: Bool
+        /// Whether the stand was read off the aircraft's own position — it is parked there —
+        /// rather than chosen from the field's stand list. A `true` here is not a guess.
+        var fromAircraftPosition: Bool
         /// How many stands were in the winning band the pick was drawn from.
         var tiedCandidates: Int
         /// How many usable stands the field offered at all.
@@ -395,9 +421,38 @@ enum GateAssigner {
     /// Whether a gate value is one the app assigned itself (so clearing the feature may
     /// clear it), rather than one the pilot typed.
     static func isAppAssigned(current: String, stamp: String) -> Bool {
+        stampOwning(current: current, stamp: stamp) != nil
+    }
+
+    /// The app's marker when it still owns what is in the field, else nil (the pilot's gate,
+    /// a blank field, or a marker that no longer matches).
+    private static func stampOwning(current: String, stamp: String) -> AutoGateStamp? {
         let entered = current.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !entered.isEmpty, let stamp = AutoGateStamp(encoded: stamp) else { return false }
-        return stamp.gate.caseInsensitiveCompare(entered) == .orderedSame
+        guard !entered.isEmpty, let decoded = AutoGateStamp(encoded: stamp),
+              decoded.gate.caseInsensitiveCompare(entered) == .orderedSame else { return nil }
+        return decoded
+    }
+
+    /// Whether a gate the app *chose* for this airport could still be improved on by reading
+    /// the aircraft's position — i.e. the field holds the app's own chosen gate for this
+    /// field, so a stand the aircraft turns out to be parked on should replace it.
+    ///
+    /// This is the "is it worth looking again" test, used before there is an assignment to
+    /// judge; `mayUpgrade` is the test applied to the assignment that comes back. Both are
+    /// false for a gate the pilot typed and for one already read off the aircraft's position.
+    static func couldUpgrade(current: String, stamp: String, icao: String) -> Bool {
+        guard let decoded = stampOwning(current: current, stamp: stamp) else { return false }
+        return !decoded.fromAircraftPosition
+            && decoded.icao == icao.uppercased().trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Whether `assignment` may replace what the app itself last wrote for the same airport
+    /// because it is better information: a stand the aircraft is demonstrably parked on beats
+    /// one chosen from the field's stand list. Never touches a gate the pilot typed, and never
+    /// swaps a position-derived gate back for a chosen one.
+    static func mayUpgrade(current: String, stamp: String, icao: String,
+                           to assignment: Assignment) -> Bool {
+        assignment.fromAircraftPosition && couldUpgrade(current: current, stamp: stamp, icao: icao)
     }
 
     /// Pick a stand for the flight, or nil when the field's extract carries no stand that
@@ -410,30 +465,81 @@ enum GateAssigner {
 
     /// Seedable form, so the choice can be driven deterministically in tests.
     ///
-    /// `role` does not change the pick today — both ends of the flight are chosen from the
-    /// same stand data in the same way — it labels the assignment for the diagnostics log
-    /// and keeps the two ends' bookkeeping separate.
+    /// `role` decides one thing: only a **departure** gate may be read off the aircraft's
+    /// parked position. The arrival gate is picked while the aircraft is still at the origin
+    /// (or enroute), where its position says nothing about which stand it will end up on —
+    /// and on a there-and-back leg, where origin and destination are the same field, reading
+    /// it would hand back the stand the flight is leaving. Beyond that both ends are chosen
+    /// from the same stand data in the same way.
     static func assign<G: RandomNumberGenerator>(surface: AirportSurfaceModel,
                                                 flight: FlightContext,
                                                 role: GateRole,
                                                 using generator: inout G) -> Assignment? {
         let candidates = self.candidates(in: surface, flight: flight)
-        guard let bestPenalty = candidates.map({ $0.penalty }).min() else { return nil }
+        guard !candidates.isEmpty else { return nil }
+
+        // The aircraft is parked on one of these stands: that stand *is* the departure gate,
+        // and no amount of tag matching beats knowing. Short-circuits the pick entirely.
+        if role == .departure, let parked = standAircraftIsParkedOn(among: candidates, flight: flight) {
+            return assignment(for: parked.candidate, fromAircraftPosition: true,
+                              band: 1, total: candidates.count,
+                              reason: "aircraft is parked on it "
+                                + "(\(Int(parked.distanceMeters.rounded())) m from the mapped stand)")
+        }
 
         // Lowest penalty wins, and the winner is drawn at random from everything tied on it
         // — so a field hands out a different one of its equally-suitable stands each flight
         // rather than always the first one in the extract.
+        guard let bestPenalty = candidates.map({ $0.penalty }).min() else { return nil }
         let band = candidates.filter { $0.penalty == bestPenalty }
         guard let winner = band.randomElement(using: &generator) else { return nil }
-
-        return Assignment(gate: winner.stand.name.trimmingCharacters(in: .whitespacesAndNewlines),
-                          osmID: winner.stand.osmID,
-                          coordinate: winner.stand.coordinate,
-                          matchedOperator: winner.matchedOperator,
-                          matchedAircraftType: winner.profile.maxClass != nil,
-                          tiedCandidates: band.count,
-                          totalCandidates: candidates.count,
+        return assignment(for: winner, fromAircraftPosition: false,
+                          band: band.count, total: candidates.count,
                           reason: reason(for: winner, flight: flight, band: band.count))
+    }
+
+    /// How close to a mapped stand a parked aircraft has to be for that stand to be read as
+    /// the gate it is sitting on. Matches the radius the arrival completion already uses
+    /// (`AppModel.gateArrivalRadiusMeters`), and for the same reason: an OSM stand is a single
+    /// node, mapped anywhere from the jet-bridge head to the nose-wheel stop line, and the
+    /// Infinite Flight scenery it is being compared against is a different survey again. The
+    /// *nearest* stand wins, so at a tightly packed concourse the radius only decides whether
+    /// the aircraft is on a stand at all, not which one.
+    static let parkedAtStandMeters: Double = 80
+
+    /// The stand a parked aircraft is sitting on, if any: the nearest assignable stand within
+    /// `parkedAtStandMeters`. Nil when the aircraft isn't parked, has no position yet, or is
+    /// nowhere near a mapped stand (out on a taxiway, or a field whose stands aren't mapped).
+    ///
+    /// Deliberately drawn from the same candidate list as the chosen gate, so the two hard
+    /// exclusions still hold: a stand with no identifier can't be named in a clearance even if
+    /// the aircraft is on it, and a de-icing pad or maintenance stand is not a gate to be
+    /// pushed back off.
+    private static func standAircraftIsParkedOn(among candidates: [Candidate],
+                                                flight: FlightContext)
+        -> (candidate: Candidate, distanceMeters: Double)? {
+        guard let parked = flight.parkedPosition?.clLocation, parked.isValid else { return nil }
+        var best: (candidate: Candidate, distanceMeters: Double)?
+        for candidate in candidates {
+            let distance = SurfaceGeometry.distanceMeters(parked, candidate.stand.coordinate.clLocation)
+            guard distance <= parkedAtStandMeters else { continue }
+            if let current = best, distance >= current.distanceMeters { continue }
+            best = (candidate: candidate, distanceMeters: distance)
+        }
+        return best
+    }
+
+    private static func assignment(for candidate: Candidate, fromAircraftPosition: Bool,
+                                   band: Int, total: Int, reason: String) -> Assignment {
+        Assignment(gate: candidate.stand.name.trimmingCharacters(in: .whitespacesAndNewlines),
+                   osmID: candidate.stand.osmID,
+                   coordinate: candidate.stand.coordinate,
+                   matchedOperator: candidate.matchedOperator,
+                   matchedAircraftType: candidate.profile.maxClass != nil,
+                   fromAircraftPosition: fromAircraftPosition,
+                   tiedCandidates: band,
+                   totalCandidates: total,
+                   reason: reason)
     }
 
     // MARK: - Candidates

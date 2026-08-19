@@ -25,6 +25,41 @@ final class GateAutoAssignSettingTests: XCTestCase {
         return model
     }
 
+    /// A field whose stands are spread out, so a test can park the aircraft on a *specific* one.
+    /// `C<n>` sits n × ~0.0005° (~55 m) north of the reference, far enough apart that the 80 m
+    /// parked radius reaches only its own stand and its immediate neighbours.
+    private func spreadStandsSurface(icao: String, reference: CLLocationCoordinate2D) -> AirportSurfaceModel {
+        var model = MockAirportSurface.model(icao: icao, reference: reference,
+                                             primaryRunwayIdent: "15L", gate: "A1")
+        model.parkingPositions = (1...8).map { index in
+            SurfaceParking(osmID: "node/\(icao)-C\(index)",
+                           tags: ["aeroway": "gate", "ref": "C\(index)",
+                                  "operator": "United Airlines", "aircraft:type": "B738"],
+                           kind: .gate, name: "C\(index)",
+                           coordinate: standCoordinate(reference: reference, index: index))
+        }
+        return model
+    }
+
+    private func standCoordinate(reference: CLLocationCoordinate2D, index: Int) -> GeoCoordinate {
+        GeoCoordinate(latitude: reference.latitude + Double(index) * 0.0005,
+                      longitude: reference.longitude)
+    }
+
+    /// Telemetry for an aircraft sitting still on the ground at a coordinate.
+    private func parkedState(at coordinate: GeoCoordinate) -> AircraftState {
+        var state = AircraftState.empty
+        state.latitude = coordinate.latitude
+        state.longitude = coordinate.longitude
+        state.altitudeMSL = 100
+        state.altitudeAGL = 0
+        state.groundSpeed = 0
+        state.onGround = true
+        state.aircraftName = "Boeing 737-800"
+        state.lastUpdate = Date()
+        return state
+    }
+
     private func makeModel() -> AppModel {
         let model = AppModel()
         model.settings.voiceEnabled = false
@@ -46,6 +81,16 @@ final class GateAutoAssignSettingTests: XCTestCase {
     private func waitForAssignment(_ model: AppModel, role: GateRole) async -> String {
         for _ in 0..<200 {
             if !gate(model, role).isEmpty { break }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        return gate(model, role)
+    }
+
+    /// Wait for a gate field to reach an expected value — the assignment *changing* one gate
+    /// for a better one, which the non-empty wait above can't see.
+    private func waitForGate(_ model: AppModel, role: GateRole, toEqual expected: String) async -> String {
+        for _ in 0..<200 {
+            if gate(model, role) == expected { break }
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
         return gate(model, role)
@@ -160,6 +205,79 @@ final class GateAutoAssignSettingTests: XCTestCase {
         XCTAssertTrue(model.mayAutoAssignGate(role: .arrival, icao: "KMSP"),
                       "the arrival gate is still open — it is hours away")
         model.airportSurface.hideTaxiMap()
+    }
+
+    func testTheDepartureGateIsReadOffTheStandTheAircraftIsParkedOn() async {
+        let model = makeModel()
+        model.airportSurface.injectSimulatedSurfaceForTesting(spreadStandsSurface(icao: "KIAH", reference: iah),
+                                                             icao: "KIAH")
+        model.settings.autoAssignGates = true
+        // Parked on C5 before the plan is loaded, so the very first assignment can read it.
+        model.aircraftState = parkedState(at: standCoordinate(reference: iah, index: 5))
+        model.settings.departure = "KIAH"
+        model.syncFlightPlanFromSettings()
+
+        XCTAssertEqual(await waitForGate(model, role: .departure, toEqual: "C5"), "C5",
+                       "the stand the aircraft is sitting on is the gate")
+        XCTAssertEqual(model.settings.autoAssignedDepartureGate, "KIAH:C5:P",
+                       "and the marker records that it was read, not chosen")
+    }
+
+    func testAGateChosenBeforeTelemetryIsUpgradedOnceTheAircraftReportsParked() async {
+        let model = makeModel()
+        model.airportSurface.injectSimulatedSurfaceForTesting(spreadStandsSurface(icao: "KIAH", reference: iah),
+                                                             icao: "KIAH")
+        model.settings.autoAssignGates = true
+        model.settings.departure = "KIAH"
+        // No telemetry yet — the usual case at flight load — so the first gate is a guess.
+        model.syncFlightPlanFromSettings()
+        let chosen = await waitForAssignment(model, role: .departure)
+        XCTAssertFalse(chosen.isEmpty, "a gate is filled in straight away rather than waiting")
+        XCTAssertEqual(model.settings.autoAssignedDepartureGate, "KIAH:\(chosen)",
+                       "marked as chosen, so it can still be improved on")
+
+        // The first fix arrives with the aircraft parked on C5. Fed through the real telemetry
+        // path, so this also covers the transition hook that re-runs the assignment.
+        model.ingestStateForTesting(parkedState(at: standCoordinate(reference: iah, index: 5)))
+
+        XCTAssertEqual(await waitForGate(model, role: .departure, toEqual: "C5"), "C5",
+                       "the guess is replaced by the stand the aircraft is actually on")
+        XCTAssertEqual(model.settings.autoAssignedDepartureGate, "KIAH:C5:P")
+        XCTAssertEqual(model.flightPlan.departureGate, "C5", "and the plan follows")
+    }
+
+    func testAPilotsGateIsNotUpgradedByThePosition() async {
+        let model = makeModel()
+        model.airportSurface.injectSimulatedSurfaceForTesting(spreadStandsSurface(icao: "KIAH", reference: iah),
+                                                             icao: "KIAH")
+        model.settings.autoAssignGates = true
+        model.settings.departureGate = "E7"
+        model.aircraftState = parkedState(at: standCoordinate(reference: iah, index: 5))
+        model.settings.departure = "KIAH"
+        model.syncFlightPlanFromSettings()
+
+        await settle()
+        XCTAssertEqual(model.settings.departureGate, "E7",
+                       "being parked elsewhere doesn't override what the pilot typed")
+        XCTAssertTrue(model.settings.autoAssignedDepartureGate.isEmpty)
+    }
+
+    func testAPositionDerivedGateIsNotRePickedWhenTheAircraftMoves() async {
+        let model = makeModel()
+        model.airportSurface.injectSimulatedSurfaceForTesting(spreadStandsSurface(icao: "KIAH", reference: iah),
+                                                             icao: "KIAH")
+        model.settings.autoAssignGates = true
+        model.aircraftState = parkedState(at: standCoordinate(reference: iah, index: 5))
+        model.settings.departure = "KIAH"
+        model.syncFlightPlanFromSettings()
+        XCTAssertEqual(await waitForGate(model, role: .departure, toEqual: "C5"), "C5")
+
+        // Nudged onto a different stand. The gate already came from the aircraft's position, so
+        // it stands — the pilot clears the field if they want it read again.
+        model.ingestStateForTesting(parkedState(at: standCoordinate(reference: iah, index: 2)))
+        await settle()
+        XCTAssertEqual(model.settings.departureGate, "C5",
+                       "a gate read off the position isn't re-read on every reposition")
     }
 
     func testSwappingGatesCarriesTheirMarkers() {

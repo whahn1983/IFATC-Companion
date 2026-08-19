@@ -1861,6 +1861,11 @@ final class AppModel: ObservableObject {
         // so the deviation line tracks the weather ahead instead of going stale and
         // dropping between manual refreshes.
         maybeResamplePrecipitation()
+        // A departure gate the app *chose* for a blank field becomes knowable the moment the
+        // aircraft reports itself stopped on the ground: whichever mapped stand it is sitting
+        // on is the gate. Hooked to that transition rather than the tick, so it costs one
+        // attempt per stop instead of one per fix.
+        updateAutoGateOnParkedChange(for: state)
         // Pull the destination ATIS the moment the aircraft comes within 100 NM, so the
         // arrival ATIS button appears promptly rather than waiting for the ~5-min timer.
         maybeFetchArrivalATIS()
@@ -2952,13 +2957,54 @@ final class AppModel: ObservableObject {
     // Optional, off by default, and strictly additive: it fills a gate field the pilot left
     // BLANK with a real stand from the airport's OpenStreetMap extract, so the taxi route
     // has somewhere real to start from / end at without the pilot having to look a gate up.
-    // It never overwrites a gate the pilot typed. `GateAssigner` chooses the stand — the
-    // airline's own stand and an aircraft-size match where OSM carries those tags, otherwise
-    // a random plausible stand.
+    // It never overwrites a gate the pilot typed.
+    //
+    // Where the stand comes from, best source first: the departure gate is *read off the
+    // aircraft's own position* when it is parked on a mapped stand — that stand is the gate,
+    // nothing is chosen. Failing that (airborne, mid-taxi, no fix yet, or nowhere near a
+    // mapped stand) `GateAssigner` chooses one: the airline's own stand and an aircraft-size
+    // match where OSM carries those tags, otherwise a random plausible stand. Because the gate
+    // is first filled at flight load — usually before any telemetry — a chosen gate is
+    // upgraded to the parked one the moment the aircraft reports itself stopped on the ground
+    // (`updateAutoGateOnParkedChange`); that is the only case in which the app rewrites its
+    // own gate at the same airport.
 
     /// Roles whose assignment is already in flight, keyed `"departure:KIAH"`, so a second
     /// flight-plan read moments later doesn't queue a duplicate fetch.
     private var autoGateRequests: Set<String> = []
+
+    /// Whether the last telemetry fix had the aircraft stopped on the ground, so the automatic
+    /// assignment can be re-run on the *transition* into that state rather than on every fix.
+    /// Nil until the first usable fix, which is why a session that opens with the aircraft
+    /// already parked still counts as a transition and gets its gate read off its position.
+    private var aircraftWasParked: Bool?
+
+    /// Re-run the assignment when the aircraft first reports itself stopped on the ground. The
+    /// gate is chosen at flight load, which is typically before any telemetry has arrived — so
+    /// this is the moment a *chosen* departure gate can be replaced by the stand the aircraft
+    /// is actually parked on. A no-op when the feature is off, when the field isn't the app's,
+    /// or when the gate already came from the aircraft's position.
+    private func updateAutoGateOnParkedChange(for state: AircraftState) {
+        let parked = aircraftIsParked(state)
+        defer { aircraftWasParked = parked }
+        guard parked, aircraftWasParked != true else { return }
+        autoAssignGatesIfNeeded()
+    }
+
+    /// Whether telemetry has the aircraft sitting still on the ground at a known position —
+    /// the precondition for reading its gate off that position.
+    ///
+    /// Deliberately a weaker test than `isParkedAtGate`, which ends the flight and therefore
+    /// wants the parking brake and the Ramp frequency behind it. All this position does is name
+    /// the stand the aircraft is already on, so being stopped on the ground is evidence enough;
+    /// requiring the brake would leave the gate unnamed for a pilot idling at their stand with
+    /// it released. A missing ground flag reads as *not* on the ground — the opposite default to
+    /// `isParkedAtGate` — because with no ground reference there is nothing to say the aircraft
+    /// isn't airborne, and an airborne position must never name a stand.
+    private func aircraftIsParked(_ s: AircraftState) -> Bool {
+        guard s.coordinate != nil else { return false }
+        return s.onGround == true && (s.groundSpeed ?? 0) < 1
+    }
 
     /// Fill any blank gate field from its airport's stand data. Called whenever the flight's
     /// endpoints are (re)established — the same moment the surfaces are prefetched — and when
@@ -3028,17 +3074,29 @@ final class AppModel: ObservableObject {
     }
 
     /// The flight details the stand picker matches against: the callsign (for the airline's
-    /// own stands) and the aircraft Infinite Flight reports (for the stand's size).
+    /// own stands), the aircraft Infinite Flight reports (for the stand's size), and — when
+    /// the aircraft is sitting still on the ground — where it is, which is what lets a
+    /// departure gate be *read* rather than chosen.
     func gateFlightContext() -> GateAssigner.FlightContext {
         GateAssigner.FlightContext(callsign: flightPlan.callsign,
                                    airline: flightPlan.airline,
-                                   aircraftName: aircraftState.aircraftName)
+                                   aircraftName: aircraftState.aircraftName,
+                                   parkedPosition: parkedAircraftPosition())
+    }
+
+    /// The aircraft's position, but only when it is sitting still on the ground there — so a
+    /// non-nil result always means "this is where the aircraft is parked" (see
+    /// `aircraftIsParked`).
+    private func parkedAircraftPosition() -> GeoCoordinate? {
+        guard aircraftIsParked(aircraftState), let coordinate = aircraftState.coordinate else { return nil }
+        return GeoCoordinate(coordinate)
     }
 
     /// Write an automatic assignment into its gate field and stamp it as the app's own, so a
     /// later assignment knows it may replace it and a pilot edit takes it back.
     func applyAutoAssignedGate(_ assignment: GateAssigner.Assignment, role: GateRole, icao: String) {
-        let stamp = AutoGateStamp(icao: icao, gate: assignment.gate).encoded
+        let stamp = AutoGateStamp(icao: icao, gate: assignment.gate,
+                                  fromAircraftPosition: assignment.fromAircraftPosition).encoded
         switch role {
         case .departure:
             settings.departureGate = assignment.gate
@@ -3055,7 +3113,7 @@ final class AppModel: ObservableObject {
     private func autoAssignGate(role: GateRole) {
         let icao = (role == .departure ? flightPlan.departure : flightPlan.destination)
             .trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        guard icao.count >= 3, mayAutoAssignGate(role: role, icao: icao) else { return }
+        guard icao.count >= 3, shouldRunAutoAssign(role: role, icao: icao) else { return }
         let reference = role == .departure ? resolvedDepartureCoordinate() : resolvedDestinationCoordinate()
         guard let reference, reference.isValid else { return }
         let requestKey = "\(role.rawValue):\(icao)"
@@ -3067,7 +3125,7 @@ final class AppModel: ObservableObject {
             guard let surface else { return }
             // Re-check the field: the pilot may have typed a gate (or the taxi may have
             // started) while the extract was downloading.
-            guard self.mayAutoAssignGate(role: role, icao: icao) else { return }
+            guard self.shouldRunAutoAssign(role: role, icao: icao) else { return }
             guard let assignment = GateAssigner.assign(surface: surface,
                                                        flight: self.gateFlightContext(),
                                                        role: role) else {
@@ -3075,8 +3133,41 @@ final class AppModel: ObservableObject {
                     + "(\(surface.parkingPositions.count) parking features in the extract).")
                 return
             }
+            // A field the app already filled for this airport is only rewritten when the new
+            // gate is genuinely better information — the stand the aircraft is parked on. A
+            // second *chosen* gate would just re-roll the dice on the pilot.
+            guard self.mayWriteAutoGate(assignment, role: role, icao: icao) else { return }
             self.applyAutoAssignedGate(assignment, role: role, icao: icao)
         }
+    }
+
+    /// Whether the assignment for a role is worth running at all: either the field is the
+    /// app's to fill, or it holds a gate the app *chose* and the aircraft is now parked, so
+    /// the stand it is sitting on can replace the guess.
+    private func shouldRunAutoAssign(role: GateRole, icao: String) -> Bool {
+        if mayAutoAssignGate(role: role, icao: icao) { return true }
+        return canUpgradeAutoGate(role: role, icao: icao)
+    }
+
+    /// Whether a chosen departure gate could still be improved on by the aircraft's position:
+    /// the taxi has not begun, the aircraft is parked somewhere, and the field still holds the
+    /// app's own chosen (not yet position-derived) gate for this airport.
+    private func canUpgradeAutoGate(role: GateRole, icao: String) -> Bool {
+        guard role == .departure, airportSurface.kind == .none else { return false }
+        guard parkedAircraftPosition() != nil else { return false }
+        return GateAssigner.couldUpgrade(current: settings.departureGate,
+                                         stamp: settings.autoAssignedDepartureGate, icao: icao)
+    }
+
+    /// Whether this particular assignment may be written: a field that is the app's to fill
+    /// takes anything, and a field already carrying an automatic gate takes only an upgrade.
+    private func mayWriteAutoGate(_ assignment: GateAssigner.Assignment,
+                                  role: GateRole, icao: String) -> Bool {
+        if mayAutoAssignGate(role: role, icao: icao) { return true }
+        guard role == .departure else { return false }
+        return GateAssigner.mayUpgrade(current: settings.departureGate,
+                                       stamp: settings.autoAssignedDepartureGate,
+                                       icao: icao, to: assignment)
     }
 
     /// Merge a flight plan read from Infinite Flight into the active plan. Manual

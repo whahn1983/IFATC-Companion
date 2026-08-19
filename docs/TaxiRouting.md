@@ -279,6 +279,45 @@ toggle (Settings → Data Sources, `AppSettings.autoAssignGates`, off by default
 blank field with a named stand taken from the airport's own OSM extract, so the clearance and the
 map name a real gate.
 
+### The gate you are parked at wins
+
+When the aircraft is **already sitting on a mapped stand** at the departure field, nothing is
+chosen: that stand *is* the gate, read straight off the aircraft's position. It beats every other
+signal, including an airline match — an `operator` tag is a guess about where the flight belongs,
+whereas the position is a fact about where it is.
+
+The position is supplied only when telemetry has the aircraft **stopped on the ground**
+(`AppModel.aircraftIsParked`), so a non-nil position always means "parked here". That test is
+deliberately weaker than `isParkedAtGate`, which ends the flight and so wants the parking brake and
+the Ramp frequency behind it: naming the stand you are on needs no more than being stopped on it,
+and requiring the brake would leave the gate unnamed for a pilot idling at their stand with it
+released. A *missing* ground flag reads as not-on-the-ground — the opposite default to
+`isParkedAtGate` — because an airborne position must never name a stand.
+
+The nearest assignable stand within `GateAssigner.parkedAtStandMeters` (80 m, the same radius the
+arrival completion uses, and for the same reason: an OSM stand is one node, mapped anywhere from the
+jet-bridge head to the nose-wheel stop line, against different scenery again) wins. Since the nearest
+one wins, at a packed concourse the radius only decides whether the aircraft is on a stand at all.
+The two hard exclusions still apply — parking on a de-icing pad or an unidentified stand names
+neither, because neither can be said in a clearance.
+
+Only the **departure** gate is read this way. The arrival gate is picked while the aircraft is still
+at the origin or enroute, where its position says nothing about the stand it will end up on — and on
+a there-and-back leg, where origin and destination are the same field, reading it would hand back the
+stand the flight is leaving.
+
+Because the gate is first filled at flight load — usually before any telemetry has arrived — a gate
+that had to be *chosen* is **upgraded** to the parked one the moment the aircraft reports itself
+stopped on the ground. `AppModel.updateAutoGateOnParkedChange` hooks that transition rather than the
+telemetry tick, so it costs one attempt per stop instead of one per fix, and `GateAssigner.mayUpgrade`
+allows the rewrite only when the incoming gate is position-derived and the outgoing one was the app's
+own guess for the same airport. This is the *only* case in which the app rewrites its own gate at the
+same airport: a position-derived gate is never re-picked (nudging the aircraft onto another stand
+doesn't move the gate — clear the field to have it read again), and a second *chosen* gate would just
+re-roll the dice on the pilot.
+
+### Choosing one when the position can't say
+
 `GateAssigner` (`AirportSurface/GateAssignment.swift`) makes the choice from the stand tags the
 normalizer already keeps on every `SurfaceParking`:
 
@@ -299,8 +338,9 @@ gate assignment comes from the airline, not from a map.
 ### Only when the pilot left it blank
 
 The assignment writes the visible field, so it has to be able to tell its own value apart from a
-pilot's. It stamps what it wrote as `ICAO:GATE` (`AppSettings.autoAssignedDepartureGate` /
-`…ArrivalGate`), and `GateAssigner.mayAssign` then allows a write only when the field is blank, or
+pilot's. It stamps what it wrote as `ICAO:GATE` — or `ICAO:GATE:P` for a gate read off the aircraft's
+position (`AppSettings.autoAssignedDepartureGate` / `…ArrivalGate`; a two-part marker written before
+the flag existed decodes as a chosen gate). `GateAssigner.mayAssign` then allows a write only when the field is blank, or
 still holds the app's own stamp **for a different airport** (the last flight's gate is stale). A
 gate the pilot typed — or typed over an automatic one — is never touched. `AppModel` adds two more
 conditions: the gate the active plan is already flying must be the app's too (a reloaded saved
@@ -309,8 +349,9 @@ feature), and a departure gate is off limits once the taxi has begun, since the 
 the aircraft actually is. Switching the toggle off withdraws only the gates the app filled in.
 
 The assignment runs where the surfaces are prefetched — whenever the flight's endpoints are
-established — and again on every gate-field edit (`applyManualGates`), so a field the pilot has just
-*cleared* is blank again and gets filled. It reads its extract through
+established — again on every gate-field edit (`applyManualGates`), so a field the pilot has just
+*cleared* is blank again and gets filled, and again when the aircraft first reports itself parked (the
+upgrade above). It reads its extract through
 `AirportSurfaceCoordinator.surfaceModel(icao:reference:)`, which never disturbs an active taxi and
 coalesces with the prefetch already in flight, so it costs no extra Overpass request. Every
 assignment is logged with its rationale, so Diagnostics explains why a gate was chosen.
