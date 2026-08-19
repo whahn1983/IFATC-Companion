@@ -53,7 +53,7 @@ IFATC Companion is organized into five tabs:
 - **Saved flights.** Flying more than one flight, or putting one down to come back to later? Save it from the **Flights** list (the button at the top right of the ATC tab) and load it back whenever you like — the app returns exactly as you left it: transcript, clearances, tuned frequency, flight plan, gates and callsign. Flights are named for their route (`KIAH-KORD`), swipe to delete, and the one you're flying stays up to date on its own. Your position and the weather refresh from Infinite Flight the moment you load. See [docs/SavedFlights.md](docs/SavedFlights.md).
 - **Auto-assign gates.** Off by default. Turn it on (Settings → Data Sources) and any gate field you leave blank is filled with a real stand from the airport's OpenStreetMap data, so the taxi route always has a real gate to take you to. If you're **already parked at a stand**, that's the one it uses — it reads your gate off your position rather than guessing. Otherwise it picks: your airline's own stand and one sized for your aircraft where the map says so, else a plausible one. A gate you type is never changed, and turning it off gives back only the gates it filled in.
 - **Clear Flight** button to reset the conversation and start fresh.
-- **Auto-discover** to find Infinite Flight on your local network.
+- **Auto-discover** to find Infinite Flight on your local network — and to keep finding it: if the saved address stops answering (a new Wi-Fi network hands the iPad a different IP), the app searches again and replaces the address on its own. An address you typed yourself is left alone; turn auto-discover off to pin it.
 - **Multiplayer awareness.** When a human controller is staffing your airport on a multiplayer server, IFATC Companion detects it and **stands by** so it never talks over the real controller.
 
 ---
@@ -74,6 +74,7 @@ To connect IFATC Companion to your real Infinite Flight session, you'll need **L
 **2. Connect IFATC Companion (on your iPhone):**
 - Open the **Settings** tab.
 - Enter the **Host/IP** and **Port** from Infinite Flight (the default port is **10112**), or use **auto-discover** to find it automatically.
+- With auto-discover on, you don't have to keep that address current: whenever nothing answers at it, the app re-searches the network and fills in Infinite Flight's new address. This is what happens after you change Wi-Fi networks and the iPad's IP changes.
 
 Once connected, IFATC Companion reads your live aircraft state and flight plan automatically, and the ATC conversation follows your flight.
 
