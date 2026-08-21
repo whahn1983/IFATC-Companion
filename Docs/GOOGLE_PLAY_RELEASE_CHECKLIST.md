@@ -91,15 +91,55 @@ committing code alone, which is why the two are separated.
 
 ### Known gaps to resolve before submitting
 
-- [ ] Two adversarial static reviews of the uncompiled `:app` files found and fixed **23** defects (seven build-breaking), the second round reviewing the first round's fixes — see the parity matrix. These fixes are themselves uncompiled; check them first when the build finally runs.
-- [ ] **Read the first `Android` CI run.** `ubuntu-latest` ships the Android SDK, so the `app` job compiles `:app` — the one thing that could not be done while the port was written. Expect it to fail the first time and treat its output as the real integration list.
-- [ ] `:app` has **not been compiled** in the environment this port was written in — the Android SDK and Google's Maven repository were unreachable there. The engine (`:core`) and the pure Compose screens are both verified, but the first Android Studio build should be expected to surface ordinary integration fixes.
-- [ ] Confirm the **Play Billing library version** in `gradle/libs.versions.toml` against the current Play requirement, and that `PlayBillingRepository` matches its API. This is the one file that could not be compile-checked.
-- [ ] **Nothing in this port has been heard.** The radio effect chain, the TTS voices, the chatter mix and the squelch bursts are ported maths that has never been played through a speaker. Listen to a full flight before shipping.
-- [ ] The **radar raster is not drawn on the route map** — provider selection, fetching and sampling all work, and the vector cells and advisory shading draw, but the fetched image is not composited onto the canvas. Decide whether to ship without it or finish it first.
-- [ ] The **Flights list screen** is not built (`SavedFlightStore` behind it is).
-- [ ] **Play In-App Review** is not called; the engagement counting that decides when to ask is ported.
-- [ ] Review `Docs/ANDROID_PARITY_MATRIX.md` and close or accept every open row.
+**Closed since this list was written** — kept here because knowing what was checked is
+as useful as knowing what is left:
+
+- [x] `:app` compiles. CI (`.github/workflows/android.yml`) runs `assembleDebug` on every
+      Android change. It built clean on the first attempt it was ever given.
+- [x] Android Lint gates at `abortOnError = true` with **zero errors**. Its first run
+      reported *"14 errors, 63 warnings"* while exiting 0, because `abortOnError` was
+      false — a green check that proved nothing. All 14 are fixed.
+- [x] R8 runs. `bundleRelease` is in CI, so minification and resource shrinking are
+      exercised on every change. **This proves the build succeeds, not that the app
+      behaves** — see the runtime item below, which is still open.
+- [x] Play Billing compiles and lints against the pinned library. Three defects were found
+      and fixed in it, including a failed purchase query being treated as authoritative
+      "owns nothing" — which revoked a paying subscriber and poisoned the offline cache.
+
+**Still open:**
+
+- [ ] **Nothing in this port has been heard, and nothing has run on a device.** The radio
+      effect chain, the TTS voices, the chatter mix and the squelch bursts are ported maths
+      that has never been played through a speaker. Listen to a full flight before shipping.
+- [ ] **Run the minified build on a device.** R8 building a bundle is not the same as the
+      app working under it: a serializer R8 stripped fails on first deserialization, not at
+      build time. Exercise settings, saved flights, phraseology profiles, the surface cache
+      and Play Billing **on the minified build**.
+- [ ] The **radar raster is not drawn on the route map** — provider selection, fetching and
+      sampling all work, and the vector cells and advisory shading draw, but the fetched
+      image is not composited onto the canvas.
+- [ ] **The taxi route engine is not wired into `:app`.** `AirportSurfaceCoordinator` is
+      never constructed, so no route is computed: the taxi map draws the field but no
+      route, hold-short bars or crossings, and `TaxiPhraseology` never fires, leaving taxi
+      clearances permanently in their generic form. This is the largest remaining gap —
+      the integration layer for a 2,106-line stateful subsystem that has to be threaded
+      into the telemetry tick and the ATC state machine's taxi, read-back and crossing
+      transitions, and it needs live-telemetry device time to trust.
+- [ ] The **Flights list screen** is not built, and `SavedFlightStore` is not constructed.
+      (Crash/relaunch **session** resume *is* wired and tested — a different thing.)
+- [ ] **Center sector hand-offs**: the sector is now named, but the spoken crossing
+      hand-off, tuning Center to the tracked sector's frequency, persisting the sector
+      across a reconnect, and the `awaitingCenterSectorCheckIn` call-up semantics are not
+      done.
+- [ ] **The Compose screens are not localizable.** They are compiled by `:uicheck` without
+      Android resources, so they cannot call `stringResource` and every user-facing string
+      in them is a hardcoded literal. Seven `cd_*` content descriptions in `strings.xml`
+      are unreferenced for this reason.
+- [ ] **Play In-App Review** is not called; the engagement counting that decides when to
+      ask is ported.
+- [ ] Review `Docs/ANDROID_PARITY_MATRIX.md` and close or accept every open row — in
+      particular every row marked 🔌, which means the `:core` tests pass and the app never
+      calls the code.
 
 ---
 
