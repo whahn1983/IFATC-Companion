@@ -1,13 +1,15 @@
 package com.h3consultingpartners.ifatccompanion.ui
 
 import com.h3consultingpartners.ifatccompanion.core.atis.ATISPhraseology
-import com.h3consultingpartners.ifatccompanion.core.billing.EntitlementState
 import com.h3consultingpartners.ifatccompanion.core.config.AppConfig
+import com.h3consultingpartners.ifatccompanion.core.billing.EntitlementState
+import com.h3consultingpartners.ifatccompanion.core.connect.IFConnectState
+import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticRecord
 import com.h3consultingpartners.ifatccompanion.core.model.ATCFacility
 import com.h3consultingpartners.ifatccompanion.core.session.FlightSessionState
 import com.h3consultingpartners.ifatccompanion.core.session.PilotActionPresentation
 import com.h3consultingpartners.ifatccompanion.core.settings.AppSettings
-import com.h3consultingpartners.ifatccompanion.core.ui.LegalStrings
+import com.h3consultingpartners.ifatccompanion.core.surface.SurfaceSessionState
 import com.h3consultingpartners.ifatccompanion.core.weather.WeatherSessionState
 import com.h3consultingpartners.ifatccompanion.ui.screens.AtcScreenActions
 import com.h3consultingpartners.ifatccompanion.ui.screens.AtcScreenModel
@@ -60,10 +62,10 @@ fun FlightViewModel.atcModel(
         nearestAirport = session.aircraftState.nearestAirport.orEmpty(),
         assignedAltitudeText = formatAltitude(session.assignedAltitude),
         facilityLabel = session.currentFacility.title,
-        connectionText = connectionText(session),
+        connectionText = session.connectionState.detailedTitle,
         standbyText = if (session.companionStandby) PilotActionPresentation.STANDBY_HINT else null,
         weatherBannerText = weatherBannerText(weather),
-        frequencyText = { facility -> formatFrequency(frequencyFor(facility, session)) },
+        frequencyText = { facility -> formatFrequency(frequencyForFacility(facility)) },
         canTune = { facility -> facility in session.relevantFacilities },
         tunableFacilities = ATCFacility.entries.filter { it in session.relevantFacilities },
         atisButtonVisible = atis != null,
@@ -201,14 +203,19 @@ fun FlightViewModel.weatherActions() = WeatherScreenActions(
 
 // region Settings
 
-fun FlightViewModel.settingsModel(session: FlightSessionState, settings: AppSettings) = SettingsScreenModel(
+fun FlightViewModel.settingsModel(
+    session: FlightSessionState,
+    settings: AppSettings,
+    entitlements: EntitlementState,
+    surface: SurfaceSessionState,
+) = SettingsScreenModel(
     settings = settings,
     hasLiveAccess = session.hasLiveAccess,
-    entitlementStatusText = entitlementState().statusText,
+    entitlementStatusText = entitlements.statusText,
     voices = availableVoices(),
     workingSectorText = session.centerSectorName,
     overpassEndpoint = AppConfig.Endpoints.OVERPASS_ENDPOINTS.firstOrNull().orEmpty(),
-    surfaceCacheSummary = surfaceCacheSummary(),
+    surfaceCacheSummary = surface.cacheSummary,
 )
 
 fun FlightViewModel.settingsActions(
@@ -275,7 +282,9 @@ fun FlightViewModel.diagnosticsModel(
     settings: AppSettings,
     weather: WeatherSessionState,
     ui: FlightViewModel.UiState,
-    diagnosticsLog: List<com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticRecord>,
+    diagnosticsLog: List<DiagnosticRecord>,
+    connect: IFConnectState,
+    surface: SurfaceSessionState,
 ): DiagnosticsScreenModel {
     return DiagnosticsScreenModel(
         mockMode = settings.mockMode,
@@ -288,12 +297,15 @@ fun FlightViewModel.diagnosticsModel(
         weatherEndpointText = weather.status,
         weatherDiagnostics = weatherDiagnosticRows(weather),
         showSampledRadarCells = ui.showSampledRadarCells,
-        discoveredStateCount = connectDiagnostics().discoveredStateCount,
-        resolvedMappingCount = connectDiagnostics().resolvedMappingCount,
-        discoveredStates = connectDiagnostics().discoveredStates,
-        lastRawMessage = connectDiagnostics().lastRawMessage,
+        discoveredStateCount = connect.manifestEntries.size,
+        resolvedMappingCount = resolvedMappingCount(),
+        // The manifest is the field's own vocabulary, and a name that does not appear is
+        // the usual reason a reading is missing — so the list is shown verbatim rather than
+        // summarised.
+        discoveredStates = connect.manifestEntries.map { "${it.id}  ${it.name}" },
+        lastRawMessage = connect.lastError ?: connect.liveFlightPlanRaw,
         surfaceDiagnostics = surfaceDiagnosticRows(),
-        surfaceError = surfaceError(),
+        surfaceError = surface.lastError,
         log = diagnosticsLog,
     )
 }
@@ -362,9 +374,3 @@ private val CLOCK_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("HH
 private const val FLIGHT_LEVEL_FLOOR_FT = 18000
 
 // endregion
-
-/** The legal footer the Settings screen shows, kept in `:core` so both platforms share it. */
-internal fun dataSourcesFooter(): String = LegalStrings.dataSourcesSummary()
-
-/** Where the "unlocked" wording comes from when Live access is on. */
-internal fun EntitlementState.liveAccessSummary(): String = statusText

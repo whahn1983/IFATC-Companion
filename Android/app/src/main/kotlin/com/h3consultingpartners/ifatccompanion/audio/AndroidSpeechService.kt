@@ -4,6 +4,7 @@ import android.content.Context
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
+import com.h3consultingpartners.ifatccompanion.core.atis.ATISPhraseology
 import com.h3consultingpartners.ifatccompanion.core.audio.RadioAudio
 import com.h3consultingpartners.ifatccompanion.core.model.ATCFacility
 import com.h3consultingpartners.ifatccompanion.core.model.ATCTransmission
@@ -68,6 +69,12 @@ class AndroidSpeechService(
         val pilotVoiceId: String,
         val atisVoiceId: String,
         val controllerVoiceIds: Map<ATCFacility, String>,
+        /**
+         * Whether the ICAO phraseology pack is selected. Only the D-ATIS renderer reads it
+         * — every other line arrives already rendered by the phraseology engine, which
+         * applied the pack itself.
+         */
+        val icaoPhraseology: Boolean,
     )
 
     private data class QueuedCall(
@@ -169,6 +176,36 @@ class AndroidSpeechService(
 
         queue.trySend(
             QueuedCall(transmission.spokenText, voiceId.ifEmpty { null }, isPilot, configuration),
+        )
+    }
+
+    /**
+     * The voices the Settings picker offers, as (id, title) pairs.
+     *
+     * The audio layer deliberately does not know the UI's option type — it hands back
+     * plain data, and the screen decides how to render it.
+     */
+    fun voiceOptions(): List<Pair<String, String>> = availableVoices().map { voice ->
+        val language = voice.locale.getDisplayName(Locale.US)
+        voice.name to if (language.isEmpty()) voice.name else "$language — ${voice.name}"
+    }
+
+    /**
+     * Speak a D-ATIS broadcast on the ATIS voice.
+     *
+     * It goes through the same queue as everything else, so it never plays over a
+     * controller call, and it is marked as an ATIS line so the per-facility voice mapping
+     * picks the configured broadcast voice rather than a controller's.
+     */
+    fun speakAtis(rawText: String) {
+        if (rawText.isBlank()) return
+        speak(
+            ATCTransmission(
+                sender = ATCTransmission.Sender.ATC,
+                facility = ATCFacility.ATIS,
+                displayText = ATISPhraseology.displayText(rawText),
+                spokenText = ATISPhraseology.spokenText(rawText, icao = configuration().icaoPhraseology),
+            ),
         )
     }
 

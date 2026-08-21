@@ -1,15 +1,22 @@
 package com.h3consultingpartners.ifatccompanion
 
+import android.app.Activity
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import androidx.browser.customtabs.CustomTabsIntent
 import com.h3consultingpartners.ifatccompanion.core.diagnostics.DiagnosticsStore
 import com.h3consultingpartners.ifatccompanion.core.net.AppHttp
 import com.h3consultingpartners.ifatccompanion.core.net.HttpFetching
 import com.h3consultingpartners.ifatccompanion.core.net.OkHttpFetcher
 import com.h3consultingpartners.ifatccompanion.core.platform.Clock
+import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticCategory
+import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticLevel
 import com.h3consultingpartners.ifatccompanion.core.platform.FileStore
 import com.h3consultingpartners.ifatccompanion.data.AndroidFileStore
 import com.h3consultingpartners.ifatccompanion.data.DataStoreKeyValueStore
 import com.h3consultingpartners.ifatccompanion.audio.AndroidSpeechService
+import com.h3consultingpartners.ifatccompanion.audio.PushToTalkRecognizer
 import com.h3consultingpartners.ifatccompanion.audio.RadioAudioEngine
 import com.h3consultingpartners.ifatccompanion.billing.PlayBillingRepository
 import com.h3consultingpartners.ifatccompanion.core.connect.IFConnectManager
@@ -17,8 +24,12 @@ import com.h3consultingpartners.ifatccompanion.core.session.FlightSessionCoordin
 import com.h3consultingpartners.ifatccompanion.core.settings.AppSettings
 import com.h3consultingpartners.ifatccompanion.core.atis.ATISService
 import com.h3consultingpartners.ifatccompanion.core.mock.MockSimulatorFeed
+import com.h3consultingpartners.ifatccompanion.core.phraseology.PhraseologyMode
 import com.h3consultingpartners.ifatccompanion.core.phraseology.PhraseologyProfileStore
 import com.h3consultingpartners.ifatccompanion.core.settings.SettingsRepository
+import com.h3consultingpartners.ifatccompanion.core.surface.AirportSurfaceCache
+import com.h3consultingpartners.ifatccompanion.core.surface.AirportSurfaceProvider
+import com.h3consultingpartners.ifatccompanion.core.surface.SurfaceSessionController
 import com.h3consultingpartners.ifatccompanion.core.weather.AviationWeatherService
 import com.h3consultingpartners.ifatccompanion.core.weather.WeatherSessionController
 import com.h3consultingpartners.ifatccompanion.core.weather.radar.PrecipitationOverlayService
@@ -28,6 +39,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.plus
 import kotlinx.coroutines.Dispatchers
 import java.io.File
+import java.lang.ref.WeakReference
 
 /**
  * The application's object graph, wired by hand.
@@ -134,6 +146,16 @@ class AppGraph private constructor(
         )
     }
 
+    val surfaceProvider: AirportSurfaceProvider by lazy {
+        AirportSurfaceProvider(http, AirportSurfaceCache(fileStore), clock = clock)
+            .also { it.configure(diagnostics) }
+    }
+
+    /** The OpenStreetMap surface for both ends of the flight, and the routing graph on it. */
+    val surface: SurfaceSessionController by lazy {
+        SurfaceSessionController(surfaceProvider, clock = clock, diagnostics = diagnostics)
+    }
+
     val phraseologyProfiles: PhraseologyProfileStore by lazy {
         PhraseologyProfileStore(fileStore)
     }
@@ -158,6 +180,90 @@ class AppGraph private constructor(
     var activeFlightController: ActiveFlightController? = null
 
     /** Load persisted settings into memory before the first screen reads one. */
+    // region Android edges
+    //
+    // The only things in this file that genuinely need Android. Every decision behind them
+    // lives in :core; these just carry the result out to the system.
+
+    /**
+     * The Activity currently on screen, held weakly.
+     *
+     * Play Billing's purchase flow needs one and nothing else in the app does. A strong
+     * reference here would keep a destroyed Activity — and its whole view tree — alive for
+     * the life of the process, which is exactly the leak this class would otherwise cause.
+     */
+    private var currentActivity: WeakReference<Activity>? = null
+
+    fun onActivityResumed(activity: Activity) {
+        currentActivity = WeakReference(activity)
+    }
+
+    fun onActivityPaused(activity: Activity) {
+        if (currentActivity?.get() === activity) currentActivity = null
+    }
+
+    fun activityOrNull(): Activity? = currentActivity?.get()
+
+    /**
+     * Open a link in a Custom Tab — the Android counterpart of `SFSafariViewController`,
+     * which is what iOS uses for SimBrief and the legal links. The site keeps its own
+     * branding and session, and the app neither scrapes it nor injects into it.
+     *
+     * Falls back to whatever browser the user has when no Custom Tabs provider is
+     * installed, and does nothing at all when there is no browser — a missing browser is
+     * not a reason to crash mid-flight.
+     */
+    fun openLink(url: String) {
+        val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return
+        val host = activityOrNull() ?: context
+        val intent = CustomTabsIntent.Builder().setShowTitle(true).build()
+        intent.intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val opened = runCatching { intent.launchUrl(host, uri) }.isSuccess
+        if (opened) return
+        val fallback = Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        runCatching { host.startActivity(fallback) }
+            .onFailure {
+                diagnostics.log(
+                    DiagnosticCategory.GENERAL,
+                    level = DiagnosticLevel.WARNING,
+                    message = "No browser available to open $url",
+                )
+            }
+    }
+
+    /** Hand text to the system share sheet — how a profile or a diagnostics dump leaves the app. */
+    fun shareText(subject: String, text: String) {
+        val host = activityOrNull() ?: context
+        val share = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, subject)
+            putExtra(Intent.EXTRA_TEXT, text)
+        }
+        val chooser = Intent.createChooser(share, subject).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        runCatching { host.startActivity(chooser) }
+    }
+
+    /**
+     * Switch between the scripted mock flight and a live Connect session.
+     *
+     * Mock Mode is free and offline, so turning it on stops the network side entirely
+     * rather than running both; turning it off stops the feed and lets discovery start.
+     */
+    fun setMockMode(enabled: Boolean) {
+        if (enabled) {
+            connect.disconnect()
+            mockFeed.start()
+        } else {
+            mockFeed.stop()
+        }
+        diagnostics.log(
+            DiagnosticCategory.SESSION,
+            message = if (enabled) "Mock Mode on" else "Mock Mode off",
+        )
+    }
+
+    // endregion
+
     suspend fun warmUp() {
         settingsStore.load()
         entitlementStore.load()
@@ -167,6 +273,9 @@ class AppGraph private constructor(
      * The subset of settings the speech service reads, snapshotted per call so a toggle
      * takes effect on the next transmission.
      */
+    /** Push-to-talk recognition, on-device only. */
+    val pushToTalk: PushToTalkRecognizer by lazy { PushToTalkRecognizer(context, diagnostics) }
+
     private fun AppSettings.toSpeechConfiguration() = AndroidSpeechService.SpeechConfiguration(
         voiceEnabled = voiceEnabled,
         radioEffectEnabled = transmissionStaticEnabled,
@@ -186,6 +295,7 @@ class AppGraph private constructor(
             // Ramp is a simulated local position, not ATC; it shares the Ground voice.
             com.h3consultingpartners.ifatccompanion.core.model.ATCFacility.RAMP to voiceGround,
         ),
+        icaoPhraseology = phraseologyMode == PhraseologyMode.ICAO,
     )
 
     companion object {

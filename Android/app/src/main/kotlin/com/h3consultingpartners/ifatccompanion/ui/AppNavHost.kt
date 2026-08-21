@@ -50,6 +50,9 @@ fun AppNavHost(
     val weather by viewModel.weatherState.collectAsStateWithLifecycle()
     val ui by viewModel.ui.collectAsStateWithLifecycle()
     val diagnosticsLog by viewModel.diagnosticsLog.collectAsStateWithLifecycle()
+    val connect by viewModel.connectState.collectAsStateWithLifecycle()
+    val entitlements by viewModel.entitlements.collectAsStateWithLifecycle()
+    val surface by viewModel.surfaceState.collectAsStateWithLifecycle()
     var settingsDestination by rememberSaveable { mutableStateOf(SettingsDestination.ROOT) }
 
     when (tab) {
@@ -73,7 +76,7 @@ fun AppNavHost(
 
         AppTab.SETTINGS -> when (settingsDestination) {
             SettingsDestination.ROOT -> SettingsScreen(
-                model = viewModel.settingsModel(session, settings),
+                model = viewModel.settingsModel(session, settings, entitlements, surface),
                 actions = viewModel.settingsActions(
                     onOpenSubscription = { settingsDestination = SettingsDestination.SUBSCRIPTION },
                     onOpenPhraseologyProfiles = {
@@ -84,7 +87,7 @@ fun AppNavHost(
             )
 
             SettingsDestination.SUBSCRIPTION -> SubscriptionScreen(
-                state = viewModel.entitlementState(),
+                state = entitlements,
                 actions = viewModel.subscriptionActions(
                     onClose = { settingsDestination = SettingsDestination.ROOT },
                 ),
@@ -109,7 +112,9 @@ fun AppNavHost(
         }
 
         AppTab.DIAGNOSTICS -> DiagnosticsScreen(
-            model = viewModel.diagnosticsModel(session, settings, weather, ui, diagnosticsLog),
+            model = viewModel.diagnosticsModel(
+                session, settings, weather, ui, diagnosticsLog, connect, surface,
+            ),
             actions = viewModel.diagnosticsActions(),
             modifier = modifier,
         )

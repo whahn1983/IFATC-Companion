@@ -93,6 +93,21 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
+     * Play Billing's purchase flow needs an Activity to show over, and it is the only
+     * thing in the app that does. The graph holds this weakly and drops it on pause, so a
+     * destroyed Activity is never kept alive by it.
+     */
+    override fun onResume() {
+        super.onResume()
+        graph.onActivityResumed(this)
+    }
+
+    override fun onPause() {
+        graph.onActivityPaused(this)
+        super.onPause()
+    }
+
+    /**
      * Ask for notifications once, when the app first comes to the foreground, so the
      * live flight update can be shown. Only on Android 13+, where the permission exists.
      */

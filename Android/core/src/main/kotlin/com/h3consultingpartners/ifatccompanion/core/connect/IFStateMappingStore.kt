@@ -386,6 +386,9 @@ class IFStateMappingStore {
 
     fun entry(logical: Logical): IFManifestEntry? = resolved[logical]
 
+    /** How many of the readings the app needs this field's manifest actually resolved. */
+    val resolvedCount: Int get() = resolved.size
+
     val unresolvedKeys: List<Logical>
         get() = Logical.entries.filter { resolved[it] == null }
 

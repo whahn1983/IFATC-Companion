@@ -7,6 +7,7 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.h3consultingpartners.ifatccompanion.AppGraph
 import com.h3consultingpartners.ifatccompanion.core.billing.EntitlementState
+import com.h3consultingpartners.ifatccompanion.core.config.AppConfig
 import com.h3consultingpartners.ifatccompanion.core.billing.SubscriptionProduct
 import com.h3consultingpartners.ifatccompanion.core.model.ATCFacility
 import com.h3consultingpartners.ifatccompanion.core.model.FlightPlan
@@ -18,6 +19,7 @@ import com.h3consultingpartners.ifatccompanion.core.session.FlightSessionState
 import com.h3consultingpartners.ifatccompanion.core.session.PilotAction
 import com.h3consultingpartners.ifatccompanion.core.session.PilotActionPresentation
 import com.h3consultingpartners.ifatccompanion.core.settings.AppSettings
+import com.h3consultingpartners.ifatccompanion.core.settings.NOAARadarOverlayMode
 import com.h3consultingpartners.ifatccompanion.core.settings.SettingsRepository
 import com.h3consultingpartners.ifatccompanion.core.weather.WeatherSessionState
 import com.h3consultingpartners.ifatccompanion.ui.screens.FlightOverrides
@@ -149,16 +151,20 @@ class FlightViewModel(
 
     fun onPushToTalkStart() {
         updateUi { it.copy(isListening = true, speechPartial = "") }
-        graph.speech.startListening(
+        graph.pushToTalk.start(
             onPartial = { partial -> updateUi { it.copy(speechPartial = partial) } },
             onFinal = { text -> onSpeechRecognized(text) },
-            onError = { updateUi { it.copy(isListening = false) } },
+            onError = { message ->
+                // Say why, rather than leaving a dead button: no offline model, no
+                // permission and "didn't catch that" are different problems for the pilot.
+                updateUi { it.copy(isListening = false, speechPartial = "", lastSpokenIntentTitle = message) }
+            },
         )
     }
 
     fun onPushToTalkEnd() {
         updateUi { it.copy(isListening = false) }
-        graph.speech.stopListening()
+        graph.pushToTalk.stop()
     }
 
     private fun onSpeechRecognized(text: String) {
@@ -250,10 +256,14 @@ class FlightViewModel(
     }
 
     fun onRefreshFlightPlan() {
-        viewModelScope.launch { graph.connect.requestFlightPlan() }
+        viewModelScope.launch { graph.connect.refreshFlightPlan() }
     }
 
-    fun onOpenSimBrief() = graph.openLink(com.h3consultingpartners.ifatccompanion.core.config.AppConfig.Links.SIMBRIEF)
+    /**
+     * SimBrief opens in a Custom Tab — their site, their branding, their session. The app
+     * neither scrapes it nor injects anything into it.
+     */
+    fun onOpenSimBrief() = graph.openLink(AppConfig.Links.SIMBRIEF)
 
     // endregion
 
@@ -261,11 +271,7 @@ class FlightViewModel(
 
     fun onToggleRadarOverlay(enabled: Boolean) {
         settingsRepository.setNoaaRadarOverlay(
-            if (enabled) {
-                com.h3consultingpartners.ifatccompanion.core.settings.NOAARadarOverlayMode.AUTO_WHERE_AVAILABLE
-            } else {
-                com.h3consultingpartners.ifatccompanion.core.settings.NOAARadarOverlayMode.OFF
-            },
+            if (enabled) NOAARadarOverlayMode.AUTO_WHERE_AVAILABLE else NOAARadarOverlayMode.OFF,
         )
         graph.weather.refreshOverlayDescriptor()
     }
@@ -299,7 +305,8 @@ class FlightViewModel(
         coordinator.applyEngineConfig()
     }
 
-    fun availableVoices(): List<VoiceOption> = graph.speech.availableVoices()
+    fun availableVoices(): List<VoiceOption> =
+        graph.speech.voiceOptions().map { (id, title) -> VoiceOption(id, title) }
 
     fun onPreviewVoice(voiceId: String) = graph.speech.previewVoice(voiceId)
 
@@ -321,19 +328,25 @@ class FlightViewModel(
 
     fun onOpenLink(url: String) = graph.openLink(url)
 
-    fun surfaceCacheSummary(): String? = graph.surface.cacheSummary()
+    val surfaceState = graph.surface.state
 
     fun surfaceDiagnosticRows(): List<Pair<String, String>> = graph.surface.diagnosticRows()
-
-    fun surfaceError(): String? = graph.surface.lastError()
 
     // endregion
 
     // region Subscription
 
-    fun entitlementState(): EntitlementState = graph.entitlements.state.value
+    val entitlements: StateFlow<EntitlementState> = graph.entitlements.state
 
-    fun onPurchase(product: SubscriptionProduct) = graph.entitlements.purchase(product)
+    /**
+     * Play Billing's purchase flow needs the Activity it will be shown over. If there
+     * isn't one — the process is in the background — there is nothing to launch onto, so
+     * the tap is dropped rather than crashing.
+     */
+    fun onPurchase(product: SubscriptionProduct) {
+        val activity = graph.activityOrNull() ?: return
+        graph.entitlements.purchase(activity, product)
+    }
 
     fun onRestorePurchases() {
         viewModelScope.launch { graph.entitlements.restorePurchases() }
@@ -428,15 +441,20 @@ class FlightViewModel(
 
     fun mockRouteText(): String = with(graph.mockFeed.route) { "$departure → $destination" }
 
-    fun connectDiagnostics(): AppGraph.ConnectDiagnostics = graph.connectDiagnostics()
+    /** How many of the readings the app needs the field's manifest actually resolved. */
+    fun resolvedMappingCount(): Int = graph.connect.mappingStore.resolvedCount
+
+    /** The live Connect snapshot — manifest, link state, last error. */
+    val connectState = graph.connect.state
 
     // endregion
 
-    /** The connection line the ATC header shows. */
-    fun connectionText(state: FlightSessionState): String = graph.connectionText(state)
+    fun frequencyForFacility(facility: ATCFacility): Double = coordinator.frequencyForFacility(facility)
 
-    fun frequencyFor(facility: ATCFacility, state: FlightSessionState): Double =
-        coordinator.frequencyForFacility(facility)
+    override fun onCleared() {
+        graph.pushToTalk.release()
+        super.onCleared()
+    }
 
     companion object {
         fun factory(graph: AppGraph): ViewModelProvider.Factory = viewModelFactory {
