@@ -36,6 +36,7 @@ import com.h3consultingpartners.ifatccompanion.core.weather.AviationWeatherServi
 import com.h3consultingpartners.ifatccompanion.core.weather.WeatherSessionController
 import com.h3consultingpartners.ifatccompanion.core.weather.radar.PrecipitationOverlayService
 import com.h3consultingpartners.ifatccompanion.service.ActiveFlightController
+import com.h3consultingpartners.ifatccompanion.service.FlightSessionActiveFlightController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.plus
@@ -179,7 +180,24 @@ class AppGraph private constructor(
      * can address the session without an Activity.
      */
     @Volatile
-    var activeFlightController: ActiveFlightController? = null
+    /**
+     * The bridge the foreground service reads. Constructed lazily and assigned to the
+     * mutable field the service looks up, so the service never has to know how the graph
+     * is built.
+     */
+    val activeFlightController: ActiveFlightController by lazy {
+        FlightSessionActiveFlightController(
+            coordinator = flightSessionCoordinator,
+            scope = applicationScope,
+            clock = clock,
+            onStopRequested = {
+                connect.disconnect()
+                mockFeed.stop()
+                chatter.stop()
+                diagnostics.log(DiagnosticCategory.SESSION, message = "Flight session stopped from the notification")
+            },
+        )
+    }
 
     /** Load persisted settings into memory before the first screen reads one. */
     // region Android edges
