@@ -120,7 +120,7 @@ cd Android
 
 Open `Android/` in Android Studio to run it on a device or emulator.
 
-> **Verification status.** `:core` compiles and its **818 tests pass** (0 failures, 0
+> **Verification status.** `:core` compiles and its **819 tests pass** (0 failures, 0
 > skipped), and the Compose screens type-check. `:app` has **not** been compiled: the
 > environment this port was written in had no Android SDK and no access to Google's Maven
 > repository, so everything touching an Android API is written but unverified. Expect the

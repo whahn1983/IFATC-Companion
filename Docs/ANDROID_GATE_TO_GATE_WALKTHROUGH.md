@@ -117,6 +117,9 @@ pilot lines are not decoration: remove one and the flow stops there, on both pla
 
 ---
 
-*Generated from the `WalkthroughDump` test in
-`Android/core/src/test/kotlin/.../core/mock/`. Re-run it after changing the flow and the
-transcript above should still match.*
+*The transcript above is pinned by `GateToGateTranscriptTest` in
+`Android/core/src/test/kotlin/.../core/mock/`, which asserts the whole conversation —
+sender, frequency and wording — line for line. Change a controller call and that test
+fails, which is the point: the whole product is phraseology, so a changed word is a
+behaviour change. When it fails because a call legitimately changed, update both the test
+and this document; a stale walkthrough is worse than none.*

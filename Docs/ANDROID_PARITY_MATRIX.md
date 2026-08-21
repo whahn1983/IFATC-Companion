@@ -15,7 +15,7 @@ because a screen exists.
 | 🔵 **Android-native substitution** | Deliberately different because the platform is, with the difference stated. |
 
 > **Verification status of the two modules.** `:core` is compiled and its tests are run in
-> the environment this port was written in — **818 tests across 64 classes, 0 failures, 0
+> the environment this port was written in — **819 tests across 65 classes, 0 failures, 0
 > skipped**, and the per-area counts below are real. **`:app` has never been compiled**:
 > that environment had no Android SDK and no access to Google's Maven repository. The
 > *pure* Compose screens are type-checked against JetBrains Compose
@@ -263,7 +263,7 @@ Stated plainly, and none of them hidden behind a ✅ elsewhere in this file.
 | | |
 | --- | --- |
 | `:core` compile | ✅ `./gradlew -c settings-core.gradle.kts :core:compileKotlin` |
-| `:core` tests | ✅ **818 tests, 64 classes, 0 failures, 0 skipped** |
+| `:core` tests | ✅ **819 tests, 65 classes, 0 failures, 0 skipped** |
 | Compose screens type-check | ✅ `./gradlew -c settings-uicheck.gradle.kts :uicheck:compileKotlin` |
 | `:app` compile | ❌ not possible here |
 | Instrumented tests | ❌ not possible here |
@@ -285,7 +285,7 @@ Stated plainly, and none of them hidden behind a ✅ elsewhere in this file.
 | Persistence | 23 |
 | Center sectors | 17 |
 | Map projection | 14 |
-| Mock Mode | 12 |
+| Mock Mode (incl. the golden gate-to-gate transcript) | 13 |
 | Settings | 12 |
 | Live Flight Update | 10 |
 | Airports | 8 |
