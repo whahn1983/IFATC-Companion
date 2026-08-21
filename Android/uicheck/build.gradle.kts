@@ -47,5 +47,6 @@ dependencies {
     implementation("org.jetbrains.compose.ui:ui-graphics:$composeVersion")
     implementation("org.jetbrains.compose.ui:ui-text:$composeVersion")
     implementation("org.jetbrains.compose.material:material-icons-core:$composeVersion")
+    implementation("org.jetbrains.compose.material:material-icons-extended:$composeVersion")
     implementation(libs.kotlinx.coroutines.core)
 }
