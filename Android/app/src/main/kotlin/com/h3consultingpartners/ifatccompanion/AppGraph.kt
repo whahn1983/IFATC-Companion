@@ -9,6 +9,13 @@ import com.h3consultingpartners.ifatccompanion.core.platform.Clock
 import com.h3consultingpartners.ifatccompanion.core.platform.FileStore
 import com.h3consultingpartners.ifatccompanion.data.AndroidFileStore
 import com.h3consultingpartners.ifatccompanion.data.DataStoreKeyValueStore
+import com.h3consultingpartners.ifatccompanion.audio.AndroidSpeechService
+import com.h3consultingpartners.ifatccompanion.audio.RadioAudioEngine
+import com.h3consultingpartners.ifatccompanion.billing.PlayBillingRepository
+import com.h3consultingpartners.ifatccompanion.core.connect.IFConnectManager
+import com.h3consultingpartners.ifatccompanion.core.session.FlightSessionCoordinator
+import com.h3consultingpartners.ifatccompanion.core.settings.AppSettings
+import com.h3consultingpartners.ifatccompanion.core.settings.SettingsRepository
 import com.h3consultingpartners.ifatccompanion.service.ActiveFlightController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
@@ -51,10 +58,59 @@ class AppGraph private constructor(
         cacheDirectory = File(context.cacheDir, AppHttp.DEFAULT_CACHE_NAME),
     )
 
+    val settingsRepository: SettingsRepository by lazy { SettingsRepository(settingsStore) }
+
+    val entitlements: PlayBillingRepository by lazy {
+        PlayBillingRepository(
+            context = context,
+            scope = applicationScope,
+            cache = entitlementStore,
+            diagnostics = diagnostics,
+        )
+    }
+
+    val radio: RadioAudioEngine by lazy { RadioAudioEngine(applicationScope) }
+
+    val speech: AndroidSpeechService by lazy {
+        AndroidSpeechService(
+            context = context,
+            scope = applicationScope,
+            radio = radio,
+            configuration = { settingsRepository.settings.toSpeechConfiguration() },
+        )
+    }
+
     /**
-     * The live flight session. Set once the session holder is constructed; the
-     * foreground service reads it through [AppGraph.instanceOrNull] so it can address
-     * the session without an Activity.
+     * The Infinite Flight link. It runs on a single-threaded scope so its token and task
+     * bookkeeping keeps the same "one mutator" guarantee the iOS main actor gives.
+     */
+    val connect: IFConnectManager by lazy {
+        IFConnectManager(
+            scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+            clock = clock,
+            diagnostics = diagnostics,
+        )
+    }
+
+    /**
+     * The one flight session. A process singleton because it must outlive any Activity:
+     * the foreground service, the notification actions and the UI all address it.
+     */
+    val flightSessionCoordinator: FlightSessionCoordinator by lazy {
+        FlightSessionCoordinator(
+            scope = applicationScope,
+            clock = clock,
+            diagnostics = diagnostics,
+            connect = connect,
+            settingsProvider = { settingsRepository.settings },
+            speak = { transmission -> speech.speak(transmission) },
+        )
+    }
+
+    /**
+     * The live flight session, as the foreground service sees it. Set once the session
+     * holder is constructed; the service reads it through [AppGraph.instanceOrNull] so it
+     * can address the session without an Activity.
      */
     @Volatile
     var activeFlightController: ActiveFlightController? = null
@@ -64,6 +120,31 @@ class AppGraph private constructor(
         settingsStore.load()
         entitlementStore.load()
     }
+
+    /**
+     * The subset of settings the speech service reads, snapshotted per call so a toggle
+     * takes effect on the next transmission.
+     */
+    private fun AppSettings.toSpeechConfiguration() = AndroidSpeechService.SpeechConfiguration(
+        voiceEnabled = voiceEnabled,
+        radioEffectEnabled = transmissionStaticEnabled,
+        speechRate = speechRate,
+        speechPitch = speechPitch,
+        voiceVolume = voiceVolume,
+        defaultVoiceId = defaultVoiceID,
+        pilotVoiceId = voicePilot,
+        atisVoiceId = voiceATIS,
+        controllerVoiceIds = mapOf(
+            com.h3consultingpartners.ifatccompanion.core.model.ATCFacility.GROUND to voiceGround,
+            com.h3consultingpartners.ifatccompanion.core.model.ATCFacility.CLEARANCE to voiceGround,
+            com.h3consultingpartners.ifatccompanion.core.model.ATCFacility.TOWER to voiceTower,
+            com.h3consultingpartners.ifatccompanion.core.model.ATCFacility.DEPARTURE to voiceDeparture,
+            com.h3consultingpartners.ifatccompanion.core.model.ATCFacility.CENTER to voiceCenter,
+            com.h3consultingpartners.ifatccompanion.core.model.ATCFacility.APPROACH to voiceApproach,
+            // Ramp is a simulated local position, not ATC; it shares the Ground voice.
+            com.h3consultingpartners.ifatccompanion.core.model.ATCFacility.RAMP to voiceGround,
+        ),
+    )
 
     companion object {
         @Volatile

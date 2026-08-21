@@ -2,7 +2,6 @@ package com.h3consultingpartners.ifatccompanion.ui
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
-import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.h3consultingpartners.ifatccompanion.AppGraph
@@ -65,7 +64,7 @@ class FlightViewModel(
     fun onTune(facility: ATCFacility) = coordinator.tuneTo(facility)
 
     fun onReplayLastCall() {
-        session.value.latestTransmission?.let(graph.speechOrNull()::speakIfAvailable)
+        session.value.latestTransmission?.let(graph.speech::speak)
     }
 
     // endregion
@@ -74,6 +73,9 @@ class FlightViewModel(
 
     fun updateSettings(settings: AppSettings) {
         settingsRepository.replace(settings)
+        // Phraseology mode and digit style feed the engine, so it is rebuilt whenever
+        // settings change rather than only when those two do — it is cheap, and missing
+        // the rebuild would leave the pilot hearing the pack they just switched away from.
         coordinator.applyEngineConfig()
     }
 
