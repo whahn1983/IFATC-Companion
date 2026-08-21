@@ -41,9 +41,9 @@ env:
 jobs:
   # The engine. Pure Kotlin/JVM with no android.* or androidx.* anywhere, which is what
   # lets it build and test with nothing but a JDK — no SDK, no emulator. This is the job
-  # that has real coverage behind it (819 tests), so it is also the fastest signal.
+  # that has real coverage behind it, so it is also the fastest signal.
   engine:
-    name: Core engine (819 tests)
+    name: Core engine tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -93,8 +93,10 @@ jobs:
   # Android-API line in it is unverified, and two rounds of static review found 23 defects
   # that a compiler would have caught in seconds. This job is what finally settles that.
   #
-  # EXPECT THIS TO FAIL ON ITS FIRST RUN. That is the point: it converts "unverified" into
-  # a concrete list of errors. It is advisory, so a red result blocks nothing.
+  # It was written expecting to fail on its first run, and did not: :app compiled clean the
+  # first time it was ever compiled anywhere. What it did catch was lint — which had
+  # abortOnError = false and so reported "14 errors, 63 warnings" while exiting 0. Lint now
+  # gates, which is why the Android Lint step below is worth its 90 seconds.
   app:
     name: Android app build
     runs-on: ubuntu-latest
@@ -122,6 +124,17 @@ jobs:
       - name: Android Lint
         working-directory: Android
         run: ./gradlew :app:lintDebug --no-daemon
+
+      # The release build is where R8 runs, and R8 is the difference between "compiles" and
+      # "works in production": it strips unreachable code, and a reflective or generated
+      # entry point it cannot see gets removed. This app persists settings, saved flights,
+      # phraseology profiles and the airport-surface cache through kotlinx.serialization,
+      # which is exactly the shape R8 tends to break — so a debug-only pipeline would have
+      # shipped that unverified. Unsigned: no signing material is committed, and an
+      # unsigned bundle exercises minification just as well as a signed one.
+      - name: Bundle release (exercises R8 and resource shrinking)
+        working-directory: Android
+        run: ./gradlew :app:bundleRelease --no-daemon --stacktrace
 
       - name: Upload lint report
         if: always()

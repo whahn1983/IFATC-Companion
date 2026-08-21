@@ -23,6 +23,11 @@
     <string name="notification_standby">Standing by for staffed ATC</string>
     <string name="notification_updated_at">Updated %1$s</string>
 
+    <string name="permission_notifications_title">Show your live flight?</string>
+    <string name="permission_microphone_title">Use the microphone?</string>
+    <string name="permission_continue">Continue</string>
+    <string name="permission_not_now">Not now</string>
+
     <string name="permission_notifications_rationale">IFATC Companion shows your live flight — phase, controller, altitude and heading — on a notification you can act on without opening the app. Allow notifications to use it.</string>
     <string name="permission_microphone_rationale">Push-to-talk uses the microphone so you can speak your read-backs and requests instead of tapping. Recognition runs on your device; nothing is recorded or uploaded.</string>
     <string name="permission_local_network_rationale">IFATC Companion connects to Infinite Flight on your own Wi-Fi network to read your flight and exchange ATC messages. No data leaves your network.</string>
