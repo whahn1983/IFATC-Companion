@@ -48,14 +48,21 @@ Web Mercator is not an arbitrary choice: it is the projection NOAA's radar
 `exportImage` service and NASA GIBS both publish in, so the precipitation imagery the
 app already fetches composites onto the map with no reprojection.
 
-### Geographic context on the weather map
+### Geographic context on the weather map — NOT YET BUILT
 
-MapKit gave the weather map coastlines for free. Without a base map the route would
-float in space, so the weather map draws a **graticule** (labelled parallels and
-meridians at a spacing chosen from the zoom) and a **scale bar**, and can optionally
-composite **NASA GIBS coastline imagery** — the same keyless, public, no-account
-service the app already uses for the global precipitation estimate, and therefore no
-new provider, no key and no bill.
+MapKit gave the weather map coastlines for free. Without a base map the route floats in
+space, and **today it does**: the route map draws its polyline, airports, waypoints,
+PIREPs, hazard polygons and the aircraft onto an empty background, with no coastline, no
+grid and no scale.
+
+An earlier version of this document described a graticule, a scale bar and optional NASA
+GIBS coastline imagery as though they existed. None of them do — `grep` finds no
+graticule, no scale bar, and no `BaseMapTileSource`; GIBS is wired for the precipitation
+raster only. Stated plainly here rather than left to be discovered, and tracked in
+`ANDROID_REMAINING_WORK.md`.
+
+The taxi map does not have this problem: an airport surface diagram is self-contained,
+because the OSM geometry *is* the map.
 
 ### What this costs
 
@@ -64,7 +71,7 @@ new provider, no key and no bill.
 | Route, aircraft, hazards, deviation line, taxi geometry | Overlays on a base map | Drawn directly — **parity** |
 | Precipitation overlay | Custom overlay renderer | Composited raster — **parity** |
 | Pan / pinch-zoom / fit-to-content | MapKit | `MapProjection` — **parity**, and tested |
-| Street-level base map | Yes | **No** — graticule + optional GIBS imagery instead |
+| Street-level base map | Yes | **No** — and no substitute yet either; see the section above |
 | Place labels, points of interest | Yes | **No** |
 | 3D / satellite / flyover | Yes | **No** |
 
@@ -73,16 +80,27 @@ and the alternative was a key, a billing account and a bill that grows with inst
 This trade-off is recorded as a **known parity difference** in
 `Docs/ANDROID_PARITY_MATRIX.md` rather than presented as equivalence.
 
-## If the owner later wants a base map
+## Options for adding geographic context
 
-`MapCanvas` takes its background from a pluggable source, so adopting one is a
-contained change and not a rewrite:
+`MapCanvas` hands every layer a `MapFrame` with a `project(Coordinate)` function, so any
+of these is an added layer rather than a rewrite. The projection and gestures do not
+change. Ordered by value per unit of cost and by whether they keep the no-key, no-bill,
+no-backend constraints:
 
-1. Add a `BaseMapTileSource` implementation that fetches and caches tiles.
-2. Supply it to `MapCanvas`; the projection, gestures and every layer are unchanged.
+| Option | Key / bill / backend | Offline | Effort | What it gives |
+| --- | --- | --- | --- | --- |
+| **A. Graticule + scale bar** | None | Yes | Small | A coordinate frame and a sense of distance. Pure arithmetic on the existing projection, no network at all. The cheapest thing that stops the route floating in space. |
+| **B. Bundled Natural Earth coastlines** | None — public domain, shipped in the APK | Yes | Small–Medium | Real coastlines and borders, drawn as one more vector layer. Works with no connectivity, which matters for the actual use case: a pilot mid-flight. A low-resolution set is small; resolution is a size/detail dial. |
+| **C. NASA GIBS raster underlay** | None — keyless, public, already used for precipitation | No | Medium | Satellite or land imagery under the route, at the viewport bounding box, via the same WMS the precipitation layer already calls. No new provider, no key, no bill. Needs connectivity and adds a fetch per viewport change. |
+| **D. Protomaps / PMTiles** | No per-request API, but the file must be bundled or hosted | Yes if bundled | Large | A genuine vector base map from a single file. Either a large APK or object-storage hosting — which is new infrastructure, so it is an owner decision, not a default. |
+| **E. Commercial SDK** (Google, Mapbox, MapTiler, Stadia) | **Key + billing account + recurring cost that scales with installs** | No | Medium | A full street map. Outside the brief this port was built to; adopting it is a deliberate reversal, not a fix. |
 
-That decision belongs to the owner, because it is the one that introduces a key,
-a bill, or a server. Nothing in the current build presumes it.
+**A and B together** are the recommendation: no key, no bill, no backend, no network, and
+between them they turn the route map from a line in the void into something readable. C is
+a reasonable enhancement on top. D and E both change the app's cost or dependency shape and
+belong to the owner.
+
+Note none of this affects the taxi map, which needs no base map at all.
 
 ## Licensing obligations that ride on the map
 
