@@ -68,10 +68,6 @@ android {
         isCoreLibraryDesugaringEnabled = true
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
-    }
-
     buildFeatures {
         compose = true
         buildConfig = true
@@ -96,7 +92,17 @@ android {
 
     lint {
         warningsAsErrors = false
+        // Not gating yet: this is the first run of lint against a module that had
+        // never been compiled. `textReport` puts every finding in the CI log so the
+        // list can be worked through; gating follows once it is clean.
         abortOnError = false
+        textReport = true
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
     }
 }
 

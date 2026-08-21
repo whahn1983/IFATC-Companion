@@ -4,6 +4,7 @@ import com.h3consultingpartners.ifatccompanion.core.platform.FileStore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
 
 /**
@@ -174,6 +175,7 @@ class PhraseologyProfileStore(private val files: FileStore) {
         // iOS exports with `.prettyPrinted, .sortedKeys`; kotlinx has no sorted-keys
         // option, so exported key order follows the declaration order instead. The
         // bytes differ from iOS's, the content does not.
+        @OptIn(ExperimentalSerializationApi::class)
         private val prettyJson = Json {
             ignoreUnknownKeys = true
             prettyPrint = true

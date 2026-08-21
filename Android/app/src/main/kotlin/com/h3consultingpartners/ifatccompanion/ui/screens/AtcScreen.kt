@@ -14,7 +14,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CompareArrows
+import androidx.compose.material.icons.automirrored.filled.CompareArrows
 import androidx.compose.material.icons.filled.Dialpad
 import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.Mic
@@ -24,7 +24,7 @@ import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material.icons.filled.Textsms
-import androidx.compose.material3.Divider
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -226,7 +226,7 @@ private fun StatusHeader(model: AtcScreenModel, actions: AtcScreenActions) {
                 onCommit = actions.onCallsignCommit,
                 modifier = Modifier.weight(1f),
             )
-            Divider(Modifier.height(34.dp).width(1.dp))
+            VerticalDivider(Modifier.height(34.dp), thickness = 1.dp)
             HeaderStat(
                 title = "Airport",
                 value = model.nearestAirport,
@@ -257,7 +257,7 @@ private fun StatusHeader(model: AtcScreenModel, actions: AtcScreenActions) {
             ) {
                 IconButton(onClick = actions.onSwapGates) {
                     Icon(
-                        Icons.Filled.CompareArrows,
+                        Icons.AutoMirrored.Filled.CompareArrows,
                         contentDescription = "Swap departure and arrival gates",
                         tint = MaterialTheme.colorScheme.primary,
                     )
@@ -284,7 +284,7 @@ private fun StatusHeader(model: AtcScreenModel, actions: AtcScreenActions) {
                 icon = Icons.Filled.Flag,
                 modifier = Modifier.weight(1f),
             )
-            Divider(Modifier.height(34.dp).width(1.dp))
+            VerticalDivider(Modifier.height(34.dp), thickness = 1.dp)
             HeaderStat(
                 title = "Assigned",
                 value = model.assignedAltitudeText,

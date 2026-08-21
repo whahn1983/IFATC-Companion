@@ -12,12 +12,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
@@ -214,7 +214,7 @@ private fun ProfileRow(profile: PhraseologyProfile, actions: PhraseologyProfiles
             Icon(Icons.Filled.Delete, contentDescription = "Delete ${profile.name}")
         }
         IconButton(onClick = { actions.onEdit(profile) }) {
-            Icon(Icons.Filled.KeyboardArrowRight, contentDescription = "Edit ${profile.name}")
+            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Edit ${profile.name}")
         }
     }
 }
@@ -253,7 +253,7 @@ private fun PhraseologyProfileEditor(
         item {
             Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = actions.onCloseEditor) {
-                    Icon(Icons.Filled.ArrowBack, contentDescription = "Back to profiles")
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to profiles")
                 }
                 Text("Edit Profile", style = MaterialTheme.typography.titleLarge)
                 Spacer(Modifier.weight(1f))
@@ -368,7 +368,7 @@ private fun TemplateRow(
         ) {
             IconButton(onClick = { expanded = !expanded }) {
                 Icon(
-                    imageVector = if (expanded) Icons.Filled.KeyboardArrowDown else Icons.Filled.KeyboardArrowRight,
+                    imageVector = if (expanded) Icons.Filled.KeyboardArrowDown else Icons.AutoMirrored.Filled.KeyboardArrowRight,
                     contentDescription = if (expanded) "Collapse ${key.title}" else "Expand ${key.title}",
                 )
             }

@@ -12,6 +12,7 @@ import com.h3consultingpartners.ifatccompanion.core.model.ATCTransmission
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
@@ -112,7 +113,10 @@ class AndroidSpeechService(
             utteranceId?.let { utteranceCompletions.remove(it)?.complete(true) }
         }
 
-        @Deprecated("Superseded by onError(String, int)", ReplaceWith(""))
+        // Abstract on UtteranceProgressListener and deprecated at the same time, so the
+        // override is mandatory. Some engines still call it instead of the two-argument
+        // form, so it has to keep completing the pending utterance.
+        @Suppress("OVERRIDE_DEPRECATION")
         override fun onError(utteranceId: String?) {
             utteranceId?.let { utteranceCompletions.remove(it)?.complete(false) }
         }
@@ -261,6 +265,7 @@ class AndroidSpeechService(
         _isSpeaking.value = false
     }
 
+    @OptIn(ExperimentalCoroutinesApi::class) // Channel.isEmpty
     private fun startPump() {
         if (pumpJob != null) return
         pumpJob = scope.launch {

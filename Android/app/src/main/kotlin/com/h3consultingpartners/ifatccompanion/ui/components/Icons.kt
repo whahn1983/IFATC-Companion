@@ -21,7 +21,7 @@ import androidx.compose.material.icons.filled.LocalParking
 import androidx.compose.material.icons.filled.Power
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.RecordVoiceOver
-import androidx.compose.material.icons.filled.Undo
+import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.TurnRight
 import androidx.compose.material.icons.filled.UTurnLeft
 import androidx.compose.material.icons.filled.WbSunny
@@ -58,7 +58,7 @@ object IFATCIcons {
         "record_voice_over" -> Icons.Filled.RecordVoiceOver
         "u_turn_left" -> Icons.Filled.UTurnLeft
         "check_circle" -> Icons.Filled.CheckCircle
-        "undo" -> Icons.Filled.Undo
+        "undo" -> Icons.AutoMirrored.Filled.Undo
         "dangerous" -> Icons.Filled.Dangerous
         "cloud" -> Icons.Filled.Cloud
         // A key with no mapping is a bug, but it must not be one that blanks a button

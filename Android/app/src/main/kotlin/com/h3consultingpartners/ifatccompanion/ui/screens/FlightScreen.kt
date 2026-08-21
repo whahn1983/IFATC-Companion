@@ -14,7 +14,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FlightTakeoff
 import androidx.compose.material.icons.filled.Map
-import androidx.compose.material.icons.filled.NoteAdd
+import androidx.compose.material.icons.automirrored.filled.NoteAdd
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -152,7 +152,7 @@ private fun FlightPlanCard(model: FlightScreenModel, actions: FlightScreenAction
         )
         WideButton(
             title = SimBriefStrings.BUTTON_TITLE,
-            icon = Icons.Filled.NoteAdd,
+            icon = Icons.AutoMirrored.Filled.NoteAdd,
             onClick = actions.onOpenSimBrief,
         )
         Text(
