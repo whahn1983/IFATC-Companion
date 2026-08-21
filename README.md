@@ -120,6 +120,13 @@ cd Android
 
 Open `Android/` in Android Studio to run it on a device or emulator.
 
+> **Verification status.** `:core` compiles and its **818 tests pass** (0 failures, 0
+> skipped), and the Compose screens type-check. `:app` has **not** been compiled: the
+> environment this port was written in had no Android SDK and no access to Google's Maven
+> repository, so everything touching an Android API is written but unverified. Expect the
+> first Android Studio build to surface ordinary integration fixes, and see the parity
+> matrix for the full list of what is and is not verified.
+
 Release signing is supplied out of band and never committed — set
 `IFATC_RELEASE_STORE_FILE`, `IFATC_RELEASE_STORE_PASSWORD`, `IFATC_RELEASE_KEY_ALIAS` and
 `IFATC_RELEASE_KEY_PASSWORD` as Gradle properties or environment variables, or put them
@@ -138,6 +145,7 @@ stays unsigned.
 | [Docs/ANDROID_BACKGROUND_EXECUTION.md](Docs/ANDROID_BACKGROUND_EXECUTION.md) | The foreground service and the Live Flight Update |
 | [Docs/GOOGLE_PLAY_DATA_SAFETY.md](Docs/GOOGLE_PLAY_DATA_SAFETY.md) | The Data safety answers, written from the implementation |
 | [Docs/GOOGLE_PLAY_RELEASE_CHECKLIST.md](Docs/GOOGLE_PLAY_RELEASE_CHECKLIST.md) | What is done in the repository, and what only a person with the Play Console can do |
+| [Docs/ANDROID_GATE_TO_GATE_WALKTHROUGH.md](Docs/ANDROID_GATE_TO_GATE_WALKTHROUGH.md) | A real gate-to-gate transcript from the Android engine, next to what iOS asserts |
 | [Android/PORTING.md](Android/PORTING.md) | The conventions every ported file follows |
 
 ### Where Android differs, and why
