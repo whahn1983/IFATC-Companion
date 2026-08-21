@@ -1,6 +1,9 @@
 package com.h3consultingpartners.ifatccompanion.audio
 
+import android.content.Context
 import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.media.AudioFormat
 import android.media.AudioTrack
 import com.h3consultingpartners.ifatccompanion.core.audio.RadioAudio
@@ -29,7 +32,16 @@ import java.util.concurrent.atomic.AtomicBoolean
  * mixer levels — comes from `RadioAudio` in :core, so the tuning the iOS build arrived at
  * is carried across exactly rather than re-tuned against a different audio stack.
  */
-class RadioAudioEngine(private val scope: CoroutineScope) {
+class RadioAudioEngine(
+    private val context: Context,
+    private val scope: CoroutineScope,
+    /**
+     * Told when the system takes audio away for good, and when it gives it back. Wired to
+     * `AmbientChatterService.onInterruptionBegan/Ended` — without it those hooks, which
+     * `:core` already implements and tests, would never fire on Android.
+     */
+    private val onInterruption: (began: Boolean) -> Unit = {},
+) {
 
     private val sampleRate = RadioAudio.SAMPLE_RATE
 
@@ -67,12 +79,68 @@ class RadioAudioEngine(private val scope: CoroutineScope) {
 
     val isRunning: Boolean get() = running.get()
 
+    private val audioManager: AudioManager
+        get() = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+
+    private var focusRequest: AudioFocusRequest? = null
+
     /**
-     * Start the engine. Safe to call repeatedly. The caller takes audio focus first — the
-     * flight service does that once for the whole session.
+     * Handle the system taking audio away.
+     *
+     * A transient loss ducks rather than stops, which is what a radio should do under a
+     * navigation prompt; a permanent loss stops and gives the focus back, because the user
+     * started something else and holding focus after that is exactly the behaviour Play
+     * penalises in a mediaPlayback service.
+     */
+    private val focusListener = AudioManager.OnAudioFocusChangeListener { change ->
+        when (change) {
+            AudioManager.AUDIOFOCUS_LOSS -> {
+                onInterruption(true)
+                stop()
+            }
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK,
+            -> setDucked(true)
+            AudioManager.AUDIOFOCUS_GAIN -> {
+                setDucked(false)
+                onInterruption(false)
+            }
+        }
+    }
+
+    /** Take audio focus. Returns false when the system refuses — then nothing is played. */
+    private fun requestFocus(): Boolean {
+        if (focusRequest != null) return true
+        val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+            .setAudioAttributes(audioAttributes)
+            // The app ducks other audio rather than pausing it: a pilot may well be
+            // listening to something else, and ATC over the top is the point.
+            .setWillPauseWhenDucked(false)
+            .setOnAudioFocusChangeListener(focusListener)
+            .build()
+        val granted = audioManager.requestAudioFocus(request) ==
+            AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        if (granted) focusRequest = request
+        return granted
+    }
+
+    private fun abandonFocus() {
+        val request = focusRequest ?: return
+        focusRequest = null
+        audioManager.abandonAudioFocusRequest(request)
+    }
+
+    /**
+     * Start the engine. Safe to call repeatedly.
+     *
+     * Audio focus is taken here rather than by the caller: the engine is the thing that
+     * knows when sound is actually being produced, and it runs for background chatter with
+     * no foreground service involved at all.
      */
     fun start() {
-        if (running.getAndSet(true)) return
+        if (running.get()) return
+        if (!requestFocus()) return
+        running.set(true)
 
         val minBuffer = AudioTrack.getMinBufferSize(
             sampleRate,
@@ -121,6 +189,7 @@ class RadioAudioEngine(private val scope: CoroutineScope) {
     }
 
     fun stop() {
+        abandonFocus()
         if (!running.getAndSet(false)) return
         renderJob?.cancel()
         renderJob = null

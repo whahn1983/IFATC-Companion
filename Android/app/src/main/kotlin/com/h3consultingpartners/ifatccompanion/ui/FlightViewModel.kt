@@ -73,6 +73,8 @@ class FlightViewModel(
         val editingProfile: PhraseologyProfile? = null,
         val profileImportFailed: Boolean = false,
         val showSampledRadarCells: Boolean = false,
+        /** Set when the ATC tab's subscribe banner is tapped; the shell consumes it. */
+        val subscriptionRequested: Boolean = false,
         val microphoneDenied: Boolean = false,
         val isListening: Boolean = false,
         val speechPartial: String = "",
@@ -121,9 +123,12 @@ class FlightViewModel(
      * Tuning ATIS is what makes the pilot *have* the information code — it is only from
      * here on that any call reports it. Pulls the freshest broadcast rather than serving
      * the cached one, because a pilot tuning ATIS is asking for the current letter.
+     *
+     * It deliberately does **not** retune the controller: ATIS is a one-way broadcast, not
+     * a facility, so listening to it must not take the pilot off the frequency they are
+     * working.
      */
     fun onTuneAtis() {
-        coordinator.tuneTo(ATCFacility.ATIS)
         val arrival = session.value.hasDeparted
         viewModelScope.launch {
             graph.weather.refreshAtis()
@@ -133,7 +138,9 @@ class FlightViewModel(
             } else {
                 graph.weather.state.value.departureAtis
             }
-            atis?.part(arrival)?.let { part -> graph.speech.speakAtis(part.text) }
+            atis?.part(arrival)?.let { part ->
+                graph.speech.speakAtis(part, graph.clock.nowMillis())
+            }
         }
     }
 
@@ -141,9 +148,21 @@ class FlightViewModel(
         session.value.latestTransmission?.let(graph.speech::speak)
     }
 
-    fun onSubscribe() = Unit // Navigation is owned by AppNavHost; the banner only signals intent.
+    /**
+     * The subscribe banner on the ATC tab. Navigation belongs to [AppNavHost], which owns
+     * the destination state, so this raises a one-shot request rather than navigating
+     * itself — a no-op here would leave the banner dead, which is how it shipped before.
+     */
+    fun onSubscribe() {
+        updateUi { it.copy(subscriptionRequested = true) }
+    }
 
-    fun onContactAtcAboutWeather() = coordinator.performPilotAction(PilotAction.REQUEST_RIDE_REPORT)
+    /** Consumed by the shell once it has switched to the paywall. */
+    fun onSubscriptionRequestHandled() {
+        updateUi { it.copy(subscriptionRequested = false) }
+    }
+
+    fun onContactAtcAboutWeather() = coordinator.performPilotAction(PilotAction.RIDE_REPORT)
 
     // endregion
 

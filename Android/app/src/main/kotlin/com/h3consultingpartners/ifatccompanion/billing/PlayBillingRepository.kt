@@ -72,7 +72,7 @@ class PlayBillingRepository(
         scope.launch {
             when (result.responseCode) {
                 BillingClient.BillingResponseCode.OK -> {
-                    handlePurchases(purchases.orEmpty())
+                    handlePurchases(purchases.orEmpty(), authoritative = false)
                     val pending = purchases.orEmpty().any {
                         it.purchaseState == Purchase.PurchaseState.PENDING
                     }
@@ -253,7 +253,7 @@ class PlayBillingRepository(
         if (!billingClient.isReady) return
         val subscriptions = queryPurchases(BillingClient.ProductType.SUBS)
         val oneTime = queryPurchases(BillingClient.ProductType.INAPP)
-        handlePurchases(subscriptions + oneTime)
+        handlePurchases(subscriptions + oneTime, authoritative = true)
     }
 
     private suspend fun queryPurchases(type: String): List<Purchase> {
@@ -267,7 +267,18 @@ class PlayBillingRepository(
         return result.purchasesList
     }
 
-    private suspend fun handlePurchases(purchases: List<Purchase>) {
+    /**
+     * Apply a set of purchases.
+     *
+     * [authoritative] is the whole safety of this method. The full `queryPurchases` sweep
+     * sees everything the account owns, so an absence there genuinely means "not
+     * entitled". A `PurchasesUpdatedListener` callback sees only the transaction that just
+     * happened — so an absence there means nothing at all, and treating it as a revocation
+     * takes Live Connected Mode away from a paying customer the moment any callback
+     * arrives carrying only a pending purchase, or an empty OK list. A non-authoritative
+     * call may therefore only ever *grant*.
+     */
+    private suspend fun handlePurchases(purchases: List<Purchase>, authoritative: Boolean) {
         val mapped = purchases.map { it.toLivePurchase() }
 
         // Play automatically refunds and revokes anything left unacknowledged for three
@@ -291,7 +302,9 @@ class PlayBillingRepository(
         _state.value = _state.value.copy(
             hasPendingPurchase = LiveAccessRules.pending(mapped).isNotEmpty(),
         )
-        applyEntitlement(entitled, fromCache = false)
+        if (authoritative || entitled) {
+            applyEntitlement(entitled, fromCache = false)
+        }
     }
 
     /** Launch the Play purchase flow for one product. */
@@ -303,16 +316,23 @@ class PlayBillingRepository(
         }
         setPhase(PurchasePhase.Purchasing)
 
+        // Play REQUIRES an offer token for a subscription, and throws out of build() when
+        // it is missing rather than returning an error — so the absence is caught here and
+        // reported as the same clean failure every other path in this method produces.
+        val offerToken = if (product.isSubscription) {
+            _state.value.products.firstOrNull { it.product == product }?.offerToken
+                ?: run {
+                    log(DiagnosticLevel.WARNING, "No offer token for ${product.productId}")
+                    setPhase(PurchasePhase.Failed(EntitlementState.PRODUCTS_UNAVAILABLE_MESSAGE))
+                    return
+                }
+        } else {
+            null
+        }
+
         val productParams = BillingFlowParams.ProductDetailsParams.newBuilder()
             .setProductDetails(details)
-            .apply {
-                if (product.isSubscription) {
-                    val token = _state.value.products
-                        .firstOrNull { it.product == product }
-                        ?.offerToken
-                    if (token != null) setOfferToken(token)
-                }
-            }
+            .apply { if (offerToken != null) setOfferToken(offerToken) }
             .build()
 
         val result = billingClient.launchBillingFlow(

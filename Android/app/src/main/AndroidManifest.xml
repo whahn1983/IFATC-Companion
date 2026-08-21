@@ -24,6 +24,14 @@
     <!-- The live flight notification (ongoing / Live Update). -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!--
+        Android 16 gates promoting an ongoing notification to a Live Update behind this
+        permission. Without it setRequestPromotedOngoing(true) is silently ignored and the
+        flight card never gets promoted, which is the whole point of that branch. It is
+        normal-protection, so there is no runtime prompt.
+    -->
+    <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
+
     <!-- The active-flight session keeps the Infinite Flight connection, the ATC
          engine and spoken radio running while the app is not on screen. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />

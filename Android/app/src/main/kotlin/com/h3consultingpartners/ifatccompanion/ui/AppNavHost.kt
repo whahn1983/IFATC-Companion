@@ -1,6 +1,8 @@
 package com.h3consultingpartners.ifatccompanion.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -47,6 +49,7 @@ fun AppNavHost(
     session: FlightSessionState,
     modifier: Modifier = Modifier,
     onRequestMicrophone: () -> Boolean = { false },
+    onSelectTab: (AppTab) -> Unit = {},
 ) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val weather by viewModel.weatherState.collectAsStateWithLifecycle()
@@ -55,7 +58,27 @@ fun AppNavHost(
     val connect by viewModel.connectState.collectAsStateWithLifecycle()
     val entitlements by viewModel.entitlements.collectAsStateWithLifecycle()
     val surface by viewModel.surfaceState.collectAsStateWithLifecycle()
+    val profiles by viewModel.phraseologyProfilesState.collectAsStateWithLifecycle()
     var settingsDestination by rememberSaveable { mutableStateOf(SettingsDestination.ROOT) }
+
+    // The subscribe banner on the ATC tab cannot navigate itself — this file owns the
+    // destination — so it raises a request that is consumed here exactly once.
+    LaunchedEffect(ui.subscriptionRequested) {
+        if (!ui.subscriptionRequested) return@LaunchedEffect
+        settingsDestination = SettingsDestination.SUBSCRIPTION
+        onSelectTab(AppTab.SETTINGS)
+        viewModel.onSubscriptionRequestHandled()
+    }
+
+    // [Back] System back pops the Settings sub-stack instead of leaving the app. Enabled
+    // only while a sub-screen is showing, so back from a root tab behaves normally.
+    BackHandler(enabled = tab == AppTab.SETTINGS && settingsDestination != SettingsDestination.ROOT) {
+        if (ui.editingProfile != null) {
+            viewModel.onCloseProfileEditor()
+        } else {
+            settingsDestination = SettingsDestination.ROOT
+        }
+    }
 
     when (tab) {
         AppTab.ATC -> AtcScreen(
@@ -104,7 +127,7 @@ fun AppNavHost(
             )
 
             SettingsDestination.PHRASEOLOGY_PROFILES -> PhraseologyProfilesScreen(
-                model = viewModel.phraseologyProfilesModel(ui),
+                model = viewModel.phraseologyProfilesModel(ui, profiles),
                 actions = viewModel.phraseologyProfilesActions(
                     onCloseEditor = {
                         // Back from the editor returns to the list; back from the list

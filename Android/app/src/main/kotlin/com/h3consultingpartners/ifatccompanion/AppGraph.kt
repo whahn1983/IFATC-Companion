@@ -90,7 +90,15 @@ class AppGraph private constructor(
         )
     }
 
-    val radio: RadioAudioEngine by lazy { RadioAudioEngine(applicationScope) }
+    val radio: RadioAudioEngine by lazy {
+        RadioAudioEngine(
+            context = context,
+            scope = applicationScope,
+            // Route the platform's focus loss/gain into the chatter service's own
+            // interruption hooks, which :core already implements.
+            onInterruption = { began -> if (began) chatter.onInterruptionBegan() else chatter.onInterruptionEnded() },
+        )
+    }
 
     val speech: AndroidSpeechService by lazy {
         AndroidSpeechService(
@@ -118,7 +126,7 @@ class AppGraph private constructor(
      * the foreground service, the notification actions and the UI all address it.
      */
     /** Mock Mode's scripted feed — the free, offline flight, and the tests' stand-in sim. */
-    val mockFeed: MockSimulatorFeed by lazy { MockSimulatorFeed(applicationScope, clock) }
+    val mockFeed: MockSimulatorFeed by lazy { MockSimulatorFeed(scope = applicationScope, clock = clock) }
 
     val weatherService: AviationWeatherService by lazy {
         AviationWeatherService(http, clock = clock, diagnostics = diagnostics)
@@ -175,15 +183,9 @@ class AppGraph private constructor(
     }
 
     /**
-     * The live flight session, as the foreground service sees it. Set once the session
-     * holder is constructed; the service reads it through [AppGraph.instanceOrNull] so it
-     * can address the session without an Activity.
-     */
-    @Volatile
-    /**
-     * The bridge the foreground service reads. Constructed lazily and assigned to the
-     * mutable field the service looks up, so the service never has to know how the graph
-     * is built.
+     * The bridge the foreground service reads. `by lazy` is already thread-safe, so this
+     * needs no `@Volatile` — and could not carry one, since the annotation applies only to
+     * a `var` with a real backing field.
      */
     val activeFlightController: ActiveFlightController by lazy {
         FlightSessionActiveFlightController(
@@ -287,6 +289,16 @@ class AppGraph private constructor(
     suspend fun warmUp() {
         settingsStore.load()
         entitlementStore.load()
+
+        // Both of these need an explicit start, and neither used to get one — the effect
+        // was an app that never spoke a word and a paywall whose buttons never enabled.
+        //
+        // They are started here rather than lazily on first use because both take real
+        // time to become ready: TextToSpeech binds to a service and only then reports its
+        // voices (the Settings picker is empty until it does), and the BillingClient must
+        // connect and fetch ProductDetails before any purchase can be launched.
+        speech.initialize()
+        entitlements.start()
     }
 
     /**

@@ -5,11 +5,11 @@
      accounts. Diagnostics and transient caches are excluded as noise. -->
 <full-backup-content>
     <include domain="file" path="datastore/ifatc_settings.preferences_pb" />
-    <include domain="file" path="saved_flights" />
-    <include domain="file" path="phraseology_profiles" />
+    <include domain="file" path="ifatc/saved_flights" />
+    <include domain="file" path="ifatc/phraseology_profiles" />
     <exclude domain="file" path="datastore/ifatc_entitlement.preferences_pb" />
-    <exclude domain="file" path="surface_cache" />
-    <exclude domain="file" path="weather_cache" />
-    <exclude domain="file" path="diagnostics" />
+    <exclude domain="file" path="ifatc/surface_cache" />
+    <exclude domain="file" path="ifatc/weather_cache" />
+    <exclude domain="file" path="ifatc/diagnostics" />
     <exclude domain="sharedpref" path="." />
 </full-backup-content>

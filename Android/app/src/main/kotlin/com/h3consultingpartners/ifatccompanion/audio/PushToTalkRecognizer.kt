@@ -31,9 +31,6 @@ class PushToTalkRecognizer(
 ) {
 
     private var recognizer: SpeechRecognizer? = null
-    private var onPartial: (String) -> Unit = {}
-    private var onFinal: (String) -> Unit = {}
-    private var onError: (String) -> Unit = {}
 
     /** Whether this device has a recognition service at all. */
     val isAvailable: Boolean get() = SpeechRecognizer.isRecognitionAvailable(context)
@@ -52,15 +49,16 @@ class PushToTalkRecognizer(
             )
             return
         }
-        this.onPartial = onPartial
-        this.onFinal = onFinal
-        this.onError = onError
 
-        // A previous session may still be open if the pilot re-pressed quickly.
-        stop()
+        // Tear the previous session down completely, not just stopListening() — otherwise
+        // it is never destroyed and its callbacks keep arriving.
+        release()
 
-        val engine = SpeechRecognizer.createSpeechRecognizer(context).also { recognizer = it }
-        engine.setRecognitionListener(listener)
+        val engine = SpeechRecognizer.createSpeechRecognizer(context)
+        recognizer = engine
+        engine.setRecognitionListener(
+            Session(engine, onPartial, onFinal, onError),
+        )
         engine.startListening(intent())
     }
 
@@ -82,16 +80,22 @@ class PushToTalkRecognizer(
         runCatching { engine.destroy() }
     }
 
-    private fun intent(): Intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-        putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.US.toLanguageTag())
-        putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-        // On-device only: a pilot's transmissions are not sent anywhere.
-        putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
-        putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-    }
+    /**
+     * One press-and-hold, bound to the recognizer that serves it.
+     *
+     * Holding the engine here is what makes a late callback harmless: a superseded session
+     * can see that it is no longer the current recognizer and do nothing, instead of
+     * reporting its result and destroying whichever recognizer happens to be live.
+     */
+    private inner class Session(
+        private val engine: SpeechRecognizer,
+        private val onPartial: (String) -> Unit,
+        private val onFinal: (String) -> Unit,
+        private val onError: (String) -> Unit,
+    ) : RecognitionListener {
 
-    private val listener = object : RecognitionListener {
+        private val isCurrent: Boolean get() = recognizer === engine
+
         override fun onReadyForSpeech(params: Bundle?) = Unit
         override fun onBeginningOfSpeech() = Unit
         override fun onRmsChanged(rmsdB: Float) = Unit
@@ -100,16 +104,19 @@ class PushToTalkRecognizer(
         override fun onEvent(eventType: Int, params: Bundle?) = Unit
 
         override fun onPartialResults(partialResults: Bundle?) {
+            if (!isCurrent) return
             firstResult(partialResults)?.let(onPartial)
         }
 
         override fun onResults(results: Bundle?) {
+            if (!isCurrent) return
             val text = firstResult(results)
             release()
             if (text.isNullOrBlank()) onError(NOTHING_HEARD) else onFinal(text)
         }
 
         override fun onError(error: Int) {
+            if (!isCurrent) return
             release()
             val message = describe(error)
             diagnostics.log(
@@ -122,6 +129,15 @@ class PushToTalkRecognizer(
 
         private fun firstResult(bundle: Bundle?): String? =
             bundle?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
+    }
+
+    private fun intent(): Intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+        putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.US.toLanguageTag())
+        putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+        // On-device only: a pilot's transmissions are not sent anywhere.
+        putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+        putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
     }
 
     /**

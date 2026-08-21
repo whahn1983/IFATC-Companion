@@ -8,6 +8,7 @@ import com.h3consultingpartners.ifatccompanion.core.billing.EntitlementState
 import com.h3consultingpartners.ifatccompanion.core.connect.IFConnectState
 import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticRecord
 import com.h3consultingpartners.ifatccompanion.core.model.ATCFacility
+import com.h3consultingpartners.ifatccompanion.core.phraseology.PhraseologyProfilesState
 import com.h3consultingpartners.ifatccompanion.core.session.FlightSessionState
 import com.h3consultingpartners.ifatccompanion.core.session.PilotActionPresentation
 import com.h3consultingpartners.ifatccompanion.core.settings.AppSettings
@@ -76,7 +77,10 @@ fun FlightViewModel.atcModel(
         atisButtonSubtitle = atis?.letter(arrivalPhaseAtis)
             ?.let { "Information ${ATISPhraseology.phoneticLetter(it)}" }
             .orEmpty(),
-        atisButtonActive = session.currentFacility == ATCFacility.ATIS,
+        // ATIS is a broadcast, not a facility, so "active" means the pilot has actually
+        // tuned it for this phase and will report its code — not that they are on some
+        // ATIS frequency, which does not exist.
+        atisButtonActive = atisReceiptSummary(weather, arrivalPhaseAtis) != null,
         atisAirport = atisAirport,
         atisIsArrival = arrivalPhaseAtis,
         atisReceiptSummary = atisReceiptSummary(weather, arrivalPhaseAtis),
@@ -245,7 +249,7 @@ fun FlightViewModel.subscriptionActions(onClose: () -> Unit) = SubscriptionScree
     onRestore = ::onRestorePurchases,
     // Android has no in-app "manage subscription" sheet: Play Store's own subscriptions
     // page is the sanctioned destination, and Apple's URL would be wrong here.
-    onManage = { onOpenLink(AppConfig.Links.MANAGE_SUBSCRIPTIONS_URL); onClose() },
+    onManage = { onOpenLink(AppConfig.Billing.MANAGE_SUBSCRIPTIONS_URL); onClose() },
     onOpenTerms = { onOpenLink(AppConfig.Links.GOOGLE_PLAY_TERMS) },
     onOpenPrivacy = { onOpenLink(AppConfig.Links.PRIVACY_POLICY) },
 )
@@ -254,8 +258,10 @@ fun FlightViewModel.subscriptionActions(onClose: () -> Unit) = SubscriptionScree
 
 // region Phraseology profiles
 
-fun FlightViewModel.phraseologyProfilesModel(ui: FlightViewModel.UiState): PhraseologyProfilesModel {
-    val profiles = phraseologyProfilesState.value
+fun FlightViewModel.phraseologyProfilesModel(
+    ui: FlightViewModel.UiState,
+    profiles: PhraseologyProfilesState,
+): PhraseologyProfilesModel {
     return PhraseologyProfilesModel(
         profiles = profiles.profiles,
         activeProfileId = profiles.activeProfileID,

@@ -81,6 +81,7 @@ class MainActivity : ComponentActivity() {
                         session = session,
                         modifier = modifier,
                         onRequestMicrophone = ::ensureMicrophonePermission,
+                        onSelectTab = { tab = it },
                     )
                 }
             }
