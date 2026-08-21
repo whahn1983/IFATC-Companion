@@ -68,8 +68,12 @@ class AirportSurfaceCache(
             .map { it.removeSuffix(".json").uppercase() }
             .sorted()
 
-    /** Total bytes used by the cache (for the Settings display). */
+    /**
+     * Total bytes used by the cache (for the Settings display). Uses the store's size
+     * query rather than reading each entry: this runs on every surface refresh, and a
+     * cache holding several large fields is megabytes of pointless allocation otherwise.
+     */
     fun totalSizeBytes(): Int =
         runCatching { store.list(namespace) }.getOrDefault(emptyList())
-            .sumOf { store.read(namespace, it)?.size ?: 0 }
+            .sumOf { (store.sizeBytes(namespace, it) ?: 0L).toInt() }
 }

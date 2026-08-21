@@ -12,6 +12,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.withContext
+import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.EmptyCoroutineContext
 
 /**
  * What the app knows about the airport surface right now: the loaded extract, the routing
@@ -55,6 +58,22 @@ class SurfaceSessionController(
     private val airports: AirportDatabase = AirportDatabase,
     private val clock: Clock = Clock.system,
     private val diagnostics: DiagnosticsSink = DiagnosticsSink.noop,
+    /**
+     * Where the heavy work runs. Loading a surface parses a multi-megabyte Overpass
+     * document, normalizes it, and builds a routing graph with O(edges x segments)
+     * geometry loops — hundreds of milliseconds to seconds at a large field, and none of
+     * it suspends. On Android the caller was the ViewModel scope, which is the main
+     * thread, so a refresh at KLAX or EGLL blocked the UI long enough to fire the ANR
+     * watchdog.
+     *
+     * Confining it here rather than at the call site means a future caller cannot
+     * reintroduce that. Defaulted to EmptyCoroutineContext so the engine stays
+     * dispatcher-agnostic and the tests keep running on their own test dispatcher; the
+     * Android graph passes Dispatchers.Default. Default rather than IO because the cost
+     * is CPU, not blocking I/O — IO's much larger pool would let several multi-megabyte
+     * parses run at once.
+     */
+    private val workContext: CoroutineContext = EmptyCoroutineContext,
 ) {
 
     private val _state = MutableStateFlow(SurfaceSessionState())
@@ -67,7 +86,7 @@ class SurfaceSessionController(
      * pilot needs to act on: the taxi map simply doesn't draw and the controller falls back
      * to generic taxi phrasing. So a failure is recorded and reported, never thrown.
      */
-    suspend fun refresh(plan: FlightPlan, forceRefresh: Boolean = false) {
+    suspend fun refresh(plan: FlightPlan, forceRefresh: Boolean = false) = withContext(workContext) {
         _state.update { it.copy(loading = true, lastError = null) }
         val departure = load(plan.departure, forceRefresh)
         val arrival = load(plan.destination, forceRefresh)
@@ -127,7 +146,7 @@ class SurfaceSessionController(
             ?.let { Coordinate(it.latitude, it.longitude) }
     }
 
-    suspend fun clearCache() {
+    suspend fun clearCache() = withContext(workContext) {
         provider.clearCache()
         val info = provider.cacheInfo()
         _state.update {

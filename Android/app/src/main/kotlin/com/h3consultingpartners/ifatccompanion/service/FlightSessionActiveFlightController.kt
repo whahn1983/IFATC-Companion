@@ -31,13 +31,18 @@ class FlightSessionActiveFlightController(
 ) : ActiveFlightController {
 
     /**
-     * A flight is "active" from the moment ATC communication starts until it is parked.
-     * Before the first call there is nothing to keep alive, and after block-in the flight
-     * is over — leaving a foreground service running past either would be exactly the
-     * battery drain Play penalises, and a notification the pilot cannot dismiss.
+     * A flight is "active" from the moment ATC communication starts until it ends —
+     * either by reaching the arrival gate, or by being stopped.
+     *
+     * The `sessionEnded` half is load-bearing. Keyed on PARKED alone, a flight that never
+     * reaches the gate — quit mid-cruise, diverted, link permanently lost, Mock Mode
+     * switched off — stayed "active" forever, so the service never stopped. On Android 12
+     * and below a foreground-service notification is not user-dismissible, so the pilot
+     * was left with a frozen Live Flight Update card that only a force-stop could clear,
+     * and a 1 Hz poll running behind it.
      */
     override val isSessionActive: StateFlow<Boolean> = coordinator.state
-        .map { it.atcCommunicationStarted && it.atcState != ATCState.PARKED }
+        .map { it.atcCommunicationStarted && !it.sessionEnded && it.atcState != ATCState.PARKED }
         .stateIn(scope, SharingStarted.Eagerly, false)
 
     override val liveUpdate: StateFlow<LiveFlightUpdate?> = coordinator.state

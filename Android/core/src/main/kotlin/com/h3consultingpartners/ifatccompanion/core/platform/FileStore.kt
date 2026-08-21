@@ -12,6 +12,16 @@ interface FileStore {
     fun list(namespace: String): List<String>
     /** Epoch millis the entry was last written, or null when it does not exist. */
     fun lastModified(namespace: String, name: String): Long?
+
+    /**
+     * Bytes the entry occupies, or null when it does not exist.
+     *
+     * The default reads the entry, which is what a size query had to do before this
+     * existed — and summing a whole cache that way pulls every file into memory just to
+     * discard it. A store backed by a real filesystem should override this with a stat.
+     */
+    fun sizeBytes(namespace: String, name: String): Long? =
+        read(namespace, name)?.size?.toLong()
 }
 
 class InMemoryFileStore(private val clock: Clock = Clock.system) : FileStore {

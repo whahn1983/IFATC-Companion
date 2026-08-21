@@ -137,10 +137,12 @@ class RadioAudioEngine(
      * knows when sound is actually being produced, and it runs for background chatter with
      * no foreground service involved at all.
      */
+    @Synchronized
     fun start() {
         // compareAndSet, not get-then-set: two callers racing here — the chatter service
         // and a transmission arriving at the same moment — would otherwise both pass the
-        // check and build a second render loop over the one track.
+        // check and build a second render loop over the one track. Synchronized as well,
+        // so building a generation cannot interleave with stop() tearing one down.
         if (!running.compareAndSet(false, true)) return
         if (!requestFocus()) {
             running.set(false)
@@ -161,6 +163,11 @@ class RadioAudioEngine(
             var generator = RadioAudio.BedGenerator()
             val block = FloatArray(BLOCK_FRAMES)
             var current: Transmission? = null
+
+            // Bind to this generation's track. A loop that wakes from a blocked write
+            // after a later start() has installed new tracks must not write into — or
+            // tear down — that newer generation.
+            val track = renderTrack ?: return@launch
 
             while (isActive && running.get()) {
                 generator = RadioAudio.fillStaticBed(block, generator, bedGain)
@@ -183,12 +190,19 @@ class RadioAudioEngine(
                 // A blocking write paces the loop against the track's own consumption, so
                 // audio is generated exactly as fast as it is heard — the Android
                 // counterpart of the iOS source node being pulled by the render thread.
-                val written = renderTrack?.write(block, 0, block.size, AudioTrack.WRITE_BLOCKING)
-                if (written == null || written < 0) {
-                    // The track is gone. Clear `running` here rather than only in stop(),
-                    // so a later transmission fails fast instead of awaiting a loop that
-                    // has already exited.
-                    running.set(false)
+                val written = track.write(block, 0, block.size, AudioTrack.WRITE_BLOCKING)
+                if (written < 0) {
+                    // ERROR_DEAD_OBJECT after an audioserver restart, or
+                    // ERROR_INVALID_OPERATION when the output device changes — a Bluetooth
+                    // headset dropping, headphones unplugged.
+                    //
+                    // Tear down properly rather than just clearing `running`. Leaving that
+                    // to stop() meant every later stop() short-circuited on its own guard,
+                    // so audio focus was held for the rest of the process (the pilot's
+                    // music stayed ducked and could not recover) and both AudioTracks were
+                    // orphaned — once per chatter start/stop cycle. Only if this is still
+                    // the installed generation, so a stale loop cannot release live tracks.
+                    if (renderTrack === track) stop() else running.set(false)
                     break
                 }
             }
@@ -199,8 +213,18 @@ class RadioAudioEngine(
         }
     }
 
+    /**
+     * Unconditional and idempotent. It used to return early unless `running` was still
+     * set, which meant a render loop that had already exited on a write error left focus
+     * held and both tracks leaked forever. Every statement below is null-guarded and safe
+     * to repeat — AudioTrack.release() on a released track, Job.cancel() on a finished
+     * job, abandonFocus() with no request — so the guard bought nothing and cost that.
+     *
+     * Synchronized because the render thread can now enter it at the same time as a caller.
+     */
+    @Synchronized
     fun stop() {
-        if (!running.getAndSet(false)) return
+        running.set(false)
         abandonFocus()
         renderJob?.cancel()
         renderJob = null

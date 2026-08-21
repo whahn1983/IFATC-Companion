@@ -119,6 +119,23 @@ data class FlightSessionState(
     val savedFlightRetiredByClearing: String? = null,
 
     // endregion
+
+    // region Session lifecycle
+
+    /**
+     * True once the flight has been deliberately ended — Stop tapped, the transport torn
+     * down, Mock Mode switched off. Cleared again by the next controller exchange.
+     *
+     * This exists because "is the flight over?" cannot be derived from the ATC state
+     * alone. Reaching PARKED means the flight ended at the gate, but a flight that is
+     * abandoned mid-cruise, diverted, or whose link is dropped for good never reaches any
+     * terminal state — so anything keyed on `atcState != PARKED` stays true forever. That
+     * left the foreground service, its undismissable notification and the 1 Hz poll
+     * running for the rest of the process.
+     */
+    val sessionEnded: Boolean = false,
+
+    // endregion
 ) {
 
     /**

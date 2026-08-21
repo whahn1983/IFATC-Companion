@@ -49,6 +49,11 @@ class AndroidFileStore(private val root: File) : FileStore {
             ?.map { it.name }
             .orEmpty()
 
+    override fun sizeBytes(namespace: String, name: String): Long? {
+        val target = file(namespace, name)
+        return if (target.isFile) target.length() else null
+    }
+
     override fun lastModified(namespace: String, name: String): Long? {
         val target = file(namespace, name)
         return if (target.isFile) target.lastModified() else null

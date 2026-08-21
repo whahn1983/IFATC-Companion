@@ -247,4 +247,62 @@ class FlightSessionCoordinatorTest {
         assertEquals(FlightPhase.CLIMB, coordinator.state.value.phase)
         assertTrue(coordinator.state.value.phaseDebug.notes.isNotEmpty())
     }
+    // region Session lifecycle
+
+    @Test
+    fun `endSession marks the flight over so a watcher can stop without reaching the gate`() = runTest {
+        val coordinator = coordinator(this)
+        coordinator.ingestFlightPlan(plan)
+        coordinator.post(
+            ATCTransmission(
+                sender = ATCTransmission.Sender.ATC,
+                facility = ATCFacility.CLEARANCE,
+                displayText = "United 598, cleared to Minneapolis as filed.",
+                spokenText = "United five niner eight, cleared to Minneapolis as filed.",
+                timestampMillis = 0,
+            ),
+            speakIt = false,
+        )
+        advanceUntilIdle()
+
+        // A controller exchange has happened and the flight is nowhere near the gate.
+        assertTrue(coordinator.state.value.atcCommunicationStarted)
+        assertFalse(coordinator.state.value.sessionEnded)
+        assertTrue(coordinator.state.value.atcState != ATCState.PARKED)
+
+        coordinator.endSession()
+        advanceUntilIdle()
+
+        // This is the whole point: a flight abandoned mid-cruise is over even though it
+        // never reached PARKED, which is what anything keyed on atcState alone missed.
+        assertTrue(coordinator.state.value.sessionEnded)
+    }
+
+    @Test
+    fun `a new controller exchange revives a session that was ended earlier`() = runTest {
+        val coordinator = coordinator(this)
+        coordinator.ingestFlightPlan(plan)
+        coordinator.endSession()
+        advanceUntilIdle()
+        assertTrue(coordinator.state.value.sessionEnded)
+
+        coordinator.post(
+            ATCTransmission(
+                sender = ATCTransmission.Sender.ATC,
+                facility = ATCFacility.CLEARANCE,
+                displayText = "United 598, push and start approved.",
+                spokenText = "United five niner eight, push and start approved.",
+                timestampMillis = 1_000,
+            ),
+            speakIt = false,
+        )
+        advanceUntilIdle()
+
+        // Without this the flag latches for the process and the next flight never starts
+        // the foreground service.
+        assertFalse(coordinator.state.value.sessionEnded)
+    }
+
+    // endregion
+
 }

@@ -178,7 +178,15 @@ class AppGraph private constructor(
 
     /** The OpenStreetMap surface for both ends of the flight, and the routing graph on it. */
     val surface: SurfaceSessionController by lazy {
-        SurfaceSessionController(surfaceProvider, clock = clock, diagnostics = diagnostics)
+        SurfaceSessionController(
+            surfaceProvider,
+            clock = clock,
+            diagnostics = diagnostics,
+            // Overpass decode, normalize and two routing-graph builds. Seconds of
+            // uninterrupted CPU at a large field, and every caller reaches it from the
+            // ViewModel scope, which is the main thread.
+            workContext = Dispatchers.Default,
+        )
     }
 
     val phraseologyProfiles: PhraseologyProfileStore by lazy {
@@ -210,6 +218,10 @@ class AppGraph private constructor(
                 connect.disconnect()
                 mockFeed.stop()
                 chatter.stop()
+                // Tearing down the transports is not enough on its own: without this the
+                // session still looks active, so the service that Stop was meant to end
+                // keeps running.
+                flightSessionCoordinator.endSession()
                 diagnostics.log(DiagnosticCategory.SESSION, message = "Flight session stopped from the notification")
             },
         )
@@ -291,6 +303,9 @@ class AppGraph private constructor(
             mockFeed.start()
         } else {
             mockFeed.stop()
+            // The mock feed was the only thing driving the state, so switching it off ends
+            // the flight. Without this the session stays "active" with nothing feeding it.
+            flightSessionCoordinator.endSession()
         }
         diagnostics.log(
             DiagnosticCategory.SESSION,

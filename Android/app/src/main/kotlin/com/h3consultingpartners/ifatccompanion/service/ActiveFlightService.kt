@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
@@ -48,11 +49,47 @@ class ActiveFlightService : LifecycleService() {
     private val controller: ActiveFlightController?
         get() = AppGraph.instanceOrNull()?.activeFlightController
 
+    /**
+     * A foreground service keeps the process out of the cached and frozen buckets. It does
+     * NOT keep the CPU running: once the screen is off and the device suspends, the
+     * session's 1 Hz poll of Infinite Flight simply stops until something else wakes the
+     * SoC. That is precisely this app's main use case — the sim on one device, the phone
+     * pocketed — so a partial wake lock is what actually delivers it.
+     *
+     * WAKE_LOCK was already declared in the manifest for exactly this, and was never
+     * acquired anywhere. The audio path does not cover it either: chatter is off by
+     * default, so between transmissions nothing is streaming.
+     *
+     * Held only for the service's own lifetime, which is bounded by the flight session,
+     * and released in onDestroy whichever way the service ends.
+     */
+    private var wakeLock: PowerManager.WakeLock? = null
+
     override fun onCreate() {
         super.onCreate()
         FlightNotifications.createChannels(this)
+        acquireWakeLock()
         startInForeground()
         observeSession()
+    }
+
+    override fun onDestroy() {
+        releaseWakeLock()
+        super.onDestroy()
+    }
+
+    private fun acquireWakeLock() {
+        if (wakeLock != null) return
+        val power = getSystemService(PowerManager::class.java) ?: return
+        wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG).apply {
+            setReferenceCounted(false)
+            acquire(WAKE_LOCK_TIMEOUT_MILLIS)
+        }
+    }
+
+    private fun releaseWakeLock() {
+        wakeLock?.let { if (it.isHeld) runCatching { it.release() } }
+        wakeLock = null
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -139,6 +176,16 @@ class ActiveFlightService : LifecycleService() {
     }
 
     companion object {
+        private const val WAKE_LOCK_TAG = "IFATCCompanion:ActiveFlight"
+
+        /**
+         * A backstop, not the normal release path — onDestroy does that. A wake lock with
+         * no timeout that somehow outlives its release would drain the battery until the
+         * process died, so this bounds the damage at a duration longer than any real
+         * gate-to-gate flight.
+         */
+        private const val WAKE_LOCK_TIMEOUT_MILLIS = 12L * 60L * 60L * 1000L
+
         private const val ACTION_STOP = "com.h3consultingpartners.ifatccompanion.STOP_FLIGHT"
         private const val ACTION_PERFORM = "com.h3consultingpartners.ifatccompanion.PERFORM_LIVE_ACTION"
         private const val EXTRA_ACTION_ID = "action_id"

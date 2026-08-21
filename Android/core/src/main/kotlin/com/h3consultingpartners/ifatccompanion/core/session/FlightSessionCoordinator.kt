@@ -635,6 +635,19 @@ class FlightSessionCoordinator(
     // region Transcript
 
     /** Append a transmission to the transcript and speak it. */
+    /**
+     * Mark the flight as deliberately over. Everything watching the session — the
+     * foreground service above all — keys on this rather than trying to infer an ending
+     * from the ATC state, which only ever reaches a terminal value when the flight
+     * happens to finish at the arrival gate.
+     *
+     * Deliberately does not clear the transcript: the pilot may still want to read or
+     * export it, and the next controller exchange revives the session anyway.
+     */
+    fun endSession() {
+        _state.update { it.copy(sessionEnded = true) }
+    }
+
     fun post(tx: ATCTransmission, speakIt: Boolean = true) {
         // A controller call that would only repeat the last one, and which the pilot has
         // already acknowledged, adds nothing. A call that went unanswered is never held —
@@ -650,6 +663,9 @@ class FlightSessionCoordinator(
                 transcript = it.transcript + tx,
                 // ATIS is a one-way broadcast: it is never the call a read-back answers.
                 latestTransmission = if (tx.isATISLine) it.latestTransmission else tx,
+                // Traffic again means the flight is live again, so a session ended earlier
+                // in this process does not keep the next one from starting the service.
+                sessionEnded = false,
             )
         }
 
