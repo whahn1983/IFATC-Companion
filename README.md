@@ -80,6 +80,82 @@ Once connected, IFATC Companion reads your live aircraft state and flight plan a
 
 ---
 
+## Android
+
+A native Android port lives alongside the iOS app in [`Android/`](Android/). It is a
+Kotlin / Jetpack Compose / Material 3 application built to match the shipping iOS app —
+same features, same ATC behaviour, same phraseology, same screens, same legal text —
+translated to Android's own platform model rather than reimplemented as a lookalike.
+
+**Application ID:** `com.h3consultingpartners.ifatccompanion` · **minSdk** 29 ·
+**target/compileSdk** 36
+
+### Two modules
+
+| Module | What it is |
+| --- | --- |
+| `:core` | **Pure Kotlin/JVM.** Models, geodesy, the Infinite Flight Connect client, the ATC state machine, phraseology, ATIS, weather, the OpenStreetMap surface pipeline and taxi routing, Mock Mode, persistence. No `android.*`, no `androidx.*`. |
+| `:app` | Compose UI, the active-flight foreground service, audio, notifications, Play Billing, resources. |
+
+Keeping the engine Android-free means it is unit tested on a plain JVM — no emulator, no
+device — and that the layering the iOS app keeps by convention is enforced by the
+compiler here: the ATC engine cannot reach the UI, taxi routing cannot reach the map
+renderer, weather cannot reach either.
+
+### Building
+
+```bash
+cd Android
+
+# The engine: compiles and tests with only a JDK — no Android SDK required.
+./gradlew -c settings-core.gradle.kts :core:test
+
+# The Compose screens: type-checked without the Android SDK.
+./gradlew -c settings-uicheck.gradle.kts :uicheck:compileKotlin
+
+# The app itself (Android Studio, or any machine with the SDK).
+./gradlew :app:assembleDebug
+./gradlew :app:bundleRelease
+```
+
+Open `Android/` in Android Studio to run it on a device or emulator.
+
+Release signing is supplied out of band and never committed — set
+`IFATC_RELEASE_STORE_FILE`, `IFATC_RELEASE_STORE_PASSWORD`, `IFATC_RELEASE_KEY_ALIAS` and
+`IFATC_RELEASE_KEY_PASSWORD` as Gradle properties or environment variables, or put them
+in a git-ignored `Android/keystore.properties`. Without them the release build simply
+stays unsigned.
+
+### Android documentation
+
+| Document | What it covers |
+| --- | --- |
+| [Docs/ANDROID_PARITY_MATRIX.md](Docs/ANDROID_PARITY_MATRIX.md) | Every iOS capability and how far the port has got — with an honest status column |
+| [Docs/ANDROID_ARCHITECTURE.md](Docs/ANDROID_ARCHITECTURE.md) | The module split, the platform ports, and where the iOS `AppModel` went |
+| [Docs/ANDROID_MAPPING.md](Docs/ANDROID_MAPPING.md) | Why the maps are rendered by the app rather than by a mapping SDK |
+| [Docs/ANDROID_DATA_SOURCES.md](Docs/ANDROID_DATA_SOURCES.md) | Every provider, endpoint, licence, commercial-use basis and attribution |
+| [Docs/ANDROID_BILLING.md](Docs/ANDROID_BILLING.md) | Play Billing, the entitlement rule, and what a client-only implementation cannot secure |
+| [Docs/ANDROID_BACKGROUND_EXECUTION.md](Docs/ANDROID_BACKGROUND_EXECUTION.md) | The foreground service and the Live Flight Update |
+| [Docs/GOOGLE_PLAY_DATA_SAFETY.md](Docs/GOOGLE_PLAY_DATA_SAFETY.md) | The Data safety answers, written from the implementation |
+| [Docs/GOOGLE_PLAY_RELEASE_CHECKLIST.md](Docs/GOOGLE_PLAY_RELEASE_CHECKLIST.md) | What is done in the repository, and what only a person with the Play Console can do |
+| [Android/PORTING.md](Android/PORTING.md) | The conventions every ported file follows |
+
+### Where Android differs, and why
+
+Three differences are deliberate, and each is recorded in the parity matrix:
+
+- **Background operation is not tied to background chatter.** iOS needs the chatter
+  because its `audio` background mode requires audio actually being produced; Android's
+  foreground service does not. A flight runs in the background either way, and the app
+  never plays silent audio to stay alive.
+- **The maps are drawn by the app.** Every Android mapping SDK wants an API key, a
+  billing account or a tile bill. Neither of this app's maps is a *place* map, so the
+  coordinate frame is arithmetic and the rest is the app's own data.
+- **The Live Flight Update has no Refresh button.** iOS needs one because ActivityKit
+  throttles a backgrounded app's pushes; Android's notification stays live on its own.
+
+---
+
 ## Subscription
 
 - **Mock Mode is free** and never requires a purchase — you can explore the full experience offline.
