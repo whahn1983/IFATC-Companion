@@ -205,7 +205,10 @@ private fun StatusHeader(model: AtcScreenModel, actions: AtcScreenActions) {
             )
             Spacer(Modifier.weight(1f))
             // Center reads as the sector actually working the flight ("Fort Worth
-            // Center"); every other facility keeps its plain title.
+            // Center") once an airborne fix has landed inside a known sector; every other
+            // facility keeps its plain title. Before the first such fix — and whenever the
+            // sector database has not loaded — it falls back to a plain "Center", which is
+            // what the whole of a flight used to read, because nothing fed the tracker.
             StatusPill(
                 text = model.facilityLabel,
                 level = StatusLevel.NEUTRAL,

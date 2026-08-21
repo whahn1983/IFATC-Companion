@@ -10,6 +10,8 @@ import com.h3consultingpartners.ifatccompanion.core.atc.PhaseDetector
 import com.h3consultingpartners.ifatccompanion.core.atc.PilotResponseEngine
 import com.h3consultingpartners.ifatccompanion.core.atc.RunwayLineupDetector
 import com.h3consultingpartners.ifatccompanion.core.connect.IFConnectManager
+import com.h3consultingpartners.ifatccompanion.core.enroute.CenterSectorDatabase
+import com.h3consultingpartners.ifatccompanion.core.enroute.CenterSectorTracker
 import com.h3consultingpartners.ifatccompanion.core.geo.Coordinate
 import com.h3consultingpartners.ifatccompanion.core.geo.Geo
 import com.h3consultingpartners.ifatccompanion.core.model.ATCFacility
@@ -62,6 +64,17 @@ class FlightSessionCoordinator(
 
     private val _state = MutableStateFlow(FlightSessionState())
     val state: StateFlow<FlightSessionState> = _state.asStateFlow()
+
+    /**
+     * Which Center sector is working the flight.
+     *
+     * The database, the polygon lookup, the boundary hysteresis and the simulated
+     * frequencies were all ported and tested — and nothing ever fed them a position, so
+     * `centerSectorName` stayed null for every flight and Center always identified itself
+     * generically instead of as, say, "Fort Worth Center".
+     */
+    private val sectorTracker = CenterSectorTracker()
+    private var sectorLoadRequested = false
 
     private val settings: AppSettings get() = settingsProvider()
 
@@ -128,6 +141,7 @@ class FlightSessionCoordinator(
         )
 
         captureDepartureFieldElevation(aircraft, previous)
+        updateCenterSector(aircraft)
 
         _state.update {
             it.copy(
@@ -828,6 +842,44 @@ class FlightSessionCoordinator(
      * facility list is UI, but the numbers are the engine's — the buttons must show what a
      * call will actually say.
      */
+    /**
+     * Feed every airborne fix to the sector tracker and publish the sector's radio name.
+     *
+     * Fed for the whole airborne phase rather than only the enroute leg, so the name is
+     * already correct at the moment Departure hands over rather than a fix or two later.
+     *
+     * The database is ~550 KB of JSON, so it is loaded off-thread and only once, on the
+     * first airborne fix that needs it — not at construction, which would make every test
+     * and every preflight pay for it. Until it reports ready the tracker returns nothing
+     * and the generic "Center" fallback holds, which is the correct degraded state.
+     */
+    private fun updateCenterSector(aircraft: AircraftState) {
+        if (!settingsProvider().centerSectorHandoffs) return
+        // onGround is nullable — treat "unknown" as on the ground rather than guessing a
+        // position is airborne, which would feed the tracker taxiway fixes.
+        if (aircraft.onGround != false) return
+        val coordinate = aircraft.coordinate ?: return
+
+        val database = CenterSectorDatabase.shared
+        if (!database.isReady) {
+            if (!sectorLoadRequested) {
+                sectorLoadRequested = true
+                database.prepare(scope)
+            }
+            return
+        }
+
+        sectorTracker.update(
+            coordinate = coordinate,
+            atMillis = clock.nowMillis(),
+            database = database,
+        )
+        val name = sectorTracker.current?.radioName
+        if (name != _state.value.centerSectorName) {
+            _state.update { it.copy(centerSectorName = name) }
+        }
+    }
+
     fun frequencyForFacility(facility: ATCFacility): Double =
         frequencyFor(facility, buildContext(stateMachine.current))
 

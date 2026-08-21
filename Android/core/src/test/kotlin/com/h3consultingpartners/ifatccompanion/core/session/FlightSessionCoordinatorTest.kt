@@ -1,5 +1,6 @@
 package com.h3consultingpartners.ifatccompanion.core.session
 
+import com.h3consultingpartners.ifatccompanion.core.enroute.CenterSectorDatabase
 import com.h3consultingpartners.ifatccompanion.core.model.ATCFacility
 import com.h3consultingpartners.ifatccompanion.core.model.ATCState
 import com.h3consultingpartners.ifatccompanion.core.model.ATCTransmission
@@ -15,6 +16,8 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -301,6 +304,60 @@ class FlightSessionCoordinatorTest {
         // Without this the flag latches for the process and the next flight never starts
         // the foreground service.
         assertFalse(coordinator.state.value.sessionEnded)
+    }
+
+    // endregion
+
+    // region Center sector
+
+    @Test
+    fun `an airborne fix names the Center sector working the flight`() = runTest {
+        // Loaded synchronously here so the first fix already has data. In the app the
+        // coordinator kicks the load off-thread on the first airborne fix and the generic
+        // "Center" fallback holds until it lands.
+        assertTrue(CenterSectorDatabase.shared.loadNow(), "the sector database should load")
+
+        val coordinator = coordinator(this)
+        coordinator.ingestFlightPlan(plan)
+        assertNull(coordinator.state.value.centerSectorName, "nothing is known before a fix")
+
+        // 32.0N 95.0W — over east Texas, well inside a real Center sector.
+        coordinator.ingestAircraftState(airborne(altitude = 35_000.0))
+        advanceUntilIdle()
+
+        // The database, the polygon lookup and the tracker were all ported and tested, and
+        // nothing ever fed them a position — so this stayed null for every flight and
+        // Center identified itself generically for the whole cruise.
+        assertNotNull(
+            coordinator.state.value.centerSectorName,
+            "an airborne fix inside a sector should name it",
+        )
+    }
+
+    @Test
+    fun `a fix on the ground names no sector`() = runTest {
+        assertTrue(CenterSectorDatabase.shared.loadNow())
+        val coordinator = coordinator(this)
+        coordinator.ingestFlightPlan(plan)
+
+        coordinator.ingestAircraftState(
+            AircraftState(
+                latitude = 32.0,
+                longitude = -95.0,
+                altitudeMSL = 500.0,
+                altitudeAGL = 0.0,
+                groundSpeed = 12.0,
+                verticalSpeed = 0.0,
+                heading = 15.0,
+                onGround = true,
+            ),
+        )
+        advanceUntilIdle()
+
+        // Taxiway fixes must not be fed to the tracker: a sector name at the gate would be
+        // wrong, and worse, it would consume the first-fix adoption the tracker uses to
+        // decide there is nothing to hand off from.
+        assertNull(coordinator.state.value.centerSectorName)
     }
 
     // endregion
