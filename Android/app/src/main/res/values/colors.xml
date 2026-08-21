@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The palette is taken from the shipping iOS app: the accent is the asset
+  catalog's AccentColor (sRGB 0.298, 0.871, 0.694), and the radar blues are
+  sampled from the app icon's own gradient, so Android carries the same visual
+  identity rather than a new one.
+-->
+<resources>
+    <!-- Accent — iOS AccentColor. -->
+    <color name="ifatc_mint">#FF4CDEB1</color>
+    <color name="ifatc_mint_dark">#FF1F9E77</color>
+    <color name="ifatc_mint_container_light">#FFB6F2DE</color>
+    <color name="ifatc_mint_container_dark">#FF00513B</color>
+
+    <!-- Radar blues from the app icon gradient. -->
+    <color name="ifatc_radar_deep">#FF0A1A38</color>
+    <color name="ifatc_radar_mid">#FF112D59</color>
+    <color name="ifatc_radar_light">#FF153E78</color>
+    <color name="ifatc_radar_sweep">#FF1B635F</color>
+    <color name="ifatc_radar_blip">#FFB4E1FF</color>
+
+    <!-- Surfaces — iOS WidgetBackground light/dark. -->
+    <color name="ifatc_surface_light">#FFF2F5F6</color>
+    <color name="ifatc_surface_dark">#FF161A21</color>
+
+    <color name="ifatc_on_dark">#FFFFFFFF</color>
+    <color name="ifatc_on_light">#FF11181C</color>
+</resources>

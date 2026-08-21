@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!--
+      The app is entirely Jetpack Compose, so the XML theme only has to carry the
+      window and splash-screen chrome. Colours, typography and shape live in
+      ui/theme/Theme.kt, which is where the Material 3 scheme (and the dynamic-colour
+      opt-in) is defined.
+    -->
+    <style name="Theme.IFATCCompanion" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowBackground">@color/ifatc_surface_light</item>
+    </style>
+
+    <style name="Theme.IFATCCompanion.Starting" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/ifatc_radar_deep</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
+        <item name="postSplashScreenTheme">@style/Theme.IFATCCompanion</item>
+        <item name="android:windowLayoutInDisplayCutoutMode" tools:targetApi="p">shortEdges</item>
+    </style>
+</resources>
