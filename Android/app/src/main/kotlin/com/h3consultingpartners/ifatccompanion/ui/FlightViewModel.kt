@@ -6,9 +6,11 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.h3consultingpartners.ifatccompanion.AppGraph
+import com.h3consultingpartners.ifatccompanion.core.airports.AirportDatabase
 import com.h3consultingpartners.ifatccompanion.core.billing.EntitlementState
-import com.h3consultingpartners.ifatccompanion.core.config.AppConfig
 import com.h3consultingpartners.ifatccompanion.core.billing.SubscriptionProduct
+import com.h3consultingpartners.ifatccompanion.core.config.AppConfig
+import com.h3consultingpartners.ifatccompanion.core.geo.Coordinate
 import com.h3consultingpartners.ifatccompanion.core.model.ATCFacility
 import com.h3consultingpartners.ifatccompanion.core.model.ATCState
 import com.h3consultingpartners.ifatccompanion.core.model.FlightPlan
@@ -25,12 +27,15 @@ import com.h3consultingpartners.ifatccompanion.core.settings.SettingsRepository
 import com.h3consultingpartners.ifatccompanion.core.surface.routing.AirportSurfaceState
 import com.h3consultingpartners.ifatccompanion.core.surface.routing.TaxiMapAction
 import com.h3consultingpartners.ifatccompanion.core.weather.WeatherSessionState
+import com.h3consultingpartners.ifatccompanion.ui.map.BaseMapModel
 import com.h3consultingpartners.ifatccompanion.ui.screens.FlightOverrides
 import com.h3consultingpartners.ifatccompanion.ui.screens.VoiceOption
+import kotlin.math.roundToInt
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -105,6 +110,8 @@ class FlightViewModel(
 
         observeTaxi()
 
+        observeBaseMapImagery()
+
         // Load the airport surface whenever the flight's endpoints change.
         //
         // Until now SurfaceSessionController.refresh had exactly one caller in the whole
@@ -127,6 +134,75 @@ class FlightViewModel(
                 }
         }
     }
+
+    // region Base map
+
+    private val _baseMap = MutableStateFlow(BaseMapModel())
+
+    /**
+     * What sits under the route line: bundled coastlines and a graticule always, plus
+     * satellite imagery when it can be fetched.
+     *
+     * The two halves are deliberately unequal. Coastlines are packaged with the app and
+     * the graticule is arithmetic, so they are on from the first frame with no network at
+     * all — which is the case that matters, because a pilot with the app open at altitude
+     * often has no signal. Imagery is an enhancement, and its absence is the ordinary
+     * offline state rather than an error the pilot is told about.
+     */
+    val baseMap: StateFlow<BaseMapModel> = _baseMap.asStateFlow()
+
+    /**
+     * Fetch one image per route rather than one per pan.
+     *
+     * The window is padded well beyond the route (see `BaseMapWindow`), so ordinary
+     * panning and zooming stay inside what was already fetched, and the layer is a static
+     * Blue Marble image with no time dimension, so there is nothing to keep current. That
+     * makes a single request per route the right cadence rather than a compromise —
+     * chasing the camera would put the map on the network for the whole flight.
+     */
+    private fun observeBaseMapImagery() {
+        viewModelScope.launch {
+            session
+                .map(::baseMapCoverage)
+                .distinctUntilChanged()
+                .collectLatest { coordinates ->
+                    if (coordinates.isEmpty()) return@collectLatest
+                    val imagery = graph.baseMapImagery.load(coordinates) ?: return@collectLatest
+                    _baseMap.value = _baseMap.value.copy(
+                        imagery = imagery.image,
+                        imageryBounds = imagery.bounds,
+                    )
+                }
+        }
+    }
+
+    /**
+     * The coordinates the imagery has to cover, coarse enough that a 1 Hz telemetry tick
+     * does not re-request an identical image.
+     *
+     * The filed route is preferred because it does not move. Only when nothing is filed
+     * does this fall back to the aircraft itself, and then rounded to a whole degree — the
+     * window is at least two degrees across, so the aircraft cannot land outside its own
+     * imagery, and free flight refetches every degree crossed rather than every second.
+     */
+    private fun baseMapCoverage(state: FlightSessionState): List<Coordinate> {
+        val plan = state.flightPlan
+        val planned = buildList {
+            AirportDatabase.coordinate(plan.departure)?.let(::add)
+            addAll(plan.waypoints.mapNotNull { it.coordinate?.takeIf(Coordinate::isValid) })
+            AirportDatabase.coordinate(plan.destination)?.let(::add)
+        }
+        if (planned.isNotEmpty()) return planned
+        val here = state.aircraftState.coordinate?.takeIf(Coordinate::isValid) ?: return emptyList()
+        return listOf(
+            Coordinate(
+                latitude = here.latitude.roundToInt().toDouble(),
+                longitude = here.longitude.roundToInt().toDouble(),
+            ),
+        )
+    }
+
+    // endregion
 
     // region Pilot actions
 

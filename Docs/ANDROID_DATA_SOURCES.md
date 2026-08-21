@@ -139,7 +139,35 @@ rules the iOS build applies:
 
 ---
 
-## 9. SimBrief (Navigraph) — opened, never scraped
+## 9. Natural Earth — route-map coastlines
+
+| | |
+| --- | --- |
+| **Purpose** | Coastlines under the route on the weather map, so a flight plan is drawn against something rather than on an empty canvas. |
+| **Delivery** | **Bundled with the app** (`core/src/main/resources/coastlines.json`, ~75 KB). No network request, works with no connectivity at all — which is the case that matters for a pilot at altitude. |
+| **Dataset** | 1:110m physical coastline, stripped of properties and rounded to two decimal places (roughly a kilometre, finer than the source detail justifies). |
+| **Licence** | **Public domain.** No attribution is required. |
+| **Attribution** | "Coastlines: Natural Earth (public domain)" is shown on the map and in Settings anyway — saying where data came from is worth doing whether or not a licence compels it. Asserted by `LegalStringsTest`. |
+| **Android implementation** | `core/map/CoastlineData.kt`, drawn by `app/ui/map/BaseMapLayers.kt` |
+
+---
+
+## 10. NASA GIBS — route-map satellite underlay
+
+| | |
+| --- | --- |
+| **Purpose** | Land and sea-floor imagery beneath the route. A **second, separate** use of GIBS from the precipitation estimate in §5, with a different layer and a different failure posture. |
+| **Endpoint** | `https://gibs.earthdata.nasa.gov/wms/epsg3857/best/wms.cgi`, layer `BlueMarble_ShadedRelief_Bathymetry` |
+| **Key required** | **No.** |
+| **Cadence** | **One request per route**, not per viewport. The layer is static — it carries no `TIME` dimension — so there is nothing to keep current, and the requested window is padded well beyond the route so panning stays inside it. |
+| **Licence / commercial-use basis** | NASA imagery is generally not copyrighted and may be used for any purpose, including commercially, subject to NASA's media-usage guidelines (do not imply NASA endorsement). |
+| **Attribution** | "Imagery: NASA GIBS", shown on the map **only while imagery is actually displayed**, and in full in Settings. |
+| **When it fails** | Returns null and nothing is reported to the pilot. The graticule, the scale bar and the bundled coastlines all still draw, so no signal costs detail and never legibility. |
+| **Android implementation** | `core/map/BaseImageryService.kt`, `core/map/BaseMapWindow.kt`, `app/map/BaseMapImageryLoader.kt` |
+
+---
+
+## 11. SimBrief (Navigraph) — opened, never scraped
 
 | | |
 | --- | --- |
@@ -151,7 +179,7 @@ rules the iOS build applies:
 
 ---
 
-## 10. Google Play Billing
+## 12. Google Play Billing
 
 Purchases and entitlement only. See `Docs/ANDROID_BILLING.md`. No pilot data is sent;
 the app reads Play's own purchase records for the signed-in Google account.

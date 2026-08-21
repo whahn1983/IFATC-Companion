@@ -1,9 +1,10 @@
 package com.h3consultingpartners.ifatccompanion.core.map
 
 import com.h3consultingpartners.ifatccompanion.core.geo.Coordinate
-import kotlinx.serialization.json.Json
+import com.h3consultingpartners.ifatccompanion.core.ui.LegalStrings
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
+import kotlinx.serialization.json.Json
 
 /**
  * World coastlines, bundled with the app.
@@ -31,8 +32,11 @@ object CoastlineData {
 
     const val RESOURCE_NAME = "coastlines.json"
 
-    /** Natural Earth is public domain; this is a credit, not a licence requirement. */
-    const val CREDIT = "Coastlines: Natural Earth (public domain)"
+    /**
+     * Natural Earth is public domain; this is a credit, not a licence requirement. It
+     * delegates so there is exactly one wording, shared with Settings and the map itself.
+     */
+    const val CREDIT = LegalStrings.BaseMap.COASTLINE_ATTRIBUTION
 
     private val json = Json { ignoreUnknownKeys = true }
 

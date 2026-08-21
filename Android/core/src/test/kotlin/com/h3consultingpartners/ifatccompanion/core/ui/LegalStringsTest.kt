@@ -1,5 +1,7 @@
 package com.h3consultingpartners.ifatccompanion.core.ui
 
+import com.h3consultingpartners.ifatccompanion.core.map.BaseImageryService
+import com.h3consultingpartners.ifatccompanion.core.map.CoastlineData
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -87,6 +89,61 @@ class LegalStringsTest {
             assertTrue(
                 text.contains("simulation", ignoreCase = true),
                 "\"$text\" must say it is for simulation only",
+            )
+        }
+    }
+
+    @Test
+    fun theBaseMapCreditsNameBothSourcesAndNeitherClaimsTheOther() {
+        // Two sources with two different obligations. Natural Earth is public domain, so
+        // its line is courtesy; NASA asks that GIBS be credited wherever its imagery
+        // appears. Conflating them — or crediting NASA for the coastlines — would be wrong
+        // in a way nobody would notice by looking at the map.
+        assertTrue(LegalStrings.BaseMap.COASTLINE_ATTRIBUTION.contains("Natural Earth"))
+        assertTrue(
+            LegalStrings.BaseMap.COASTLINE_ATTRIBUTION.contains("public domain", ignoreCase = true),
+        )
+        assertTrue(!LegalStrings.BaseMap.COASTLINE_ATTRIBUTION.contains("NASA"))
+
+        assertTrue(LegalStrings.BaseMap.IMAGERY_ATTRIBUTION.contains("NASA"))
+        assertTrue(LegalStrings.BaseMap.IMAGERY_ATTRIBUTION_LONG.contains("NASA"))
+        assertTrue(!LegalStrings.BaseMap.IMAGERY_ATTRIBUTION.contains("Natural Earth"))
+    }
+
+    @Test
+    fun theCreditsShownOnTheMapAreTheOnesTheDataLayersCarry() {
+        // The map draws from CoastlineData and BaseImageryService; Settings and this test
+        // read LegalStrings. If those ever diverge the app would credit one source on the
+        // map and a different wording everywhere else.
+        assertEquals(LegalStrings.BaseMap.COASTLINE_ATTRIBUTION, CoastlineData.CREDIT)
+        assertEquals(LegalStrings.BaseMap.IMAGERY_ATTRIBUTION_LONG, BaseImageryService.ATTRIBUTION)
+    }
+
+    @Test
+    fun theDataSourcesSummaryNamesEverySourceItClaimsToCover() {
+        // This one string is the app's own answer to "where does all this come from", so
+        // adding a source without adding it here makes the summary quietly incomplete.
+        val summary = LegalStrings.dataSourcesSummary()
+        for (source in listOf(
+            LegalStrings.OpenStreetMap.LICENSE_NAME,
+            LegalStrings.CenterSectors.PROVIDER_NAME,
+            LegalStrings.BaseMap.COASTLINE_PROVIDER,
+            LegalStrings.BaseMap.IMAGERY_PROVIDER,
+        )) {
+            assertTrue(summary.contains(source), "the Data Sources summary never mentions $source")
+        }
+    }
+
+    @Test
+    fun losingTheImageryIsDescribedAsNormalRatherThanAsAFailure() {
+        // The whole arrangement is that coastlines and the grid survive with no network.
+        // If this text ever reads like an error, the arrangement has been misunderstood.
+        val note = LegalStrings.BaseMap.OFFLINE_NOTE
+        assertTrue(note.contains("no connection") || note.contains("need no connection"))
+        for (alarming in listOf("error", "failed", "failure", "unavailable")) {
+            assertTrue(
+                !note.contains(alarming, ignoreCase = true),
+                "the offline note calls a normal state a \"$alarming\"",
             )
         }
     }

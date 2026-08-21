@@ -190,6 +190,21 @@ private fun DrawScope.drawImagery(frame: MapFrame, image: ImageBitmap, bounds: G
     if (targetWidth <= 0f || targetHeight <= 0f) return
     if (image.width <= 0 || image.height <= 0) return
 
+    // Nothing of it is on screen. Worth checking rather than leaving to the clip, because
+    // the rectangle being projected can be enormous — see the upscale cap below.
+    val canvasWidth = frame.canvasSize.width
+    val canvasHeight = frame.canvasSize.height
+    if (bottomRight.x < 0f || bottomRight.y < 0f) return
+    if (topLeft.x > canvasWidth || topLeft.y > canvasHeight) return
+
+    // Past a certain zoom the underlay is a blur, and asking for it is expensive: the map
+    // zooms to a span of 2^-25 of the world, so a route-sized window projects to a
+    // rectangle of order a hundred million pixels. The rasteriser would clip it, but only
+    // after being asked to scale it. Dropping the imagery at that zoom costs a blur that
+    // was adding nothing and leaves the coastlines and graticule, which stay sharp because
+    // they are vectors.
+    if (targetWidth / image.width > MAX_IMAGERY_UPSCALE) return
+
     // dstOffset/dstSize rather than a translate-and-scale pair: one call, no nested
     // transforms to leak into the layers drawn after this one.
     drawImage(
@@ -220,4 +235,7 @@ private const val SCALE_BAR_INSET = 14f
 private const val LABEL_INSET = 4f
 private const val LABEL_HEIGHT = 14f
 private const val IMAGERY_ALPHA = 0.85f
+
+/** Beyond this the underlay is a blur, and projecting it is far more work than it is worth. */
+private const val MAX_IMAGERY_UPSCALE = 8f
 private val LABEL_FONT_SIZE = 9.sp

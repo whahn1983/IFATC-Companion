@@ -409,6 +409,9 @@ fun SettingsScreen(
                 SettingsValue(SettingsLabels.OVERPASS_ENDPOINT, model.overpassEndpoint)
                 SettingsValue(SettingsLabels.CENTER_SECTORS, LegalStrings.CenterSectors.PROVIDER_NAME)
                 SettingsValue(SettingsLabels.LICENSE, LegalStrings.CenterSectors.LICENSE_SHORT_NAME)
+                SettingsValue(SettingsLabels.MAP_COASTLINES, LegalStrings.BaseMap.COASTLINE_PROVIDER)
+                SettingsValue(SettingsLabels.LICENSE, LegalStrings.BaseMap.COASTLINE_LICENSE_NAME)
+                SettingsValue(SettingsLabels.MAP_IMAGERY, LegalStrings.BaseMap.IMAGERY_PROVIDER)
                 model.surfaceCacheSummary?.let { SettingsValue("Cached airports", it) }
 
                 SettingsToggle(
@@ -453,6 +456,12 @@ fun SettingsScreen(
                 })
                 SettingsLink(label = SettingsLabels.CENTER_SECTOR_DOCUMENTATION, onClick = {
                     actions.onOpenLink(LegalStrings.CenterSectors.DOCUMENTATION_URL)
+                })
+                SettingsLink(label = "Natural Earth terms of use", onClick = {
+                    actions.onOpenLink(LegalStrings.BaseMap.COASTLINE_URL)
+                })
+                SettingsLink(label = "NASA GIBS", onClick = {
+                    actions.onOpenLink(LegalStrings.BaseMap.IMAGERY_URL)
                 })
             }
         }

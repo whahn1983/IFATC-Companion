@@ -116,6 +116,8 @@ object SettingsLabels {
     const val LICENSE = "License"
     const val OVERPASS_ENDPOINT = "Overpass endpoint"
     const val CENTER_SECTORS = "Center sectors"
+    const val MAP_COASTLINES = "Map coastlines"
+    const val MAP_IMAGERY = "Map imagery"
     const val TAXI_AUTO_CROSSING_CALLS = "Automatic runway-crossing calls"
     const val TAXI_AUTO_RECALCULATE = "Auto-recalculate when off route"
     const val AUTO_ASSIGN_GATES = "Auto-assign gates"

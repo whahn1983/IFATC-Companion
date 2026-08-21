@@ -65,6 +65,14 @@ object AppConfig {
             "https://github.com/whahn1983/IFATC-Companion/blob/main/docs/OpenStreetMapLicensing.md"
         const val CC_BY_SA_4_0 = "https://creativecommons.org/licenses/by-sa/4.0/"
 
+        /**
+         * Base-map provenance. Both are keyless and free of any account or billing
+         * relationship, which is why they are the base map at all — see
+         * Docs/ANDROID_MAPPING.md for the providers that were rejected for wanting one.
+         */
+        const val NASA_GIBS = "https://nasa-gibs.github.io/gibs-api-docs/"
+        const val NATURAL_EARTH = "https://www.naturalearthdata.com/about/terms-of-use/"
+
         /** SimBrief — opened in an in-app browser. Not affiliated. */
         const val SIMBRIEF = "https://dispatch.simbrief.com"
 

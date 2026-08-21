@@ -99,6 +99,46 @@ object LegalStrings {
 
     // endregion
 
+    // region Base map — Natural Earth (public domain) and NASA GIBS
+
+    /**
+     * What sits under the route line.
+     *
+     * Neither source needs a key, an account or a bill, which is the reason both were
+     * chosen; Docs/ANDROID_MAPPING.md records why every provider that does was rejected.
+     * Natural Earth is public domain, so its credit is courtesy. NASA asks that GIBS be
+     * credited wherever its imagery appears, so that one is shown whenever imagery is.
+     */
+    object BaseMap {
+        const val COASTLINE_PROVIDER = "Natural Earth"
+        const val COASTLINE_LICENSE_NAME = "Public domain"
+        const val COASTLINE_ATTRIBUTION = "Coastlines: Natural Earth (public domain)"
+        const val COASTLINE_URL = AppConfig.Links.NATURAL_EARTH
+
+        const val IMAGERY_PROVIDER = "NASA Global Imagery Browse Services (GIBS)"
+        const val IMAGERY_LICENSE_NAME = "Free and open — no account or key"
+
+        /** Shown beneath the route map whenever imagery is actually on screen. */
+        const val IMAGERY_ATTRIBUTION = "Imagery: NASA GIBS"
+
+        /** The fuller credit, for Settings and Diagnostics where there is room. */
+        const val IMAGERY_ATTRIBUTION_LONG =
+            "Imagery provided by NASA Global Imagery Browse Services (GIBS), part of " +
+                "NASA Earth Science Data and Information System."
+        const val IMAGERY_URL = AppConfig.Links.NASA_GIBS
+
+        /**
+         * Why losing the imagery is not a failure worth reporting: the coastlines are
+         * bundled and the graticule is arithmetic, so the map stays legible offline.
+         */
+        const val OFFLINE_NOTE =
+            "Coastlines and the lat/lon grid are built in and need no connection. " +
+                "Satellite imagery is fetched when a connection is available and is " +
+                "simply absent when it is not."
+    }
+
+    // endregion
+
     // region Weather
 
     const val WEATHER_SIMULATION_ONLY =
@@ -137,7 +177,10 @@ object LegalStrings {
             "authoritative and not guaranteed to match Infinite Flight scenery. En-route " +
             "Center sector boundaries are adapted from the ${CenterSectors.PROVIDER_NAME} " +
             "(${CenterSectors.LICENSE_SHORT_NAME}) and bundled with the app. " +
-            "${CenterSectors.FREQUENCY_DISCLAIMER} Simulation only."
+            "${CenterSectors.FREQUENCY_DISCLAIMER} The route map's coastlines are " +
+            "bundled ${BaseMap.COASTLINE_PROVIDER} data (${BaseMap.COASTLINE_LICENSE_NAME}); " +
+            "its satellite underlay is fetched from ${BaseMap.IMAGERY_PROVIDER} and needs " +
+            "no account or key. ${BaseMap.OFFLINE_NOTE} Simulation only."
 
     /** The Data Sources section's legal footer, assembled as the iOS screen assembles it. */
     fun openStreetMapLegal(): String =

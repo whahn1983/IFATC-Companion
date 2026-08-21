@@ -48,18 +48,37 @@ Web Mercator is not an arbitrary choice: it is the projection NOAA's radar
 `exportImage` service and NASA GIBS both publish in, so the precipitation imagery the
 app already fetches composites onto the map with no reprojection.
 
-### Geographic context on the weather map — NOT YET BUILT
+### Geographic context on the weather map — BUILT (A + B + C)
 
-MapKit gave the weather map coastlines for free. Without a base map the route floats in
-space, and **today it does**: the route map draws its polyline, airports, waypoints,
-PIREPs, hazard polygons and the aircraft onto an empty background, with no coastline, no
-grid and no scale.
+MapKit gave the weather map coastlines for free. The Compose canvas gets them from three
+layers of its own, drawn under everything else by `ui/map/BaseMapLayers.kt`:
 
-An earlier version of this document described a graticule, a scale bar and optional NASA
-GIBS coastline imagery as though they existed. None of them do — `grep` finds no
-graticule, no scale bar, and no `BaseMapTileSource`; GIBS is wired for the precipitation
-raster only. Stated plainly here rather than left to be discovered, and tracked in
-`ANDROID_REMAINING_WORK.md`.
+| Layer | Source | Needs network | Code |
+| --- | --- | --- | --- |
+| **A. Graticule + scale bar** | Arithmetic on `MapProjection` | No | `core/map/MapGraticule.kt` |
+| **B. Coastlines** | Natural Earth 1:110m, public domain, bundled (~75 KB) | No | `core/map/CoastlineData.kt`, `core/src/main/resources/coastlines.json` |
+| **C. Satellite underlay** | NASA GIBS `BlueMarble_ShadedRelief_Bathymetry`, keyless WMS | **Yes** | `core/map/BaseImageryService.kt`, `app/map/BaseMapImageryLoader.kt` |
+
+The three are independent by design, and the order matters: **C degrades to A and B**.
+A pilot at altitude with no signal gets a graticule, a scale bar and real coastlines, and
+loses only the picture of the ground. `BaseImageryService.imagery` returns null for every
+failure — no route, no signal, a WMS `ServiceException`, an empty body, bytes that do not
+decode — and null simply leaves `BaseMapModel.imagery` unset. Nothing is reported to the
+pilot, because nothing has gone wrong that they can act on.
+
+None of this adds a provider relationship. GIBS is the same keyless service the
+precipitation estimate already calls, Natural Earth is public domain and shipped in the
+APK, and the graticule is a few dozen lines of arithmetic. No API key, no billing account,
+no backend, no recurring cost.
+
+**Imagery is fetched once per route, not once per viewport.** `core/map/BaseMapWindow.kt`
+pads the route's bounding box (2×, floor of 1°) so ordinary panning and zooming stay
+inside what was already fetched, and requests it at the aspect ratio of the window *in Web
+Mercator* — sizing from degrees would squash the image by roughly `sec(latitude)`, which is
+half at 60° N. The layer is static and carries no `TIME` dimension, so there is nothing to
+keep current and one fetch is the right cadence rather than a compromise. With nothing
+filed, the window follows the aircraft rounded to a whole degree, so free flight refetches
+about every degree crossed instead of every telemetry tick.
 
 The taxi map does not have this problem: an airport surface diagram is self-contained,
 because the OSM geometry *is* the map.
@@ -71,7 +90,7 @@ because the OSM geometry *is* the map.
 | Route, aircraft, hazards, deviation line, taxi geometry | Overlays on a base map | Drawn directly — **parity** |
 | Precipitation overlay | Custom overlay renderer | Composited raster — **parity** |
 | Pan / pinch-zoom / fit-to-content | MapKit | `MapProjection` — **parity**, and tested |
-| Street-level base map | Yes | **No** — and no substitute yet either; see the section above |
+| Street-level base map | Yes | **No** — coastlines, a graticule and satellite imagery instead; see above |
 | Place labels, points of interest | Yes | **No** |
 | 3D / satellite / flyover | Yes | **No** |
 
@@ -80,27 +99,28 @@ and the alternative was a key, a billing account and a bill that grows with inst
 This trade-off is recorded as a **known parity difference** in
 `Docs/ANDROID_PARITY_MATRIX.md` rather than presented as equivalence.
 
-## Options for adding geographic context
+## Options that were considered
 
-`MapCanvas` hands every layer a `MapFrame` with a `project(Coordinate)` function, so any
-of these is an added layer rather than a rewrite. The projection and gestures do not
-change. Ordered by value per unit of cost and by whether they keep the no-key, no-bill,
-no-backend constraints:
+`MapCanvas` hands every layer a `MapFrame` with a `project(Coordinate)` function, so each
+of these was an added layer rather than a rewrite. The projection and gestures do not
+change.
 
-| Option | Key / bill / backend | Offline | Effort | What it gives |
+| Option | Key / bill / backend | Offline | What it gives | Status |
 | --- | --- | --- | --- | --- |
-| **A. Graticule + scale bar** | None | Yes | Small | A coordinate frame and a sense of distance. Pure arithmetic on the existing projection, no network at all. The cheapest thing that stops the route floating in space. |
-| **B. Bundled Natural Earth coastlines** | None — public domain, shipped in the APK | Yes | Small–Medium | Real coastlines and borders, drawn as one more vector layer. Works with no connectivity, which matters for the actual use case: a pilot mid-flight. A low-resolution set is small; resolution is a size/detail dial. |
-| **C. NASA GIBS raster underlay** | None — keyless, public, already used for precipitation | No | Medium | Satellite or land imagery under the route, at the viewport bounding box, via the same WMS the precipitation layer already calls. No new provider, no key, no bill. Needs connectivity and adds a fetch per viewport change. |
-| **D. Protomaps / PMTiles** | No per-request API, but the file must be bundled or hosted | Yes if bundled | Large | A genuine vector base map from a single file. Either a large APK or object-storage hosting — which is new infrastructure, so it is an owner decision, not a default. |
-| **E. Commercial SDK** (Google, Mapbox, MapTiler, Stadia) | **Key + billing account + recurring cost that scales with installs** | No | Medium | A full street map. Outside the brief this port was built to; adopting it is a deliberate reversal, not a fix. |
+| **A. Graticule + scale bar** | None | Yes | A coordinate frame and a sense of distance. Pure arithmetic on the existing projection, no network at all. | **Built** |
+| **B. Bundled Natural Earth coastlines** | None — public domain, shipped in the APK | Yes | Real coastlines, drawn as one more vector layer. Works with no connectivity, which is the case that matters for a pilot mid-flight. | **Built** (1:110m) |
+| **C. NASA GIBS raster underlay** | None — keyless, public, already used for precipitation | No | Satellite/relief imagery under the route, via the same WMS the precipitation layer calls. | **Built**, degrades to A + B |
+| **D. Protomaps / PMTiles** | No per-request API, but the file must be bundled or hosted | Yes if bundled | A genuine vector base map from a single file. | **Not built** — either a large APK or object-storage hosting, which is new infrastructure and therefore an owner decision |
+| **E. Commercial SDK** (Google, Mapbox, MapTiler, Stadia) | **Key + billing account + recurring cost that scales with installs** | No | A full street map. | **Not built** — outside the brief this port was built to; adopting it would be a deliberate reversal, not a fix |
 
-**A and B together** are the recommendation: no key, no bill, no backend, no network, and
-between them they turn the route map from a line in the void into something readable. C is
-a reasonable enhancement on top. D and E both change the app's cost or dependency shape and
-belong to the owner.
+A, B and C together need no key, no bill, no backend and — for A and B — no network.
+D and E both change the app's cost or dependency shape and remain owner decisions.
 
 Note none of this affects the taxi map, which needs no base map at all.
+
+Raising coastline resolution is a size/detail dial, not new work: swapping the bundled
+1:110m set for 1:50m is a larger `coastlines.json` and nothing else. It was not done
+because 1:110m is the right level for orientation at route scale and keeps the asset small.
 
 ## Licensing obligations that ride on the map
 
@@ -109,3 +129,11 @@ Rendering OSM-derived geometry does not escape the ODbL. Every taxi map view dis
 <https://www.openstreetmap.org/copyright>. The wording, the licence naming (ODbL 1.0,
 **not** CC BY 4.0) and the link are asserted by `LegalStringsTest`. See
 `Docs/ANDROID_DATA_SOURCES.md` and the iOS `docs/OpenStreetMapLicensing.md`.
+
+The base map carries lighter obligations, and they are not the same as each other. Natural
+Earth is **public domain**, so its credit is courtesy rather than a condition — it is shown
+anyway, because saying where data came from is worth doing whether or not a licence
+compels it. NASA asks that GIBS be credited wherever its imagery appears, so the route map
+shows "Imagery: NASA GIBS" **only when imagery is actually on screen** — crediting a source
+that is not being displayed would be its own kind of wrong. Both strings live in
+`LegalStrings.BaseMap` so the map, Settings and this document cannot drift apart.

@@ -26,6 +26,7 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import com.h3consultingpartners.ifatccompanion.core.geo.Coordinate
 import com.h3consultingpartners.ifatccompanion.core.model.AircraftState
+import com.h3consultingpartners.ifatccompanion.core.ui.LegalStrings
 import com.h3consultingpartners.ifatccompanion.core.weather.PIREP
 import com.h3consultingpartners.ifatccompanion.core.weather.SIGMET
 import com.h3consultingpartners.ifatccompanion.core.weather.TurbulenceSeverity
@@ -106,18 +107,6 @@ fun RouteMap(
             .height(height)
             .clip(RoundedCornerShape(MAP_CORNER_RADIUS)),
     ) {
-        // Only truly empty when there is nothing to place either: with a base map there
-        // is now always something on screen, so this is about the route, not the canvas.
-        if (model.route.isEmpty() && model.departure == null && model.aircraft.coordinate == null) {
-            Text(
-                text = "No route to draw yet.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.align(Alignment.Center).padding(16.dp),
-            )
-            return@Box
-        }
-
         MapCanvas(state = state, modifier = Modifier.fillMaxSize()) { frame ->
             // 0. The base map — imagery if there is any, then coastlines, graticule and
             //    scale bar. Everything below reads over it.
@@ -173,7 +162,46 @@ fun RouteMap(
             // 8. The aircraft, last, because it is never obscured.
             drawAircraft(frame, model.aircraft, semantic.aircraft)
         }
+
+        // The canvas draws whatever the base map gives it, so an unplanned flight now
+        // shows coastlines and a grid rather than an empty rectangle. The message says
+        // there is no *route* — which is true — over a map that is genuinely there.
+        if (model.route.isEmpty() && model.departure == null && model.aircraft.coordinate == null) {
+            Text(
+                text = "No route to draw yet.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.align(Alignment.Center).padding(16.dp),
+            )
+        }
+
+        BaseMapCredit(
+            baseMap = baseMap,
+            modifier = Modifier.align(Alignment.BottomEnd).padding(horizontal = 6.dp, vertical = 4.dp),
+        )
     }
+}
+
+/**
+ * Who the ground under the route came from.
+ *
+ * Natural Earth is public domain, so its line is courtesy. NASA asks that GIBS be credited
+ * wherever its imagery appears, so that half appears only when imagery is actually on
+ * screen — crediting a source that is not being shown would be its own kind of wrong.
+ */
+@Composable
+private fun BaseMapCredit(baseMap: BaseMapModel, modifier: Modifier = Modifier) {
+    val parts = buildList {
+        if (baseMap.showCoastlines) add(LegalStrings.BaseMap.COASTLINE_ATTRIBUTION)
+        if (baseMap.imagery != null) add(LegalStrings.BaseMap.IMAGERY_ATTRIBUTION)
+    }
+    if (parts.isEmpty()) return
+    Text(
+        text = parts.joinToString(" · "),
+        style = MaterialTheme.typography.labelSmall,
+        color = MAP_GRATICULE_LABEL_COLOR,
+        modifier = modifier,
+    )
 }
 
 // region Drawing primitives

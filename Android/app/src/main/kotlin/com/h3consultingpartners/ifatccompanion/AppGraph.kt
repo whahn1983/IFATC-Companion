@@ -6,31 +6,31 @@ import android.content.Context
 import android.content.Intent
 import androidx.browser.customtabs.CustomTabsIntent
 import androidx.core.net.toUri
-import com.h3consultingpartners.ifatccompanion.core.diagnostics.DiagnosticsStore
-import com.h3consultingpartners.ifatccompanion.core.net.AppHttp
-import com.h3consultingpartners.ifatccompanion.core.net.HttpFetching
-import com.h3consultingpartners.ifatccompanion.core.net.OkHttpFetcher
-import com.h3consultingpartners.ifatccompanion.core.persistence.SessionStateStore
-import com.h3consultingpartners.ifatccompanion.core.platform.Clock
-import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticCategory
-import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticLevel
-import com.h3consultingpartners.ifatccompanion.core.platform.FileStore
-import com.h3consultingpartners.ifatccompanion.data.AndroidFileStore
-import com.h3consultingpartners.ifatccompanion.data.DataStoreKeyValueStore
 import com.h3consultingpartners.ifatccompanion.audio.AndroidChatterRadio
 import com.h3consultingpartners.ifatccompanion.audio.AndroidSpeechService
 import com.h3consultingpartners.ifatccompanion.audio.PushToTalkRecognizer
 import com.h3consultingpartners.ifatccompanion.audio.RadioAudioEngine
 import com.h3consultingpartners.ifatccompanion.billing.PlayBillingRepository
+import com.h3consultingpartners.ifatccompanion.core.atis.ATISService
+import com.h3consultingpartners.ifatccompanion.core.chatter.AmbientChatterService
 import com.h3consultingpartners.ifatccompanion.core.connect.IFConnectManager
+import com.h3consultingpartners.ifatccompanion.core.diagnostics.DiagnosticsStore
+import com.h3consultingpartners.ifatccompanion.core.map.BaseImageryService
+import com.h3consultingpartners.ifatccompanion.core.map.CoastlineData
+import com.h3consultingpartners.ifatccompanion.core.mock.MockSimulatorFeed
+import com.h3consultingpartners.ifatccompanion.core.net.AppHttp
+import com.h3consultingpartners.ifatccompanion.core.net.HttpFetching
+import com.h3consultingpartners.ifatccompanion.core.net.OkHttpFetcher
+import com.h3consultingpartners.ifatccompanion.core.persistence.SessionStateStore
+import com.h3consultingpartners.ifatccompanion.core.phraseology.PhraseologyMode
+import com.h3consultingpartners.ifatccompanion.core.phraseology.PhraseologyProfileStore
+import com.h3consultingpartners.ifatccompanion.core.platform.Clock
+import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticCategory
+import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticLevel
+import com.h3consultingpartners.ifatccompanion.core.platform.FileStore
 import com.h3consultingpartners.ifatccompanion.core.session.FlightSessionCoordinator
 import com.h3consultingpartners.ifatccompanion.core.session.TaxiClearanceContext
 import com.h3consultingpartners.ifatccompanion.core.settings.AppSettings
-import com.h3consultingpartners.ifatccompanion.core.atis.ATISService
-import com.h3consultingpartners.ifatccompanion.core.chatter.AmbientChatterService
-import com.h3consultingpartners.ifatccompanion.core.mock.MockSimulatorFeed
-import com.h3consultingpartners.ifatccompanion.core.phraseology.PhraseologyMode
-import com.h3consultingpartners.ifatccompanion.core.phraseology.PhraseologyProfileStore
 import com.h3consultingpartners.ifatccompanion.core.settings.SettingsRepository
 import com.h3consultingpartners.ifatccompanion.core.surface.AirportSurfaceCache
 import com.h3consultingpartners.ifatccompanion.core.surface.AirportSurfaceProvider
@@ -39,17 +39,20 @@ import com.h3consultingpartners.ifatccompanion.core.surface.routing.AirportSurfa
 import com.h3consultingpartners.ifatccompanion.core.weather.AviationWeatherService
 import com.h3consultingpartners.ifatccompanion.core.weather.WeatherSessionController
 import com.h3consultingpartners.ifatccompanion.core.weather.radar.PrecipitationOverlayService
+import com.h3consultingpartners.ifatccompanion.data.AndroidFileStore
+import com.h3consultingpartners.ifatccompanion.data.DataStoreKeyValueStore
+import com.h3consultingpartners.ifatccompanion.map.BaseMapImageryLoader
 import com.h3consultingpartners.ifatccompanion.service.ActiveFlightController
 import com.h3consultingpartners.ifatccompanion.service.FlightSessionActiveFlightController
+import java.io.File
+import java.lang.ref.WeakReference
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.plus
-import kotlinx.coroutines.Dispatchers
-import java.io.File
-import java.lang.ref.WeakReference
 
 /**
  * The application's object graph, wired by hand.
@@ -97,6 +100,19 @@ class AppGraph private constructor(
     val http: HttpFetching = OkHttpFetcher(
         cacheDirectory = File(context.cacheDir, AppHttp.DEFAULT_CACHE_NAME),
     )
+
+    /**
+     * The route map's satellite underlay. Keyless and free — NASA GIBS, the same service
+     * the global precipitation estimate already uses — so this adds no provider, no API
+     * key, no billing account and no backend. When it cannot be reached the map keeps its
+     * bundled coastlines and its graticule, which is the arrangement, not a fallback.
+     */
+    val baseMapImagery: BaseMapImageryLoader by lazy {
+        BaseMapImageryLoader(
+            service = BaseImageryService(http),
+            diagnostics = diagnostics,
+        )
+    }
 
     val settingsRepository: SettingsRepository by lazy { SettingsRepository(settingsStore) }
 
@@ -415,6 +431,14 @@ class AppGraph private constructor(
         // connect and fetch ProductDetails before any purchase can be launched.
         speech.initialize()
         entitlements.start()
+
+        // Parse the bundled coastlines off the main thread.
+        //
+        // CoastlineData caches, so this happens exactly once — but whoever triggers it
+        // pays for it, and without this that is the Compose draw phase on the first frame
+        // of the Weather tab, parsing five thousand points while a frame is due. Doing it
+        // here costs nothing anyone is waiting on.
+        applicationScope.launch { CoastlineData.lines() }
 
         // Resume a flight the process did not survive. loadResumable already refuses a
         // completed session and anything older than its window, so this is a no-op on a
