@@ -16,15 +16,19 @@ import com.h3consultingpartners.ifatccompanion.core.weather.deviation.RadarBound
  * usable composite coverage, and fails gracefully (falling through to the NASA satellite
  * estimate) where the render can't be produced.
  *
- * **Rendering is off in shipping builds on both platforms.** iOS ships
- * `useORD: false` because decoding the raw scientific DBZH GeoTIFF with ImageIO
- * produces a garbled field — false clutter over clear ocean and little signal where
- * precipitation is heavy. The Android port therefore does not carry the ORD client or
- * the composite renderer either: reproducing a decode path that is disabled upstream
- * would ship a known-bad layer, and no keyless, rendered, cleanly licensed pan-European
- * radar source exists to swap in. Europe falls through to the clearly-labelled NASA
- * satellite estimate. The provider stays in place, and a WMS endpoint configured through
- * [wmsBaseUrl] re-enables it immediately — see Docs/ANDROID_DATA_SOURCES.md.
+ * Rendering: there is no public keyless *rendered* WMS/WMTS for the composite, so the
+ * provider fetches the latest ORD composite GeoTIFF anonymously ([EUMETNETORDClient], the
+ * `--no-sign-request` equivalent) and reprojects/colorizes it itself
+ * ([OPERACompositeRenderer]) into the same PNG form the NOAA/NASA overlays use. A
+ * configured [wmsBaseUrl] still overrides this with a WMS GetMap when a compatible ORD/WMS
+ * service is available. [exportImageUrl] (the direct-URL path the map can load itself) only
+ * returns a URL for the WMS case; the ORD render is asynchronous, so it is served through
+ * [exportImage]. **The ORD decode/colorize scaling is best-effort and intended to be
+ * verified/tuned on device against real composites.**
+ *
+ * The shipping build constructs this provider with `useORD = false` — see the comment in
+ * [PrecipitationOverlayService]'s default provider list for why, and for what to flip to
+ * re-enable it.
  *
  * Ported from `IFATCCompanion/Weather/PrecipitationProviders.swift`.
  */
@@ -38,13 +42,38 @@ class EUMETNETOPERARadarProvider(
     val wmsBaseUrl: String = "",
     /** The product to request (defaults to the top preference). */
     val product: Product = Product.MAXIMUM_REFLECTIVITY,
+    /**
+     * Whether to render from the anonymous ORD composite GeoTIFF when no WMS endpoint is
+     * configured. The type default is on — this is the live European radar source — but the
+     * shipping provider list turns it off (see [PrecipitationOverlayService]).
+     */
+    val useORD: Boolean = true,
+    /** The anonymous ORD client (keyless public bucket). */
+    val ordClient: EUMETNETORDClient = EUMETNETORDClient(http),
+    /**
+     * The shared decoded-composite cache. Its decoder is the platform raster decoder; with
+     * none supplied the ORD decode fails to null and the overlay degrades gracefully.
+     */
+    private val ordStore: OPERACompositeStore = OPERACompositeStore(),
 ) : RadarPrecipitationProvider {
 
     /** OPERA composite products, in preference order. */
-    enum class Product(val wmsLayerName: String, val ordProductCode: String) {
-        MAXIMUM_REFLECTIVITY("opera_maximum_reflectivity", "DBZH"),
-        INSTANTANEOUS_RAIN_RATE("opera_instantaneous_rain_rate", "RATE"),
-        ONE_HOUR_ACCUMULATION("opera_1h_accumulation", "ACRR"),
+    enum class Product(
+        /**
+         * Candidate WMS layer name for the product (endpoint-specific; override as needed
+         * for the configured ORD/WMS service).
+         */
+        val wmsLayerName: String,
+        /** The ORD composite product code (`DBZH` / `RATE` / `ACRR`). */
+        val ordProduct: EUMETNETORDClient.Product,
+    ) {
+        MAXIMUM_REFLECTIVITY("opera_maximum_reflectivity", EUMETNETORDClient.Product.MAXIMUM_REFLECTIVITY),
+        INSTANTANEOUS_RAIN_RATE("opera_instantaneous_rain_rate", EUMETNETORDClient.Product.INSTANTANEOUS_RAIN_RATE),
+        ONE_HOUR_ACCUMULATION("opera_1h_accumulation", EUMETNETORDClient.Product.ONE_HOUR_ACCUMULATION),
+        ;
+
+        /** The raw ORD product code, as it appears in the bucket key. */
+        val ordProductCode: String get() = ordProduct.rawValue
     }
 
     override val id = "eumetnet-opera-radar"
@@ -59,14 +88,15 @@ class EUMETNETOPERARadarProvider(
     override fun covers(region: MapRegion): Boolean = coverageBox.overlaps(region.boundingBox)
 
     /**
-     * OPERA can render where it covers the region **and** it has a working source. With
-     * the ORD path absent (see the class note), that means a configured WMS endpoint and
-     * nothing else — so today the provider covers Europe but cannot draw it, and
-     * selection falls through to the NASA satellite estimate rather than claiming
-     * coverage it can't render.
+     * OPERA can render where it covers the region **and** it has a working source — the
+     * anonymous ORD composite or a configured WMS endpoint. With neither, it can't produce
+     * imagery, so it must not win selection (the service then falls through to the NASA
+     * satellite estimate) rather than claiming coverage it can't draw.
      */
-    override fun canRenderOverlay(region: MapRegion): Boolean =
-        covers(region) && wmsBaseUrl.trim().isNotEmpty()
+    override fun canRenderOverlay(region: MapRegion): Boolean {
+        if (!covers(region)) return false
+        return useORD || wmsBaseUrl.trim().isNotEmpty()
+    }
 
     override suspend fun availableFrames(region: MapRegion): List<RadarFrame> {
         if (!covers(region)) return emptyList()
@@ -81,13 +111,31 @@ class EUMETNETOPERARadarProvider(
     }
 
     override suspend fun exportImage(bbox: RadarBoundingBox, size: PixelSize, frame: RadarFrame): ByteArray? {
-        val url = exportImageUrl(bbox, size, frame) ?: return null
-        return fetchOverlayPng(http, url)
+        // Prefer a configured WMS GetMap (rendered server-side) when present.
+        val url = exportImageUrl(bbox, size, frame)
+        if (url != null) return fetchOverlayPng(http, url)
+        // Otherwise render the anonymous ORD composite GeoTIFF ourselves.
+        if (!useORD) return null
+        return renderORDComposite(bbox, size)
     }
 
     /**
-     * Build a WMS 1.1.1 GetMap for the configured OPERA/ORD service (EPSG:3857). Null
-     * when no WMS endpoint is configured, which is the shipping default.
+     * Fetch the latest anonymous ORD composite GeoTIFF and reproject/colorize it into a
+     * Web-Mercator PNG for [bbox] (the same layout the NOAA/NASA overlays use, so the
+     * existing sampler and overlay renderer consume it unchanged). Null on any
+     * listing/fetch/decode failure so the caller degrades gracefully.
+     */
+    suspend fun renderORDComposite(bbox: RadarBoundingBox, size: PixelSize): ByteArray? {
+        if (!size.isValid) return null
+        val raster = ordStore.current(product.ordProduct, ordClient, clock.nowMillis()) ?: return null
+        return OPERACompositeRenderer.renderMercatorPNG(raster, bbox, size.width, size.height)
+    }
+
+    /**
+     * Build a WMS 1.1.1 GetMap for the configured OPERA/ORD service (EPSG:3857). Null when
+     * no WMS endpoint is configured — the overlay is then produced asynchronously from the
+     * anonymous ORD composite GeoTIFF (see [exportImage] / [renderORDComposite]), rather
+     * than displaying satellite/forecast data as radar.
      */
     override fun exportImageUrl(bbox: RadarBoundingBox, size: PixelSize, frame: RadarFrame?): String? {
         val base = wmsBaseUrl.trim()

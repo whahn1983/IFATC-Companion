@@ -11,8 +11,8 @@ import kotlin.math.roundToInt
  *
  * 1. Inside NOAA radar coverage → NOAA/NWS radar precipitation.
  * 2. Else inside EUMETNET OPERA (Europe) coverage → OPERA radar precipitation **when it
- *    can render**. OPERA has no render path in shipping builds (see
- *    [EUMETNETOPERARadarProvider]), so today Europe falls through to case 3.
+ *    can render**. OPERA's ORD render is **currently disabled** (see the provider
+ *    construction below), so today Europe falls through to case 3.
  * 3. Else → NASA global satellite precipitation *estimate* (never called radar).
  * 4. If none covers the region → no overlay ("Precipitation overlay unavailable for this
  *    region.").
@@ -20,12 +20,14 @@ import kotlin.math.roundToInt
  * In Mock Mode the offline mock provider stands in. Only these providers ship — no paid
  * or unclear-commercial-use providers.
  *
- * Ported from `IFATCCompanion/Weather/PrecipitationOverlayService.swift`. Two things
- * differ, both consequences of the ORD render path not existing on Android: there is no
- * rendered-overlay file cache and no async render queue, because every shipping provider
- * returns a direct image URL that the map loads itself. The failure-streak cooldown is
- * kept — a provider whose endpoint is persistently unreachable must still fall through
- * rather than leave the map blank while claiming coverage.
+ * Ported from `IFATCCompanion/Weather/PrecipitationOverlayService.swift`. One thing
+ * differs: iOS renders the asynchronous (ORD OPERA) overlay into a temp PNG file and hands
+ * SwiftUI's `AsyncImage` that file URL, deduping in-flight renders per region key. Android
+ * draws its own map, so a provider that has no direct URL is fetched as **bytes** through
+ * [overlayImage] instead of a file cache — the same call the sampler already needs. The
+ * per-region [overlayKey] quantization and the failure-streak cooldown are both kept: a
+ * provider whose endpoint is persistently unreachable must still fall through rather than
+ * leave the map blank while claiming coverage.
  */
 class PrecipitationOverlayService(
     private val providers: List<RadarPrecipitationProvider>,
@@ -39,7 +41,20 @@ class PrecipitationOverlayService(
     ) : this(
         providers = listOf(
             NOAARadarPrecipitationProvider(http, clock),
-            EUMETNETOPERARadarProvider(http, clock),
+            // OPERA ORD rendering is disabled in shipping builds. Decoding the raw
+            // scientific DBZH GeoTIFF produces a garbled field — false clutter speckle over
+            // clear ocean AND little/no signal where real precipitation is heavy — because
+            // a general-purpose image decoder can't faithfully read/scale the single-band
+            // sample values. There is no keyless, rendered, cleanly licensed pan-European
+            // radar source to swap in: LibreWXR is close (keyless, RainViewer-compatible
+            // tiles, includes OPERA) but its European composite carries a CC-BY-SA
+            // **share-alike** obligation via DPC Italy and offers no production reliability.
+            // Until a validated source exists, OPERA still *covers* Europe but *cannot
+            // render*, so selection falls through to the NASA satellite estimate (clearly
+            // labelled, not called radar). The provider and its whole ORD/renderer/store
+            // stack stay in place — flip `useORD = true` (or configure a WMS endpoint) to
+            // re-enable.
+            EUMETNETOPERARadarProvider(http, clock, useORD = false),
             NASAGIBSPrecipitationProvider(http, clock),
         ),
         mockProvider = MockRadarPrecipitationProvider(clock),
@@ -151,6 +166,9 @@ class PrecipitationOverlayService(
      * in a cooldown so selection falls through to the next one.
      */
     private fun noteRenderFailure(id: String) {
+        // iOS words this "OPERA composite unavailable" because its async-render path is only
+        // ever reached by the ORD OPERA provider. Here every provider's bytes come through
+        // the same call, so the message names the layer rather than one source.
         lastError = "Precipitation overlay unavailable"
         val streak = (renderFailureStreak[id] ?: 0) + 1
         renderFailureStreak[id] = streak
