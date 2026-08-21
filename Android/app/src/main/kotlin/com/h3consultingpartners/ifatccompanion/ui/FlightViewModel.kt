@@ -234,7 +234,9 @@ class FlightViewModel(
                         graph.surfaceRouting.beginDeparture(
                             icao = plan.departure,
                             reference = reference,
-                            aircraftName = plan.name,
+                            // The aircraft type comes from telemetry, not the plan — it is
+                            // what sizes the taxi route's turn radii.
+                            aircraftName = state.aircraftState.aircraftName,
                             runway = plan.departureRunway.ifEmpty { plan.runway },
                             gate = plan.departureGate,
                             startCoordinate = start,
