@@ -1,0 +1,133 @@
+name: Android
+
+# This repository holds both the iOS app and the Android port. Everything Android lives
+# under Android/, so the path filter below keeps this workflow off iOS work entirely: an
+# iOS-only commit or pull request never queues these jobs, burns no minutes, and shows no
+# check at all.
+#
+# Deliberately NOT a required status check. Path-filtered workflows and required checks
+# interact badly — a pull request that touches no Android file never reports the check,
+# and GitHub reads "never reported" as "not satisfied", which makes the pull request
+# permanently unmergeable. Leaving it advisory avoids that trap without needing the usual
+# workaround (a second always-green workflow sharing the job name), which would itself put
+# a job on every iOS pull request.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Android/**'
+      - '.github/workflows/android.yml'
+  pull_request:
+    paths:
+      - 'Android/**'
+      # Included so a change to this file is exercised by the file itself.
+      - '.github/workflows/android.yml'
+  workflow_dispatch:
+
+# Read-only. Nothing here publishes, comments, or writes to the repository.
+permissions:
+  contents: read
+
+# A new push to the same branch cancels the run it supersedes, so a burst of commits costs
+# one build rather than one per commit.
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Matches the sourceCompatibility / jvmTarget every module is configured with.
+  JAVA_VERSION: '17'
+
+jobs:
+  # The engine. Pure Kotlin/JVM with no android.* or androidx.* anywhere, which is what
+  # lets it build and test with nothing but a JDK — no SDK, no emulator. This is the job
+  # that has real coverage behind it (819 tests), so it is also the fastest signal.
+  engine:
+    name: Core engine (819 tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Run :core tests
+        working-directory: Android
+        run: ./gradlew -c settings-core.gradle.kts :core:test --no-daemon
+
+      # Only on failure: the HTML report says which assertion went, which the log does not.
+      - name: Upload test report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-test-report
+          path: Android/core/build/reports/tests/
+          retention-days: 7
+
+  # The Compose screens, type-checked against JetBrains Compose desktop artifacts, which
+  # publish the same androidx.compose.* packages. This catches screen-level Kotlin errors
+  # without an Android SDK, and it is the check that ran locally throughout the port.
+  screens:
+    name: Compose screens type-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Type-check the screens
+        working-directory: Android
+        run: ./gradlew -c settings-uicheck.gradle.kts :uicheck:compileKotlin --no-daemon
+
+  # The one that matters most. The :app module was written in an environment with no
+  # Android SDK and no reachable Google Maven, so it has never been compiled — every
+  # Android-API line in it is unverified, and two rounds of static review found 23 defects
+  # that a compiler would have caught in seconds. This job is what finally settles that.
+  #
+  # EXPECT THIS TO FAIL ON ITS FIRST RUN. That is the point: it converts "unverified" into
+  # a concrete list of errors. It is advisory, so a red result blocks nothing.
+  app:
+    name: Android app build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      # The runner image ships an SDK, but not necessarily the compileSdk this project
+      # pins. This installs cmdline-tools and accepts licences so the platform can be
+      # fetched, rather than failing on whatever the image happened to include.
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Assemble debug
+        working-directory: Android
+        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
+
+      # Lint is a separate step so a compile failure is not mistaken for a lint failure,
+      # and so lint still runs when the build succeeds.
+      - name: Android Lint
+        working-directory: Android
+        run: ./gradlew :app:lintDebug --no-daemon
+
+      - name: Upload lint report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-lint-report
+          path: Android/app/build/reports/lint-results-*.html
+          retention-days: 7
+          if-no-files-found: ignore

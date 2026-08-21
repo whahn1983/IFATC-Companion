@@ -29,6 +29,7 @@ committing code alone, which is why the two are separated.
 | Data-safety answers prepared | `Docs/GOOGLE_PLAY_DATA_SAFETY.md` |
 | Attribution and legal text | `core/ui/LegalStrings.kt`, asserted by `LegalStringsTest` |
 | Play store icon (512×512) | `Android/play-assets/play-store-icon-512.png` |
+| CI | `.github/workflows/android.yml` — engine tests, Compose type-check, and the `:app` build. Path-filtered to `Android/**`, so iOS work never triggers it; advisory, not a required check |
 
 ---
 
@@ -91,6 +92,7 @@ committing code alone, which is why the two are separated.
 ### Known gaps to resolve before submitting
 
 - [ ] Two adversarial static reviews of the uncompiled `:app` files found and fixed **23** defects (seven build-breaking), the second round reviewing the first round's fixes — see the parity matrix. These fixes are themselves uncompiled; check them first when the build finally runs.
+- [ ] **Read the first `Android` CI run.** `ubuntu-latest` ships the Android SDK, so the `app` job compiles `:app` — the one thing that could not be done while the port was written. Expect it to fail the first time and treat its output as the real integration list.
 - [ ] `:app` has **not been compiled** in the environment this port was written in — the Android SDK and Google's Maven repository were unreachable there. The engine (`:core`) and the pure Compose screens are both verified, but the first Android Studio build should be expected to surface ordinary integration fixes.
 - [ ] Confirm the **Play Billing library version** in `gradle/libs.versions.toml` against the current Play requirement, and that `PlayBillingRepository` matches its API. This is the one file that could not be compile-checked.
 - [ ] **Nothing in this port has been heard.** The radio effect chain, the TTS voices, the chatter mix and the squelch bursts are ported maths that has never been played through a speaker. Listen to a full flight before shipping.

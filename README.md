@@ -120,6 +120,10 @@ cd Android
 
 Open `Android/` in Android Studio to run it on a device or emulator.
 
+CI (`.github/workflows/android.yml`) runs the engine tests, the Compose type-check and the
+`:app` build on every Android change. It is **path-filtered to `Android/**`**, so an
+iOS-only commit never triggers it, and it is advisory rather than a required check.
+
 > **Verification status.** `:core` compiles and its **819 tests pass** (0 failures, 0
 > skipped), and the Compose screens type-check. `:app` has **not** been compiled: the
 > environment this port was written in had no Android SDK and no access to Google's Maven
