@@ -3,6 +3,10 @@ package com.h3consultingpartners.ifatccompanion.core.chatter
 import com.h3consultingpartners.ifatccompanion.core.model.ATCFacility
 import com.h3consultingpartners.ifatccompanion.core.model.ATCTransmission
 import com.h3consultingpartners.ifatccompanion.core.phraseology.Phonetic
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.random.Random
 import kotlin.test.Test
@@ -18,6 +22,7 @@ import kotlin.test.assertTrue
  * exercise `VoiceCatalog`, which is the platform TTS layer and lives in `:app`; the
  * controller-voice and Live-Activity settings cases belong to the settings package.
  */
+@OptIn(ExperimentalCoroutinesApi::class)
 class ChatterTest {
 
     /**
@@ -340,10 +345,121 @@ class ChatterTest {
 
     // endregion
 
+    // endregion
+
+    // region Scheduling loop
+
+    /**
+     * The loop puts exchanges on the air for the tuned facility, opening the squelch for each
+     * call and closing it again in the gap, until it is stopped.
+     */
+    @Test
+    fun theLoopRunsExchangesForTheTunedFacilityUntilStopped() = runTest {
+        val radio = RecordingRadio()
+        val service = AmbientChatterService(radio, backgroundScope, Random(3))
+        service.bindContext(facility = { ATCFacility.TOWER })
+        service.start()
+        assertTrue(service.isRunning.value)
+
+        advanceTimeBy(60_000)   // several exchanges at the default Moderate density (5–14 s gaps)
+        runCurrent()
+        service.stop()
+
+        assertFalse(service.isRunning.value)
+        assertTrue(radio.spoken.isNotEmpty(), "the loop should have put calls on the air")
+        assertTrue(
+            radio.spoken.all { it.facility == ATCFacility.TOWER },
+            "every call must be for the frequency the pilot is tuned to",
+        )
+        assertEquals(
+            radio.transmittingOn,
+            radio.transmittingOff,
+            "the squelch closes again after every transmission",
+        )
+    }
+
+    /**
+     * Tuning a new frequency mid-exchange cuts the call that's on the air rather than
+     * finishing a Tower exchange after the pilot has already switched to Ground.
+     */
+    @Test
+    fun aMidExchangeFrequencySwitchCutsTheCallOnTheAir() = runTest {
+        val radio = RecordingRadio(speechMillis = 4_000)
+        var facility = ATCFacility.TOWER
+        val service = AmbientChatterService(radio, backgroundScope, Random(5))
+        service.bindContext(facility = { facility })
+        service.start()
+
+        advanceTimeBy(500)   // a call is on the air
+        runCurrent()
+        assertTrue(radio.spoken.isNotEmpty())
+        assertFalse(radio.stoppedSpeech)
+
+        facility = ATCFacility.GROUND
+        service.facilityDidChange(ATCFacility.GROUND)
+        assertTrue(radio.stoppedSpeech, "the call on the previous frequency must be cut immediately")
+
+        advanceTimeBy(5_000)
+        runCurrent()
+        service.stop()
+        assertTrue(
+            radio.spoken.any { it.facility == ATCFacility.GROUND },
+            "the loop should start fresh chatter for the newly-tuned frequency",
+        )
+    }
+
+    /** Push-to-talk drops the graph so the chatter never bleeds into the microphone. */
+    @Test
+    fun pushToTalkPausesTheChatterAndResumeBringsItBack() = runTest {
+        val radio = RecordingRadio(speechMillis = 4_000)
+        val service = AmbientChatterService(radio, backgroundScope, Random(9))
+        service.bindContext(facility = { ATCFacility.GROUND })
+        service.start()
+        advanceTimeBy(500)
+        runCurrent()
+
+        service.pauseForPTT()
+        assertTrue(radio.stoppedSpeech)
+        assertFalse(radio.isRunning, "the engine releases the route for the recogniser")
+
+        service.resumeAfterPTT()
+        assertTrue(radio.isRunning)
+        // Still running overall, so the loop picks back up.
+        assertTrue(service.isRunning.value)
+        service.stop()
+    }
+
+    /** A bare mic-key burst with the chatter off starts the engine and releases it again. */
+    @Test
+    fun aMicKeyBurstWithTheChatterOffReleasesTheEngineAfterTheIdleWindow() = runTest {
+        val radio = RecordingRadio()
+        val service = AmbientChatterService(radio, backgroundScope, Random(11))
+        service.micKey(MicKeyEvent.KEY_UP)
+        assertEquals(1, radio.keyClicks)
+        assertTrue(radio.isRunning)
+
+        service.micKey(MicKeyEvent.KEY_DOWN)
+        assertEquals(1, radio.squelchTails)
+
+        advanceTimeBy(AmbientChatterService.IDLE_STOP_MILLIS + 1)
+        runCurrent()
+        assertFalse(radio.isRunning, "the engine must not stay up after a bare mic-key burst")
+    }
+
+    // endregion
+
     /** A [ChatterRadio] that records calls instead of making noise. */
-    private class RecordingRadio : ChatterRadio {
+    private class RecordingRadio(private val speechMillis: Long = 0) : ChatterRadio {
+        data class Spoken(val line: ChatterLine, val facility: ATCFacility)
+
         var startCount = 0
         var stoppedSpeech = false
+        var transmittingOn = 0
+        var transmittingOff = 0
+        var keyClicks = 0
+        var squelchTails = 0
+        val spoken = mutableListOf<Spoken>()
+
         override var isRunning = false
             private set
 
@@ -360,14 +476,26 @@ class ChatterTest {
 
         override fun setChatterLevel(level: Double) = Unit
         override fun setDucked(ducked: Boolean) = Unit
-        override fun setTransmitting(transmitting: Boolean) = Unit
-        override suspend fun speak(line: ChatterLine, facility: ATCFacility) = Unit
+
+        override fun setTransmitting(transmitting: Boolean) {
+            if (transmitting) transmittingOn += 1 else transmittingOff += 1
+        }
+
+        override suspend fun speak(line: ChatterLine, facility: ATCFacility) {
+            spoken.add(Spoken(line, facility))
+            if (speechMillis > 0) delay(speechMillis)
+        }
 
         override fun stopSpeech() {
             stoppedSpeech = true
         }
 
-        override fun playKeyClick() = Unit
-        override fun playSquelchTail() = Unit
+        override fun playKeyClick() {
+            keyClicks += 1
+        }
+
+        override fun playSquelchTail() {
+            squelchTails += 1
+        }
     }
 }

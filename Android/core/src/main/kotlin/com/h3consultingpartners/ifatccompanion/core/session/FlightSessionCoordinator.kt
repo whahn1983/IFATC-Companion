@@ -28,6 +28,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -77,6 +79,12 @@ class FlightSessionCoordinator(
     /** Field elevation at the departure runway, captured at takeoff. */
     private var liftoffAltitudeMSL: Double = 0.0
 
+    /**
+     * Departure field elevation in feet MSL, captured from on-ground telemetry before
+     * departure. Zero until a genuine on-ground snapshot arrives.
+     */
+    private var departureFieldElevationMSL: Double = 0.0
+
     init {
         connect?.onState = ::ingestAircraftState
         connect?.onFlightPlan = ::ingestFlightPlan
@@ -116,6 +124,8 @@ class FlightSessionCoordinator(
             previous = previous.phase,
         )
 
+        captureDepartureFieldElevation(aircraft, previous)
+
         _state.update {
             it.copy(
                 aircraftState = aircraft,
@@ -133,6 +143,47 @@ class FlightSessionCoordinator(
 
         advanceAutomaticFlow(aircraft, detection.phase)
         recomputeDerivedState()
+    }
+
+    /**
+     * The departure field's elevation, captured from on-ground telemetry (MSL − AGL,
+     * since there is no onboard elevation database), so the initial climb is a height
+     * above the *field* rather than above sea level. At Denver a configured 5,000 ft
+     * climb becomes 11,000 ft MSL instead of a sub-surface 5,000.
+     *
+     * Only ever taken from a snapshot that *reports* being on the ground. Falling back to
+     * the detected phase looks equivalent but isn't: a half-read snapshot carries no
+     * ground reference, so the phase detector holds the phase where it is — on the ground
+     * for a departure — and this would then take the raw MSL, with no AGL to subtract, as
+     * the field elevation. One such snapshot in the seconds after rotation would put the
+     * field hundreds of feet up and raise every initial climb derived from it.
+     */
+    private fun captureDepartureFieldElevation(aircraft: AircraftState, previous: FlightSessionState) {
+        if (previous.hasDeparted) return
+        val reportedOnGround = aircraft.onGround ?: aircraft.altitudeAGL?.let { it < ON_GROUND_AGL_FT }
+        if (reportedOnGround != true) return
+        val msl = aircraft.altitudeMSL ?: return
+        departureFieldElevationMSL = max(0.0, msl - (aircraft.altitudeAGL ?: 0.0))
+    }
+
+    /**
+     * The configured initial climb is a height above the departure field, so it is added
+     * to the field elevation and rounded up to the next thousand — a valid MSL altitude
+     * at a high-elevation airport. At sea level the field is 0 and the value is unchanged.
+     * Prefers the elevation captured on the ground before departure, falling back to the
+     * current on-ground estimate when that capture has not run yet.
+     */
+    private fun elevationAwareInitialClimbFt(): Int {
+        val climbAboveField =
+            if (settings.initialClimbAltitudeFt > 0) settings.initialClimbAltitudeFt else DEFAULT_INITIAL_CLIMB_FT
+        val aircraft = _state.value.aircraftState
+        val fieldElevation = when {
+            departureFieldElevationMSL > 0 -> departureFieldElevationMSL.roundToInt()
+            aircraft.onGround == true && aircraft.altitudeMSL != null ->
+                max(0.0, aircraft.altitudeMSL!! - (aircraft.altitudeAGL ?: 0.0)).roundToInt()
+            else -> 0
+        }
+        return roundedUpToThousand(fieldElevation + climbAboveField)
     }
 
     fun ingestFlightPlan(plan: FlightPlan) {
@@ -170,9 +221,152 @@ class FlightSessionCoordinator(
             return
         }
 
-        val target = stateMachine.mappedState(phase)
-        if (!AtcFlowOrder.isForward(target, stateMachine.current)) return
+        val mapped = stateMachine.mappedState(phase)
+        val previousState = stateMachine.current
+        val target = adjustedAirborneTarget(mapped, aircraft)
+        if (!AtcFlowOrder.isForward(target, previousState)) return
         advanceAndPost(target, automatic = true)
+
+        // Once the approach is cleared and the aircraft is established, Approach hands the
+        // pilot to Tower — instruction first, then the hand-off, the reverse of the usual
+        // "contact … then instruction" order. So it is posted explicitly here rather than
+        // through the generic facility-change hand-off, which the FINAL → LANDING step
+        // then suppresses.
+        if (previousState != ATCState.FINAL && stateMachine.current == ATCState.FINAL) {
+            announceApproachToTowerHandoff()
+        }
+    }
+
+    /**
+     * Refine the phase-derived target into the state the flight is actually at.
+     *
+     * The phase detector reports *physics* — climbing, approaching, on the ground. A
+     * controller's flow has more steps than that: the same "approach" phase covers both
+     * "descend, expect the ILS" and "cleared ILS approach", and the same "landing" phase
+     * covers both "cleared to land" and "exit the runway, contact Ground". This ladder is
+     * what turns one into the other, and each rung is a real procedural gate rather than a
+     * timer.
+     *
+     * Ported from `AppModel.adjustedAirborneTarget(mapped:state:)`.
+     */
+    private fun adjustedAirborneTarget(mapped: ATCState, aircraft: AircraftState): ATCState {
+        val altitude = aircraft.altitudeMSL ?: 0.0
+        val ceiling = currentTraconCeilingFt.toDouble()
+        val onGround = aircraft.onGround ?: false
+        val runway = buildContext(stateMachine.current).runway
+        val current = stateMachine.current
+
+        // Hold Tower → Departure until the aircraft is through ~2,000 ft AGL. Handing off
+        // the instant the wheels leave the ground clears the pilot "direct" to the first
+        // filed fix while it is still the runway-end waypoint just ahead, and stacks the
+        // departure call right on top of the takeoff clearance — so wait for the climb to
+        // carry past it first. When Infinite Flight does not expose AGL, fall back to the
+        // altitude gained since the takeoff clearance was issued.
+        if (current == ATCState.TOWER_DEPARTURE &&
+            (mapped == ATCState.INITIAL_CLIMB || mapped == ATCState.CLIMB)
+        ) {
+            val groundReference =
+                if (departureFieldElevationMSL > 0) departureFieldElevationMSL else liftoffAltitudeMSL
+            val agl = aircraft.altitudeAGL ?: max(0.0, altitude - groundReference)
+            if (agl < DEPARTURE_HANDOFF_AGL_FT) return ATCState.TOWER_DEPARTURE
+        }
+
+        // Departure hands off to Center 1,000 ft below the TRACON ceiling (17,000 ft for a
+        // FL180 ceiling) rather than right at it. That buffer gives the pilot time to check
+        // in with Center and be cleared to the next altitude before the climb reaches the
+        // ceiling, so it continues past FL180 without pausing.
+        if (mapped == ATCState.CLIMB && altitude < ceiling - CENTER_HANDOFF_BUFFER_FT &&
+            current in DEPARTURE_WORKED_STATES
+        ) {
+            return ATCState.INITIAL_CLIMB
+        }
+
+        // Top of descent: leaving cruise, Center issues the descend-via-STAR (or plain
+        // descend) first, before any Approach hand-off.
+        if (current in CRUISE_STATES && (mapped == ATCState.DESCENT || mapped == ATCState.APPROACH)) {
+            return ATCState.DESCENT
+        }
+
+        // Descending through the TRACON ceiling, or arriving in the terminal area, Center
+        // hands the aircraft to Approach.
+        if (current == ATCState.DESCENT && (mapped == ATCState.DESCENT || mapped == ATCState.APPROACH)) {
+            return if (mapped == ATCState.APPROACH || altitude < ceiling - TERMINAL_ENTRY_BUFFER_FT) {
+                ATCState.APPROACH
+            } else {
+                ATCState.DESCENT
+            }
+        }
+
+        // Approach clears the approach once the aircraft is established — APPR engaged, or
+        // lined up on final and wings level — before the Tower hand-off. This must follow
+        // the "descend, expect approach" call.
+        if (current == ATCState.APPROACH && isEstablishedOnApproach(aircraft, runway)) {
+            return ATCState.FINAL
+        }
+        // Cleared to land (Tower) on short final or at touchdown.
+        if (current == ATCState.FINAL && (onGround || isOnShortFinal(aircraft))) {
+            return ATCState.LANDING
+        }
+        // After touchdown, Tower instructs the pilot to exit the runway and contact Ground.
+        if (current == ATCState.LANDING && onGround) {
+            return ATCState.RUNWAY_EXIT
+        }
+        // Once clear of the runway / at taxi speed, switch to Ground and taxi in.
+        if (current == ATCState.RUNWAY_EXIT) {
+            val groundSpeed = aircraft.groundSpeed ?: 0.0
+            return if (onGround && groundSpeed < RUNWAY_VACATED_GROUND_SPEED) {
+                ATCState.GROUND_ARRIVAL
+            } else {
+                ATCState.RUNWAY_EXIT
+            }
+        }
+        return mapped
+    }
+
+    /** TRACON ceiling in feet, where Departure hands off to Center. */
+    private val currentTraconCeilingFt: Int
+        get() = if (settings.traconCeilingFL > 0) settings.traconCeilingFL * 100 else DEFAULT_TRACON_CEILING_FT
+
+    /**
+     * Whether the aircraft is established on the approach: the autopilot approach mode
+     * (APPR) is engaged, or it is lined up on final with the runway. Read from Infinite
+     * Flight telemetry; the mock feed simulates APPR on the approach phase.
+     */
+    private fun isEstablishedOnApproach(aircraft: AircraftState, runway: String): Boolean {
+        if (aircraft.onGround == true) return false
+        if (aircraft.approachModeEngaged == true) return true
+        if (!lineupDetector.isOnFinalApproach(aircraft, runway)) return false
+        // Lined up with the runway and not still turning onto final (wings roughly level).
+        val bank = aircraft.bankAngle
+        if (bank != null && abs(bank) > WINGS_LEVEL_BANK_DEGREES) return false
+        return true
+    }
+
+    /** Whether the aircraft is on short final: airborne, low, and descending. */
+    private fun isOnShortFinal(aircraft: AircraftState): Boolean {
+        if (aircraft.onGround == true) return false
+        val agl = aircraft.altitudeAGL ?: aircraft.altitudeMSL ?: 0.0
+        val verticalSpeed = aircraft.verticalSpeed ?: 0.0
+        return agl < SHORT_FINAL_AGL_FT && verticalSpeed < SHORT_FINAL_DESCENT_FPM
+    }
+
+    /**
+     * After the approach is cleared (aircraft established), Approach hands the pilot off to
+     * Tower for the landing clearance.
+     */
+    private fun announceApproachToTowerHandoff() {
+        val c = buildContext(ATCState.FINAL)
+        val tx = engine.handoff(
+            cs = c.callsign,
+            from = ATCFacility.APPROACH,
+            to = ATCFacility.TOWER,
+            frequency = c.towerFrequency,
+        )
+        post(tx, speakIt = true)
+        // This hand-off follows the cleared-approach call that just closed the gate.
+        // Re-aim the gate at the hand-off so the pilot reads back "contacting Tower" (the
+        // last message) and the controller does not nag "how do you read?".
+        readbackGate.soften(tx)
     }
 
     /**
@@ -545,6 +739,11 @@ class FlightSessionCoordinator(
 
     private fun updateAssignedAltitude(target: ATCState, context: ATCContext) {
         val altitude = when (target) {
+            // The clearance and the takeoff clearance both assign the initial climb, so the
+            // pilot has an altitude to fly from the moment they are cleared — not only once
+            // Departure is working them.
+            ATCState.CLEARANCE, ATCState.TOWER_DEPARTURE -> context.initialClimbAltitude
+
             ATCState.INITIAL_CLIMB, ATCState.DEPARTURE ->
                 if (context.traconCeiling > 0) {
                     context.traconCeiling
@@ -643,7 +842,7 @@ class FlightSessionCoordinator(
             plan = plan,
             assignedAltitude = current.assignedAltitude,
             cruiseAltitude = plan.cruiseAltitude,
-            initialClimbAltitude = s.initialClimbAltitudeFt,
+            initialClimbAltitude = elevationAwareInitialClimbFt(),
             windDirection = 0,
             windSpeed = 0,
             squawk = DEFAULT_SQUAWK,
@@ -697,6 +896,59 @@ class FlightSessionCoordinator(
         const val GATE_ARRIVAL_RADIUS_METERS = 80.0
 
         const val METERS_PER_NM = 1852.0
+
+        /** Below this AGL a snapshot with no explicit on-ground flag still counts as on the ground. */
+        const val ON_GROUND_AGL_FT = 10.0
+
+        /** The configured initial climb, when Settings supplies none. */
+        const val DEFAULT_INITIAL_CLIMB_FT = 5000
+
+        /** TRACON ceiling when Settings supplies no flight level. */
+        const val DEFAULT_TRACON_CEILING_FT = 18000
+
+        /**
+         * Height above the departure field before Tower hands off to Departure. Handing off
+         * at the wheels would clear the pilot direct to a fix still just ahead, and stack
+         * the departure call on top of the takeoff clearance.
+         */
+        const val DEPARTURE_HANDOFF_AGL_FT = 2000.0
+
+        /**
+         * Departure hands off to Center this far below the TRACON ceiling, so the pilot has
+         * time to check in and be cleared higher before the climb reaches it.
+         */
+        const val CENTER_HANDOFF_BUFFER_FT = 1000.0
+
+        /** How far below the ceiling a descent counts as entering the terminal area. */
+        const val TERMINAL_ENTRY_BUFFER_FT = 200.0
+
+        /** Below this ground speed, an aircraft on the ground has vacated the runway. */
+        const val RUNWAY_VACATED_GROUND_SPEED = 40.0
+
+        /** Beyond this bank the aircraft is still turning onto final, not established. */
+        const val WINGS_LEVEL_BANK_DEGREES = 6.0
+
+        /** Short final: below this height above the field and descending. */
+        const val SHORT_FINAL_AGL_FT = 1500.0
+        const val SHORT_FINAL_DESCENT_FPM = -100.0
+
+        /** The states in which Departure is working the flight. */
+        private val DEPARTURE_WORKED_STATES = setOf(
+            ATCState.TOWER_DEPARTURE,
+            ATCState.INITIAL_CLIMB,
+            ATCState.DEPARTURE,
+        )
+
+        /** The states from which the next call is the top-of-descent clearance. */
+        private val CRUISE_STATES = setOf(
+            ATCState.CRUISE,
+            ATCState.CENTER,
+            ATCState.TOP_OF_DESCENT,
+        )
+
+        /** Round up to the next whole thousand feet, so a callout is a valid MSL altitude. */
+        internal fun roundedUpToThousand(feet: Int): Int =
+            if (feet <= 0) 0 else (ceil(feet / 1000.0) * 1000).toInt()
 
         /** Feet a "request higher" / "request lower" moves the assigned altitude by. */
         const val ALTITUDE_REQUEST_STEP = 2_000

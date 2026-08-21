@@ -287,7 +287,6 @@ class MockScenarioTest {
      * configured climb is added, rounded up to the next thousand. At Denver (~5,434 ft) a
      * 5,000 ft climb becomes 11,000 ft MSL instead of a sub-surface 5,000 ft.
      */
-    @Ignore // coordinator gap: field elevation is not captured yet
     @Test
     fun departureInitialClimbIsRaisedAboveHighField() = runTest {
         val mock = feed(this)
@@ -313,7 +312,6 @@ class MockScenarioTest {
      * has no AGL to subtract. Capturing that would put the field hundreds of feet up and
      * raise every initial climb derived from it.
      */
-    @Ignore // coordinator gap: field elevation is not captured yet
     @Test
     fun fieldElevationIsNotTakenFromASnapshotWithNoGroundReference() = runTest {
         val mock = feed(this)
@@ -399,7 +397,6 @@ class MockScenarioTest {
         return model
     }
 
-    @Ignore // see the note on runFullFlight
     @Test
     fun fullMockFlightProducesRealisticControllerSequence() = runTest {
         val model = runFullFlight(this)
@@ -441,7 +438,6 @@ class MockScenarioTest {
 
     // region Descent: STAR + no contradiction
 
-    @Ignore // see the note on runFullFlight
     @Test
     fun descentSaysDescendViaStarAndIsNotContradictory() = runTest {
         val model = runFullFlight(this)
@@ -456,8 +452,23 @@ class MockScenarioTest {
             allText.contains("pilot's discretion"),
             "automatic descent must not use the contradictory discretion phrasing",
         )
+
+        // One deliberate narrowing of the iOS assertion. `MockScenarioTests.swift` greps the
+        // *whole* transcript for "maintain FL370", but the cruise level legitimately appears
+        // there once before the descent — Center's climb call, "radar contact, climb and
+        // maintain FL370", which is correct phraseology and identical on both platforms
+        // (`PhraseologyEngine.centerRadarContactClimb` + `formatAltDisplay`). Widening the
+        // grep to the whole transcript therefore also catches a call the test is not about.
+        // What the test means is that the *descent* must not re-assign the level the
+        // aircraft is leaving, so that is what is asserted: every descent call, and nothing
+        // after it, is free of the cruise level.
+        val descentIndex = index(model, "descend via the KKILR arrival", ATCTransmission.Sender.ATC)
+        assertNotNull(descentIndex, "no descent call to check")
+        val fromDescentOn = model.state.value.transcript
+            .drop(descentIndex)
+            .joinToString("\n") { it.displayText }
         assertFalse(
-            allText.contains("maintain FL370"),
+            fromDescentOn.contains("maintain FL370"),
             "descent must not tell the pilot to maintain the cruise level",
         )
     }
@@ -466,7 +477,6 @@ class MockScenarioTest {
 
     // region Pilot readbacks before progressing
 
-    @Ignore // see the note on runFullFlight
     @Test
     fun pilotReadsBackBeforeFlowProgresses() = runTest {
         val model = runFullFlight(this)
@@ -505,7 +515,6 @@ class MockScenarioTest {
 
     // region Overall ordering is gate-to-gate
 
-    @Ignore // see the note on runFullFlight
     @Test
     fun transcriptOrderingIsGateToGate() = runTest {
         val model = runFullFlight(this)
