@@ -2,28 +2,39 @@ package com.h3consultingpartners.ifatccompanion.ui
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.h3consultingpartners.ifatccompanion.AppGraph
+import com.h3consultingpartners.ifatccompanion.core.billing.EntitlementState
+import com.h3consultingpartners.ifatccompanion.core.billing.SubscriptionProduct
 import com.h3consultingpartners.ifatccompanion.core.model.ATCFacility
+import com.h3consultingpartners.ifatccompanion.core.model.FlightPlan
+import com.h3consultingpartners.ifatccompanion.core.phraseology.PhraseologyProfile
+import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticCategory
+import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticRecord
 import com.h3consultingpartners.ifatccompanion.core.session.FlightSessionCoordinator
 import com.h3consultingpartners.ifatccompanion.core.session.FlightSessionState
 import com.h3consultingpartners.ifatccompanion.core.session.PilotAction
 import com.h3consultingpartners.ifatccompanion.core.session.PilotActionPresentation
 import com.h3consultingpartners.ifatccompanion.core.settings.AppSettings
 import com.h3consultingpartners.ifatccompanion.core.settings.SettingsRepository
+import com.h3consultingpartners.ifatccompanion.core.weather.WeatherSessionState
+import com.h3consultingpartners.ifatccompanion.ui.screens.FlightOverrides
+import com.h3consultingpartners.ifatccompanion.ui.screens.VoiceOption
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 
 /**
  * The bridge between the flight session and Compose.
  *
- * It deliberately holds no logic of its own: the engine decides, and this exposes what
- * it decided and forwards what the pilot did. Anything that looks like a rule belongs in
+ * It deliberately holds no logic of its own: the engine decides, and this exposes what it
+ * decided and forwards what the pilot did. Anything that looks like a rule belongs in
  * `:core`, where it can be tested — that is the whole reason the engine is a separate
- * module.
+ * module. What does live here is *draft* state: the text a pilot is part-way through
+ * typing, which is not a fact about the flight until they commit it.
  */
 class FlightViewModel(
     private val graph: AppGraph,
@@ -35,11 +46,52 @@ class FlightViewModel(
 
     val settings: StateFlow<AppSettings> = settingsRepository.state
 
-    private val _microphoneDenied = MutableStateFlow(false)
-    val microphoneDenied: StateFlow<Boolean> = _microphoneDenied.asStateFlow()
+    val weatherState: StateFlow<WeatherSessionState> = graph.weather.state
 
-    private val _speechPartial = MutableStateFlow("")
-    val speechPartial: StateFlow<String> = _speechPartial.asStateFlow()
+    val phraseologyProfilesState = graph.phraseologyProfiles.state
+
+    val diagnosticsLog: StateFlow<List<DiagnosticRecord>> = graph.diagnostics.records
+
+    /**
+     * Everything on screen that is *not* a fact about the flight: text a pilot is part-way
+     * through typing, which sheet is open, whether the microphone is listening.
+     *
+     * One snapshot rather than a dozen separate flows, so a screen collects once and every
+     * field it reads recomposes together. The engine's state stays where it belongs — in
+     * [session] — and never mixes with this.
+     */
+    private val _ui = MutableStateFlow(UiState())
+    val ui: StateFlow<UiState> = _ui.asStateFlow()
+
+    data class UiState(
+        val draftCallsign: String = "",
+        val draftDepartureGate: String = "",
+        val draftArrivalGate: String = "",
+        val overrides: FlightOverrides = FlightOverrides(),
+        val editingProfile: PhraseologyProfile? = null,
+        val profileImportFailed: Boolean = false,
+        val showSampledRadarCells: Boolean = false,
+        val microphoneDenied: Boolean = false,
+        val isListening: Boolean = false,
+        val speechPartial: String = "",
+        val lastSpokenText: String = "",
+        val lastSpokenIntentTitle: String? = null,
+    )
+
+    private inline fun updateUi(transform: (UiState) -> UiState) {
+        _ui.value = transform(_ui.value)
+    }
+
+    init {
+        // Keep the weather engine's view of the flight current. It only recomputes derived
+        // ride state on each tick — the network fetch is on its own cadence — so this is
+        // cheap enough to run on every telemetry update.
+        viewModelScope.launch {
+            session.collect { state ->
+                graph.weather.updateFlightContext(state.flightPlan, state.aircraftState, state.phase)
+            }
+        }
+    }
 
     // region Pilot actions
 
@@ -63,8 +115,176 @@ class FlightViewModel(
 
     fun onTune(facility: ATCFacility) = coordinator.tuneTo(facility)
 
+    /**
+     * Tuning ATIS is what makes the pilot *have* the information code — it is only from
+     * here on that any call reports it. Pulls the freshest broadcast rather than serving
+     * the cached one, because a pilot tuning ATIS is asking for the current letter.
+     */
+    fun onTuneAtis() {
+        coordinator.tuneTo(ATCFacility.ATIS)
+        val arrival = session.value.hasDeparted
+        viewModelScope.launch {
+            graph.weather.refreshAtis()
+            graph.weather.noteAtisTuned(arrival)
+            val atis = if (arrival) {
+                graph.weather.state.value.arrivalAtis
+            } else {
+                graph.weather.state.value.departureAtis
+            }
+            atis?.part(arrival)?.let { part -> graph.speech.speakAtis(part.text) }
+        }
+    }
+
     fun onReplayLastCall() {
         session.value.latestTransmission?.let(graph.speech::speak)
+    }
+
+    fun onSubscribe() = Unit // Navigation is owned by AppNavHost; the banner only signals intent.
+
+    fun onContactAtcAboutWeather() = coordinator.performPilotAction(PilotAction.REQUEST_RIDE_REPORT)
+
+    // endregion
+
+    // region Push to talk
+
+    fun onPushToTalkStart() {
+        updateUi { it.copy(isListening = true, speechPartial = "") }
+        graph.speech.startListening(
+            onPartial = { partial -> updateUi { it.copy(speechPartial = partial) } },
+            onFinal = { text -> onSpeechRecognized(text) },
+            onError = { updateUi { it.copy(isListening = false) } },
+        )
+    }
+
+    fun onPushToTalkEnd() {
+        updateUi { it.copy(isListening = false) }
+        graph.speech.stopListening()
+    }
+
+    private fun onSpeechRecognized(text: String) {
+        // The parse is the engine's call, not the UI's — the UI only reports what came back.
+        val intent = coordinator.handleSpokenPilotText(text)
+        updateUi {
+            it.copy(
+                isListening = false,
+                speechPartial = "",
+                lastSpokenText = text,
+                lastSpokenIntentTitle = intent,
+            )
+        }
+    }
+
+    fun onMicrophonePermissionResult(granted: Boolean) {
+        updateUi { it.copy(microphoneDenied = !granted) }
+    }
+
+    // endregion
+
+    // region ATC screen fields
+
+    fun onCallsignChange(value: String) = updateUi { it.copy(draftCallsign = value) }
+
+    fun onCallsignCommit() {
+        val plan = session.value.flightPlan
+        coordinator.ingestFlightPlan(
+            plan.copy(callsign = _ui.value.draftCallsign.trim(), manualOverride = true),
+        )
+    }
+
+    fun onDepartureGateChange(value: String) = updateUi { it.copy(draftDepartureGate = value) }
+
+    fun onArrivalGateChange(value: String) = updateUi { it.copy(draftArrivalGate = value) }
+
+    fun onGatesCommit() {
+        val plan = session.value.flightPlan
+        coordinator.ingestFlightPlan(
+            plan.copy(
+                departureGate = _ui.value.draftDepartureGate.trim(),
+                arrivalGate = _ui.value.draftArrivalGate.trim(),
+                manualOverride = true,
+            ),
+        )
+    }
+
+    /** A misfiled pair is common enough on a turn-around to deserve one tap. */
+    fun onSwapGates() {
+        updateUi { it.copy(draftDepartureGate = it.draftArrivalGate, draftArrivalGate = it.draftDepartureGate) }
+        onGatesCommit()
+    }
+
+    // endregion
+
+    // region Flight screen
+
+    fun onOverridesChange(value: FlightOverrides) {
+        updateUi { it.copy(overrides = value) }
+    }
+
+    fun onApplyOverrides() {
+        val o = _ui.value.overrides
+        val plan = session.value.flightPlan
+        coordinator.ingestFlightPlan(
+            plan.copy(
+                callsign = o.callsign.ifBlank { plan.callsign },
+                airline = o.airline.ifBlank { plan.airline },
+                flightNumber = o.flightNumber.ifBlank { plan.flightNumber },
+                departure = o.departure.ifBlank { plan.departure },
+                destination = o.destination.ifBlank { plan.destination },
+                alternate = o.alternate.ifBlank { plan.alternate },
+                cruiseAltitude = o.cruiseAltitude.toIntOrNull() ?: plan.cruiseAltitude,
+                runway = o.runway.ifBlank { plan.runway },
+                approach = o.approach.ifBlank { plan.approach },
+                sid = o.sid.ifBlank { plan.sid },
+                star = o.star.ifBlank { plan.star },
+                departureGate = o.departureGate.ifBlank { plan.departureGate },
+                arrivalGate = o.arrivalGate.ifBlank { plan.arrivalGate },
+                manualOverride = true,
+            ),
+        )
+    }
+
+    /** Clearing hands the flight plan back to Infinite Flight, which is the point. */
+    fun onClearOverrides() {
+        updateUi { it.copy(overrides = FlightOverrides()) }
+        coordinator.ingestFlightPlan(FlightPlan.empty)
+    }
+
+    fun onRefreshFlightPlan() {
+        viewModelScope.launch { graph.connect.requestFlightPlan() }
+    }
+
+    fun onOpenSimBrief() = graph.openLink(com.h3consultingpartners.ifatccompanion.core.config.AppConfig.Links.SIMBRIEF)
+
+    // endregion
+
+    // region Weather screen
+
+    fun onToggleRadarOverlay(enabled: Boolean) {
+        settingsRepository.setNoaaRadarOverlay(
+            if (enabled) {
+                com.h3consultingpartners.ifatccompanion.core.settings.NOAARadarOverlayMode.AUTO_WHERE_AVAILABLE
+            } else {
+                com.h3consultingpartners.ifatccompanion.core.settings.NOAARadarOverlayMode.OFF
+            },
+        )
+        graph.weather.refreshOverlayDescriptor()
+    }
+
+    fun onRadarOpacityChange(value: Float) {
+        settingsRepository.setRadarOpacity(value.toDouble())
+        graph.weather.refreshOverlayDescriptor()
+    }
+
+    /**
+     * iOS refreshes weather by pull-to-refresh and then recomputes every deviation against
+     * what landed. Same order here: one fetch feeds both, and because this is a manual
+     * refresh it re-solves even mid-deviation.
+     */
+    fun onRefreshWeather() {
+        viewModelScope.launch {
+            graph.weather.refresh()
+            graph.weather.recomputeRideItems()
+        }
     }
 
     // endregion
@@ -74,22 +294,154 @@ class FlightViewModel(
     fun updateSettings(settings: AppSettings) {
         settingsRepository.replace(settings)
         // Phraseology mode and digit style feed the engine, so it is rebuilt whenever
-        // settings change rather than only when those two do — it is cheap, and missing
-        // the rebuild would leave the pilot hearing the pack they just switched away from.
+        // settings change rather than only when those two do — it is cheap, and missing the
+        // rebuild would leave the pilot hearing the pack they just switched away from.
         coordinator.applyEngineConfig()
     }
 
-    fun onMicrophonePermissionResult(granted: Boolean) {
-        _microphoneDenied.value = !granted
+    fun availableVoices(): List<VoiceOption> = graph.speech.availableVoices()
+
+    fun onPreviewVoice(voiceId: String) = graph.speech.previewVoice(voiceId)
+
+    fun onRefreshAirportData() {
+        viewModelScope.launch { graph.surface.refresh(session.value.flightPlan) }
+    }
+
+    fun onClearAirportCache() {
+        viewModelScope.launch { graph.surface.clearCache() }
+    }
+
+    /** Everything the app stores is local, so a reset is a genuine factory reset. */
+    fun onResetAppData() {
+        settingsRepository.resetAll()
+        viewModelScope.launch { graph.surface.clearCache() }
+        graph.diagnostics.clear()
+        coordinator.applyEngineConfig()
+    }
+
+    fun onOpenLink(url: String) = graph.openLink(url)
+
+    fun surfaceCacheSummary(): String? = graph.surface.cacheSummary()
+
+    fun surfaceDiagnosticRows(): List<Pair<String, String>> = graph.surface.diagnosticRows()
+
+    fun surfaceError(): String? = graph.surface.lastError()
+
+    // endregion
+
+    // region Subscription
+
+    fun entitlementState(): EntitlementState = graph.entitlements.state.value
+
+    fun onPurchase(product: SubscriptionProduct) = graph.entitlements.purchase(product)
+
+    fun onRestorePurchases() {
+        viewModelScope.launch { graph.entitlements.restorePurchases() }
     }
 
     // endregion
 
+    // region Phraseology profiles
+
+    fun onSelectActiveProfile(id: String?) {
+        graph.phraseologyProfiles.activeProfileID = id
+        coordinator.applyEngineConfig()
+    }
+
+    fun onEditProfile(profile: PhraseologyProfile) {
+        updateUi { it.copy(editingProfile = profile) }
+    }
+
+    fun onCloseProfileEditor() {
+        updateUi { it.copy(editingProfile = null) }
+    }
+
+    /**
+     * iOS commits the draft when the editor disappears. Compose has no equally reliable
+     * moment — a process death or a configuration change would lose it — so every edit
+     * writes straight through. Same result, no window where the work is only in view state.
+     */
+    fun onSaveProfileDraft(profile: PhraseologyProfile) {
+        graph.phraseologyProfiles.update(profile)
+        updateUi { it.copy(editingProfile = profile) }
+        coordinator.applyEngineConfig()
+    }
+
+    fun onDeleteProfile(profile: PhraseologyProfile) {
+        graph.phraseologyProfiles.delete(profile)
+        if (_ui.value.editingProfile?.id == profile.id) updateUi { it.copy(editingProfile = null) }
+        coordinator.applyEngineConfig()
+    }
+
+    fun onCreateProfile() {
+        val profile = graph.phraseologyProfiles.createNew()
+        graph.phraseologyProfiles.activeProfileID = profile.id
+        updateUi { it.copy(editingProfile = profile) }
+        coordinator.applyEngineConfig()
+    }
+
+    fun onAddExampleProfile() {
+        graph.phraseologyProfiles.add(PhraseologyProfile.example())
+        coordinator.applyEngineConfig()
+    }
+
+    fun onImportProfileJson(json: String) {
+        val imported = graph.phraseologyProfiles.importJSON(json)
+        updateUi { it.copy(profileImportFailed = imported == null) }
+        if (imported != null) coordinator.applyEngineConfig()
+    }
+
+    fun onShareProfile(profile: PhraseologyProfile) {
+        graph.shareText(
+            subject = profile.name,
+            text = graph.phraseologyProfiles.exportJSON(profile),
+        )
+    }
+
+    fun onDismissProfileImportError() {
+        updateUi { it.copy(profileImportFailed = false) }
+    }
+
+    // endregion
+
+    // region Diagnostics
+
+    fun onToggleMockMode(enabled: Boolean) {
+        settingsRepository.setMockMode(enabled)
+        graph.setMockMode(enabled)
+    }
+
+    fun onAdvanceMockPhase() = graph.mockFeed.advancePhase()
+
+    fun onToggleSimulateStaffedATC(enabled: Boolean) = coordinator.setSimulateStaffedATC(enabled)
+
+    fun onToggleSampledRadarCells(enabled: Boolean) {
+        updateUi { it.copy(showSampledRadarCells = enabled) }
+    }
+
+    fun onClearDiagnosticsLog() = graph.diagnostics.clear()
+
+    fun onExportSurfaceDiagnostics() {
+        graph.shareText(subject = "Airport surface diagnostics", text = graph.surface.exportText())
+        graph.diagnostics.log(DiagnosticCategory.SURFACE, message = "Surface diagnostics exported")
+    }
+
+    fun mockRouteText(): String = with(graph.mockFeed.route) { "$departure → $destination" }
+
+    fun connectDiagnostics(): AppGraph.ConnectDiagnostics = graph.connectDiagnostics()
+
+    // endregion
+
+    /** The connection line the ATC header shows. */
+    fun connectionText(state: FlightSessionState): String = graph.connectionText(state)
+
+    fun frequencyFor(facility: ATCFacility, state: FlightSessionState): Double =
+        coordinator.frequencyForFacility(facility)
+
     companion object {
         fun factory(graph: AppGraph): ViewModelProvider.Factory = viewModelFactory {
             initializer {
-                val coordinator = graph.flightSessionCoordinator
-                FlightViewModel(graph, coordinator, graph.settingsRepository)
+                FlightViewModel(graph, graph.flightSessionCoordinator, graph.settingsRepository)
             }
         }
     }

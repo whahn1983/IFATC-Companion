@@ -18,6 +18,8 @@ import com.h3consultingpartners.ifatccompanion.core.model.ATCTransmission
 import com.h3consultingpartners.ifatccompanion.core.model.AircraftState
 import com.h3consultingpartners.ifatccompanion.core.model.FlightPhase
 import com.h3consultingpartners.ifatccompanion.core.model.FlightPlan
+import com.h3consultingpartners.ifatccompanion.core.atc.PilotIntent
+import com.h3consultingpartners.ifatccompanion.core.atc.PilotIntentParser
 import com.h3consultingpartners.ifatccompanion.core.phraseology.PhraseologyEngine
 import com.h3consultingpartners.ifatccompanion.core.platform.Clock
 import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticCategory
@@ -68,6 +70,7 @@ class FlightSessionCoordinator(
     private var pilotEngine = PilotResponseEngine(engine)
     private val phaseDetector = PhaseDetector()
     private val lineupDetector = RunwayLineupDetector()
+    private val intentParser = PilotIntentParser()
 
     private val readbackGate = ReadbackGate(
         scope = scope,
@@ -803,6 +806,40 @@ class FlightSessionCoordinator(
      * until then, and null at a field with no OpenStreetMap coverage.
      */
     var arrivalGatePosition: Coordinate? = null
+
+    /**
+     * The frequency a facility is reached on, for the tune buttons. Public because the
+     * facility list is UI, but the numbers are the engine's — the buttons must show what a
+     * call will actually say.
+     */
+    fun frequencyForFacility(facility: ATCFacility): Double =
+        frequencyFor(facility, buildContext(stateMachine.current))
+
+    /**
+     * Handle a spoken pilot transmission from push-to-talk.
+     *
+     * The parse is the engine's job, not the UI's: recognised speech is matched to an
+     * intent and routed to the same handler the corresponding button would have called, so
+     * a spoken read-back and a tapped one are indistinguishable downstream — same gate,
+     * same standby guard, same transcript. Returns the intent's title for the UI to echo,
+     * or null when nothing in the text matched, in which case the app says so rather than
+     * guessing at a clearance.
+     */
+    fun handleSpokenPilotText(text: String): String? {
+        if (text.isBlank()) return null
+        val intent = intentParser.parse(text)
+        val action = intent.pilotAction
+        return when {
+            intent == PilotIntent.READBACK -> { readBack(); intent.title }
+            intent == PilotIntent.SAY_AGAIN -> { sayAgain(); intent.title }
+            intent == PilotIntent.UNABLE -> { unable(); intent.title }
+            intent == PilotIntent.CHECK_IN -> { checkIn(); intent.title }
+            // "Wilco" acknowledges the instruction it answers, which is a read-back.
+            intent == PilotIntent.WILCO -> { readBack(); intent.title }
+            action != null -> { performPilotAction(action); intent.title }
+            else -> null
+        }
+    }
 
     private fun frequencyFor(facility: ATCFacility, c: ATCContext): Double = when (facility) {
         ATCFacility.RAMP -> c.rampFrequency

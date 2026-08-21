@@ -47,23 +47,26 @@ fun AppNavHost(
     onRequestMicrophone: () -> Boolean = { false },
 ) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
+    val weather by viewModel.weatherState.collectAsStateWithLifecycle()
+    val ui by viewModel.ui.collectAsStateWithLifecycle()
+    val diagnosticsLog by viewModel.diagnosticsLog.collectAsStateWithLifecycle()
     var settingsDestination by rememberSaveable { mutableStateOf(SettingsDestination.ROOT) }
 
     when (tab) {
         AppTab.ATC -> AtcScreen(
-            model = viewModel.atcModel(session, settings),
+            model = viewModel.atcModel(session, settings, weather, ui),
             actions = viewModel.atcActions(onRequestMicrophone),
             modifier = modifier,
         )
 
         AppTab.FLIGHT -> FlightScreen(
-            model = viewModel.flightModel(session, settings),
+            model = viewModel.flightModel(session, settings, ui),
             actions = viewModel.flightActions(),
             modifier = modifier,
         )
 
         AppTab.WEATHER -> WeatherScreen(
-            model = viewModel.weatherModel(session, settings),
+            model = viewModel.weatherModel(session, settings, weather),
             actions = viewModel.weatherActions(),
             modifier = modifier,
         )
@@ -89,16 +92,24 @@ fun AppNavHost(
             )
 
             SettingsDestination.PHRASEOLOGY_PROFILES -> PhraseologyProfilesScreen(
-                model = viewModel.phraseologyProfilesModel(),
+                model = viewModel.phraseologyProfilesModel(ui),
                 actions = viewModel.phraseologyProfilesActions(
-                    onLeave = { settingsDestination = SettingsDestination.ROOT },
+                    onCloseEditor = {
+                        // Back from the editor returns to the list; back from the list
+                        // returns to Settings, which is the SwiftUI stack's behaviour.
+                        if (ui.editingProfile != null) {
+                            viewModel.onCloseProfileEditor()
+                        } else {
+                            settingsDestination = SettingsDestination.ROOT
+                        }
+                    },
                 ),
                 modifier = modifier,
             )
         }
 
         AppTab.DIAGNOSTICS -> DiagnosticsScreen(
-            model = viewModel.diagnosticsModel(session, settings),
+            model = viewModel.diagnosticsModel(session, settings, weather, ui, diagnosticsLog),
             actions = viewModel.diagnosticsActions(),
             modifier = modifier,
         )

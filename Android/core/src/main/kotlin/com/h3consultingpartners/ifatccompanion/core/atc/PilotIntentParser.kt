@@ -1,5 +1,7 @@
 package com.h3consultingpartners.ifatccompanion.core.atc
 
+import com.h3consultingpartners.ifatccompanion.core.session.PilotAction
+
 /**
  * A pilot intent recognised from spoken (or typed) input. Maps to an existing pilot
  * action in the flight session. Deterministic keyword matching — no AI/LLM.
@@ -49,6 +51,34 @@ enum class PilotIntent(val rawValue: String) {
             DESTINATION_WEATHER -> "Destination Weather"
             CHECK_IN -> "Check In"
             UNKNOWN -> "Unrecognized"
+        }
+
+    /**
+     * The response-button action this intent is the spoken form of, or null for the three
+     * acknowledgements (which are their own control) and for an unrecognised phrase.
+     *
+     * Spoken and tapped requests must be indistinguishable downstream — same read-back
+     * gate, same standby guard, same transcript — so a spoken intent routes to exactly the
+     * action its button would have raised rather than to a parallel path.
+     */
+    val pilotAction: PilotAction?
+        get() = when (this) {
+            REQUEST_CLEARANCE -> PilotAction.CLEARANCE
+            REQUEST_PUSHBACK -> PilotAction.PUSHBACK
+            REQUEST_ENGINE_START -> PilotAction.ENGINE_START
+            REQUEST_TAXI -> PilotAction.TAXI
+            READY_FOR_DEPARTURE -> PilotAction.READY
+            REQUEST_TAKEOFF -> PilotAction.TAKEOFF
+            REQUEST_HIGHER -> PilotAction.REQUEST_HIGHER
+            REQUEST_LOWER -> PilotAction.REQUEST_LOWER
+            REQUEST_VECTORS -> PilotAction.VECTORS
+            REQUEST_APPROACH -> PilotAction.APPROACH
+            RIDE_REPORT -> PilotAction.RIDE_REPORT
+            DESTINATION_WEATHER -> PilotAction.DEST_WX
+            CHECK_IN -> PilotAction.CHECK_IN
+            // "Wilco" is an acknowledgement of an instruction, so it reads back rather
+            // than raising a request of its own.
+            READBACK, SAY_AGAIN, UNABLE, WILCO, UNKNOWN -> null
         }
 
     companion object {

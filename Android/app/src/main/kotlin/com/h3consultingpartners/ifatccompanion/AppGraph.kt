@@ -15,7 +15,13 @@ import com.h3consultingpartners.ifatccompanion.billing.PlayBillingRepository
 import com.h3consultingpartners.ifatccompanion.core.connect.IFConnectManager
 import com.h3consultingpartners.ifatccompanion.core.session.FlightSessionCoordinator
 import com.h3consultingpartners.ifatccompanion.core.settings.AppSettings
+import com.h3consultingpartners.ifatccompanion.core.atis.ATISService
+import com.h3consultingpartners.ifatccompanion.core.mock.MockSimulatorFeed
+import com.h3consultingpartners.ifatccompanion.core.phraseology.PhraseologyProfileStore
 import com.h3consultingpartners.ifatccompanion.core.settings.SettingsRepository
+import com.h3consultingpartners.ifatccompanion.core.weather.AviationWeatherService
+import com.h3consultingpartners.ifatccompanion.core.weather.WeatherSessionController
+import com.h3consultingpartners.ifatccompanion.core.weather.radar.PrecipitationOverlayService
 import com.h3consultingpartners.ifatccompanion.service.ActiveFlightController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
@@ -96,6 +102,42 @@ class AppGraph private constructor(
      * The one flight session. A process singleton because it must outlive any Activity:
      * the foreground service, the notification actions and the UI all address it.
      */
+    /** Mock Mode's scripted feed — the free, offline flight, and the tests' stand-in sim. */
+    val mockFeed: MockSimulatorFeed by lazy { MockSimulatorFeed(applicationScope, clock) }
+
+    val weatherService: AviationWeatherService by lazy {
+        AviationWeatherService(http, clock = clock, diagnostics = diagnostics)
+    }
+
+    val atisService: ATISService by lazy {
+        ATISService(http, clock = clock, diagnostics = diagnostics)
+    }
+
+    val precipitationOverlay: PrecipitationOverlayService by lazy {
+        PrecipitationOverlayService(http, clock).also { it.configure(diagnostics) }
+    }
+
+    /**
+     * The weather half of the session — the aviation-weather fetch, the ride reports, ATIS,
+     * and the overlay descriptor. Separate from the flight session because the ATC state
+     * machine and the weather feed share almost nothing but the flight plan.
+     */
+    val weather: WeatherSessionController by lazy {
+        WeatherSessionController(
+            weatherService = weatherService,
+            atisService = atisService,
+            overlayService = precipitationOverlay,
+            clock = clock,
+            diagnostics = diagnostics,
+            mock = mockFeed,
+            settingsProvider = { settingsRepository.state.value },
+        )
+    }
+
+    val phraseologyProfiles: PhraseologyProfileStore by lazy {
+        PhraseologyProfileStore(fileStore)
+    }
+
     val flightSessionCoordinator: FlightSessionCoordinator by lazy {
         FlightSessionCoordinator(
             scope = applicationScope,
