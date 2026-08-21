@@ -60,6 +60,7 @@ fun AppNavHost(
     val surface by viewModel.surfaceState.collectAsStateWithLifecycle()
     val profiles by viewModel.phraseologyProfilesState.collectAsStateWithLifecycle()
     val voices by viewModel.availableVoices.collectAsStateWithLifecycle()
+    val routing by viewModel.surfaceRouting.collectAsStateWithLifecycle()
     var settingsDestination by rememberSaveable { mutableStateOf(SettingsDestination.ROOT) }
 
     // The subscribe banner on the ATC tab cannot navigate itself — this file owns the
@@ -86,7 +87,19 @@ fun AppNavHost(
             model = viewModel.atcModel(session, settings, weather, ui),
             actions = viewModel.atcActions(onRequestMicrophone),
             modifier = modifier,
-            taxiMap = { TaxiMap(viewModel.taxiMapModel(session, surface)) },
+            taxiMap = {
+                TaxiMap(
+                    model = viewModel.taxiMapModel(session, surface, routing),
+                    // Both action lists come straight off the coordinator's state. The
+                    // crossing one is what releases AWAITING_PILOT_READBACK, so without it
+                    // a taxi that reaches a runway never continues.
+                    actions = routing.crossingActions + routing.offRouteActions,
+                    awaitingCrossingReadback = routing.awaitingCrossingReadback,
+                    nextInstruction = routing.nextInstruction,
+                    onAction = viewModel::onTaxiAction,
+                    onCrossingReadback = viewModel::onCrossingReadback,
+                )
+            },
         )
 
         AppTab.FLIGHT -> FlightScreen(

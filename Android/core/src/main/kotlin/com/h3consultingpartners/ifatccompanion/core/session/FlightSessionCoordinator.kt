@@ -53,6 +53,19 @@ import kotlin.math.roundToInt
  * as a constructor parameter, which is what lets a whole simulated flight be driven in a
  * unit test.
  */
+/**
+ * What a computed taxi route contributes to a clearance: the taxiway sequence to say, the
+ * runway to hold short of, and — on arrival — the taxiway leading to the ramp.
+ *
+ * Deliberately a plain triple of strings rather than the route itself, so `:core`'s ATC
+ * flow stays independent of the surface-routing subsystem.
+ */
+data class TaxiClearanceContext(
+    val taxiways: String,
+    val crossingRunway: String?,
+    val parkingTaxiway: String,
+)
+
 class FlightSessionCoordinator(
     private val scope: CoroutineScope,
     private val clock: Clock = Clock.system,
@@ -62,6 +75,19 @@ class FlightSessionCoordinator(
     private val settingsProvider: () -> AppSettings = { AppSettings() },
     /** Speaks a transmission. The app supplies text-to-speech; tests supply a recorder. */
     private val speak: (ATCTransmission) -> Unit = {},
+    /**
+     * The taxi route currently in force, if any, for the fields the phraseology engine
+     * needs to say something specific.
+     *
+     * `buildContext` used to hardcode `taxiway = ""`, `crossingRunway = null` and
+     * `parkingTaxiway = ""`, which is why every taxi clearance came out content-free —
+     * "taxi to runway 16L" with no route, at every airport, forever. The route engine that
+     * can fill them exists and is tested; it simply had no way to reach here.
+     *
+     * Defaulted so the engine stays independent of the surface subsystem and the tests
+     * keep constructing this with no extra argument.
+     */
+    private val taxiContextProvider: () -> TaxiClearanceContext? = { null },
 ) {
 
     private val _state = MutableStateFlow(FlightSessionState())
@@ -109,12 +135,28 @@ class FlightSessionCoordinator(
     }
 
     /** Rebuild the phraseology engine and everything derived from it after a settings change. */
+    /**
+     * The phraseology engine in force. Exposed because the surface-routing coordinator
+     * builds its taxi phrasing from the same engine, and must therefore be handed the same
+     * digit style and phraseology pack the pilot chose.
+     */
+    val phraseologyEngine: PhraseologyEngine get() = engine
+
+    /**
+     * Notified whenever the engine is rebuilt, so anything holding its own reference can
+     * follow. Without it a settings change would leave the taxi phrasing on the previous
+     * pack while every other line moved — the kind of split nobody notices until a
+     * transcript reads half ICAO and half FAA.
+     */
+    var onEngineRebuilt: ((PhraseologyEngine) -> Unit)? = null
+
     fun applyEngineConfig() {
         engine = buildEngine()
         val restored = stateMachine.current
         stateMachine = ATCStateMachine(engine)
         stateMachine.restore(restored)
         pilotEngine = PilotResponseEngine(engine)
+        onEngineRebuilt?.invoke(engine)
         recomputeDerivedState()
     }
 
@@ -1048,6 +1090,7 @@ class FlightSessionCoordinator(
      * the runway in use, the frequencies and the procedures.
      */
     fun buildContext(state: ATCState): ATCContext {
+        val taxiContext = taxiContextProvider()
         val current = _state.value
         val plan = current.flightPlan
         val s = settings
@@ -1069,9 +1112,9 @@ class FlightSessionCoordinator(
             windSpeed = 0,
             squawk = DEFAULT_SQUAWK,
             runway = runway,
-            taxiway = "",
-            crossingRunway = null,
-            parkingTaxiway = "",
+            taxiway = taxiContext?.taxiways.orEmpty(),
+            crossingRunway = taxiContext?.crossingRunway,
+            parkingTaxiway = taxiContext?.parkingTaxiway.orEmpty(),
             approachName = plan.approach,
             departureFrequency = DEFAULT_DEPARTURE_FREQUENCY,
             centerFrequency = DEFAULT_CENTER_FREQUENCY,

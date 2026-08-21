@@ -10,6 +10,7 @@ import com.h3consultingpartners.ifatccompanion.core.billing.EntitlementState
 import com.h3consultingpartners.ifatccompanion.core.config.AppConfig
 import com.h3consultingpartners.ifatccompanion.core.billing.SubscriptionProduct
 import com.h3consultingpartners.ifatccompanion.core.model.ATCFacility
+import com.h3consultingpartners.ifatccompanion.core.model.ATCState
 import com.h3consultingpartners.ifatccompanion.core.model.FlightPlan
 import com.h3consultingpartners.ifatccompanion.core.phraseology.PhraseologyProfile
 import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticCategory
@@ -21,6 +22,8 @@ import com.h3consultingpartners.ifatccompanion.core.session.PilotActionPresentat
 import com.h3consultingpartners.ifatccompanion.core.settings.AppSettings
 import com.h3consultingpartners.ifatccompanion.core.settings.NOAARadarOverlayMode
 import com.h3consultingpartners.ifatccompanion.core.settings.SettingsRepository
+import com.h3consultingpartners.ifatccompanion.core.surface.routing.AirportSurfaceState
+import com.h3consultingpartners.ifatccompanion.core.surface.routing.TaxiMapAction
 import com.h3consultingpartners.ifatccompanion.core.weather.WeatherSessionState
 import com.h3consultingpartners.ifatccompanion.ui.screens.FlightOverrides
 import com.h3consultingpartners.ifatccompanion.ui.screens.VoiceOption
@@ -99,6 +102,8 @@ class FlightViewModel(
                 graph.weather.updateFlightContext(state.flightPlan, state.aircraftState, state.phase)
             }
         }
+
+        observeTaxi()
 
         // Load the airport surface whenever the flight's endpoints change.
         //
@@ -189,6 +194,100 @@ class FlightViewModel(
     }
 
     fun onContactAtcAboutWeather() = coordinator.performPilotAction(PilotAction.RIDE_REPORT)
+
+    // endregion
+
+    // region Taxi routing
+
+    /**
+     * The computed taxi route, its crossings and the aircraft's progress along it.
+     *
+     * This is what the taxi map draws. Until now nothing constructed the coordinator
+     * behind it, so the map had no route to show at any point in any flight.
+     */
+    val surfaceRouting: StateFlow<AirportSurfaceState> = graph.surfaceRouting.state
+
+    /**
+     * Drive the taxi coordinator from the flight's own state.
+     *
+     * The coordinator has a strict order — begin, clearance issued, read-back complete —
+     * and it draws nothing until the read-back lands: `revealIfReady` returns early
+     * without it and `updateLive` no-ops while the map is hidden. Rather than reach into
+     * the ATC state machine, this watches the states it already publishes, which keeps
+     * `:core`'s flow ignorant of the surface subsystem.
+     */
+    private fun observeTaxi() {
+        viewModelScope.launch {
+            var startedFor: ATCState? = null
+            var sawReadback = false
+            session.collect { state ->
+                val taxiing = state.atcState == ATCState.GROUND_TAXI ||
+                    state.atcState == ATCState.PUSHBACK_TAXI
+                val plan = state.flightPlan
+
+                if (taxiing && startedFor != state.atcState) {
+                    startedFor = state.atcState
+                    sawReadback = false
+                    val reference = plan.departureCoordinate ?: state.aircraftState.coordinate
+                    val start = state.aircraftState.coordinate ?: reference
+                    if (reference != null && start != null && plan.departure.length >= 3) {
+                        graph.surfaceRouting.beginDeparture(
+                            icao = plan.departure,
+                            reference = reference,
+                            aircraftName = plan.name,
+                            runway = plan.departureRunway.ifEmpty { plan.runway },
+                            gate = plan.departureGate,
+                            startCoordinate = start,
+                            mock = state.mockMode,
+                        )
+                        graph.surfaceRouting.taxiClearanceIssued(supersedeWhenRouteReady = true)
+                    }
+                }
+
+                // The read-back is what reveals the map. Detected as the gate closing
+                // again after a taxi clearance, which is the same moment the pilot's
+                // acknowledgement reaches the transcript.
+                if (taxiing && !sawReadback && !state.awaitingReadback && startedFor != null) {
+                    sawReadback = true
+                    graph.surfaceRouting.taxiReadBackComplete()
+                }
+
+                if (!taxiing && startedFor != null && state.atcState == ATCState.PARKED) {
+                    startedFor = null
+                    graph.surfaceRouting.hideTaxiMap()
+                }
+
+                graph.surfaceRouting.updateLive(
+                    coordinate = state.aircraftState.coordinate,
+                    heading = state.aircraftState.heading,
+                    onGround = state.aircraftState.onGround,
+                    groundSpeed = state.aircraftState.groundSpeed,
+                )
+            }
+        }
+    }
+
+    /**
+     * A taxi-map action the pilot tapped.
+     *
+     * Every one of these had no caller. That matters most for REQUEST_CROSSING: with
+     * `autoCrossingCalls` on by default the coordinator issues a crossing clearance and
+     * then waits in AWAITING_PILOT_READBACK for an acknowledgement no button could send,
+     * so a taxi that met a runway would have stopped there for good.
+     */
+    fun onTaxiAction(action: TaxiMapAction) {
+        when (action) {
+            TaxiMapAction.REQUEST_CROSSING -> graph.surfaceRouting.requestCrossing()
+            TaxiMapAction.HOLD_POSITION -> graph.surfaceRouting.holdPosition()
+            TaxiMapAction.REQUEST_ALTERNATE_ROUTE -> graph.surfaceRouting.requestAlternateRoute()
+            TaxiMapAction.RECALCULATE -> graph.surfaceRouting.recalculateRoute()
+            TaxiMapAction.CONTINUE_ORIGINAL_ROUTE -> graph.surfaceRouting.continueOriginalRoute()
+            TaxiMapAction.REQUEST_NEW_TAXI -> graph.surfaceRouting.requestNewTaxiInstructions()
+        }
+    }
+
+    /** Acknowledge a runway-crossing clearance — the release for the wedge above. */
+    fun onCrossingReadback() = graph.surfaceRouting.crossingReadbackReceived()
 
     // endregion
 

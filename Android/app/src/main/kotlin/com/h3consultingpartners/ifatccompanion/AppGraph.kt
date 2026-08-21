@@ -24,6 +24,7 @@ import com.h3consultingpartners.ifatccompanion.audio.RadioAudioEngine
 import com.h3consultingpartners.ifatccompanion.billing.PlayBillingRepository
 import com.h3consultingpartners.ifatccompanion.core.connect.IFConnectManager
 import com.h3consultingpartners.ifatccompanion.core.session.FlightSessionCoordinator
+import com.h3consultingpartners.ifatccompanion.core.session.TaxiClearanceContext
 import com.h3consultingpartners.ifatccompanion.core.settings.AppSettings
 import com.h3consultingpartners.ifatccompanion.core.atis.ATISService
 import com.h3consultingpartners.ifatccompanion.core.chatter.AmbientChatterService
@@ -34,6 +35,7 @@ import com.h3consultingpartners.ifatccompanion.core.settings.SettingsRepository
 import com.h3consultingpartners.ifatccompanion.core.surface.AirportSurfaceCache
 import com.h3consultingpartners.ifatccompanion.core.surface.AirportSurfaceProvider
 import com.h3consultingpartners.ifatccompanion.core.surface.SurfaceSessionController
+import com.h3consultingpartners.ifatccompanion.core.surface.routing.AirportSurfaceCoordinator
 import com.h3consultingpartners.ifatccompanion.core.weather.AviationWeatherService
 import com.h3consultingpartners.ifatccompanion.core.weather.WeatherSessionController
 import com.h3consultingpartners.ifatccompanion.core.weather.radar.PrecipitationOverlayService
@@ -218,6 +220,71 @@ class AppGraph private constructor(
             connect = connect,
             settingsProvider = { settingsRepository.settings },
             speak = { transmission -> speech.speak(transmission) },
+            // What turns "taxi to runway 16L" into "taxi to runway 16L via A, C, hold
+            // short of 27". The route engine has always been able to produce this; nothing
+            // carried it into the clearance.
+            taxiContextProvider = { surfaceRouting.taxiClearanceContext() },
+        ).also { coordinator ->
+            // The taxi phrasing must follow the pilot's digit style and phraseology pack
+            // like every other line, so it tracks the same engine rather than snapshotting
+            // one at construction.
+            coordinator.onEngineRebuilt = { engine -> surfaceRouting.updateEngine(engine) }
+        }
+    }
+
+    /**
+     * Taxi routing over the airport surface: the route itself, its runway crossings, the
+     * hold-short points, and the phraseology that names them.
+     *
+     * `AirportSurfaceCoordinator` is 2,106 lines of ported, tested logic that until now
+     * was constructed nowhere, so no route was ever computed: the taxi map drew the field
+     * with no route on it and every taxi clearance stayed in its generic form.
+     *
+     * Its own KDoc says it is not thread-safe and must be driven from one dispatcher —
+     * `sessionScope`, the same one the flight session is confined to. The `scope` it is
+     * given is where its *asynchronous* work runs, and that is deliberately the Default
+     * pool: routing is A* over the surface graph, and running that on the main thread is
+     * the ANR this port already had to fix once.
+     */
+    val surfaceRouting: AirportSurfaceCoordinator by lazy {
+        AirportSurfaceCoordinator(
+            provider = surfaceProvider,
+            scope = applicationScope,
+            clock = clock,
+            diagnostics = diagnostics,
+        ).also { routing ->
+            routing.configure(
+                engine = flightSessionCoordinator.phraseologyEngine,
+                emit = { transmission -> flightSessionCoordinator.post(transmission) },
+                callsign = {
+                    val plan = flightSessionCoordinator.state.value.flightPlan
+                    flightSessionCoordinator.phraseologyEngine.callsign(
+                        airline = plan.airline,
+                        flightNumber = plan.flightNumber,
+                        fallback = plan.callsign,
+                    )
+                },
+            )
+        }
+    }
+
+    /**
+     * The computed route, reduced to the three fields a clearance needs.
+     *
+     * Written here rather than in `:core` so the ATC flow keeps knowing nothing about the
+     * surface-routing subsystem: it asks for three strings and does not care where they
+     * came from. Null whenever no route exists — no OpenStreetMap coverage, an Overpass
+     * outage, or simply nothing computed yet — and the clearance then degrades to its
+     * generic form rather than saying something wrong.
+     */
+    private fun AirportSurfaceCoordinator.taxiClearanceContext(): TaxiClearanceContext? {
+        val route = state.value.route ?: return null
+        return TaxiClearanceContext(
+            taxiways = route.taxiwaysText,
+            // The first crossing is the one the clearance names; later ones are issued as
+            // the taxi reaches them, which is what the crossing state machine is for.
+            crossingRunway = route.crossings.firstOrNull()?.runwayIdent,
+            parkingTaxiway = if (route.isDeparture) "" else route.taxiwaySequence.lastOrNull().orEmpty(),
         )
     }
 

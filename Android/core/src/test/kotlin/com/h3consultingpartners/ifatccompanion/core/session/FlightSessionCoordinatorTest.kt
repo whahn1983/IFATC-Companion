@@ -43,11 +43,13 @@ class FlightSessionCoordinatorTest {
         scope: TestScope,
         settings: AppSettings = AppSettings(mockMode = false),
         spoken: MutableList<ATCTransmission> = mutableListOf(),
+        taxiContext: () -> TaxiClearanceContext? = { null },
     ) = FlightSessionCoordinator(
         scope = scope,
         clock = MutableClock(0),
         settingsProvider = { settings },
         speak = { spoken += it },
+        taxiContextProvider = taxiContext,
     )
 
     private fun airborne(
@@ -486,6 +488,47 @@ class FlightSessionCoordinatorTest {
         // button meant to remove it.
         assertEquals("DAL9", coordinator.state.value.flightPlan.callsign)
         assertFalse(coordinator.state.value.flightPlan.manualOverride)
+    }
+
+    // endregion
+
+    // region Taxi clearance content
+
+    @Test
+    fun `a taxi clearance names the route when one is available`() = runTest {
+        val coordinator = coordinator(
+            this,
+            taxiContext = {
+                TaxiClearanceContext(
+                    taxiways = "A, C, B",
+                    crossingRunway = "27",
+                    parkingTaxiway = "",
+                )
+            },
+        )
+        coordinator.ingestFlightPlan(plan)
+        advanceUntilIdle()
+
+        val context = coordinator.buildContext(ATCState.GROUND_TAXI)
+
+        // buildContext hardcoded these three to empty, which is why every taxi clearance
+        // this app has ever produced on Android said "taxi to runway 15L" and nothing
+        // else — at every airport, for the whole of every flight.
+        assertEquals("A, C, B", context.taxiway)
+        assertEquals("27", context.crossingRunway)
+    }
+
+    @Test
+    fun `a taxi clearance stays generic when no route is available`() = runTest {
+        val coordinator = coordinator(this)
+        coordinator.ingestFlightPlan(plan)
+        advanceUntilIdle()
+
+        // No OpenStreetMap coverage, an Overpass outage, or simply no route computed yet:
+        // the clearance must degrade to the generic form rather than say something wrong.
+        val context = coordinator.buildContext(ATCState.GROUND_TAXI)
+        assertEquals("", context.taxiway)
+        assertNull(context.crossingRunway)
     }
 
     // endregion

@@ -1,12 +1,17 @@
 package com.h3consultingpartners.ifatccompanion.ui.map
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -26,6 +31,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.h3consultingpartners.ifatccompanion.core.geo.Coordinate
 import com.h3consultingpartners.ifatccompanion.core.surface.SurfaceConfidence
+import com.h3consultingpartners.ifatccompanion.core.surface.routing.TaxiMapAction
 import com.h3consultingpartners.ifatccompanion.ui.theme.IFATCTheme
 
 /** One runway crossing on the route, and whether it is the one being worked. */
@@ -66,8 +72,56 @@ data class TaxiMapModel(
  * Surface geometry is OpenStreetMap data under the ODbL. The attribution shown beneath
  * the map is the licence condition, not decoration.
  */
+/**
+ * The taxi map, with the controls the taxi state machine needs to be released.
+ *
+ * [actions] are not decoration. With automatic crossing calls on — the default — the
+ * coordinator issues a crossing clearance and then waits in AWAITING_PILOT_READBACK for an
+ * acknowledgement. Until these existed there was no way to send one, so a taxi that met a
+ * runway would have stopped there for the rest of the flight. [onAction] and
+ * [onCrossingReadback] are what let it continue.
+ */
 @Composable
 fun TaxiMap(
+    model: TaxiMapModel,
+    modifier: Modifier = Modifier,
+    expanded: Boolean = false,
+    height: Dp = if (expanded) TAXI_MAP_HEIGHT_EXPANDED else TAXI_MAP_HEIGHT,
+    actions: List<TaxiMapAction> = emptyList(),
+    awaitingCrossingReadback: Boolean = false,
+    nextInstruction: String = "",
+    onAction: (TaxiMapAction) -> Unit = {},
+    onCrossingReadback: () -> Unit = {},
+) {
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        TaxiMapCanvas(model, Modifier.fillMaxWidth(), expanded, height)
+
+        if (nextInstruction.isNotBlank()) {
+            Text(
+                text = nextInstruction,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        if (awaitingCrossingReadback) {
+            Button(onClick = onCrossingReadback, modifier = Modifier.fillMaxWidth()) {
+                Text("Read back crossing clearance")
+            }
+        }
+
+        if (actions.isNotEmpty()) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                for (action in actions) {
+                    OutlinedButton(onClick = { onAction(action) }) { Text(action.title) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TaxiMapCanvas(
     model: TaxiMapModel,
     modifier: Modifier = Modifier,
     expanded: Boolean = false,

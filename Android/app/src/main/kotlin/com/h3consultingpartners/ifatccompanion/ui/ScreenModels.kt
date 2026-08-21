@@ -13,8 +13,10 @@ import com.h3consultingpartners.ifatccompanion.core.session.FlightSessionState
 import com.h3consultingpartners.ifatccompanion.core.session.PilotActionPresentation
 import com.h3consultingpartners.ifatccompanion.core.settings.AppSettings
 import com.h3consultingpartners.ifatccompanion.core.surface.SurfaceSessionState
+import com.h3consultingpartners.ifatccompanion.core.surface.routing.AirportSurfaceState
 import com.h3consultingpartners.ifatccompanion.core.weather.WeatherSessionState
 import com.h3consultingpartners.ifatccompanion.ui.map.RouteMapModel
+import com.h3consultingpartners.ifatccompanion.ui.map.TaxiCrossingMarker
 import com.h3consultingpartners.ifatccompanion.ui.map.TaxiMapModel
 import com.h3consultingpartners.ifatccompanion.ui.screens.AtcScreenActions
 import com.h3consultingpartners.ifatccompanion.ui.screens.AtcScreenModel
@@ -432,22 +434,55 @@ fun FlightViewModel.routeMapModel(
  * The taxi map's model. Only the runways the route touches are included — see the note on
  * [TaxiMap] for why that restriction exists rather than drawing the whole field.
  */
-fun FlightViewModel.taxiMapModel(session: FlightSessionState, surface: SurfaceSessionState): TaxiMapModel {
+fun FlightViewModel.taxiMapModel(
+    session: FlightSessionState,
+    surface: SurfaceSessionState,
+    routing: AirportSurfaceState,
+): TaxiMapModel {
     val arriving = session.hasDeparted
     val model = if (arriving) surface.arrival else surface.departure ?: return TaxiMapModel()
     val plan = session.flightPlan
     val gate = if (arriving) plan.arrivalGate else plan.departureGate
     val aircraft = session.aircraftState
+    val route = routing.route
+
+    // Only the runways the route actually touches. Drawing every runway at a large field
+    // at fit-to-route zoom is what overwhelmed MapKit's overlay layer on iOS, and the
+    // TaxiMap KDoc has promised this restriction all along while the body ignored it.
+    val touched = route?.crossings?.map { it.runwayIdent.uppercase() }.orEmpty().toMutableSet()
+    route?.holdShortRunway?.let { touched += it.uppercase() }
+    val runways = model?.runways.orEmpty()
+    val relevant = if (route == null || touched.isEmpty()) runways else {
+        runways.filter { runway ->
+            runway.idents.any { it.uppercase() in touched }
+        }.ifEmpty { runways }
+    }
+
     return TaxiMapModel(
-        relevantRunways = model?.runways.orEmpty().map { runway ->
+        // These four are the defect: every one of them was left at its default, so the
+        // map could draw the field and never the taxi.
+        route = route?.line.orEmpty(),
+        routeConfidence = routing.routeConfidence,
+        holdingPositions = route?.crossings.orEmpty().map { it.holdShortPoint.toCoordinate() },
+        crossings = route?.crossings.orEmpty().map { crossing ->
+            TaxiCrossingMarker(
+                point = crossing.point.toCoordinate(),
+                runwayIdent = crossing.runwayIdent,
+                isActive = routing.activeCrossing?.index == crossing.index,
+            )
+        },
+        relevantRunways = relevant.map { runway ->
             runway.centerline.map { Coordinate(it.latitude, it.longitude) }
         },
         isDeparture = !arriving,
         departureGate = standPosition(surface, arriving = false, gate = plan.departureGate),
         destination = standPosition(surface, arriving = true, gate = plan.arrivalGate),
-        destinationLabel = gate,
-        aircraft = aircraft.coordinate,
-        aircraftHeadingDegrees = aircraft.trueHeading ?: aircraft.heading ?: 0.0,
+        destinationLabel = route?.destinationLabel?.ifBlank { gate } ?: gate,
+        // The coordinator's own tracked position when it has one — it is smoothed along
+        // the route — falling back to raw telemetry before the map is revealed.
+        aircraft = routing.displayAircraft?.coordinate?.toCoordinate() ?: aircraft.coordinate,
+        aircraftHeadingDegrees = routing.displayAircraft?.headingDegrees
+            ?: aircraft.trueHeading ?: aircraft.heading ?: 0.0,
     )
 }
 
