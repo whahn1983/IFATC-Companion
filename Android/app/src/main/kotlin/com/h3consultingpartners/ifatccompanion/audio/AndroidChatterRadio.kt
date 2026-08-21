@@ -71,7 +71,13 @@ class AndroidChatterRadio(
         speech.speakChatter(line.spokenText, voiceId, configured.chatterVolume)
     }
 
-    override fun stopSpeech() = speech.stop()
+    /**
+     * Scoped to the chatter's own line. This used to call the speech service's global
+     * stop(), which drains the queue shared with real ATC and fails every pending
+     * utterance — so toggling chatter off, pressing push-to-talk or ending a flight could
+     * silently discard a controller clearance that happened to be in flight.
+     */
+    override fun stopSpeech() = speech.stopChatterSpeech()
 
     override fun playKeyClick() = engine.playKeyClick()
 

@@ -7,6 +7,7 @@ import android.speech.tts.Voice
 import com.h3consultingpartners.ifatccompanion.core.atis.AirportATIS
 import com.h3consultingpartners.ifatccompanion.core.atis.ATISSession
 import com.h3consultingpartners.ifatccompanion.core.audio.RadioAudio
+import com.h3consultingpartners.ifatccompanion.core.chatter.MicKeyEvent
 import com.h3consultingpartners.ifatccompanion.core.model.ATCFacility
 import com.h3consultingpartners.ifatccompanion.core.model.ATCTransmission
 import kotlinx.coroutines.CompletableDeferred
@@ -26,6 +27,7 @@ import java.io.File
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Offline text-to-speech for the ATC radio — the Android counterpart of
@@ -51,6 +53,21 @@ class AndroidSpeechService(
     private val scope: CoroutineScope,
     private val radio: RadioAudioEngine,
     private val configuration: () -> SpeechConfiguration,
+    /**
+     * The mic-key bracket, routed through AmbientChatterService rather than poked straight
+     * at the engine. That path (core AmbientChatterService.micKey) opens the bed if it is
+     * closed, fires the burst, and arms an idle stop — the direct counterpart of the iOS
+     * AppModel hook, already ported and tested.
+     *
+     * It matters because the two settings are independent: transmission static defaults ON
+     * while background chatter defaults OFF, and the engine used to be reachable only via
+     * the chatter service. On a default install the bed was therefore never running, so
+     * every key click and squelch tail was dropped and every call came out as flat,
+     * unprocessed speech — with the pilot's "transmission static" switch showing on.
+     */
+    private val micKey: (MicKeyEvent) -> Unit = {},
+    /** Whether the chatter service owns the radio bed right now; it must not be torn down under it. */
+    private val chatterOwnsRadio: () -> Boolean = { false },
 ) {
 
     /**
@@ -103,6 +120,15 @@ class AndroidSpeechService(
 
     private val utteranceCompletions = ConcurrentHashMap<String, CompletableDeferred<Boolean>>()
     private val utteranceCounter = AtomicLong(0)
+
+    /**
+     * The id of the background-chatter utterance currently being rendered, if any.
+     *
+     * Chatter and real ATC share one TextToSpeech and one completion map, so "stop the
+     * chatter" needs to name what it is stopping. Without this the only available stop was
+     * the global one, which drained the ATC queue as well.
+     */
+    private val chatterUtteranceId = AtomicReference<String?>(null)
 
     private var tts: TextToSpeech? = null
 
@@ -238,12 +264,40 @@ class AndroidSpeechService(
         applyVoice(engine, voiceId.ifEmpty { configuration.defaultVoiceId }, configuration)
 
         val call = QueuedCall(text, voiceId.ifEmpty { null }, isPilot = false, configuration = configuration)
-        val rendered = if (radio.isRunning) render(engine, call) else null
-        if (rendered != null && rendered.isNotEmpty()) {
-            radio.playProcessed(rendered, volume.toFloat())
-        } else {
-            speakAndWait(engine, text)
+        try {
+            val rendered = if (radio.isRunning) {
+                render(engine, call) { chatterUtteranceId.set(it) }
+            } else {
+                null
+            }
+            if (rendered != null && rendered.isNotEmpty()) {
+                radio.playProcessed(rendered, volume.toFloat())
+            } else {
+                speakAndWait(engine, text)
+            }
+        } finally {
+            chatterUtteranceId.set(null)
         }
+    }
+
+    /**
+     * Abandon the chatter line in flight, and nothing else.
+     *
+     * The chatter service calls this whenever the pilot switches chatter off, presses
+     * push-to-talk, or the flight ends. It used to be routed to [stop], which drains the
+     * shared queue and fails every pending utterance — so a real controller clearance that
+     * happened to be queued or rendering at that moment was discarded and never spoken.
+     * The transcript showed it; the pilot never heard it.
+     *
+     * Note there is no per-utterance cancel on the platform: TextToSpeech.stop() is
+     * engine-global and would abort a concurrent ATC render too. It is not needed here —
+     * what actually silences a chatter line is the chatter service cancelling its own
+     * speech job and stopping the radio bed, both of which it already does. This just
+     * releases the render so nothing is left awaiting it.
+     */
+    fun stopChatterSpeech() {
+        chatterUtteranceId.getAndSet(null)
+            ?.let { utteranceCompletions.remove(it)?.complete(false) }
     }
 
     /** Speak a short sample so the pilot can audition a voice while picking one. */
@@ -269,10 +323,31 @@ class AndroidSpeechService(
     private fun startPump() {
         if (pumpJob != null) return
         pumpJob = scope.launch {
+            var startedHere = false
             for (call in queue) {
                 _isSpeaking.value = true
+
+                // Open the bed for the duration of this burst if nothing else has. The
+                // render below is a no-op without it, which is why the radio effect was
+                // inert whenever background chatter was off — its default. Transient
+                // rather than held for the flight: holding AUDIOFOCUS_GAIN gate-to-gate
+                // would stop the pilot's music at pushback and never give it back, and a
+                // permanently running near-silent bed is exactly the keep-alive trick
+                // this app does not use.
+                if (call.configuration.radioEffectEnabled && !radio.isRunning && !chatterOwnsRadio()) {
+                    radio.start()
+                    startedHere = true
+                }
+
                 play(call)
-                if (queue.isEmpty) _isSpeaking.value = false
+
+                if (queue.isEmpty) {
+                    _isSpeaking.value = false
+                    if (startedHere && !chatterOwnsRadio()) {
+                        radio.stop()
+                        startedHere = false
+                    }
+                }
             }
         }
     }
@@ -289,7 +364,7 @@ class AndroidSpeechService(
 
         // The key-down thump fires tight against the start of the voice — after the
         // render, not before it, so the synthesis delay never opens a gap.
-        if (call.isPilot && call.configuration.radioEffectEnabled) radio.playKeyClick()
+        if (call.isPilot && call.configuration.radioEffectEnabled) micKey(MicKeyEvent.KEY_UP)
 
         if (rendered != null && rendered.isNotEmpty()) {
             radio.playProcessed(rendered, call.configuration.voiceVolume.toFloat())
@@ -304,15 +379,26 @@ class AndroidSpeechService(
             // and hold until it has finished — the controller's response must not begin
             // while the release tail is still playing.
             delay(RadioAudio.PTT_RELEASE_HANG_MILLIS)
-            radio.playSquelchTail()
+            micKey(MicKeyEvent.KEY_DOWN)
             delay(RadioAudio.PTT_RELEASE_TAIL_MILLIS)
         }
     }
 
-    /** Render to a cache WAV, decode it to mono float samples, and delete the file. */
-    private suspend fun render(engine: TextToSpeech, call: QueuedCall): FloatArray? =
+    /**
+     * Render to a cache WAV, decode it to mono float samples, and delete the file.
+     *
+     * [onId] receives the utterance id as soon as it exists, so a caller that may need to
+     * abandon this particular render later can name it. Defaulted, because only the
+     * chatter path needs to.
+     */
+    private suspend fun render(
+        engine: TextToSpeech,
+        call: QueuedCall,
+        onId: (String) -> Unit = {},
+    ): FloatArray? =
         withContext(Dispatchers.IO) {
             val id = "render-${utteranceCounter.incrementAndGet()}"
+            onId(id)
             val file = File(context.cacheDir, "tts-$id.wav")
             val completion = CompletableDeferred<Boolean>()
             utteranceCompletions[id] = completion

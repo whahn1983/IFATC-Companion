@@ -170,6 +170,12 @@ class FlightViewModel(
 
     fun onPushToTalkStart() {
         updateUi { it.copy(isListening = true, speechPartial = "") }
+        // Cut the ambient bed before the recogniser opens the mic. On a device speaker the
+        // static and the background voices are picked straight back up, which either
+        // defeats recognition outright or salts the transcript with the chatter's own
+        // callsigns. :core has had pauseForPTT/resumeAfterPTT since the port — ready,
+        // tested, and until now called by nothing.
+        graph.chatter.pauseForPTT()
         graph.pushToTalk.start(
             onPartial = { partial -> updateUi { it.copy(speechPartial = partial) } },
             onFinal = { text -> onSpeechRecognized(text) },
@@ -177,6 +183,9 @@ class FlightViewModel(
                 // Say why, rather than leaving a dead button: no offline model, no
                 // permission and "didn't catch that" are different problems for the pilot.
                 updateUi { it.copy(isListening = false, speechPartial = "", lastSpokenIntentTitle = message) }
+                // An error ends the press just as much as a release does. Without this the
+                // bed stays paused for the rest of the flight after one failed attempt.
+                graph.chatter.resumeAfterPTT()
             },
         )
     }
@@ -184,9 +193,11 @@ class FlightViewModel(
     fun onPushToTalkEnd() {
         updateUi { it.copy(isListening = false) }
         graph.pushToTalk.stop()
+        graph.chatter.resumeAfterPTT()
     }
 
     private fun onSpeechRecognized(text: String) {
+        graph.chatter.resumeAfterPTT()
         // The parse is the engine's call, not the UI's — the UI only reports what came back.
         val intent = coordinator.handleSpokenPilotText(text)
         updateUi {

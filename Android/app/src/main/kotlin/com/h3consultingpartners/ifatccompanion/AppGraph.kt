@@ -119,6 +119,11 @@ class AppGraph private constructor(
             scope = applicationScope,
             radio = radio,
             configuration = { settingsRepository.settings.toSpeechConfiguration() },
+            // Both lambdas reach `chatter`, which itself depends on `speech`. That is not a
+            // cycle: neither runs during construction, and by the time either is invoked
+            // `speech` is already built, so resolving `chatter` here is safe.
+            micKey = { chatter.micKey(it) },
+            chatterOwnsRadio = { chatter.isRunning.value },
         )
     }
 
