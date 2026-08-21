@@ -1328,7 +1328,17 @@ class WeatherDeviationTest {
         return best
     }
 
-    /** Planar segment-intersection point (test helper mirroring the detector's geometry). */
+    /**
+     * Planar segment-intersection point (test helper mirroring the detector's geometry).
+     *
+     * The parameter bounds carry a 1e-9 tolerance that the Swift helper does not need.
+     * The drawn line **ends** exactly on the route, so its final leg meets the route
+     * segment at `t == 1` — and re-solving that intersection from the already-truncated
+     * leg lands a few ulps either side of 1 (here 1.0000000000000038). A strict `t <= 1`
+     * therefore drops the very intercept this test is counting, on rounding alone. The
+     * tolerance keeps a touching endpoint counted as the single intercept; anything
+     * genuinely past the segment is still rejected.
+     */
     private fun segmentIntersectionPoint(
         a: Coordinate,
         b: Coordinate,
@@ -1347,7 +1357,8 @@ class WeatherDeviationTest {
         if (abs(denom) <= 1e-12) return null
         val t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom
         val u = ((x1 - x3) * (y1 - y2) - (y1 - y3) * (x1 - x2)) / denom
-        if (t < 0 || t > 1 || u < 0 || u > 1) return null
+        val eps = 1e-9
+        if (t < -eps || t > 1 + eps || u < -eps || u > 1 + eps) return null
         return Coordinate(y1 + t * (y2 - y1), x1 + t * (x2 - x1))
     }
 

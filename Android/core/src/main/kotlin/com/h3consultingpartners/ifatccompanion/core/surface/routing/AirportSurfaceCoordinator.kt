@@ -34,7 +34,6 @@ import kotlinx.coroutines.launch
 import java.util.Locale
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.roundToInt
 
 /**
  * Live display aircraft used by the taxi map (real telemetry in live mode, a
