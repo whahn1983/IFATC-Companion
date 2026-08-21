@@ -14,6 +14,7 @@ import com.h3consultingpartners.ifatccompanion.core.enroute.CenterSectorDatabase
 import com.h3consultingpartners.ifatccompanion.core.enroute.CenterSectorTracker
 import com.h3consultingpartners.ifatccompanion.core.geo.Coordinate
 import com.h3consultingpartners.ifatccompanion.core.geo.Geo
+import com.h3consultingpartners.ifatccompanion.core.geo.validCoordinateOrNull
 import com.h3consultingpartners.ifatccompanion.core.model.ATCFacility
 import com.h3consultingpartners.ifatccompanion.core.model.ATCState
 import com.h3consultingpartners.ifatccompanion.core.model.ATCTransmission
@@ -22,6 +23,7 @@ import com.h3consultingpartners.ifatccompanion.core.model.FlightPhase
 import com.h3consultingpartners.ifatccompanion.core.model.FlightPlan
 import com.h3consultingpartners.ifatccompanion.core.atc.PilotIntent
 import com.h3consultingpartners.ifatccompanion.core.atc.PilotIntentParser
+import com.h3consultingpartners.ifatccompanion.core.persistence.SessionSnapshot
 import com.h3consultingpartners.ifatccompanion.core.phraseology.PhraseologyEngine
 import com.h3consultingpartners.ifatccompanion.core.platform.Clock
 import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticCategory
@@ -658,6 +660,103 @@ class FlightSessionCoordinator(
      * Deliberately does not clear the transcript: the pilot may still want to read or
      * export it, and the next controller exchange revives the session anyway.
      */
+    // region Session snapshots
+
+    /**
+     * Capture everything a reconnect or a relaunch needs to resume this conversation.
+     *
+     * SessionSnapshot, SessionStateStore and SavedFlightStore were all ported and tested,
+     * and nothing ever produced a snapshot — so a flight killed mid-cruise was simply
+     * gone, and "saved flights" saved nothing. This is the missing producer.
+     *
+     * The state machine's own cursor is captured separately from [FlightSessionState
+     * .atcState]: the two differ deliberately (the conversational position the UI shows
+     * versus the gate-to-gate cursor the flow drives off), and restoring only one of them
+     * would resume the flight in a state the machine disagrees with.
+     */
+    fun captureSnapshot(): SessionSnapshot {
+        val current = _state.value
+        return SessionSnapshot(
+            atcState = current.atcState,
+            stateMachineCurrent = stateMachine.current,
+            currentFacility = current.currentFacility,
+            phase = current.phase,
+            assignedAltitude = current.assignedAltitude,
+            hasDeparted = current.hasDeparted,
+            arrivalAnnounced = current.flightHasEnded,
+            awaitingGateArrival = current.isArrivalRamp,
+            manualTuning = current.manualTuning,
+            transcript = current.transcript,
+            departure = current.flightPlan.departure,
+            destination = current.flightPlan.destination,
+            mockMode = current.mockMode,
+            savedAtMillis = clock.nowMillis(),
+            centerSectorID = sectorTracker.current?.id,
+            monitoringTower = current.monitoringTower,
+            atcCommunicationStarted = current.atcCommunicationStarted,
+            flightPlan = current.flightPlan,
+            tunedFacility = current.currentFacility,
+            pendingCheckInFacility = current.pendingCheckInFacility,
+            awaitingReadback = current.awaitingReadback,
+            pendingReadbackTx = readbackGate.pending,
+            readbackPrompts = readbackGate.promptCount,
+            arrivalGateLatitude = arrivalGatePosition?.latitude,
+            arrivalGateLongitude = arrivalGatePosition?.longitude,
+            departureFieldElevationMSL = departureFieldElevationMSL,
+            liftoffAltitudeMSL = liftoffAltitudeMSL,
+        )
+    }
+
+    /**
+     * Resume from a snapshot.
+     *
+     * Deliberately does not restore telemetry — position, altitude and phase debug come
+     * from the next live fix a moment later, and a stale position would drive one wrong
+     * round of phase detection before being corrected. What is restored is everything the
+     * simulator cannot tell us again: what was said, where the conversation had got to,
+     * and what the pilot still owes a read-back for.
+     */
+    fun restore(snapshot: SessionSnapshot) {
+        stateMachine.restore(snapshot.stateMachineCurrent)
+        readbackGate.adopt(
+            transmission = snapshot.pendingReadbackTx,
+            prompts = snapshot.readbackPrompts ?: 0,
+            closed = snapshot.awaitingReadback == true,
+        )
+        arrivalGatePosition = validCoordinateOrNull(
+            snapshot.arrivalGateLatitude,
+            snapshot.arrivalGateLongitude,
+        )
+        snapshot.departureFieldElevationMSL?.let { departureFieldElevationMSL = it }
+        snapshot.liftoffAltitudeMSL?.let { liftoffAltitudeMSL = it }
+
+        _state.update {
+            it.copy(
+                atcState = snapshot.atcState,
+                currentFacility = snapshot.currentFacility,
+                pendingCheckInFacility = snapshot.pendingCheckInFacility,
+                phase = snapshot.phase,
+                assignedAltitude = snapshot.assignedAltitude,
+                hasDeparted = snapshot.hasDeparted,
+                manualTuning = snapshot.manualTuning,
+                monitoringTower = snapshot.monitoringTower ?: false,
+                awaitingReadback = snapshot.awaitingReadback ?: false,
+                transcript = snapshot.transcript,
+                latestTransmission = snapshot.transcript.lastOrNull { tx -> !tx.isATISLine },
+                flightPlan = snapshot.flightPlan ?: it.flightPlan,
+                // A resumed session is by definition not an ended one.
+                sessionEnded = false,
+            )
+        }
+        recomputeDerivedState()
+        diagnostics.log(
+            DiagnosticCategory.SESSION,
+            message = "Resumed session with ${snapshot.transcript.size} transmissions",
+        )
+    }
+
+    // endregion
+
     fun endSession() {
         _state.update { it.copy(sessionEnded = true) }
     }

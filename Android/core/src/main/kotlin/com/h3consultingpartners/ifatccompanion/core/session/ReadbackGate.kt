@@ -45,6 +45,21 @@ class ReadbackGate(
     /** The controller call to repeat if the pilot stays idle. */
     private var pendingTransmission: ATCTransmission? = null
 
+    /**
+     * The call awaiting a read-back, and how many times it has been re-prompted, so a
+     * session snapshot can restore the gate rather than dropping the pilot back into a
+     * conversation with an instruction silently un-acknowledged.
+     */
+    val pending: ATCTransmission? get() = pendingTransmission
+    val promptCount: Int get() = prompts
+
+    /** Re-establish a gate captured in a snapshot, without re-issuing the call. */
+    fun adopt(transmission: ATCTransmission?, prompts: Int, closed: Boolean) {
+        pendingTransmission = transmission
+        this.prompts = prompts
+        isClosed = closed
+    }
+
     /** Drives the idle re-prompt while the gate is closed. */
     private var timer: Job? = null
 

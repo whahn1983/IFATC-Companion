@@ -10,6 +10,7 @@ import com.h3consultingpartners.ifatccompanion.core.diagnostics.DiagnosticsStore
 import com.h3consultingpartners.ifatccompanion.core.net.AppHttp
 import com.h3consultingpartners.ifatccompanion.core.net.HttpFetching
 import com.h3consultingpartners.ifatccompanion.core.net.OkHttpFetcher
+import com.h3consultingpartners.ifatccompanion.core.persistence.SessionStateStore
 import com.h3consultingpartners.ifatccompanion.core.platform.Clock
 import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticCategory
 import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticLevel
@@ -40,6 +41,9 @@ import com.h3consultingpartners.ifatccompanion.service.ActiveFlightController
 import com.h3consultingpartners.ifatccompanion.service.FlightSessionActiveFlightController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.plus
 import kotlinx.coroutines.Dispatchers
 import java.io.File
@@ -198,6 +202,14 @@ class AppGraph private constructor(
         PhraseologyProfileStore(fileStore)
     }
 
+    /**
+     * The crash/relaunch session snapshot. Ported and tested from the start and never
+     * constructed, so a flight killed mid-cruise — swiped away, or reclaimed by the system
+     * once no foreground service was running — was simply gone on reopening, transcript
+     * and all, despite the store being built to restore any snapshot under six hours old.
+     */
+    val sessionStore: SessionStateStore by lazy { SessionStateStore(fileStore, clock) }
+
     val flightSessionCoordinator: FlightSessionCoordinator by lazy {
         FlightSessionCoordinator(
             scope = sessionScope,
@@ -227,6 +239,9 @@ class AppGraph private constructor(
                 // session still looks active, so the service that Stop was meant to end
                 // keeps running.
                 flightSessionCoordinator.endSession()
+                // Stopping is deliberate, so there is nothing to resume; leaving the
+                // snapshot would restore the flight the pilot just ended.
+                sessionStore.clear()
                 diagnostics.log(DiagnosticCategory.SESSION, message = "Flight session stopped from the notification")
             },
         )
@@ -333,6 +348,36 @@ class AppGraph private constructor(
         // connect and fetch ProductDetails before any purchase can be launched.
         speech.initialize()
         entitlements.start()
+
+        // Resume a flight the process did not survive. loadResumable already refuses a
+        // completed session and anything older than its window, so this is a no-op on a
+        // normal cold start.
+        sessionStore.loadResumable()?.let { snapshot ->
+            if (snapshot.mockMode == settingsRepository.state.value.mockMode) {
+                flightSessionCoordinator.restore(snapshot)
+                diagnostics.log(
+                    DiagnosticCategory.SESSION,
+                    message = "Restored the previous session after a relaunch",
+                )
+            } else {
+                // A mock snapshot must never be restored into a live flight, or the
+                // reverse: the transcript would describe a flight that is not happening.
+                sessionStore.clear()
+            }
+        }
+
+        // Keep the snapshot current. Written when the transcript grows rather than on a
+        // timer: transmissions are seconds apart at their densest, and the transcript is
+        // the only part a relaunch cannot reconstruct from the next telemetry fix.
+        applicationScope.launch {
+            flightSessionCoordinator.state
+                .map { it.transcript.size }
+                .distinctUntilChanged()
+                .collect { size ->
+                    if (size == 0) return@collect
+                    runCatching { sessionStore.save(flightSessionCoordinator.captureSnapshot()) }
+                }
+        }
     }
 
     /**

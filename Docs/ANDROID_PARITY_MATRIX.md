@@ -16,7 +16,7 @@ because a screen exists.
 | 🔵 **Android-native substitution** | Deliberately different because the platform is, with the difference stated. |
 
 > **Verification status of the two modules.** `:core` is compiled and its tests are run —
-> **823 tests across 65 classes, 0 failures, 0 skipped** — and the per-area counts below
+> **825 tests across 65 classes, 0 failures, 0 skipped** — and the per-area counts below
 > are real.
 >
 > `:app` is now compiled too, by CI (`.github/workflows/android.yml`): `assembleDebug`
@@ -143,7 +143,7 @@ because a screen exists.
 | --- | --- | --- | --- |
 | Center sector database + tracker | `Enroute/*.swift` + `CenterSectors.json` | `core/enroute/`; the JSON is byte-identical and loaded from the classpath. `FlightSessionCoordinator` feeds every airborne fix to the tracker and publishes the sector's radio name, loading the ~550 KB database off-thread on the first fix that needs it | ✅ 19 tests |
 | Mock Mode scripted flight | `MockSimulatorFeed.swift` | `core/mock/MockSimulatorFeed.kt` — the same demo flight, KIAH → KMSP at FL370, to the digit | ✅ 12 tests |
-| Session resume | `SessionStateStore.swift` | `core/persistence/SessionStateStore.kt` — **never constructed in `:app`**, so a flight killed mid-session is gone on relaunch even though the store is built to restore any snapshot under six hours old | 🔌 |
+| Session resume | `SessionStateStore.swift` | `core/persistence/SessionStateStore.kt`, wired in `AppGraph.warmUp()`. `FlightSessionCoordinator.captureSnapshot()` writes on every new transmission and `restore()` reads on launch; a mock snapshot is never restored into a live flight, or the reverse, and a deliberate Stop clears it | ✅ 25 tests |
 | Saved flights | `SavedFlightStore.swift` | `core/persistence/SavedFlightStore.kt` — **never constructed in `:app`**; nothing saves or reads a flight | 🔌 23 tests total in the package |
 | Review prompt | `ReviewRequestManager.swift` | 🔵 Play In-App Review replaces `SKStoreReviewController` | ⬜ **not implemented** — the engagement counting is ported, the Play API call is not |
 

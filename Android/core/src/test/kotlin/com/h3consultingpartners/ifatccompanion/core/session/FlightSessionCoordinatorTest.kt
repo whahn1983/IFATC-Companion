@@ -362,4 +362,78 @@ class FlightSessionCoordinatorTest {
 
     // endregion
 
+    // region Session snapshots
+
+    @Test
+    fun `a snapshot round-trips the conversation into a fresh coordinator`() = runTest {
+        val original = coordinator(this)
+        original.ingestFlightPlan(plan)
+        val clearance = ATCTransmission(
+            sender = ATCTransmission.Sender.ATC,
+            facility = ATCFacility.CLEARANCE,
+            displayText = "United 598, cleared to Minneapolis as filed, climb 5000.",
+            spokenText = "United five niner eight, cleared to Minneapolis as filed, climb five thousand.",
+            timestampMillis = 1_000,
+        )
+        original.post(clearance, speakIt = false)
+        original.tuneTo(ATCFacility.GROUND)
+        advanceUntilIdle()
+
+        val snapshot = original.captureSnapshot()
+        assertEquals(1, snapshot.transcript.size)
+        assertEquals("KIAH", snapshot.departure)
+        assertEquals("KMSP", snapshot.destination)
+
+        // A fresh coordinator is what a relaunch actually gets — a new process, nothing
+        // carried over in memory.
+        val resumed = coordinator(this)
+        resumed.restore(snapshot)
+        advanceUntilIdle()
+
+        val state = resumed.state.value
+        assertEquals(1, state.transcript.size)
+        assertEquals(clearance.displayText, state.transcript.first().displayText)
+        assertEquals(snapshot.atcState, state.atcState)
+        assertEquals(snapshot.currentFacility, state.currentFacility)
+        assertEquals("KIAH", state.flightPlan.departure)
+        assertFalse(state.sessionEnded, "a resumed session is not an ended one")
+    }
+
+    @Test
+    fun `restoring re-establishes an outstanding read-back`() = runTest {
+        val original = coordinator(this)
+        original.ingestFlightPlan(plan)
+        original.post(
+            ATCTransmission(
+                sender = ATCTransmission.Sender.ATC,
+                facility = ATCFacility.CLEARANCE,
+                displayText = "United 598, climb and maintain 5000.",
+                spokenText = "United five niner eight, climb and maintain five thousand.",
+                timestampMillis = 2_000,
+                readback = ATCTransmission.Readback(
+                    displayText = "Climb and maintain 5000, United 598.",
+                    spokenText = "Climb and maintain five thousand, United five niner eight.",
+                    facility = ATCFacility.CLEARANCE,
+                ),
+            ),
+            speakIt = false,
+        )
+        advanceUntilIdle()
+
+        val snapshot = original.captureSnapshot()
+        val resumed = coordinator(this)
+        resumed.restore(snapshot)
+        advanceUntilIdle()
+
+        // Dropping this on resume would put the pilot back into a conversation with an
+        // instruction silently un-acknowledged — the controller waiting on a read-back
+        // that the app has forgotten is owed.
+        assertEquals(
+            original.state.value.awaitingReadback,
+            resumed.state.value.awaitingReadback,
+        )
+    }
+
+    // endregion
+
 }
