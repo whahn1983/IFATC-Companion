@@ -91,6 +91,11 @@ committing code alone, which is why the two are separated.
 
 ### Known gaps to resolve before submitting
 
+> Engineering work left to finish the port — sized and ordered — is in
+> [`ANDROID_REMAINING_WORK.md`](ANDROID_REMAINING_WORK.md). This list is the
+> submission gate; that one is the build plan.
+
+
 **Closed since this list was written** — kept here because knowing what was checked is
 as useful as knowing what is left:
 

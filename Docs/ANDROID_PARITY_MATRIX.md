@@ -34,6 +34,10 @@ because a screen exists.
 > test of its own. 🔌 means the `:core` tests pass and the app never calls the code — read
 > that one carefully, because it is the failure mode this matrix previously hid.
 
+> **What is left, and how big it is:**
+> [`ANDROID_REMAINING_WORK.md`](ANDROID_REMAINING_WORK.md). This matrix records
+> status per capability; that one orders the remaining work and sizes it.
+
 ---
 
 ## 1. Infinite Flight Connect
