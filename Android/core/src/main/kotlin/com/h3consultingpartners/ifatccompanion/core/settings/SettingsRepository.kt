@@ -169,9 +169,101 @@ class SettingsRepository(private val store: KeyValueStore) {
      * the keys just removed) and a legacy `"gate"` value, which `allCases` does not
      * contain, is migrated into the arrival gate again. Both are ported as they are.
      */
+    /**
+     * Write a whole settings object at once, persisting only the values that actually
+     * changed. The Settings screen edits an immutable [AppSettings] and hands the result
+     * back, which keeps every row a plain copy() rather than a call to one of eighty
+     * setters — and this is what turns that back into individual key writes.
+     */
+    fun replace(updated: AppSettings) {
+        val current = _state.value
+        if (current == updated) return
+        _state.value = updated
+        writeAll(current, updated)
+    }
+
     fun resetAll() {
         SettingsKeys.ALL.forEach(store::remove)
         _state.value = load()
+    }
+
+
+    /**
+     * Persist the fields that actually changed.
+     *
+     * The table below is the same key/type mapping the individual setters use — it exists
+     * because the Settings screen edits an immutable [AppSettings] and hands the whole
+     * object back, which keeps every row a plain `copy()` instead of a call to one of
+     * eighty setters. Only changed keys are written, so a settings tap is one or two disk
+     * writes rather than eighty.
+     */
+    private fun writeAll(current: AppSettings, updated: AppSettings) {
+        if (current.host != updated.host) store.putString(SettingsKeys.HOST, updated.host)
+        if (current.port != updated.port) store.putInt(SettingsKeys.PORT, updated.port)
+        if (current.autoDiscover != updated.autoDiscover) store.putBoolean(SettingsKeys.AUTO_DISCOVER, updated.autoDiscover)
+        if (current.keepScreenAwake != updated.keepScreenAwake) store.putBoolean(SettingsKeys.KEEP_SCREEN_AWAKE, updated.keepScreenAwake)
+        if (current.callsign != updated.callsign) store.putString(SettingsKeys.CALLSIGN, updated.callsign)
+        if (current.airline != updated.airline) store.putString(SettingsKeys.AIRLINE, updated.airline)
+        if (current.flightNumber != updated.flightNumber) store.putString(SettingsKeys.FLIGHT_NUMBER, updated.flightNumber)
+        if (current.departure != updated.departure) store.putString(SettingsKeys.DEPARTURE, updated.departure)
+        if (current.destination != updated.destination) store.putString(SettingsKeys.DESTINATION, updated.destination)
+        if (current.alternate != updated.alternate) store.putString(SettingsKeys.ALTERNATE, updated.alternate)
+        if (current.cruiseAltitude != updated.cruiseAltitude) store.putInt(SettingsKeys.CRUISE_ALTITUDE, updated.cruiseAltitude)
+        if (current.runway != updated.runway) store.putString(SettingsKeys.RUNWAY, updated.runway)
+        if (current.sid != updated.sid) store.putString(SettingsKeys.SID, updated.sid)
+        if (current.star != updated.star) store.putString(SettingsKeys.STAR, updated.star)
+        if (current.approach != updated.approach) store.putString(SettingsKeys.APPROACH, updated.approach)
+        if (current.departureGate != updated.departureGate) store.putString(SettingsKeys.DEPARTURE_GATE, updated.departureGate)
+        if (current.arrivalGate != updated.arrivalGate) store.putString(SettingsKeys.ARRIVAL_GATE, updated.arrivalGate)
+        if (current.autoAssignedDepartureGate != updated.autoAssignedDepartureGate) store.putString(SettingsKeys.AUTO_ASSIGNED_DEPARTURE_GATE, updated.autoAssignedDepartureGate)
+        if (current.autoAssignedArrivalGate != updated.autoAssignedArrivalGate) store.putString(SettingsKeys.AUTO_ASSIGNED_ARRIVAL_GATE, updated.autoAssignedArrivalGate)
+        if (current.voiceEnabled != updated.voiceEnabled) store.putBoolean(SettingsKeys.VOICE_ENABLED, updated.voiceEnabled)
+        if (current.defaultVoiceID != updated.defaultVoiceID) store.putString(SettingsKeys.DEFAULT_VOICE_ID, updated.defaultVoiceID)
+        if (current.speechRate != updated.speechRate) store.putDouble(SettingsKeys.SPEECH_RATE, updated.speechRate)
+        if (current.speechPitch != updated.speechPitch) store.putDouble(SettingsKeys.SPEECH_PITCH, updated.speechPitch)
+        if (current.voiceVolume != updated.voiceVolume) store.putDouble(SettingsKeys.VOICE_VOLUME, updated.voiceVolume)
+        if (current.respectSilentSwitch != updated.respectSilentSwitch) store.putBoolean(SettingsKeys.RESPECT_SILENT_SWITCH, updated.respectSilentSwitch)
+        if (current.voiceGround != updated.voiceGround) store.putString(SettingsKeys.VOICE_GROUND, updated.voiceGround)
+        if (current.voiceTower != updated.voiceTower) store.putString(SettingsKeys.VOICE_TOWER, updated.voiceTower)
+        if (current.voiceDeparture != updated.voiceDeparture) store.putString(SettingsKeys.VOICE_DEPARTURE, updated.voiceDeparture)
+        if (current.voiceCenter != updated.voiceCenter) store.putString(SettingsKeys.VOICE_CENTER, updated.voiceCenter)
+        if (current.voiceApproach != updated.voiceApproach) store.putString(SettingsKeys.VOICE_APPROACH, updated.voiceApproach)
+        if (current.voiceATIS != updated.voiceATIS) store.putString(SettingsKeys.VOICE_ATIS, updated.voiceATIS)
+        if (current.voicePilot != updated.voicePilot) store.putString(SettingsKeys.VOICE_PILOT, updated.voicePilot)
+        if (current.speakPilot != updated.speakPilot) store.putBoolean(SettingsKeys.SPEAK_PILOT, updated.speakPilot)
+        if (current.holdToTalkEnabled != updated.holdToTalkEnabled) store.putBoolean(SettingsKeys.HOLD_TO_TALK_ENABLED, updated.holdToTalkEnabled)
+        if (current.phraseologyMode != updated.phraseologyMode) store.putString(SettingsKeys.PHRASEOLOGY_MODE, updated.phraseologyMode.rawValue)
+        if (current.digitStyle != updated.digitStyle) store.putString(SettingsKeys.DIGIT_STYLE, updated.digitStyle.rawValue)
+        if (current.backgroundChatterEnabled != updated.backgroundChatterEnabled)
+            store.putBoolean(
+                SettingsKeys.BACKGROUND_CHATTER_ENABLED,
+                updated.backgroundChatterEnabled,
+            )
+        if (current.liveActivityEnabled != updated.liveActivityEnabled)
+            store.putBoolean(SettingsKeys.LIVE_ACTIVITY_ENABLED, updated.liveActivityEnabled)
+        if (current.chatterVolume != updated.chatterVolume) store.putDouble(SettingsKeys.CHATTER_VOLUME, updated.chatterVolume)
+        if (current.chatterDensity != updated.chatterDensity) store.putString(SettingsKeys.CHATTER_DENSITY, updated.chatterDensity.rawValue)
+        if (current.transmissionStaticEnabled != updated.transmissionStaticEnabled) store.putBoolean(SettingsKeys.TRANSMISSION_STATIC_ENABLED, updated.transmissionStaticEnabled)
+        if (current.initialClimbAltitudeFt != updated.initialClimbAltitudeFt) store.putInt(SettingsKeys.INITIAL_CLIMB_ALTITUDE_FT, updated.initialClimbAltitudeFt)
+        if (current.traconCeilingFL != updated.traconCeilingFL) store.putInt(SettingsKeys.TRACON_CEILING_FL, updated.traconCeilingFL)
+        if (current.autoTuneOnHandoff != updated.autoTuneOnHandoff) store.putBoolean(SettingsKeys.AUTO_TUNE_ON_HANDOFF, updated.autoTuneOnHandoff)
+        if (current.centerSectorHandoffs != updated.centerSectorHandoffs) store.putBoolean(SettingsKeys.CENTER_SECTOR_HANDOFFS, updated.centerSectorHandoffs)
+        if (current.taxiAutoCrossingCalls != updated.taxiAutoCrossingCalls) store.putBoolean(SettingsKeys.TAXI_AUTO_CROSSING_CALLS, updated.taxiAutoCrossingCalls)
+        if (current.taxiAutoRecalculate != updated.taxiAutoRecalculate) store.putBoolean(SettingsKeys.TAXI_AUTO_RECALCULATE, updated.taxiAutoRecalculate)
+        if (current.autoAssignGates != updated.autoAssignGates) store.putBoolean(SettingsKeys.AUTO_ASSIGN_GATES, updated.autoAssignGates)
+        if (current.autoSaveFlights != updated.autoSaveFlights) store.putBoolean(SettingsKeys.AUTO_SAVE_FLIGHTS, updated.autoSaveFlights)
+        if (current.routeCorridorNM != updated.routeCorridorNM) store.putDouble(SettingsKeys.ROUTE_CORRIDOR_NM, updated.routeCorridorNM)
+        if (current.altitudeBandFt != updated.altitudeBandFt) store.putDouble(SettingsKeys.ALTITUDE_BAND_FT, updated.altitudeBandFt)
+        if (current.weatherBaseURL != updated.weatherBaseURL) store.putString(SettingsKeys.WEATHER_BASE_URL, updated.weatherBaseURL)
+        if (current.noaaRadarOverlay != updated.noaaRadarOverlay) store.putString(SettingsKeys.NOAA_RADAR_OVERLAY, updated.noaaRadarOverlay.rawValue)
+        if (current.radarOpacity != updated.radarOpacity) store.putDouble(SettingsKeys.RADAR_OPACITY, updated.radarOpacity)
+        if (current.weatherDeviationAlerts != updated.weatherDeviationAlerts) store.putString(SettingsKeys.WEATHER_DEVIATION_ALERTS, updated.weatherDeviationAlerts.rawValue)
+        if (current.satelliteDeviationsEnabled != updated.satelliteDeviationsEnabled) store.putBoolean(SettingsKeys.SATELLITE_DEVIATIONS_ENABLED, updated.satelliteDeviationsEnabled)
+        if (current.showWeatherDataSourceLabels != updated.showWeatherDataSourceLabels) store.putBoolean(SettingsKeys.SHOW_WEATHER_DATA_SOURCE_LABELS, updated.showWeatherDataSourceLabels)
+        if (current.showWeatherCoverageWarnings != updated.showWeatherCoverageWarnings) store.putBoolean(SettingsKeys.SHOW_WEATHER_COVERAGE_WARNINGS, updated.showWeatherCoverageWarnings)
+        if (current.reduceCellularData != updated.reduceCellularData) store.putBoolean(SettingsKeys.REDUCE_CELLULAR_DATA, updated.reduceCellularData)
+        if (current.debugLogging != updated.debugLogging) store.putBoolean(SettingsKeys.DEBUG_LOGGING, updated.debugLogging)
+        if (current.mockMode != updated.mockMode) store.putBoolean(SettingsKeys.MOCK_MODE, updated.mockMode)
     }
 
     // MARK: - Write-through helpers
@@ -317,21 +409,30 @@ class SettingsRepository(private val store: KeyValueStore) {
      * The Live Activity rides on the chatter audio; turning chatter off must turn the
      * notification off too.
      */
-    fun setBackgroundChatterEnabled(value: Boolean) {
+    /**
+     * **The two chatter/notification settings are independent on Android**, and that is a
+     * deliberate divergence from iOS rather than an oversight.
+     *
+     * The iOS repository couples them: turning chatter off turns the Live Activity off,
+     * and turning the Live Activity on turns chatter on. It has to, because iOS keeps the
+     * app alive in the background through the `audio` background mode, so the chatter is
+     * literally what keeps the live updates coming.
+     *
+     * Android keeps the flight alive with a foreground service, which needs no audio at
+     * all. Forcing chatter on to get a notification would make noise the pilot did not ask
+     * for, to solve a problem this platform does not have. See
+     * Docs/ANDROID_BACKGROUND_EXECUTION.md.
+     */
+    fun setBackgroundChatterEnabled(value: Boolean) =
         writeBoolean(SettingsKeys.BACKGROUND_CHATTER_ENABLED, value) {
             it.copy(backgroundChatterEnabled = value)
         }
-        if (!value && _state.value.liveActivityEnabled) setLiveActivityEnabled(false)
-    }
 
-    /**
-     * Enabling the Live Activity requires the background chatter that keeps the app
-     * (and its live updates) running while backgrounded.
-     */
-    fun setLiveActivityEnabled(value: Boolean) {
-        writeBoolean(SettingsKeys.LIVE_ACTIVITY_ENABLED, value) { it.copy(liveActivityEnabled = value) }
-        if (value && !_state.value.backgroundChatterEnabled) setBackgroundChatterEnabled(true)
-    }
+    /** See [setBackgroundChatterEnabled] — independent of chatter on Android. */
+    fun setLiveActivityEnabled(value: Boolean) =
+        writeBoolean(SettingsKeys.LIVE_ACTIVITY_ENABLED, value) {
+            it.copy(liveActivityEnabled = value)
+        }
 
     fun setChatterVolume(value: Double) =
         writeDouble(SettingsKeys.CHATTER_VOLUME, value) { it.copy(chatterVolume = value) }

@@ -102,30 +102,40 @@ class SettingsRepositoryTest {
     }
 
     /**
-     * The Live Activity rides on the chatter audio, so the two toggles are interlocked
-     * in both directions — turning chatter off takes the notification with it, and
-     * turning the notification on brings the chatter back.
+     * **The two toggles are independent on Android, and that is deliberate.**
+     *
+     * The iOS repository interlocks them in both directions, because iOS keeps the app
+     * alive in the background through the `audio` background mode — the chatter is
+     * literally what keeps the Live Activity updating. Android keeps the flight alive
+     * with a foreground service, which needs no audio at all, so forcing chatter on to
+     * get a notification would make noise the pilot never asked for, to solve a problem
+     * this platform does not have.
+     *
+     * Recorded in Docs/ANDROID_BACKGROUND_EXECUTION.md and in the parity matrix, and
+     * stated in the Settings screen's own footer.
      */
     @Test
-    fun theLiveActivityAndBackgroundChatterAreInterlocked() {
+    fun theLiveActivityAndBackgroundChatterAreIndependent() {
         val store = InMemoryKeyValueStore()
         val repository = SettingsRepository(store)
 
         repository.setLiveActivityEnabled(true)
         assertTrue(repository.settings.liveActivityEnabled)
-        assertTrue(
+        assertFalse(
             repository.settings.backgroundChatterEnabled,
-            "enabling the notification enables the audio that keeps it updating",
+            "enabling the live update must not switch chatter on — the foreground " +
+                "service, not the audio, is what keeps the flight running",
         )
-        assertEquals(true, store.getBoolean("backgroundChatterEnabled"))
+        assertEquals(true, store.getBoolean("liveActivityEnabled"))
 
+        repository.setBackgroundChatterEnabled(true)
         repository.setBackgroundChatterEnabled(false)
         assertFalse(repository.settings.backgroundChatterEnabled)
-        assertFalse(
+        assertTrue(
             repository.settings.liveActivityEnabled,
-            "turning the chatter off must turn the notification off too",
+            "turning chatter off must leave the live update alone",
         )
-        assertEquals(false, store.getBoolean("liveActivityEnabled"))
+        assertEquals(true, store.getBoolean("liveActivityEnabled"))
     }
 
     /** The pre-split single "gate" key is read as the arrival gate. */

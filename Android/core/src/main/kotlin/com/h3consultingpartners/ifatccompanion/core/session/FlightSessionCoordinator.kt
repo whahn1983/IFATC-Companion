@@ -325,6 +325,86 @@ class FlightSessionCoordinator(
     }
 
     /**
+     * Perform one of the pilot response-button actions.
+     *
+     * Every one of them goes through here rather than being wired straight from the
+     * button, so the standby guard and the read-back gate apply uniformly — the UI does
+     * not have to know that a staffed controller silences the app, or that a pilot
+     * transmission opens the gate.
+     */
+    fun performPilotAction(action: PilotAction) {
+        if (_state.value.companionStandby) return
+        val context = buildContext(stateMachine.current)
+        val current = _state.value
+
+        val tx = when (action) {
+            PilotAction.CLEARANCE -> pilotEngine.requestClearance(context)
+            PilotAction.PUSHBACK -> pilotEngine.requestPushback(context)
+            PilotAction.ENGINE_START -> pilotEngine.requestEngineStart(context)
+            PilotAction.TAXI -> pilotEngine.requestTaxi(context)
+            PilotAction.READY -> pilotEngine.readyForDeparture(context)
+            PilotAction.TAKEOFF -> pilotEngine.requestTakeoff(context)
+            PilotAction.REQUEST_HIGHER -> pilotEngine.requestHigher(
+                context,
+                nextAltitudeStep(current.assignedAltitude, higher = true),
+            )
+            PilotAction.REQUEST_LOWER -> pilotEngine.requestLower(
+                context,
+                nextAltitudeStep(current.assignedAltitude, higher = false),
+            )
+            PilotAction.VECTORS -> pilotEngine.requestVectors(context)
+            PilotAction.APPROACH -> pilotEngine.requestApproach(context)
+            PilotAction.RIDE_REPORT -> pilotEngine.requestRideReports(context)
+            PilotAction.DEST_WX -> pilotEngine.requestWeather(context, context.plan.destination)
+            PilotAction.GO_AROUND -> pilotEngine.goAround(context)
+            PilotAction.CHECK_IN -> {
+                checkIn()
+                return
+            }
+            PilotAction.TO_GATE, PilotAction.ACCEPT_SMOOTHER_ALTITUDE -> {
+                // Both belong to subsystems that are wired in separately — the arrival
+                // ramp flow and the ride-report suggestion. Until those land, the button
+                // is not offered, so reaching here would be a bug rather than a no-op.
+                return
+            }
+        }
+
+        post(tx, speakIt = settings.speakPilot)
+        onPilotRequest(action)
+    }
+
+    /**
+     * The controller's answer to a pilot request. The pilot-driven ground sequence
+     * advances the state machine directly — that is what keeps it from skipping a phase —
+     * while the airborne requests are answered by the controller's own call.
+     */
+    private fun onPilotRequest(action: PilotAction) {
+        val target = when (action) {
+            PilotAction.CLEARANCE -> ATCState.CLEARANCE
+            PilotAction.PUSHBACK -> ATCState.PUSHBACK
+            PilotAction.ENGINE_START -> ATCState.ENGINE_START
+            PilotAction.TAXI -> ATCState.GROUND_TAXI
+            PilotAction.READY -> ATCState.LINE_UP_WAIT
+            PilotAction.TAKEOFF -> ATCState.TOWER_DEPARTURE
+            else -> return
+        }
+        // Pilot-driven: never closes the read-back gate, because the pilot is already
+        // driving the conversation.
+        advanceAndPost(target, automatic = false)
+    }
+
+    /**
+     * The altitude a "request higher" / "request lower" asks for: the next flight level
+     * in the correct hemispheric direction, a thousand feet at a time as the iOS requests
+     * do.
+     */
+    private fun nextAltitudeStep(current: Int, higher: Boolean): Int {
+        val base = if (current > 0) current else _state.value.flightPlan.cruiseAltitude
+        val step = if (higher) ALTITUDE_REQUEST_STEP else -ALTITUDE_REQUEST_STEP
+        return max(ALTITUDE_REQUEST_STEP, base + step)
+    }
+
+    /**
      * Manually tune the radio. Switching frequency does **not** check in or advance the
      * conversation on its own: it only moves the radio. From here the pilot either taps
      * Check In to call the controller up, or makes a specific request. This is how the
@@ -617,6 +697,9 @@ class FlightSessionCoordinator(
         const val GATE_ARRIVAL_RADIUS_METERS = 80.0
 
         const val METERS_PER_NM = 1852.0
+
+        /** Feet a "request higher" / "request lower" moves the assigned altitude by. */
+        const val ALTITUDE_REQUEST_STEP = 2_000
 
         const val DEFAULT_SQUAWK = "4271"
 
