@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 11 and below (fullBackupContent). Settings, saved flights and custom
+     phraseology profiles are worth restoring. The cached Play entitlement is not:
+     it is re-queried from Play Billing on launch and must never travel between
+     accounts. Diagnostics and transient caches are excluded as noise. -->
+<full-backup-content>
+    <include domain="file" path="datastore/ifatc_settings.preferences_pb" />
+    <include domain="file" path="saved_flights" />
+    <include domain="file" path="phraseology_profiles" />
+    <exclude domain="file" path="datastore/ifatc_entitlement.preferences_pb" />
+    <exclude domain="file" path="surface_cache" />
+    <exclude domain="file" path="weather_cache" />
+    <exclude domain="file" path="diagnostics" />
+    <exclude domain="sharedpref" path="." />
+</full-backup-content>

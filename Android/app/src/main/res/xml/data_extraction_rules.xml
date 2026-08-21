@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12+ (dataExtractionRules). Same intent as backup_rules.xml: user
+     preferences and saved flights transfer; the cached entitlement and all caches
+     never do. -->
+<data-extraction-rules>
+    <cloud-backup>
+        <include domain="file" path="datastore/ifatc_settings.preferences_pb" />
+        <include domain="file" path="saved_flights" />
+        <include domain="file" path="phraseology_profiles" />
+        <exclude domain="file" path="datastore/ifatc_entitlement.preferences_pb" />
+        <exclude domain="file" path="surface_cache" />
+        <exclude domain="file" path="weather_cache" />
+        <exclude domain="file" path="diagnostics" />
+    </cloud-backup>
+    <device-transfer>
+        <include domain="file" path="datastore/ifatc_settings.preferences_pb" />
+        <include domain="file" path="saved_flights" />
+        <include domain="file" path="phraseology_profiles" />
+        <exclude domain="file" path="datastore/ifatc_entitlement.preferences_pb" />
+        <exclude domain="file" path="surface_cache" />
+        <exclude domain="file" path="weather_cache" />
+        <exclude domain="file" path="diagnostics" />
+    </device-transfer>
+</data-extraction-rules>
