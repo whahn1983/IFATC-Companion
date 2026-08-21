@@ -90,6 +90,7 @@ committing code alone, which is why the two are separated.
 
 ### Known gaps to resolve before submitting
 
+- [ ] An adversarial static review of the 19 uncompiled `:app` files found and fixed 16 defects (six build-breaking) — see the parity matrix. The fixes are themselves uncompiled; check them first when the build finally runs.
 - [ ] `:app` has **not been compiled** in the environment this port was written in — the Android SDK and Google's Maven repository were unreachable there. The engine (`:core`) and the pure Compose screens are both verified, but the first Android Studio build should be expected to surface ordinary integration fixes.
 - [ ] Confirm the **Play Billing library version** in `gradle/libs.versions.toml` against the current Play requirement, and that `PlayBillingRepository` matches its API. This is the one file that could not be compile-checked.
 - [ ] **Nothing in this port has been heard.** The radio effect chain, the TTS voices, the chatter mix and the squelch bursts are ported maths that has never been played through a speaker. Listen to a full flight before shipping.

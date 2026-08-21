@@ -242,6 +242,17 @@ Stated plainly, and none of them hidden behind a ✅ elsewhere in this file.
 1. **`:app` has never been compiled.** No Android SDK, no Google Maven. The Compose
    screens are type-checked; everything touching an Android API is not. This is the
    single biggest risk in the port and the first item on the release checklist.
+
+   To partly offset it, an adversarial static review was run over the 19 `:app` files
+   with no compiler coverage — six dimensions (calls into `:core`, Android framework
+   APIs, Play Billing against its pinned version, the Compose wiring layer,
+   manifest/resources/Gradle, concurrency and lifecycle), each finding checked against
+   the declaration it contradicted. It found **16 real defects, six of them
+   build-breaking**, including an app that would never have spoken a word (the TTS
+   engine was never initialised), a paywall whose buttons could never enable (the
+   BillingClient was never started), and a billing path that revoked Live access from
+   paying customers. All 16 are fixed. A static review is not a compiler, so this
+   lowers the risk rather than removing it.
 2. **No physical-device or emulator testing.** No device, no emulator, and no Infinite
    Flight installation to connect to. Nothing in the port has been *heard* — the radio
    effect chain, the TTS voices, the chatter mix and the squelch bursts are all ported
