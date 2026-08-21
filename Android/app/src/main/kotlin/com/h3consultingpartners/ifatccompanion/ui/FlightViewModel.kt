@@ -299,6 +299,9 @@ class FlightViewModel(
 
     fun updateSettings(settings: AppSettings) {
         settingsRepository.replace(settings)
+        // Chatter reads density, volume and the on/off toggle straight from settings, so
+        // it is re-configured here rather than only when those specific fields change.
+        graph.chatter.configure(settings)
         // Phraseology mode and digit style feed the engine, so it is rebuilt whenever
         // settings change rather than only when those two do — it is cheap, and missing the
         // rebuild would leave the pilot hearing the pack they just switched away from.

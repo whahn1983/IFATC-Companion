@@ -15,6 +15,7 @@ import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticLevel
 import com.h3consultingpartners.ifatccompanion.core.platform.FileStore
 import com.h3consultingpartners.ifatccompanion.data.AndroidFileStore
 import com.h3consultingpartners.ifatccompanion.data.DataStoreKeyValueStore
+import com.h3consultingpartners.ifatccompanion.audio.AndroidChatterRadio
 import com.h3consultingpartners.ifatccompanion.audio.AndroidSpeechService
 import com.h3consultingpartners.ifatccompanion.audio.PushToTalkRecognizer
 import com.h3consultingpartners.ifatccompanion.audio.RadioAudioEngine
@@ -23,6 +24,7 @@ import com.h3consultingpartners.ifatccompanion.core.connect.IFConnectManager
 import com.h3consultingpartners.ifatccompanion.core.session.FlightSessionCoordinator
 import com.h3consultingpartners.ifatccompanion.core.settings.AppSettings
 import com.h3consultingpartners.ifatccompanion.core.atis.ATISService
+import com.h3consultingpartners.ifatccompanion.core.chatter.AmbientChatterService
 import com.h3consultingpartners.ifatccompanion.core.mock.MockSimulatorFeed
 import com.h3consultingpartners.ifatccompanion.core.phraseology.PhraseologyMode
 import com.h3consultingpartners.ifatccompanion.core.phraseology.PhraseologyProfileStore
@@ -273,6 +275,23 @@ class AppGraph private constructor(
      * The subset of settings the speech service reads, snapshotted per call so a toggle
      * takes effect on the next transmission.
      */
+    /**
+     * Background radio chatter.
+     *
+     * On Android this is only ever a feature — the foreground service, not an audio
+     * session, is what keeps a flight running in the background. See [AndroidChatterRadio].
+     */
+    val chatter: AmbientChatterService by lazy {
+        AmbientChatterService(
+            radio = AndroidChatterRadio(
+                engine = radio,
+                speech = speech,
+                settings = { settingsRepository.state.value },
+            ),
+            scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+        ).also { it.configure(settingsRepository.state.value) }
+    }
+
     /** Push-to-talk recognition, on-device only. */
     val pushToTalk: PushToTalkRecognizer by lazy { PushToTalkRecognizer(context, diagnostics) }
 
