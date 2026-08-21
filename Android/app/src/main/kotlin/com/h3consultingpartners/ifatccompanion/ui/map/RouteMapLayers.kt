@@ -22,6 +22,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import com.h3consultingpartners.ifatccompanion.core.geo.Coordinate
 import com.h3consultingpartners.ifatccompanion.core.model.AircraftState
@@ -73,9 +74,16 @@ fun RouteMap(
     modifier: Modifier = Modifier,
     showSampledCells: Boolean = false,
     height: androidx.compose.ui.unit.Dp = ROUTE_MAP_HEIGHT,
+    /**
+     * What sits under the route. Defaulted so the map is legible with no network at all:
+     * bundled coastlines and a graticule need nothing fetched, and satellite imagery is an
+     * enhancement the caller supplies when it has one.
+     */
+    baseMap: BaseMapModel = BaseMapModel(),
 ) {
     val state = rememberMapCanvasState()
     val semantic = IFATCTheme.semantic
+    val textMeasurer = rememberTextMeasurer()
 
     // Re-fit when the route itself changes — not on every telemetry tick, which would
     // fight the pilot's own panning.
@@ -98,6 +106,8 @@ fun RouteMap(
             .height(height)
             .clip(RoundedCornerShape(MAP_CORNER_RADIUS)),
     ) {
+        // Only truly empty when there is nothing to place either: with a base map there
+        // is now always something on screen, so this is about the route, not the canvas.
         if (model.route.isEmpty() && model.departure == null && model.aircraft.coordinate == null) {
             Text(
                 text = "No route to draw yet.",
@@ -109,6 +119,16 @@ fun RouteMap(
         }
 
         MapCanvas(state = state, modifier = Modifier.fillMaxSize()) { frame ->
+            // 0. The base map — imagery if there is any, then coastlines, graticule and
+            //    scale bar. Everything below reads over it.
+            drawBaseMap(
+                frame = frame,
+                model = baseMap,
+                coastlineColor = MAP_COASTLINE_COLOR,
+                graticuleColor = MAP_GRATICULE_COLOR,
+                labelColor = MAP_GRATICULE_LABEL_COLOR,
+                textMeasurer = textMeasurer,
+            )
             // 1. Precipitation (Mock Mode's vector systems).
             for (cell in model.radarCells) {
                 drawPolygon(frame, cell.polygon, radarColor(cell.intensity, semantic), fillAlpha = 0.35f, strokeWidth = 1f)
@@ -305,3 +325,8 @@ private const val AIRPORT_MARKER_RADIUS = 6f
 private const val WAYPOINT_MARKER_RADIUS = 5f
 private const val PIREP_MARKER_RADIUS = 7f
 private const val AIRCRAFT_MARKER_SIZE = 9f
+
+/** Base-map ink. Muted on purpose: context must never compete with the route. */
+private val MAP_COASTLINE_COLOR = Color(0xFF5A6B78)
+private val MAP_GRATICULE_COLOR = Color(0x33FFFFFF)
+private val MAP_GRATICULE_LABEL_COLOR = Color(0x99FFFFFF)
