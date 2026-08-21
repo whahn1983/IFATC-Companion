@@ -1,5 +1,7 @@
 package com.h3consultingpartners.ifatccompanion.core.airports
 
+import com.h3consultingpartners.ifatccompanion.core.phraseology.Phonetic
+import com.h3consultingpartners.ifatccompanion.core.phraseology.PhraseologyProcedure
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
@@ -84,28 +86,12 @@ enum class ApproachType(val rawValue: String) {
 }
 
 /**
- * The phraseology spelling a [Procedure] needs to speak itself.
- *
- * CONTRACT: on iOS these are `Phonetic.runway`, `Phonetic.spellDigits` and
- * `Phonetic.spellToken`. `Phonetic` belongs to the phraseology package, so this
- * package declares only the three calls it makes and takes the speller as a
- * parameter — wire the real `Phonetic` in as the implementation.
- */
-interface ProcedureSpeller {
-    /** Runway: "17R" -> "one seven right", "04L" -> "zero four left", "09" -> "zero niner". */
-    fun runway(raw: String, icao: Boolean): String
-
-    /** Speak each digit individually: "4271" -> "four two seven one". */
-    fun spellDigits(s: String, icao: Boolean): String
-
-    /** Spell a mixed token letter-by-letter / digit-by-digit ("A11" -> "Alpha one one"). */
-    fun spellToken(s: String, icao: Boolean): String
-}
-
-/**
  * A parsed published procedure (SID, STAR, or approach). Deterministically
  * derived from the procedure name string the pilot enters, optionally enriched
  * with known fixes from the built-in [ProcedureLibrary].
+ *
+ * Satisfies [PhraseologyProcedure], the narrow view the phraseology builders read —
+ * iOS hands `Procedure` itself to `PhraseologyEngine`.
  */
 data class Procedure(
     val kind: ProcedureKind,
@@ -116,14 +102,18 @@ data class Procedure(
     /** Text after a "." separator, e.g. "HOBTT". */
     val transition: String? = null,
     /** For approaches / runway-specific procedures. */
-    val runway: String? = null,
+    override val runway: String? = null,
     val approachType: ApproachType? = null,
     /** Ordered fixes, when known. */
-    val fixes: List<String> = emptyList(),
-) {
+    override val fixes: List<String> = emptyList(),
+) : PhraseologyProcedure {
+
+    override val approachTypeDisplay: String? get() = approachType?.display
+
+    override val approachTypeSpoken: String? get() = approachType?.spoken
 
     /** Transcript form, e.g. "WAGON5", "WAGON5.HOBTT", "ILS RWY 30L". */
-    val displayName: String
+    override val displayName: String
         get() = when (kind) {
             ProcedureKind.APPROACH -> {
                 val type = approachType?.display ?: "Approach"
@@ -140,13 +130,13 @@ data class Procedure(
         }
 
     /** Spoken form for the synthesizer. */
-    fun spokenName(speller: ProcedureSpeller, icao: Boolean): String =
+    override fun spokenName(icao: Boolean): String =
         when (kind) {
             ProcedureKind.APPROACH -> {
                 val type = approachType?.spoken ?: "approach"
                 val rwy = runway
                 if (rwy != null && rwy.isNotEmpty()) {
-                    "$type runway ${speller.runway(rwy, icao)}"
+                    "$type runway ${Phonetic.runway(rwy, icao)}"
                 } else {
                     type
                 }
@@ -155,10 +145,10 @@ data class Procedure(
                 // Speak the name word as-is (the synthesizer pronounces it), plus the
                 // revision number spelled out, plus an optional transition.
                 val parts = mutableListOf(capitalizedWords(name))
-                revision?.let { parts.add(speller.spellDigits(it.toString(), icao)) }
+                revision?.let { parts.add(Phonetic.spellDigits(it.toString(), icao)) }
                 var s = parts.joinToString(" ")
                 val t = transition
-                if (t != null && t.isNotEmpty()) s += ", ${speller.spellToken(t, icao)} transition"
+                if (t != null && t.isNotEmpty()) s += ", ${Phonetic.spellToken(t, icao)} transition"
                 s
             }
         }
