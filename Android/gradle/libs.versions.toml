@@ -26,6 +26,7 @@ truth = "1.4.4"
 turbine = "1.2.1"
 mockk = "1.14.5"
 webkit = "1.14.0"
+browser = "1.9.0"
 
 [libraries]
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
@@ -47,6 +48,7 @@ androidx-datastore-preferences = { module = "androidx.datastore:datastore-prefer
 androidx-work-runtime-ktx = { module = "androidx.work:work-runtime-ktx", version.ref = "work" }
 androidx-splashscreen = { module = "androidx.core:core-splashscreen", version.ref = "splashscreen" }
 androidx-webkit = { module = "androidx.webkit:webkit", version.ref = "webkit" }
+androidx-browser = { module = "androidx.browser:browser", version.ref = "browser" }
 billing-ktx = { module = "com.android.billingclient:billing-ktx", version.ref = "billing" }
 
 compose-bom = { module = "androidx.compose:compose-bom", version.ref = "composeBom" }
