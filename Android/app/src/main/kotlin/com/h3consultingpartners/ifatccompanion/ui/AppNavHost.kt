@@ -8,6 +8,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.h3consultingpartners.ifatccompanion.core.session.FlightSessionState
+import com.h3consultingpartners.ifatccompanion.ui.map.RouteMap
+import com.h3consultingpartners.ifatccompanion.ui.map.TaxiMap
 import com.h3consultingpartners.ifatccompanion.ui.screens.AppTab
 import com.h3consultingpartners.ifatccompanion.ui.screens.AtcScreen
 import com.h3consultingpartners.ifatccompanion.ui.screens.DiagnosticsScreen
@@ -60,6 +62,7 @@ fun AppNavHost(
             model = viewModel.atcModel(session, settings, weather, ui),
             actions = viewModel.atcActions(onRequestMicrophone),
             modifier = modifier,
+            taxiMap = { TaxiMap(viewModel.taxiMapModel(session, surface)) },
         )
 
         AppTab.FLIGHT -> FlightScreen(
@@ -72,6 +75,12 @@ fun AppNavHost(
             model = viewModel.weatherModel(session, settings, weather),
             actions = viewModel.weatherActions(),
             modifier = modifier,
+            routeMap = {
+                RouteMap(
+                    model = viewModel.routeMapModel(session, weather, ui),
+                    showSampledCells = ui.showSampledRadarCells,
+                )
+            },
         )
 
         AppTab.SETTINGS -> when (settingsDestination) {

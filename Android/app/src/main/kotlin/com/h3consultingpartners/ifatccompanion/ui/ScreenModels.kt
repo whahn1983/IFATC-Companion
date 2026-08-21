@@ -1,7 +1,9 @@
 package com.h3consultingpartners.ifatccompanion.ui
 
 import com.h3consultingpartners.ifatccompanion.core.atis.ATISPhraseology
+import com.h3consultingpartners.ifatccompanion.core.airports.AirportDatabase
 import com.h3consultingpartners.ifatccompanion.core.config.AppConfig
+import com.h3consultingpartners.ifatccompanion.core.geo.Coordinate
 import com.h3consultingpartners.ifatccompanion.core.billing.EntitlementState
 import com.h3consultingpartners.ifatccompanion.core.connect.IFConnectState
 import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticRecord
@@ -11,6 +13,8 @@ import com.h3consultingpartners.ifatccompanion.core.session.PilotActionPresentat
 import com.h3consultingpartners.ifatccompanion.core.settings.AppSettings
 import com.h3consultingpartners.ifatccompanion.core.surface.SurfaceSessionState
 import com.h3consultingpartners.ifatccompanion.core.weather.WeatherSessionState
+import com.h3consultingpartners.ifatccompanion.ui.map.RouteMapModel
+import com.h3consultingpartners.ifatccompanion.ui.map.TaxiMapModel
 import com.h3consultingpartners.ifatccompanion.ui.screens.AtcScreenActions
 import com.h3consultingpartners.ifatccompanion.ui.screens.AtcScreenModel
 import com.h3consultingpartners.ifatccompanion.ui.screens.DiagnosticsScreenActions
@@ -372,5 +376,77 @@ internal fun formatClockTime(millis: Long?): String {
 private val CLOCK_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss", Locale.US)
 
 private const val FLIGHT_LEVEL_FLOOR_FT = 18000
+
+// endregion
+
+// region Maps
+
+/**
+ * The route map's model. Coordinates only — the layer draws, it does not resolve.
+ *
+ * PIREPs without a position and advisories without geometry are dropped here rather than
+ * in the layer, because "we don't know where this is" is a data question, not a drawing
+ * one, and a marker at 0,0 off West Africa is worse than no marker.
+ */
+fun FlightViewModel.routeMapModel(
+    session: FlightSessionState,
+    weather: WeatherSessionState,
+    ui: FlightViewModel.UiState,
+): RouteMapModel {
+    val plan = session.flightPlan
+    val routeFixes = plan.waypoints.mapNotNull { it.coordinate?.takeIf(Coordinate::isValid) }
+    val departure = AirportDatabase.coordinate(plan.departure)
+    val destination = AirportDatabase.coordinate(plan.destination)
+    val route = buildList {
+        departure?.let(::add)
+        addAll(routeFixes)
+        destination?.let(::add)
+    }
+    val nextWaypoint = plan.nextWaypoint(session.aircraftState.coordinate)
+    return RouteMapModel(
+        route = route,
+        departure = departure,
+        destination = destination,
+        nextWaypoint = nextWaypoint?.coordinate?.takeIf(Coordinate::isValid),
+        nextWaypointName = nextWaypoint?.name.orEmpty(),
+        aircraft = session.aircraftState,
+        pireps = weather.pireps.filter { it.coordinate?.isValid == true },
+        routeSigmets = weather.routeSigmets.filter { it.area.size >= 3 },
+        radarCells = weather.radarOverlay.mockCells,
+        sampledCells = weather.radarOverlay.sampledCells,
+    )
+}
+
+/**
+ * The taxi map's model. Only the runways the route touches are included — see the note on
+ * [TaxiMap] for why that restriction exists rather than drawing the whole field.
+ */
+fun FlightViewModel.taxiMapModel(session: FlightSessionState, surface: SurfaceSessionState): TaxiMapModel {
+    val arriving = session.hasDeparted
+    val model = if (arriving) surface.arrival else surface.departure ?: return TaxiMapModel()
+    val plan = session.flightPlan
+    val gate = if (arriving) plan.arrivalGate else plan.departureGate
+    val aircraft = session.aircraftState
+    return TaxiMapModel(
+        relevantRunways = model?.runways.orEmpty().map { runway ->
+            runway.centerline.map { Coordinate(it.latitude, it.longitude) }
+        },
+        isDeparture = !arriving,
+        departureGate = standPosition(surface, arriving = false, gate = plan.departureGate),
+        destination = standPosition(surface, arriving = true, gate = plan.arrivalGate),
+        destinationLabel = gate,
+        aircraft = aircraft.coordinate,
+        aircraftHeadingDegrees = aircraft.trueHeading ?: aircraft.heading ?: 0.0,
+    )
+}
+
+private fun standPosition(surface: SurfaceSessionState, arriving: Boolean, gate: String): Coordinate? {
+    if (gate.isBlank()) return null
+    val model = if (arriving) surface.arrival else surface.departure ?: return null
+    return model?.parkingPositions
+        ?.firstOrNull { it.matches(gate) }
+        ?.coordinate
+        ?.let { Coordinate(it.latitude, it.longitude) }
+}
 
 // endregion
