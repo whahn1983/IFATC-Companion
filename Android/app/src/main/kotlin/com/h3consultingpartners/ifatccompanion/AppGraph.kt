@@ -63,6 +63,18 @@ class AppGraph private constructor(
     /** Survives configuration changes and Activity death; cancelled only with the process. */
     val applicationScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
+    /**
+     * The one scope every part of the flight session runs on.
+     *
+     * Confining the session to a single thread is what replaces iOS's `@MainActor`: the
+     * Connect poll, the ATC state machine and the read-back gate's re-prompt timer all
+     * mutate the same un-synchronized state, and the coordinator holds no lock. Giving the
+     * gate's timer a different dispatcher from the telemetry ingress — which is what
+     * `applicationScope` did — puts two threads into that state every time a pilot lets a
+     * call go unanswered for thirty seconds.
+     */
+    val sessionScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
     val clock: Clock = Clock.system
 
     val diagnostics: DiagnosticsStore = DiagnosticsStore(clock)
@@ -115,7 +127,7 @@ class AppGraph private constructor(
      */
     val connect: IFConnectManager by lazy {
         IFConnectManager(
-            scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+            scope = sessionScope,
             clock = clock,
             diagnostics = diagnostics,
         )
@@ -126,7 +138,8 @@ class AppGraph private constructor(
      * the foreground service, the notification actions and the UI all address it.
      */
     /** Mock Mode's scripted feed — the free, offline flight, and the tests' stand-in sim. */
-    val mockFeed: MockSimulatorFeed by lazy { MockSimulatorFeed(scope = applicationScope, clock = clock) }
+    /** On [sessionScope]: its ticks are pushed straight into the coordinator's state. */
+    val mockFeed: MockSimulatorFeed by lazy { MockSimulatorFeed(scope = sessionScope, clock = clock) }
 
     val weatherService: AviationWeatherService by lazy {
         AviationWeatherService(http, clock = clock, diagnostics = diagnostics)
@@ -173,7 +186,7 @@ class AppGraph private constructor(
 
     val flightSessionCoordinator: FlightSessionCoordinator by lazy {
         FlightSessionCoordinator(
-            scope = applicationScope,
+            scope = sessionScope,
             clock = clock,
             diagnostics = diagnostics,
             connect = connect,
@@ -190,7 +203,7 @@ class AppGraph private constructor(
     val activeFlightController: ActiveFlightController by lazy {
         FlightSessionActiveFlightController(
             coordinator = flightSessionCoordinator,
-            scope = applicationScope,
+            scope = sessionScope,
             clock = clock,
             onStopRequested = {
                 connect.disconnect()
@@ -318,7 +331,7 @@ class AppGraph private constructor(
                 speech = speech,
                 settings = { settingsRepository.state.value },
             ),
-            scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+            scope = sessionScope,
         ).also { it.configure(settingsRepository.state.value) }
     }
 

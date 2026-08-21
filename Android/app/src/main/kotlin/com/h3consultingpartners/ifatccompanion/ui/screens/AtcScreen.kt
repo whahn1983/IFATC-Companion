@@ -32,6 +32,8 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
@@ -585,17 +587,24 @@ private fun PushToTalkButton(
     modifier: Modifier = Modifier,
 ) {
     val tint = if (listening) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+    val currentPress by rememberUpdatedState(onPress)
+    val currentRelease by rememberUpdatedState(onRelease)
     Surface(
         modifier = modifier
             .fillMaxWidth()
             .height(PUSH_TO_TALK_HEIGHT)
-            .pointerInput(listening) {
+            // Keyed on Unit, deliberately. Keying this on `listening` would restart the
+            // gesture coroutine the instant `onPress` flipped it — cancelling
+            // `waitForUpOrCancellation()` before it could return, so `onRelease` never
+            // ran and the mic stayed open for the rest of the flight. The callbacks are
+            // kept current through `rememberUpdatedState` instead.
+            .pointerInput(Unit) {
                 awaitPointerEventScope {
                     while (true) {
                         awaitFirstDown(requireUnconsumed = false)
-                        onPress()
+                        currentPress()
                         waitForUpOrCancellation()
-                        onRelease()
+                        currentRelease()
                     }
                 }
             }

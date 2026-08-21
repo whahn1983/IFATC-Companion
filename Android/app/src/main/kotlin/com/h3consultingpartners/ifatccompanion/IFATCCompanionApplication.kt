@@ -6,6 +6,9 @@ import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticCategory
 import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticLevel
 import com.h3consultingpartners.ifatccompanion.notification.FlightNotifications
 import com.h3consultingpartners.ifatccompanion.service.ActiveFlightService
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 
@@ -33,6 +36,32 @@ class IFATCCompanionApplication : Application() {
 
         FlightNotifications.createChannels(this)
         startTheForegroundServiceWithTheFlight()
+        runBackgroundChatterWithTheFlight()
+    }
+
+    /**
+     * Run background chatter while it is switched on and a flight is active.
+     *
+     * Nothing used to start it, so the service — and with it the whole radio engine — never
+     * ran and the setting did nothing. It is tied to the flight rather than to the app
+     * being open, because ambient radio during a flight is the entire point; and it stops
+     * with the flight, because a static bed hissing after block-in is battery drain the
+     * pilot did not ask for.
+     */
+    private fun runBackgroundChatterWithTheFlight() {
+        val chatter = graph.chatter
+        // The chatter needs to know which frequency it is simulating; the coordinator is
+        // the only thing that knows.
+        chatter.bindContext(facility = { graph.flightSessionCoordinator.state.value.currentFacility })
+
+        graph.sessionScope.launch {
+            combine(
+                graph.settingsRepository.state.map { it.backgroundChatterEnabled },
+                graph.activeFlightController.isSessionActive,
+            ) { enabled, active -> enabled && active }
+                .distinctUntilChanged()
+                .collect { shouldRun -> if (shouldRun) chatter.start() else chatter.stop() }
+        }
     }
 
     /**

@@ -138,9 +138,14 @@ class RadioAudioEngine(
      * no foreground service involved at all.
      */
     fun start() {
-        if (running.get()) return
-        if (!requestFocus()) return
-        running.set(true)
+        // compareAndSet, not get-then-set: two callers racing here — the chatter service
+        // and a transmission arriving at the same moment — would otherwise both pass the
+        // check and build a second render loop over the one track.
+        if (!running.compareAndSet(false, true)) return
+        if (!requestFocus()) {
+            running.set(false)
+            return
+        }
 
         val minBuffer = AudioTrack.getMinBufferSize(
             sampleRate,
@@ -179,7 +184,13 @@ class RadioAudioEngine(
                 // audio is generated exactly as fast as it is heard — the Android
                 // counterpart of the iOS source node being pulled by the render thread.
                 val written = renderTrack?.write(block, 0, block.size, AudioTrack.WRITE_BLOCKING)
-                if (written == null || written < 0) break
+                if (written == null || written < 0) {
+                    // The track is gone. Clear `running` here rather than only in stop(),
+                    // so a later transmission fails fast instead of awaiting a loop that
+                    // has already exited.
+                    running.set(false)
+                    break
+                }
             }
 
             // Never leave a caller awaiting a transmission that will now never play.
@@ -189,8 +200,8 @@ class RadioAudioEngine(
     }
 
     fun stop() {
-        abandonFocus()
         if (!running.getAndSet(false)) return
+        abandonFocus()
         renderJob?.cancel()
         renderJob = null
         renderTrack?.release()
@@ -266,6 +277,13 @@ class RadioAudioEngine(
 
         val transmission = Transmission(processed)
         pending.add(transmission)
+        // The loop may have exited between the check above and this enqueue. Re-check and
+        // settle the transmission ourselves rather than awaiting a consumer that is gone —
+        // that await had no timeout and would have wedged the speech pump permanently.
+        if (!running.get()) {
+            pending.remove(transmission)
+            transmission.finished.complete(Unit)
+        }
         transmission.finished.await()
     }
 

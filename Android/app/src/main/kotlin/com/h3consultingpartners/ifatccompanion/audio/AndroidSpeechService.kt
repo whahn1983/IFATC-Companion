@@ -214,6 +214,34 @@ class AndroidSpeechService(
         )
     }
 
+    /**
+     * Render one line at a fixed rate and play it through the radio chain, returning when
+     * it has finished. This is the background-chatter path: it bypasses the transmission
+     * queue on purpose, because chatter is ducked and cut by its own service rather than
+     * ordered against the pilot's own calls, and because a queued chatter line would delay
+     * a real controller call behind it.
+     *
+     * Cancelling the caller abandons the line rather than waiting it out, which is what
+     * lets a frequency change or a PTT press cut the air immediately.
+     */
+    suspend fun speakChatter(text: String, voiceId: String, volume: Double) {
+        if (text.isBlank()) return
+        val engine = tts ?: return
+        val base = configuration()
+        // Chatter speaks at a fixed rate, independent of the user's own voice-rate
+        // setting — matching iOS, where the chatter utterance is pinned at 0.55.
+        val configuration = base.copy(speechRate = CHATTER_SPEECH_RATE, voiceVolume = volume)
+        applyVoice(engine, voiceId.ifEmpty { configuration.defaultVoiceId }, configuration)
+
+        val call = QueuedCall(text, voiceId.ifEmpty { null }, isPilot = false, configuration = configuration)
+        val rendered = if (radio.isRunning) render(engine, call) else null
+        if (rendered != null && rendered.isNotEmpty()) {
+            radio.playProcessed(rendered, volume.toFloat())
+        } else {
+            speakAndWait(engine, text)
+        }
+    }
+
     /** Speak a short sample so the pilot can audition a voice while picking one. */
     fun previewVoice(voiceId: String, sample: String = VOICE_SAMPLE_LINE) {
         val configuration = configuration()
