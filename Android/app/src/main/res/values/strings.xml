@@ -32,11 +32,4 @@
     <string name="permission_microphone_rationale">Push-to-talk uses the microphone so you can speak your read-backs and requests instead of tapping. Recognition runs on your device; nothing is recorded or uploaded.</string>
     <string name="permission_local_network_rationale">IFATC Companion connects to Infinite Flight on your own Wi-Fi network to read your flight and exchange ATC messages. No data leaves your network.</string>
 
-    <string name="cd_back">Back</string>
-    <string name="cd_close">Close</string>
-    <string name="cd_expand_map">Expand map</string>
-    <string name="cd_collapse_map">Collapse map</string>
-    <string name="cd_push_to_talk">Push to talk</string>
-    <string name="cd_clear_flight">Clear flight</string>
-    <string name="cd_saved_flights">Saved flights</string>
 </resources>

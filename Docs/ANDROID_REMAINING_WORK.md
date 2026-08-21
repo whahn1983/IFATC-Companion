@@ -47,9 +47,8 @@ did nothing at all in the app, which is what the parity matrix's 🔌 status now
 
 | # | Work | Size | Notes |
 | --- | --- | --- | --- |
-| 2.1 | **Make the Compose screens localizable** | Medium–Large | They are compiled by `:uicheck` without Android resources so they can be type-checked with no SDK present, which means they cannot call `stringResource` and every user-facing string in them is a hardcoded literal. Seven `cd_*` content descriptions sit unreferenced in `strings.xml` for this reason. Fixing it means either giving `:uicheck` a resource shim or passing resolved strings into the screens — decide which before starting. |
-| 2.2 | **Cover the 22 🟡 rows with tests** | Ongoing | Ported and compiling, no test of their own. Worth attacking by risk rather than by count. |
-| 2.3 | **Instrumented tests** | Medium | There are none. Even a handful over the flight session, the foreground service and the billing flow would catch the class of defect that static review and unit tests both miss. **Needs a device or emulator.** |
+| 2.1 | **Cover the 22 🟡 rows with tests** | Ongoing | Ported and compiling, no test of their own. Worth attacking by risk rather than by count. |
+| 2.2 | **Instrumented tests** | Medium | There are none. Even a handful over the flight session, the foreground service and the billing flow would catch the class of defect that static review and unit tests both miss. **Needs a device or emulator.** |
 
 ---
 
@@ -80,3 +79,14 @@ Recorded so nobody re-opens them as oversights:
   that cannot be run on a device, bumping them is the riskier move, not the safer one.
 - **Apple's Terms and subscription-management links.** Replaced; the iOS renewal wording
   would be false on Android.
+- **Localization.** The app ships **English only**, by decision. That makes the Compose
+  screens' hardcoded strings a non-issue rather than a gap: they are compiled by `:uicheck`
+  without Android resources so they cannot call `stringResource`, and with one language
+  there is nothing that arrangement costs.
+
+  Worth separating from accessibility, which the same strings looked like they affected and
+  do not. Screen-reader labelling lives in the code and is in good shape: icon-only controls
+  carry real `contentDescription`s, decorative icons inside labelled buttons correctly pass
+  `null` so TalkBack does not announce them twice, and the transcript and settings rows use
+  `semantics(mergeDescendants = true)`. Verifying it with TalkBack switched on is still a
+  device task and stays on the release checklist.

@@ -136,10 +136,17 @@ as useful as knowing what is left:
       hand-off, tuning Center to the tracked sector's frequency, persisting the sector
       across a reconnect, and the `awaitingCenterSectorCheckIn` call-up semantics are not
       done.
-- [ ] **The Compose screens are not localizable.** They are compiled by `:uicheck` without
-      Android resources, so they cannot call `stringResource` and every user-facing string
-      in them is a hardcoded literal. Seven `cd_*` content descriptions in `strings.xml`
-      are unreferenced for this reason.
+- [x] **English only, by decision.** The Compose screens carry hardcoded strings because
+      `:uicheck` type-checks them without Android resources, so they cannot call
+      `stringResource`. With a single shipping language that arrangement costs nothing, so
+      this is closed rather than open. Adding a second language later means giving
+      `:uicheck` a resource shim or passing resolved strings into the screens — decide
+      which before starting, not after.
+
+      Accessibility is a separate matter and is not affected: icon-only controls carry
+      real content descriptions, decorative icons inside labelled buttons pass `null` so
+      TalkBack does not read them twice, and the transcript and settings rows use
+      `semantics(mergeDescendants = true)`. The TalkBack pass below still needs doing.
 - [ ] **Play In-App Review** is not called; the engagement counting that decides when to
       ask is ported.
 - [ ] Review `Docs/ANDROID_PARITY_MATRIX.md` and close or accept every open row — in
