@@ -3,8 +3,8 @@ package com.h3consultingpartners.ifatccompanion.simbrief
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
 import androidx.browser.customtabs.CustomTabsIntent
+import androidx.core.net.toUri
 import com.h3consultingpartners.ifatccompanion.core.config.AppConfig
 
 /**
@@ -33,7 +33,7 @@ object SimBriefLauncher {
 
     /** Returns false only when the device has no browser at all. */
     fun open(context: Context, colorArgb: Int? = null): Boolean {
-        val uri = Uri.parse(AppConfig.Links.SIMBRIEF)
+        val uri = AppConfig.Links.SIMBRIEF.toUri()
         val intent = CustomTabsIntent.Builder()
             .setShowTitle(true)
             .setUrlBarHidingEnabled(false)

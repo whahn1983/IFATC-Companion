@@ -1,10 +1,11 @@
 package com.h3consultingpartners.ifatccompanion
 
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
 import androidx.browser.customtabs.CustomTabsIntent
+import androidx.core.net.toUri
 import com.h3consultingpartners.ifatccompanion.core.diagnostics.DiagnosticsStore
 import com.h3consultingpartners.ifatccompanion.core.net.AppHttp
 import com.h3consultingpartners.ifatccompanion.core.net.HttpFetching
@@ -249,7 +250,7 @@ class AppGraph private constructor(
      * not a reason to crash mid-flight.
      */
     fun openLink(url: String) {
-        val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return
+        val uri = runCatching { url.toUri() }.getOrNull() ?: return
         val host = activityOrNull() ?: context
         val intent = CustomTabsIntent.Builder().setShowTitle(true).build()
         intent.intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -361,6 +362,11 @@ class AppGraph private constructor(
     )
 
     companion object {
+        // lint flags a static field that can reach a Context. It cannot see that create()
+        // only ever stores context.applicationContext, which lives exactly as long as the
+        // process does, so there is no Activity or View to leak. Suppressed rather than
+        // reshaped, because the singleton is the app's composition root.
+        @SuppressLint("StaticFieldLeak")
         @Volatile
         private var instance: AppGraph? = null
 

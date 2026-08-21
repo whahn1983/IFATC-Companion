@@ -91,12 +91,17 @@ android {
     }
 
     lint {
-        warningsAsErrors = false
-        // Not gating yet: this is the first run of lint against a module that had
-        // never been compiled. `textReport` puts every finding in the CI log so the
-        // list can be worked through; gating follows once it is clean.
-        abortOnError = false
+        // Errors gate. The first lint run on this module reported "14 errors, 63
+        // warnings" and still exited 0, because abortOnError was false — a green
+        // check that proved nothing. Those 14 are fixed, so the gate goes on and
+        // they cannot come back silently.
+        abortOnError = true
         textReport = true
+
+        // Warnings do not gate. Most of what is left is "a newer version of this
+        // dependency exists", which is not a defect and must never be able to turn
+        // CI red on its own schedule rather than on a change to this repository.
+        warningsAsErrors = false
     }
 }
 
@@ -109,7 +114,7 @@ kotlin {
 dependencies {
     implementation(project(":core"))
 
-    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
+    coreLibraryDesugaring(libs.desugar.jdk.libs)
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)

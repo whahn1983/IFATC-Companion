@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<resources xmlns:tools="http://schemas.android.com/tools">
+<resources>
     <!--
       The app is entirely Jetpack Compose, so the XML theme only has to carry the
       window and splash-screen chrome. Colours, typography and shape live in
@@ -16,6 +16,6 @@
         <item name="windowSplashScreenBackground">@color/ifatc_radar_deep</item>
         <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
         <item name="postSplashScreenTheme">@style/Theme.IFATCCompanion</item>
-        <item name="android:windowLayoutInDisplayCutoutMode" tools:targetApi="p">shortEdges</item>
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
     </style>
 </resources>

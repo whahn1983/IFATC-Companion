@@ -2,6 +2,7 @@
 # Pinned to the newest versions known-good at authoring time. Use Android Studio's
 # "AGP Upgrade Assistant" / "Check for updates" to move them forward together.
 [versions]
+desugarJdkLibs = "2.1.5"
 agp = "8.13.0"
 kotlin = "2.2.20"
 ksp = "2.2.20-2.0.2"
@@ -29,6 +30,7 @@ webkit = "1.14.0"
 browser = "1.9.0"
 
 [libraries]
+desugar-jdk-libs = { module = "com.android.tools:desugar_jdk_libs", version.ref = "desugarJdkLibs" }
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
