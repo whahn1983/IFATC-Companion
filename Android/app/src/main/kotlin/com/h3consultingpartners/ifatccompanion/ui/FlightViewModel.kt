@@ -114,6 +114,11 @@ class FlightViewModel(
                 .collect { (departure, destination) ->
                     if (departure.isBlank() && destination.isBlank()) return@collect
                     graph.surface.refresh(session.value.flightPlan)
+                    // Weather had the same problem and worse: refresh() was reachable only
+                    // from a control that was never built, so the whole weather engine —
+                    // METARs, TAF, ride assessment, SIGMETs — was never given any data.
+                    graph.weather.refresh()
+                    graph.weather.recomputeRideItems()
                 }
         }
     }
@@ -302,7 +307,18 @@ class FlightViewModel(
 
     /** Clearing hands the flight plan back to Infinite Flight, which is the point. */
     fun onClearOverrides() {
-        updateUi { it.copy(overrides = FlightOverrides()) }
+        updateUi {
+            it.copy(
+                overrides = FlightOverrides(),
+                // Leaving these populated would show header values the plan no longer holds.
+                draftCallsign = "",
+                draftDepartureGate = "",
+                draftArrivalGate = "",
+            )
+        }
+        // Unlatch first: the empty plan below is itself unflagged, so the guard would
+        // refuse it while the override is still set and the button would do nothing.
+        coordinator.clearManualOverride()
         coordinator.ingestFlightPlan(FlightPlan.empty)
     }
 

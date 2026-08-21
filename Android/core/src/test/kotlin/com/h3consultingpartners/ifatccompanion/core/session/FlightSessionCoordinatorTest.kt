@@ -436,4 +436,58 @@ class FlightSessionCoordinatorTest {
 
     // endregion
 
+    // region Manual overrides
+
+    @Test
+    fun `a manual override does not block the pilot's own next edit`() = runTest {
+        val coordinator = coordinator(this)
+        coordinator.ingestFlightPlan(plan.copy(callsign = "UAL1", manualOverride = true))
+        advanceUntilIdle()
+        assertEquals("UAL1", coordinator.state.value.flightPlan.callsign)
+
+        // The header commits a callsign, then a gate. The second commit used to be
+        // discarded, because the guard rejected every plan once the flag was latched —
+        // including the ones the pilot had just typed.
+        coordinator.ingestFlightPlan(
+            coordinator.state.value.flightPlan.copy(departureGate = "C12", manualOverride = true),
+        )
+        advanceUntilIdle()
+
+        assertEquals("C12", coordinator.state.value.flightPlan.departureGate)
+        assertEquals("UAL1", coordinator.state.value.flightPlan.callsign)
+    }
+
+    @Test
+    fun `the simulator still cannot overwrite a manual override`() = runTest {
+        val coordinator = coordinator(this)
+        coordinator.ingestFlightPlan(plan.copy(callsign = "UAL1", manualOverride = true))
+        advanceUntilIdle()
+
+        // Connect builds its plans with manualOverride defaulted false, so narrowing the
+        // guard must not weaken this — it is the whole reason the flag exists.
+        coordinator.ingestFlightPlan(plan.copy(callsign = "DAL9"))
+        advanceUntilIdle()
+
+        assertEquals("UAL1", coordinator.state.value.flightPlan.callsign)
+    }
+
+    @Test
+    fun `clearing the override hands control back to the simulator`() = runTest {
+        val coordinator = coordinator(this)
+        coordinator.ingestFlightPlan(plan.copy(callsign = "UAL1", manualOverride = true))
+        advanceUntilIdle()
+
+        coordinator.clearManualOverride()
+        coordinator.ingestFlightPlan(plan.copy(callsign = "DAL9"))
+        advanceUntilIdle()
+
+        // Without the unlatch, "Clear Overrides" could not work at all: the empty plan it
+        // ingests is unflagged, so the guard refused it and the override outlived the
+        // button meant to remove it.
+        assertEquals("DAL9", coordinator.state.value.flightPlan.callsign)
+        assertFalse(coordinator.state.value.flightPlan.manualOverride)
+    }
+
+    // endregion
+
 }

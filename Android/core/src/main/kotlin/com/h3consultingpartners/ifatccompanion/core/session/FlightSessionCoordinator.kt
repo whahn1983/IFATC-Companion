@@ -206,9 +206,27 @@ class FlightSessionCoordinator(
     }
 
     fun ingestFlightPlan(plan: FlightPlan) {
-        // A manual override always wins over what Connect reports.
-        if (_state.value.flightPlan.manualOverride) return
+        // A manual override wins over what Connect reports — but not over the pilot's own
+        // next edit. The guard used to reject every incoming plan once the flag was set,
+        // including the ones the pilot had just typed, so committing a callsign silently
+        // discarded the gate typed after it. Connect never sets the flag (IFConnectManager
+        // builds a plan with the default false), so rejecting only unflagged plans keeps
+        // the simulator locked out exactly as before.
+        if (_state.value.flightPlan.manualOverride && !plan.manualOverride) return
         _state.update { it.copy(flightPlan = plan) }
+        recomputeDerivedState()
+    }
+
+    /**
+     * Hand control of the flight plan back to Infinite Flight.
+     *
+     * Without this "Clear Overrides" could not work: it ingests an empty plan, which the
+     * guard above refuses precisely because an override is latched, so the override
+     * outlived the button meant to remove it — and with it every subsequent plan the
+     * simulator published, for the rest of the flight.
+     */
+    fun clearManualOverride() {
+        _state.update { it.copy(flightPlan = it.flightPlan.copy(manualOverride = false)) }
         recomputeDerivedState()
     }
 

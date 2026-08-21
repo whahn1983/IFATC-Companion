@@ -5,6 +5,8 @@ import com.h3consultingpartners.ifatccompanion.core.chatter.ChatterRadio
 import com.h3consultingpartners.ifatccompanion.core.model.ATCFacility
 import com.h3consultingpartners.ifatccompanion.core.settings.AppSettings
 import kotlin.random.Random
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * The Android side of the background-chatter audio port.
@@ -61,15 +63,28 @@ class AndroidChatterRadio(
      * background **controller** line uses the same per-facility voice the user configured
      * for the real controllers, so the ambient Ground sounds like their Ground.
      */
-    override suspend fun speak(line: ChatterLine, facility: ATCFacility) {
-        val configured = settings()
-        val voiceId = if (line.isPilot) {
-            randomPilotVoiceId(configured)
-        } else {
-            configured.controllerVoiceID(facility)
+    override suspend fun speak(line: ChatterLine, facility: ATCFacility) =
+        // The chatter service is confined to the session dispatcher, which is the main
+        // thread — the Android stand-in for iOS's @MainActor. Its audio leg has no business
+        // being there: a chatter line arrives every few seconds for the whole flight, and
+        // each one meant the copy, tanh saturation and band-pass over a whole utterance at
+        // 44.1 kHz, plus two synchronous TextToSpeech binder round-trips, all on the UI
+        // thread. Frames dropped whenever the map was being panned.
+        //
+        // Safe to move: everything below reads a StateFlow value or touches the speech
+        // service's ConcurrentHashMap, AtomicLong and the TTS binder — the same objects the
+        // ATC pump already drives from Dispatchers.Default. The chatter service's own
+        // confined state (speechJob, activeFacility, the transmitting flag) stays on the
+        // session dispatcher in its caller.
+        withContext(Dispatchers.Default) {
+            val configured = settings()
+            val voiceId = if (line.isPilot) {
+                randomPilotVoiceId(configured)
+            } else {
+                configured.controllerVoiceID(facility)
+            }
+            speech.speakChatter(line.spokenText, voiceId, configured.chatterVolume)
         }
-        speech.speakChatter(line.spokenText, voiceId, configured.chatterVolume)
-    }
 
     /**
      * Scoped to the chatter's own line. This used to call the speech service's global

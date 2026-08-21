@@ -16,7 +16,7 @@ because a screen exists.
 | 🔵 **Android-native substitution** | Deliberately different because the platform is, with the difference stated. |
 
 > **Verification status of the two modules.** `:core` is compiled and its tests are run —
-> **825 tests across 65 classes, 0 failures, 0 skipped** — and the per-area counts below
+> **828 tests across 65 classes, 0 failures, 0 skipped** — and the per-area counts below
 > are real.
 >
 > `:app` is now compiled too, by CI (`.github/workflows/android.yml`): `assembleDebug`

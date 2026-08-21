@@ -22,15 +22,18 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Map
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Thermostat
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -108,6 +111,7 @@ fun WeatherScreen(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
+        item { RefreshRow(actions.onRefresh) }
         item { RouteOverlayCard(routeMap) }
         item { PrecipitationCard(model, actions) }
         item {
@@ -133,6 +137,39 @@ fun WeatherScreen(
 }
 
 // region Route overlay
+
+/**
+ * The refresh control.
+ *
+ * The screen's own documentation described this ("the note becomes a refresh action in the
+ * top bar") and it was never built: `WeatherScreenActions.onRefresh` was declared, wired to
+ * the ViewModel, and invoked by nothing. `WeatherSessionController.refresh()` had that as
+ * its only caller, so on Android the weather engine — 232 passing tests behind it — was
+ * never given any data to work with. Every METAR, TAF, ride assessment and SIGMET card on
+ * this screen sat empty for the whole flight.
+ *
+ * A visible control rather than pull-to-refresh: PullToRefreshBox is still experimental in
+ * the Compose BOM this project pins, and a screen whose only way to load weather is an
+ * unstable API is the wrong trade. Weather also now refreshes on its own when the flight's
+ * endpoints change, so this is the manual top-up rather than the only way in.
+ */
+@Composable
+private fun RefreshRow(onRefresh: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.End,
+    ) {
+        TextButton(onClick = onRefresh) {
+            Icon(
+                Icons.Filled.Refresh,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(Modifier.size(6.dp))
+            Text("Refresh weather")
+        }
+    }
+}
 
 @Composable
 private fun RouteOverlayCard(routeMap: @Composable () -> Unit) {
@@ -494,7 +531,7 @@ private fun LabelledNote(
     small: Boolean = false,
 ) {
     Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.Top) {
-        androidx.compose.material3.Icon(
+        Icon(
             imageVector = icon,
             contentDescription = null,
             modifier = Modifier.size(16.dp),
