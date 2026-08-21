@@ -11,22 +11,28 @@ because a screen exists.
 | ✅ **Ported** | Behaviour carried across, compiles, and is covered by tests that pass. |
 | 🟡 **Ported, untested** | Behaviour carried across and compiles, but has no test of its own yet. |
 | 🟠 **Partial** | Some of the area is ported; the rest is named in the row. |
+| 🔌 **Ported, not wired** | The behaviour is carried across and its `:core` tests pass — but `:app` never constructs it, so the feature does nothing in the running app. Distinguished from ✅ because "the code exists and is tested" was being read as "it works", and for these rows that is false. |
 | ⬜ **Not started** | No Android code yet. |
 | 🔵 **Android-native substitution** | Deliberately different because the platform is, with the difference stated. |
 
-> **Verification status of the two modules.** `:core` is compiled and its tests are run in
-> the environment this port was written in — **819 tests across 65 classes, 0 failures, 0
-> skipped**, and the per-area counts below are real. **`:app` has never been compiled**:
-> that environment had no Android SDK and no access to Google's Maven repository. The
-> *pure* Compose screens are type-checked against JetBrains Compose
-> (`settings-uicheck.gradle.kts`), so their Kotlin is verified; the Android-API code around
-> them — Activity, ViewModels, service, audio, billing, resources — is written but
-> unverified. Expect the first Android Studio build to surface ordinary integration fixes.
-> This is recorded here rather than discovered later.
+> **Verification status of the two modules.** `:core` is compiled and its tests are run —
+> **821 tests across 65 classes, 0 failures, 0 skipped** — and the per-area counts below
+> are real.
 >
-> Anything below marked ✅ has passing tests behind it. Anything marked 🟡 compiles (or
-> type-checks) but has no test of its own. The `:app` rows can never be better than 🟡 in
-> this environment, and saying so is the point of the vocabulary.
+> `:app` is now compiled too, by CI (`.github/workflows/android.yml`): `assembleDebug`
+> packages a debug APK, Android Lint gates with `abortOnError = true` and reports zero
+> errors, and `bundleRelease` runs R8 with minification and resource shrinking. The
+> environment this port was written in has no Android SDK, so those three are the only
+> place `:app` is verified; every `:app` change is written blind and checked by CI.
+>
+> What is still **not** verified: nothing has run on a device or emulator, and nothing has
+> been heard through a speaker. R8 producing a bundle proves the keep rules build — not
+> that a serializer survives at runtime. An earlier version of this note said `:app` had
+> never been compiled; that was true when written.
+>
+> Anything below marked ✅ has passing tests behind it. 🟡 compiles or type-checks with no
+> test of its own. 🔌 means the `:core` tests pass and the app never calls the code — read
+> that one carefully, because it is the failure mode this matrix previously hid.
 
 ---
 
@@ -111,12 +117,12 @@ because a screen exists.
 | Surface cache (75-day refresh) | `AirportSurfaceCache.swift` | `core/surface/AirportSurfaceCache.kt` over `FileStore` | ✅ |
 | Provider, failover, backoff, stale-serve | `AirportSurfaceProvider.swift` | `core/surface/AirportSurfaceProvider.kt` — endpoint failover order, 90 s query budget, per-airport backoff, request coalescing | ✅ |
 | Aircraft size classes, stand identifiers | `AircraftSizeClass.swift`, `StandIdentifier.swift` | `core/surface/` | ✅ |
-| Surface graph + routing | `SurfaceGraph*.swift`, `TaxiRouteEngine.swift` (1030) | `core/surface/routing/TaxiRouteEngine.kt` — A* that never chooses on distance alone: penalties push routes off unnecessary runway crossings, closed and unnamed segments, and opening 180° pivots | ✅ |
+| Surface graph + routing | `SurfaceGraph*.swift`, `TaxiRouteEngine.swift` (1030) | `core/surface/routing/TaxiRouteEngine.kt` — A* that never chooses on distance alone: penalties push routes off unnecessary runway crossings, closed and unnamed segments, and opening 180° pivots. **The engine is correct and tested; `:app` never routes on it** — `AirportSurfaceCoordinator` is constructed nowhere, so no route is ever computed | 🔌 |
 | Route tracking, off-route, recalculation | `RouteTracker.swift` | `core/surface/routing/RouteTracker.kt` | ✅ |
 | Runway-crossing state machine | `RunwayCrossingState.swift` | `core/surface/routing/RunwayCrossingState.kt` — the read-back is what authorises the crossing | ✅ |
 | Route confidence | `SurfaceConfidenceEvaluator.swift` | `core/surface/routing/SurfaceConfidenceEvaluator.kt`; a low-confidence route draws dashed on the map rather than being presented as fact | ✅ |
 | Automatic gate assignment | `GateAssignment.swift` (622) | `core/surface/routing/GateAssignment.kt` | ✅ |
-| Taxi phraseology | `TaxiPhraseology.swift` | `core/surface/routing/TaxiPhraseology.kt` | ✅ |
+| Taxi phraseology | `TaxiPhraseology.swift` | `core/surface/routing/TaxiPhraseology.kt` — referenced only from `AirportSurfaceCoordinator`, which `:app` never constructs, so route-aware clearances ("taxi to runway 36 via A, B, hold short of 27") never fire; the state machine falls back to the generic `taxiToRunway` | 🔌 |
 | Surface coordinator (map lifecycle) | `AirportSurfaceCoordinator.swift` (1565) | `core/surface/routing/AirportSurfaceCoordinator.kt` | ✅ |
 | Surface session (which fields load, and what is said when they can't) | part of the same file | `core/surface/SurfaceSessionController.kt` — an Overpass outage is recorded and reported, never thrown: the taxi map simply doesn't draw and taxi phrasing stays generic | ✅ 8 tests |
 
@@ -135,10 +141,10 @@ because a screen exists.
 
 | iOS capability | iOS files | Android | Status |
 | --- | --- | --- | --- |
-| Center sector database + tracker | `Enroute/*.swift` + `CenterSectors.json` | `core/enroute/`; the JSON is byte-identical and loaded from the classpath | ✅ 17 tests |
+| Center sector database + tracker | `Enroute/*.swift` + `CenterSectors.json` | `core/enroute/`; the JSON is byte-identical and loaded from the classpath. **`CenterSectorDatabase` is never constructed in `:app`**, so `centerSectorName` is never assigned: the Settings "Working sector" row never appears and Center always identifies generically rather than as, say, Fort Worth Center | 🔌 17 tests |
 | Mock Mode scripted flight | `MockSimulatorFeed.swift` | `core/mock/MockSimulatorFeed.kt` — the same demo flight, KIAH → KMSP at FL370, to the digit | ✅ 12 tests |
-| Session resume | `SessionStateStore.swift` | `core/persistence/SessionStateStore.kt` | ✅ |
-| Saved flights | `SavedFlightStore.swift` | `core/persistence/SavedFlightStore.kt` | ✅ 23 tests total in the package |
+| Session resume | `SessionStateStore.swift` | `core/persistence/SessionStateStore.kt` — **never constructed in `:app`**, so a flight killed mid-session is gone on relaunch even though the store is built to restore any snapshot under six hours old | 🔌 |
+| Saved flights | `SavedFlightStore.swift` | `core/persistence/SavedFlightStore.kt` — **never constructed in `:app`**; nothing saves or reads a flight | 🔌 23 tests total in the package |
 | Review prompt | `ReviewRequestManager.swift` | 🔵 Play In-App Review replaces `SKStoreReviewController` | ⬜ **not implemented** — the engagement counting is ported, the Play API call is not |
 
 ## 8. Audio
@@ -192,7 +198,7 @@ because a screen exists.
 | Diagnostics screen | `DiagnosticsView.swift` | `ui/screens/DiagnosticsScreen.kt` | 🟡 type-checked |
 | Phraseology profiles | `PhraseologyProfilesView.swift` | `ui/screens/PhraseologyProfilesScreen.kt` — swipe-to-delete behind an EditButton becomes an explicit per-row delete, and `ShareLink` becomes the system share sheet | 🟡 type-checked |
 | Flights list | `FlightsListView.swift` | **Not built.** `SavedFlightStore` is ported and tested; the screen that lists them is not | ⬜ |
-| Taxi map | `TaxiMapView.swift` (468) | `ui/map/TaxiMapLayers.kt` — only the geometry the route touches is drawn, the same restriction iOS adopted after overlay volume crashed MapKit | 🟡 type-checked |
+| Taxi map | `TaxiMapView.swift` (468) | `ui/map/TaxiMapLayers.kt` — the layers are written and type-checked, but `taxiMapModel` never populates `route`, `crossings`, `holdingPositions` or `routeConfidence`, so **no route, hold-short bar or crossing is ever drawn**. It also draws every runway at the field rather than only those the route touches, which is the restriction iOS adopted after overlay volume crashed MapKit | 🔌 |
 | Route map | `RouteMapView.swift` | `ui/map/RouteMapLayers.kt` — the iOS drawing order preserved exactly, because the order is what says which things the pilot must act on | 🟡 type-checked |
 | Radar raster overlay on the map | `RadarOverlayRenderer.swift` | Not composited onto the canvas yet — see the Weather section | ⬜ |
 | Pull-to-refresh on Weather | `.refreshable` | 🔵 A refresh action in the top bar. Compose's pull-to-refresh is still experimental in the pinned BOM, and a screen whose only way to load weather is an unstable API is the wrong trade | 🔵 |

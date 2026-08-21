@@ -21,6 +21,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
@@ -132,11 +134,49 @@ class AndroidSpeechService(
 
     private var tts: TextToSpeech? = null
 
+    /**
+     * Serializes "set the voice, then enqueue" against the engine.
+     *
+     * TextToSpeech carries voice, rate and pitch as *client-global* state: setVoice and
+     * setSpeechRate mutate one parameter bundle, and speak/synthesizeToFile bind whatever
+     * is current at the moment they are called. Chatter runs on the session dispatcher and
+     * the ATC pump on Dispatchers.Default, and both applied a voice and then enqueued —
+     * so a chatter line landing between the pump's applyVoice and its synthesizeToFile
+     * made a real controller transmission come out in a randomly drawn background-aircraft
+     * voice at the chatter's pinned 0.55 rate, and the reverse.
+     *
+     * Held across applyVoice and exactly one enqueue, and nothing that suspends. It is
+     * deliberately NOT held across the completion await: that waits up to
+     * RENDER_TIMEOUT_MILLIS, and blocking every other line behind one render for fifteen
+     * seconds would be a worse bug than the one being fixed.
+     */
+    private val engineLock = Mutex()
+
+    private suspend fun <T> withEngine(
+        voiceId: String?,
+        configuration: SpeechConfiguration,
+        enqueue: (TextToSpeech) -> T,
+    ): T? = engineLock.withLock {
+        val engine = tts ?: return@withLock null
+        applyVoice(engine, voiceId, configuration)
+        enqueue(engine)
+    }
+
     private val progressListener = object : UtteranceProgressListener() {
         override fun onStart(utteranceId: String?) = Unit
 
         override fun onDone(utteranceId: String?) {
             utteranceId?.let { utteranceCompletions.remove(it)?.complete(true) }
+        }
+
+        /**
+         * Without this override the platform forwards onStop to onDone, so an utterance
+         * flushed by someone else's TextToSpeech.stop() completed as a *success* — and the
+         * render then decoded a truncated or empty WAV and played it. Failing it instead
+         * makes the caller fall back to plain speech, so the line is still heard.
+         */
+        override fun onStop(utteranceId: String?, interrupted: Boolean) {
+            utteranceId?.let { utteranceCompletions.remove(it)?.complete(false) }
         }
 
         // Abstract on UtteranceProgressListener and deprecated at the same time, so the
@@ -256,24 +296,24 @@ class AndroidSpeechService(
      */
     suspend fun speakChatter(text: String, voiceId: String, volume: Double) {
         if (text.isBlank()) return
-        val engine = tts ?: return
+        if (tts == null) return
         val base = configuration()
         // Chatter speaks at a fixed rate, independent of the user's own voice-rate
         // setting — matching iOS, where the chatter utterance is pinned at 0.55.
         val configuration = base.copy(speechRate = CHATTER_SPEECH_RATE, voiceVolume = volume)
-        applyVoice(engine, voiceId.ifEmpty { configuration.defaultVoiceId }, configuration)
+        val resolvedVoice = voiceId.ifEmpty { configuration.defaultVoiceId }
 
-        val call = QueuedCall(text, voiceId.ifEmpty { null }, isPilot = false, configuration = configuration)
+        val call = QueuedCall(text, resolvedVoice, isPilot = false, configuration = configuration)
         try {
             val rendered = if (radio.isRunning) {
-                render(engine, call) { chatterUtteranceId.set(it) }
+                render(call) { chatterUtteranceId.set(it) }
             } else {
                 null
             }
             if (rendered != null && rendered.isNotEmpty()) {
                 radio.playProcessed(rendered, volume.toFloat())
             } else {
-                speakAndWait(engine, text)
+                speakAndWait(text, resolvedVoice, configuration)
             }
         } finally {
             chatterUtteranceId.set(null)
@@ -300,15 +340,30 @@ class AndroidSpeechService(
             ?.let { utteranceCompletions.remove(it)?.complete(false) }
     }
 
-    /** Speak a short sample so the pilot can audition a voice while picking one. */
+    /**
+     * Speak a short sample so the pilot can audition a voice while picking one.
+     *
+     * It used to call TextToSpeech.stop() first, to cut an earlier preview short. But
+     * stop() is engine-global: it also flushed whatever the ATC pump had in flight, and
+     * since the platform forwards onStop to onDone that render completed as a success and
+     * played a truncated file. QUEUE_FLUSH already replaces a queued preview, so the
+     * explicit stop bought nothing and cost that. Goes through the engine lock like every
+     * other enqueue, so auditioning a voice from Settings cannot repaint a controller call
+     * mid-flight.
+     */
     fun previewVoice(voiceId: String, sample: String = VOICE_SAMPLE_LINE) {
         val configuration = configuration()
-        val engine = tts ?: return
-        // Cut off any in-flight preview so rapid taps audition the latest pick immediately
-        // instead of queueing up behind earlier ones.
-        engine.stop()
-        applyVoice(engine, voiceId.ifEmpty { configuration.defaultVoiceId }, configuration)
-        engine.speak(sample, TextToSpeech.QUEUE_FLUSH, null, "preview-${utteranceCounter.incrementAndGet()}")
+        if (tts == null) return
+        scope.launch {
+            withEngine(voiceId.ifEmpty { configuration.defaultVoiceId }, configuration) {
+                it.speak(
+                    sample,
+                    TextToSpeech.QUEUE_FLUSH,
+                    null,
+                    "preview-${utteranceCounter.incrementAndGet()}",
+                )
+            }
+        }
     }
 
     fun stop() {
@@ -353,11 +408,13 @@ class AndroidSpeechService(
     }
 
     private suspend fun play(call: QueuedCall) {
-        val engine = tts ?: return
-        applyVoice(engine, call.voiceId, call.configuration)
+        if (tts == null) return
 
+        // No applyVoice here any more: render() and speakAndWait() each apply the voice
+        // inside the engine lock, immediately before their own enqueue. Applying it here
+        // and enqueueing later is exactly the window another coroutine used to slip into.
         val rendered = if (call.configuration.radioEffectEnabled && radio.isRunning) {
-            render(engine, call)
+            render(call)
         } else {
             null
         }
@@ -371,7 +428,7 @@ class AndroidSpeechService(
         } else {
             // The engine couldn't render to a file (or the effect is off) — speak it
             // plainly so the call is never silent.
-            speakAndWait(engine, call.text)
+            speakAndWait(call.text, call.voiceId, call.configuration)
         }
 
         if (call.isPilot && call.configuration.radioEffectEnabled) {
@@ -392,7 +449,6 @@ class AndroidSpeechService(
      * chatter path needs to.
      */
     private suspend fun render(
-        engine: TextToSpeech,
         call: QueuedCall,
         onId: (String) -> Unit = {},
     ): FloatArray? =
@@ -403,7 +459,10 @@ class AndroidSpeechService(
             val completion = CompletableDeferred<Boolean>()
             utteranceCompletions[id] = completion
 
-            val queued = engine.synthesizeToFile(call.text, null, file, id)
+            // Voice and enqueue together, under the lock — see [engineLock].
+            val queued = withEngine(call.voiceId, call.configuration) {
+                it.synthesizeToFile(call.text, null, file, id)
+            } ?: TextToSpeech.ERROR
             if (queued != TextToSpeech.SUCCESS) {
                 utteranceCompletions.remove(id)
                 file.delete()
@@ -424,11 +483,23 @@ class AndroidSpeechService(
             decoded?.let { WavPcm.toMono(it, RadioAudio.SAMPLE_RATE) }
         }
 
-    private suspend fun speakAndWait(engine: TextToSpeech, text: String) {
+    /**
+     * The fallback path, and the wider of the two race windows: it used to rely on an
+     * applyVoice that could have run up to RENDER_TIMEOUT_MILLIS earlier, with anything at
+     * all happening to the engine in between. It now re-applies the voice immediately
+     * before the enqueue, under the lock.
+     */
+    private suspend fun speakAndWait(
+        text: String,
+        voiceId: String?,
+        configuration: SpeechConfiguration,
+    ) {
         val id = "speak-${utteranceCounter.incrementAndGet()}"
         val completion = CompletableDeferred<Boolean>()
         utteranceCompletions[id] = completion
-        val queued = engine.speak(text, TextToSpeech.QUEUE_ADD, null, id)
+        val queued = withEngine(voiceId, configuration) {
+            it.speak(text, TextToSpeech.QUEUE_ADD, null, id)
+        } ?: TextToSpeech.ERROR
         if (queued != TextToSpeech.SUCCESS) {
             utteranceCompletions.remove(id)
             return

@@ -27,6 +27,7 @@ import com.h3consultingpartners.ifatccompanion.ui.screens.PhraseologyProfilesMod
 import com.h3consultingpartners.ifatccompanion.ui.screens.SettingsScreenActions
 import com.h3consultingpartners.ifatccompanion.ui.screens.SettingsScreenModel
 import com.h3consultingpartners.ifatccompanion.ui.screens.SubscriptionScreenActions
+import com.h3consultingpartners.ifatccompanion.ui.screens.VoiceOption
 import com.h3consultingpartners.ifatccompanion.ui.screens.WeatherScreenActions
 import com.h3consultingpartners.ifatccompanion.ui.screens.WeatherScreenModel
 import java.time.Instant
@@ -216,11 +217,14 @@ fun FlightViewModel.settingsModel(
     settings: AppSettings,
     entitlements: EntitlementState,
     surface: SurfaceSessionState,
+    // Passed in rather than read here: this builder runs on every recomposition, and
+    // enumerating the device's voices is a binder round trip.
+    voices: List<VoiceOption>,
 ) = SettingsScreenModel(
     settings = settings,
     hasLiveAccess = session.hasLiveAccess,
     entitlementStatusText = entitlements.statusText,
-    voices = availableVoices(),
+    voices = voices,
     workingSectorText = session.centerSectorName,
     overpassEndpoint = AppConfig.Endpoints.OVERPASS_ENDPOINTS.firstOrNull().orEmpty(),
     surfaceCacheSummary = surface.cacheSummary,

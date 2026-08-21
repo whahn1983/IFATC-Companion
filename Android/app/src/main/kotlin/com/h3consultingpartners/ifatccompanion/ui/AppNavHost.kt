@@ -59,6 +59,7 @@ fun AppNavHost(
     val entitlements by viewModel.entitlements.collectAsStateWithLifecycle()
     val surface by viewModel.surfaceState.collectAsStateWithLifecycle()
     val profiles by viewModel.phraseologyProfilesState.collectAsStateWithLifecycle()
+    val voices by viewModel.availableVoices.collectAsStateWithLifecycle()
     var settingsDestination by rememberSaveable { mutableStateOf(SettingsDestination.ROOT) }
 
     // The subscribe banner on the ATC tab cannot navigate itself — this file owns the
@@ -108,7 +109,7 @@ fun AppNavHost(
 
         AppTab.SETTINGS -> when (settingsDestination) {
             SettingsDestination.ROOT -> SettingsScreen(
-                model = viewModel.settingsModel(session, settings, entitlements, surface),
+                model = viewModel.settingsModel(session, settings, entitlements, surface, voices),
                 actions = viewModel.settingsActions(
                     onOpenSubscription = { settingsDestination = SettingsDestination.SUBSCRIPTION },
                     onOpenPhraseologyProfiles = {

@@ -25,8 +25,12 @@ import com.h3consultingpartners.ifatccompanion.core.weather.WeatherSessionState
 import com.h3consultingpartners.ifatccompanion.ui.screens.FlightOverrides
 import com.h3consultingpartners.ifatccompanion.ui.screens.VoiceOption
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 /**
@@ -94,6 +98,23 @@ class FlightViewModel(
             session.collect { state ->
                 graph.weather.updateFlightContext(state.flightPlan, state.aircraftState, state.phase)
             }
+        }
+
+        // Load the airport surface whenever the flight's endpoints change.
+        //
+        // Until now SurfaceSessionController.refresh had exactly one caller in the whole
+        // app — the "Refresh airport data" row in Settings. A pilot who never opened
+        // Settings never loaded any surface data, so the taxi map read "Taxi route
+        // pending." from launch to landing. Keyed on the pair so a 1 Hz telemetry tick
+        // does not re-trigger it; the provider caches and de-duplicates in flight.
+        viewModelScope.launch {
+            session
+                .map { it.flightPlan.departure to it.flightPlan.destination }
+                .distinctUntilChanged()
+                .collect { (departure, destination) ->
+                    if (departure.isBlank() && destination.isBlank()) return@collect
+                    graph.surface.refresh(session.value.flightPlan)
+                }
         }
     }
 
@@ -338,8 +359,23 @@ class FlightViewModel(
         coordinator.applyEngineConfig()
     }
 
-    fun availableVoices(): List<VoiceOption> =
-        graph.speech.voiceOptions().map { (id, title) -> VoiceOption(id, title) }
+    /**
+     * The device's installed voices, enumerated once per engine-ready transition.
+     *
+     * This used to be a plain function called from settingsModel(), which is rebuilt on
+     * every recomposition — and during a live flight the 1 Hz telemetry tick recomposes
+     * the whole nav host, so the Settings tab was making a TextToSpeech binder round trip
+     * and sorting the entire voice set on the UI thread once a second.
+     *
+     * Keyed on isReady because the engine returns nothing before initialisation completes,
+     * so a value cached any earlier would be permanently empty.
+     */
+    val availableVoices: StateFlow<List<VoiceOption>> = graph.speech.isReady
+        .map { ready ->
+            if (!ready) emptyList()
+            else graph.speech.voiceOptions().map { (id, title) -> VoiceOption(id, title) }
+        }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     fun onPreviewVoice(voiceId: String) = graph.speech.previewVoice(voiceId)
 
