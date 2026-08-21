@@ -78,7 +78,7 @@ fun SettingsScreen(
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         item {
-            SettingsSection(SettingsLabels.Sections.SUBSCRIPTION) {
+            SettingsSection(title = SettingsLabels.Sections.SUBSCRIPTION) {
                 SettingsValue("Status", model.entitlementStatusText)
                 SettingsLink(
                     label = if (model.hasLiveAccess) "Manage subscription" else "Unlock Live Connected Mode",
@@ -88,7 +88,7 @@ fun SettingsScreen(
         }
 
         item {
-            SettingsSection(SettingsLabels.Sections.CONNECTION) {
+            SettingsSection(title = SettingsLabels.Sections.CONNECTION) {
                 SettingsToggle(
                     label = SettingsLabels.MOCK_MODE,
                     checked = s.mockMode,
@@ -126,7 +126,7 @@ fun SettingsScreen(
         }
 
         item {
-            SettingsSection(SettingsLabels.Sections.VOICE) {
+            SettingsSection(title = SettingsLabels.Sections.VOICE) {
                 SettingsToggle(
                     label = SettingsLabels.VOICE_ENABLED,
                     checked = s.voiceEnabled,
@@ -169,7 +169,7 @@ fun SettingsScreen(
         }
 
         item {
-            SettingsSection(SettingsLabels.Sections.FACILITY_VOICES, footer = VOICE_PICKER_HINT) {
+            SettingsSection(title = SettingsLabels.Sections.FACILITY_VOICES, footer = VOICE_PICKER_HINT) {
                 VoicePicker(SettingsLabels.VOICE_GROUND, s.voiceGround, model.voices) { id ->
                     update { it.copy(voiceGround = id) }
                     actions.onPreviewVoice(id)
@@ -198,7 +198,7 @@ fun SettingsScreen(
         }
 
         item {
-            SettingsSection(SettingsLabels.Sections.PILOT_VOICE) {
+            SettingsSection(title = SettingsLabels.Sections.PILOT_VOICE) {
                 SettingsToggle(
                     label = SettingsLabels.SPEAK_PILOT,
                     checked = s.speakPilot,
@@ -217,7 +217,7 @@ fun SettingsScreen(
         }
 
         item {
-            SettingsSection(SettingsLabels.Sections.PHRASEOLOGY) {
+            SettingsSection(title = SettingsLabels.Sections.PHRASEOLOGY) {
                 SettingsPicker(
                     label = SettingsLabels.PHRASEOLOGY_MODE,
                     selected = s.phraseologyMode,
@@ -241,7 +241,7 @@ fun SettingsScreen(
         }
 
         item {
-            SettingsSection(SettingsLabels.Sections.ATC_AUTOMATION) {
+            SettingsSection(title = SettingsLabels.Sections.ATC_AUTOMATION) {
                 SettingsStepper(
                     label = SettingsLabels.INITIAL_CLIMB_PREFIX +
                         s.initialClimbAltitudeFt + SettingsLabels.INITIAL_CLIMB_SUFFIX,
@@ -274,7 +274,7 @@ fun SettingsScreen(
         }
 
         item {
-            SettingsSection(SettingsLabels.Sections.SAVED_FLIGHTS) {
+            SettingsSection(title = SettingsLabels.Sections.SAVED_FLIGHTS) {
                 SettingsToggle(
                     label = SettingsLabels.AUTO_SAVE_FLIGHTS,
                     checked = s.autoSaveFlights,
@@ -285,7 +285,7 @@ fun SettingsScreen(
 
         item {
             SettingsSection(
-                SettingsLabels.Sections.BACKGROUND_RADIO,
+                title = SettingsLabels.Sections.BACKGROUND_RADIO,
                 footer = BACKGROUND_RADIO_FOOTER,
             ) {
                 SettingsToggle(
@@ -323,7 +323,7 @@ fun SettingsScreen(
         }
 
         item {
-            SettingsSection(SettingsLabels.Sections.SIGMET_PIREP) {
+            SettingsSection(title = SettingsLabels.Sections.SIGMET_PIREP) {
                 SettingsSlider(
                     label = "Route corridor",
                     valueText = "${s.routeCorridorNM.roundToInt()}${SettingsLabels.ROUTE_CORRIDOR_SUFFIX}",
@@ -351,7 +351,7 @@ fun SettingsScreen(
 
         item {
             SettingsSection(
-                SettingsLabels.Sections.WEATHER_DATA,
+                title = SettingsLabels.Sections.WEATHER_DATA,
                 footer = LegalStrings.PRECIPITATION_SOURCES,
             ) {
                 SettingsPicker(
@@ -401,7 +401,7 @@ fun SettingsScreen(
 
         item {
             SettingsSection(
-                SettingsLabels.Sections.DATA_SOURCES,
+                title = SettingsLabels.Sections.DATA_SOURCES,
                 footer = LegalStrings.dataSourcesSummary(),
             ) {
                 SettingsValue(SettingsLabels.AIRPORT_SURFACE, LegalStrings.OpenStreetMap.PROVIDER_NAME)
@@ -433,7 +433,7 @@ fun SettingsScreen(
 
         item {
             SettingsSection(
-                SettingsLabels.Sections.ABOUT_LEGAL,
+                title = SettingsLabels.Sections.ABOUT_LEGAL,
                 footer = LegalStrings.openStreetMapLegal(),
             ) {
                 SettingsLink(label = "OpenStreetMap copyright", onClick = {
@@ -458,7 +458,7 @@ fun SettingsScreen(
         }
 
         item {
-            SettingsSection(SettingsLabels.Sections.ETIQUETTE) {
+            SettingsSection(title = SettingsLabels.Sections.ETIQUETTE) {
                 Text(
                     text = LegalStrings.NOT_STAFFED_ATC.replace("**", ""),
                     style = MaterialTheme.typography.bodyMedium,
@@ -468,7 +468,7 @@ fun SettingsScreen(
 
         item {
             SettingsSection(
-                SettingsLabels.Sections.ADVANCED,
+                title = SettingsLabels.Sections.ADVANCED,
                 footer = SettingsLabels.COPYRIGHT_FOOTER,
             ) {
                 SettingsToggle(

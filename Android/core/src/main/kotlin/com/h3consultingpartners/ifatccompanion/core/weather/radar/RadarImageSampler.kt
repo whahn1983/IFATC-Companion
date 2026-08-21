@@ -2,8 +2,6 @@ package com.h3consultingpartners.ifatccompanion.core.weather.radar
 
 import com.h3consultingpartners.ifatccompanion.core.geo.Coordinate
 import com.h3consultingpartners.ifatccompanion.core.geo.Geo
-import com.h3consultingpartners.ifatccompanion.core.platform.ImageDecoding
-import com.h3consultingpartners.ifatccompanion.core.platform.RgbaGrid
 import com.h3consultingpartners.ifatccompanion.core.weather.WeatherRouteAnalyzer
 import com.h3consultingpartners.ifatccompanion.core.weather.deviation.RadarBoundingBox
 import com.h3consultingpartners.ifatccompanion.core.weather.deviation.WeatherIntensity
@@ -31,7 +29,7 @@ import kotlin.math.tan
  * so it is deliberately tolerant of shade variation between providers.
  *
  * Everything here is pure: the colour classification, the clustering and the geometry.
- * The one impure step on iOS — the PNG decode — is an injected [ImageDecoding] port, so
+ * The one impure step on iOS — the PNG decode — is an injected [RasterImageDecoder], so
  * the whole sampler is unit-testable without an image codec.
  *
  * Ported from `IFATCCompanion/Weather/RadarImageSampler.swift`.
@@ -347,22 +345,23 @@ object RadarImageSampler {
     // region Image decode
 
     /**
-     * Classify a decoded RGBA grid into a `rows × cols` intensity grid.
+     * Classify a decoded raster into a `rows × cols` intensity grid.
      *
-     * The decoded buffer reads top-row-first: row 0 is the image's TOP (north), matching
+     * The decoded image reads top-row-first: row 0 is the image's TOP (north), matching
      * the grid convention (row 0 = north / `bbox.maxLatitude`, as `boundingPolygon` maps
      * it). So read it straight through — a `rows - 1 - row` flip here would mirror every
      * sampled cell north↔south about the corridor's centre latitude, turning a southern
      * storm into a northern cell.
      */
-    fun grid(rgba: RgbaGrid, palette: Palette = Palette.REFLECTIVITY): List<List<WeatherIntensity?>> =
-        List(rgba.height) { row ->
-            List(rgba.width) { col ->
+    fun grid(image: RasterImage, palette: Palette = Palette.REFLECTIVITY): List<List<WeatherIntensity?>> =
+        List(image.height) { row ->
+            List(image.width) { col ->
+                val argb = image.argbAt(col, row)
                 intensity(
-                    r = rgba.channel(row, col, 0),
-                    g = rgba.channel(row, col, 1),
-                    b = rgba.channel(row, col, 2),
-                    a = rgba.channel(row, col, 3),
+                    r = argbRed(argb),
+                    g = argbGreen(argb),
+                    b = argbBlue(argb),
+                    a = argbAlpha(argb),
                     palette = palette,
                 )
             }
@@ -376,12 +375,12 @@ object RadarImageSampler {
         png: ByteArray,
         columns: Int,
         rows: Int,
-        decoder: ImageDecoding,
+        decoder: RasterImageDecoder,
         palette: Palette = Palette.REFLECTIVITY,
     ): List<List<WeatherIntensity?>>? {
         if (columns <= 0 || rows <= 0) return null
-        val rgba = decoder.decodeRgba(png, columns, rows) ?: return null
-        return grid(rgba, palette)
+        val image = decoder.decode(png, columns, rows) ?: return null
+        return grid(image, palette)
     }
 
     /**
@@ -394,7 +393,7 @@ object RadarImageSampler {
         columns: Int,
         rows: Int,
         bbox: RadarBoundingBox,
-        decoder: ImageDecoding,
+        decoder: RasterImageDecoder,
         palette: Palette = Palette.REFLECTIVITY,
         projection: PixelProjection = PixelProjection.EQUIRECTANGULAR,
     ): List<RadarCell>? {

@@ -39,11 +39,17 @@ import androidx.compose.ui.unit.dp
  * interactive row clears Android's 48 dp minimum.
  */
 
-/** A titled group of settings rows — SwiftUI's `Section`. */
+/**
+ * A titled group of settings rows — SwiftUI's `Section`.
+ *
+ * [title] is optional because SwiftUI's `Section` is: an untitled section is how iOS
+ * groups a run of plain action rows, and rendering a blank header for it would leave a
+ * gap the iOS screen does not have.
+ */
 @Composable
 fun SettingsSection(
-    title: String,
     modifier: Modifier = Modifier,
+    title: String? = null,
     footer: String? = null,
     content: @Composable () -> Unit,
 ) {
@@ -51,12 +57,14 @@ fun SettingsSection(
         modifier = modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Text(
-            text = title,
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.padding(top = 12.dp, bottom = 4.dp),
-        )
+        if (title != null) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(top = 12.dp, bottom = 4.dp),
+            )
+        }
         Column(
             modifier = Modifier.selectableGroup(),
             verticalArrangement = Arrangement.spacedBy(2.dp),

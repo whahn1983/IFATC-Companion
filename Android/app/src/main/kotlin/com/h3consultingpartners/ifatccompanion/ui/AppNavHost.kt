@@ -1,0 +1,106 @@
+package com.h3consultingpartners.ifatccompanion.ui
+
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.h3consultingpartners.ifatccompanion.core.session.FlightSessionState
+import com.h3consultingpartners.ifatccompanion.ui.screens.AppTab
+import com.h3consultingpartners.ifatccompanion.ui.screens.AtcScreen
+import com.h3consultingpartners.ifatccompanion.ui.screens.DiagnosticsScreen
+import com.h3consultingpartners.ifatccompanion.ui.screens.FlightScreen
+import com.h3consultingpartners.ifatccompanion.ui.screens.PhraseologyProfilesScreen
+import com.h3consultingpartners.ifatccompanion.ui.screens.SettingsScreen
+import com.h3consultingpartners.ifatccompanion.ui.screens.SubscriptionScreen
+import com.h3consultingpartners.ifatccompanion.ui.screens.WeatherScreen
+
+/**
+ * Which screen a tab is showing.
+ *
+ * Two tabs have a child screen rather than a single page — Settings can push the
+ * subscription paywall or the phraseology-profile editor, and iOS presents both the same
+ * way (a sheet and a `NavigationLink`). Rather than pull in a navigation library for two
+ * destinations, the destination is state: [AppNavHost] owns it, the shell keeps rendering,
+ * and system back pops it. Adding a third destination would be the moment to reach for
+ * `androidx.navigation` instead.
+ */
+enum class SettingsDestination { ROOT, SUBSCRIPTION, PHRASEOLOGY_PROFILES }
+
+/**
+ * Routes the selected tab to its screen, and hands each one the slice of session state it
+ * renders plus the actions it can perform.
+ *
+ * This is the seam between Compose and the rest of the app: every screen below here takes
+ * a plain model and a bag of callbacks, and knows nothing about the ViewModel, the
+ * coordinator, or Android. That is what lets `:uicheck` type-check all of them against
+ * desktop Compose without an Android SDK — see settings-uicheck.gradle.kts.
+ */
+@Composable
+fun AppNavHost(
+    tab: AppTab,
+    viewModel: FlightViewModel,
+    session: FlightSessionState,
+    modifier: Modifier = Modifier,
+    onRequestMicrophone: () -> Boolean = { false },
+) {
+    val settings by viewModel.settings.collectAsStateWithLifecycle()
+    var settingsDestination by rememberSaveable { mutableStateOf(SettingsDestination.ROOT) }
+
+    when (tab) {
+        AppTab.ATC -> AtcScreen(
+            model = viewModel.atcModel(session, settings),
+            actions = viewModel.atcActions(onRequestMicrophone),
+            modifier = modifier,
+        )
+
+        AppTab.FLIGHT -> FlightScreen(
+            model = viewModel.flightModel(session, settings),
+            actions = viewModel.flightActions(),
+            modifier = modifier,
+        )
+
+        AppTab.WEATHER -> WeatherScreen(
+            model = viewModel.weatherModel(session, settings),
+            actions = viewModel.weatherActions(),
+            modifier = modifier,
+        )
+
+        AppTab.SETTINGS -> when (settingsDestination) {
+            SettingsDestination.ROOT -> SettingsScreen(
+                model = viewModel.settingsModel(session, settings),
+                actions = viewModel.settingsActions(
+                    onOpenSubscription = { settingsDestination = SettingsDestination.SUBSCRIPTION },
+                    onOpenPhraseologyProfiles = {
+                        settingsDestination = SettingsDestination.PHRASEOLOGY_PROFILES
+                    },
+                ),
+                modifier = modifier,
+            )
+
+            SettingsDestination.SUBSCRIPTION -> SubscriptionScreen(
+                state = viewModel.entitlementState(),
+                actions = viewModel.subscriptionActions(
+                    onClose = { settingsDestination = SettingsDestination.ROOT },
+                ),
+                modifier = modifier,
+            )
+
+            SettingsDestination.PHRASEOLOGY_PROFILES -> PhraseologyProfilesScreen(
+                model = viewModel.phraseologyProfilesModel(),
+                actions = viewModel.phraseologyProfilesActions(
+                    onLeave = { settingsDestination = SettingsDestination.ROOT },
+                ),
+                modifier = modifier,
+            )
+        }
+
+        AppTab.DIAGNOSTICS -> DiagnosticsScreen(
+            model = viewModel.diagnosticsModel(session, settings),
+            actions = viewModel.diagnosticsActions(),
+            modifier = modifier,
+        )
+    }
+}

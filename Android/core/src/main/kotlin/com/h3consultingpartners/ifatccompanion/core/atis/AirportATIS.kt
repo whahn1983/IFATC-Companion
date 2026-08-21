@@ -1,5 +1,8 @@
 package com.h3consultingpartners.ifatccompanion.core.atis
 
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+
 /**
  * A real-world ATIS (Automatic Terminal Information Service) broadcast for an
  * airport, as published by the FAA Digital ATIS (D-ATIS) feed.
@@ -18,7 +21,13 @@ package com.h3consultingpartners.ifatccompanion.core.atis
  * ATIS, each with its own information letter, so a report holds one or more [Part]s.
  *
  * Ported from `IFATCCompanion/ATIS/AirportATIS.swift`.
+ *
+ * Serializable because a saved flight carries the reports already fetched, so the ATIS
+ * card is populated on load rather than blank until the next refresh cycle. The [Kind]
+ * raw values are the Swift's, so a persisted session means the same thing on both
+ * platforms.
  */
+@Serializable
 data class AirportATIS(
     /** ICAO the ATIS is for (e.g. "KLAX"). */
     val airport: String,
@@ -29,10 +38,11 @@ data class AirportATIS(
 ) {
 
     /** Which operation an ATIS part applies to. */
-    enum class Kind {
-        COMBINED,
-        ARRIVAL,
-        DEPARTURE,
+    @Serializable
+    enum class Kind(val rawValue: String) {
+        @SerialName("combined") COMBINED("combined"),
+        @SerialName("arrival") ARRIVAL("arrival"),
+        @SerialName("departure") DEPARTURE("departure"),
         ;
 
         companion object {
@@ -46,6 +56,7 @@ data class AirportATIS(
     }
 
     /** A single ATIS part (a combined ATIS, or one of arrival / departure). */
+    @Serializable
     data class Part(
         val kind: Kind,
         /**
