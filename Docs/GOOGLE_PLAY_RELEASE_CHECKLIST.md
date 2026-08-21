@@ -92,6 +92,10 @@ committing code alone, which is why the two are separated.
 
 - [ ] `:app` has **not been compiled** in the environment this port was written in — the Android SDK and Google's Maven repository were unreachable there. The engine (`:core`) and the pure Compose screens are both verified, but the first Android Studio build should be expected to surface ordinary integration fixes.
 - [ ] Confirm the **Play Billing library version** in `gradle/libs.versions.toml` against the current Play requirement, and that `PlayBillingRepository` matches its API. This is the one file that could not be compile-checked.
+- [ ] **Nothing in this port has been heard.** The radio effect chain, the TTS voices, the chatter mix and the squelch bursts are ported maths that has never been played through a speaker. Listen to a full flight before shipping.
+- [ ] The **radar raster is not drawn on the route map** — provider selection, fetching and sampling all work, and the vector cells and advisory shading draw, but the fetched image is not composited onto the canvas. Decide whether to ship without it or finish it first.
+- [ ] The **Flights list screen** is not built (`SavedFlightStore` behind it is).
+- [ ] **Play In-App Review** is not called; the engagement counting that decides when to ask is ported.
 - [ ] Review `Docs/ANDROID_PARITY_MATRIX.md` and close or accept every open row.
 
 ---

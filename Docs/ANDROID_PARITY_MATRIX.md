@@ -14,14 +14,19 @@ because a screen exists.
 | ⬜ **Not started** | No Android code yet. |
 | 🔵 **Android-native substitution** | Deliberately different because the platform is, with the difference stated. |
 
-> **Verification status of the two modules.** `:core` is compiled and its tests are run
-> in the environment this port was written in — the numbers below are real. **`:app` has
-> never been compiled**: that environment had no Android SDK and no access to Google's
-> Maven repository. The *pure* Compose screens are type-checked against JetBrains Compose
-> (`settings-uicheck.gradle.kts`), so their Kotlin is verified; the Android-API code
-> around them — Activity, ViewModels, service, audio, billing, resources — is written but
-> unverified. Expect the first Android Studio build to surface ordinary integration
-> fixes. This is recorded here rather than discovered later.
+> **Verification status of the two modules.** `:core` is compiled and its tests are run in
+> the environment this port was written in — **818 tests across 64 classes, 0 failures, 0
+> skipped**, and the per-area counts below are real. **`:app` has never been compiled**:
+> that environment had no Android SDK and no access to Google's Maven repository. The
+> *pure* Compose screens are type-checked against JetBrains Compose
+> (`settings-uicheck.gradle.kts`), so their Kotlin is verified; the Android-API code around
+> them — Activity, ViewModels, service, audio, billing, resources — is written but
+> unverified. Expect the first Android Studio build to surface ordinary integration fixes.
+> This is recorded here rather than discovered later.
+>
+> Anything below marked ✅ has passing tests behind it. Anything marked 🟡 compiles (or
+> type-checks) but has no test of its own. The `:app` rows can never be better than 🟡 in
+> this environment, and saying so is the point of the vocabulary.
 
 ---
 
@@ -60,7 +65,10 @@ because a screen exists.
 | Read-back gate + idle re-prompt | `AppModel.swift` | `core/session/ReadbackGate.kt` — extracted so it is testable | ✅ 7 tests |
 | Flow ordering, facility mapping | `AppModel.swift` | `core/session/AtcFlowOrder.kt` | ✅ |
 | Response-button visibility | `AppModel.swift` | `core/session/PilotActionAvailability.kt` | ✅ 11 tests |
-| Automatic flow: takeoff, monitor-Tower, hand-offs, go-around, gate arrival | `AppModel.swift` 2107–2400, 4386–4780 | `core/session/FlightSessionCoordinator.kt` | 🟠 **Partial** — the gate, ordering and button rules are ported and tested; the telemetry-driven trigger loop that drives them is the largest remaining gap |
+| Automatic flow: takeoff, monitor-Tower, hand-offs, gate arrival | `AppModel.swift` 2107–2400, 4386–4780 | `core/session/FlightSessionCoordinator.kt` — including `adjustedAirborneTarget`, the ladder that turns a physical phase into the controller step it actually is | ✅ 30 tests, incl. a full gate-to-gate scenario |
+| Departure field elevation → initial climb | `AppModel.swift` 1930–1941, 4118–4133 | Captured from on-ground telemetry only (MSL − AGL); a half-read snapshot with no ground reference is refused | ✅ 2 tests |
+| Spoken pilot transmissions route to the button's action | `AppModel.swift` | `PilotIntent.pilotAction` + `FlightSessionCoordinator.handleSpokenPilotText` — same gate, same standby guard, same transcript as a tap | ✅ |
+| Go-around / missed approach | `AppModel.swift` 4600–4650 | Action and phraseology ported; the automatic re-establish loop after a go-around is **not** wired into `adjustedAirborneTarget` | 🟠 |
 
 ## 3. Phraseology
 
@@ -83,46 +91,55 @@ because a screen exists.
 | Shared HTTP conventions | `AppHTTP.swift` | `core/net/AppHttp.kt` | ✅ |
 | Route analysis, SIGMET corridor | `WeatherRouteAnalyzer.swift` | `core/weather/WeatherRouteAnalyzer.kt` | ✅ |
 | Provider diagnostics | `WeatherProviderDiagnostics.swift` | `core/weather/WeatherProviderDiagnostics.kt` | ✅ |
-| Turbulence model, ride reports | `TurbulenceModel.swift`, `RideReportEngine.swift` | `core/weather/deviation/` | ⬜ |
-| Route weather conflict detection | `RouteWeatherConflictDetector.swift` (2236) | `core/weather/deviation/` | ⬜ |
-| Deviation engine + phraseology | `WeatherDeviationEngine.swift`, `WeatherDeviationPhraseology.swift` | `core/weather/deviation/` | ⬜ |
-| Radar / satellite precipitation | `RadarImageSampler`, `PrecipitationProviders`, `PrecipitationOverlayService`, `RadarPrecipitationProvider`, `RadarOverlayModel` | `core/weather/radar/` | ⬜ |
-| EUMETNET OPERA (**disabled on iOS**) | `EUMETNETORDClient`, `OPERACompositeRenderer` | Stays disabled — see `Docs/ANDROID_DATA_SOURCES.md` | ⬜ |
-| Never infer turbulence from radar | design rule | Preserved in the port plan; the deviation engine keeps radar precipitation, satellite estimate, advisories and pilot reports as separate inputs | 🟠 |
+| Turbulence model, ride reports | `TurbulenceModel.swift`, `RideReportEngine.swift` | `core/weather/deviation/` | ✅ 15 tests |
+| Route weather conflict detection | `RouteWeatherConflictDetector.swift` (2236) | `core/weather/deviation/RouteWeatherConflictDetector.kt` — every tuning constant carried at its exact value | ✅ |
+| Deviation engine + phraseology | `WeatherDeviationEngine.swift`, `WeatherDeviationPhraseology.swift` | `core/weather/deviation/` | ✅ 88 tests |
+| Radar / satellite precipitation | `RadarImageSampler`, `PrecipitationProviders`, `PrecipitationOverlayService`, `RadarPrecipitationProvider`, `RadarOverlayModel` | `core/weather/radar/` — NOAA → OPERA → NASA GIBS selection, with a failure cooldown so a dead provider falls through rather than blanking the map | ✅ |
+| Raster → precipitation cells | `RadarImageSampler.swift` | `core/weather/radar/RadarImageSampler.kt`; the PNG/GeoTIFF decode is an injected `RasterImageDecoder`, so colour classification, clustering and the Mercator pixel→coordinate inversion are all testable without an image codec | ✅ 25 tests |
+| EUMETNET OPERA (**disabled on iOS**) | `EUMETNETORDClient`, `OPERACompositeRenderer` | Both ported; the shipping provider list constructs the provider with `useORD = false`, exactly as iOS does. Europe falls through to the clearly labelled NASA satellite estimate. See `Docs/ANDROID_DATA_SOURCES.md` | ✅ |
+| Weather session (fetch, ride recompute, ATIS cadence, overlay descriptor) | `AppModel.swift` `refreshWeather`/`recomputeRideItems` | `core/weather/WeatherSessionController.kt` — a separate object from the flight coordinator, because the ATC state machine and the weather feed share almost nothing but the flight plan | ✅ 18 tests |
+| Never infer turbulence from radar | design rule | The deviation engine keeps radar precipitation, satellite estimate, advisories and pilot reports as separate inputs; a satellite estimate is never labelled radar | ✅ tested |
+| Precipitation raster drawn on the route map | `RadarOverlayRenderer.swift` | **Not drawn yet.** The provider selection, the URL building and the sampler are all ported and tested, and the vector cells and advisory shading do draw — but the fetched raster is not yet composited onto the canvas | ⬜ |
 
 ## 5. Airport surface and taxi routing
 
 | iOS capability | iOS files | Android | Status |
 | --- | --- | --- | --- |
 | OSM constants, licensing, attribution | `OSMSurfaceConstants.swift` | `core/surface/OSMSurfaceConstants.kt` + `core/ui/LegalStrings.OpenStreetMap` | ✅ tested |
-| Overpass query, error-page detection | `OverpassQuery.swift`, `OverpassErrorPage.swift` | `core/surface/` | 🟠 |
-| OSM parsing and normalisation | `OSMElement.swift`, `OSMSurfaceNormalizer.swift` | `core/surface/OSMSurfaceNormalizer.kt` | 🟠 |
-| Surface cache (75-day refresh) | `AirportSurfaceCache.swift` | `core/surface/AirportSurfaceCache.kt` over `FileStore` | 🟠 |
-| Provider, failover, backoff, stale-serve | `AirportSurfaceProvider.swift` | `core/surface/` | 🟠 |
-| Aircraft size classes, stand identifiers | `AircraftSizeClass.swift`, `StandIdentifier.swift` | `core/surface/` | 🟡 |
-| Surface graph + routing | `SurfaceGraph*.swift`, `TaxiRouteEngine.swift` (1030) | `core/surface/routing/` | ⬜ |
-| Route tracking, off-route, recalculation | `RouteTracker.swift` | `core/surface/routing/` | ⬜ |
-| Runway-crossing state machine | `RunwayCrossingState.swift` | `core/surface/routing/` | ⬜ |
-| Route confidence | `SurfaceConfidenceEvaluator.swift` | `core/surface/routing/` | ⬜ |
-| Automatic gate assignment | `GateAssignment.swift` (622) | `core/surface/routing/` | ⬜ |
-| Taxi phraseology | `TaxiPhraseology.swift` | `core/surface/routing/` | ⬜ |
-| Surface coordinator (map lifecycle) | `AirportSurfaceCoordinator.swift` (1565) | `core/surface/routing/` | ⬜ |
+| Overpass query, error-page detection | `OverpassQuery.swift`, `OverpassErrorPage.swift` | `core/surface/` | ✅ |
+| OSM parsing and normalisation | `OSMElement.swift`, `OSMSurfaceNormalizer.swift` | `core/surface/OSMSurfaceNormalizer.kt` | ✅ |
+| Surface cache (75-day refresh) | `AirportSurfaceCache.swift` | `core/surface/AirportSurfaceCache.kt` over `FileStore` | ✅ |
+| Provider, failover, backoff, stale-serve | `AirportSurfaceProvider.swift` | `core/surface/AirportSurfaceProvider.kt` — endpoint failover order, 90 s query budget, per-airport backoff, request coalescing | ✅ |
+| Aircraft size classes, stand identifiers | `AircraftSizeClass.swift`, `StandIdentifier.swift` | `core/surface/` | ✅ |
+| Surface graph + routing | `SurfaceGraph*.swift`, `TaxiRouteEngine.swift` (1030) | `core/surface/routing/TaxiRouteEngine.kt` — A* that never chooses on distance alone: penalties push routes off unnecessary runway crossings, closed and unnamed segments, and opening 180° pivots | ✅ |
+| Route tracking, off-route, recalculation | `RouteTracker.swift` | `core/surface/routing/RouteTracker.kt` | ✅ |
+| Runway-crossing state machine | `RunwayCrossingState.swift` | `core/surface/routing/RunwayCrossingState.kt` — the read-back is what authorises the crossing | ✅ |
+| Route confidence | `SurfaceConfidenceEvaluator.swift` | `core/surface/routing/SurfaceConfidenceEvaluator.kt`; a low-confidence route draws dashed on the map rather than being presented as fact | ✅ |
+| Automatic gate assignment | `GateAssignment.swift` (622) | `core/surface/routing/GateAssignment.kt` | ✅ |
+| Taxi phraseology | `TaxiPhraseology.swift` | `core/surface/routing/TaxiPhraseology.kt` | ✅ |
+| Surface coordinator (map lifecycle) | `AirportSurfaceCoordinator.swift` (1565) | `core/surface/routing/AirportSurfaceCoordinator.kt` | ✅ |
+| Surface session (which fields load, and what is said when they can't) | part of the same file | `core/surface/SurfaceSessionController.kt` — an Overpass outage is recorded and reported, never thrown: the taxi map simply doesn't draw and taxi phrasing stays generic | ✅ 8 tests |
 
 ## 6. ATIS
 
 | iOS capability | iOS files | Android | Status |
 | --- | --- | --- | --- |
-| D-ATIS fetch, parse, runway extraction, spoken phraseology, information-letter memory | `ATIS/*.swift` (1134) | `core/atis/` | ⬜ |
+| D-ATIS model and feed parser | `AirportATIS.swift`, `ATISParser.swift` | `core/atis/` — an unrecognised payload yields nothing, and the whole feature disappears for that field. Nothing is ever fabricated | ✅ |
+| Active-runway extraction | `ATISRunwayParser.swift` | `core/atis/ATISRunwayParser.kt` — the coded grammar, including the outage/closure suppression | ✅ |
+| Keyless public D-ATIS client | `ATISService.swift` | `core/atis/ATISService.kt` — 2-minute TTL, request coalescing, exponential backoff, a cached 404 miss so a field with no D-ATIS is never re-asked | ✅ |
+| Spoken ATIS phraseology | `ATISPhraseology.swift` (607) | `core/atis/ATISPhraseology.kt` — every coded observation group decoded as an ATIS voice reads it, plus the ~180-entry abbreviation table | ✅ |
+| Information-letter memory (only after tuning) | `AppModel.swift` | `WeatherSessionController.noteAtisTuned` — the app never claims the pilot has information it only fetched in the background | ✅ tested |
+| **Total** | 1134 lines of Swift | `core/atis/` (6 files) | ✅ **90 tests** |
 
 ## 7. En-route sectors, Mock Mode, persistence
 
 | iOS capability | iOS files | Android | Status |
 | --- | --- | --- | --- |
-| Center sector database + tracker | `Enroute/*.swift` + `CenterSectors.json` | `core/enroute/`, JSON bundled as a classpath resource | 🟠 in progress |
-| Mock Mode scripted flight | `MockSimulatorFeed.swift` | `core/mock/` | ⬜ |
-| Session resume | `SessionStateStore.swift` | `core/persistence/` | ⬜ |
-| Saved flights | `SavedFlightStore.swift` | `core/persistence/` | ⬜ |
-| Review prompt | `ReviewRequestManager.swift` | 🔵 Play In-App Review replaces `SKStoreReviewController` | ⬜ |
+| Center sector database + tracker | `Enroute/*.swift` + `CenterSectors.json` | `core/enroute/`; the JSON is byte-identical and loaded from the classpath | ✅ 17 tests |
+| Mock Mode scripted flight | `MockSimulatorFeed.swift` | `core/mock/MockSimulatorFeed.kt` — the same demo flight, KIAH → KMSP at FL370, to the digit | ✅ 12 tests |
+| Session resume | `SessionStateStore.swift` | `core/persistence/SessionStateStore.kt` | ✅ |
+| Saved flights | `SavedFlightStore.swift` | `core/persistence/SavedFlightStore.kt` | ✅ 23 tests total in the package |
+| Review prompt | `ReviewRequestManager.swift` | 🔵 Play In-App Review replaces `SKStoreReviewController` | ⬜ **not implemented** — the engagement counting is ported, the Play API call is not |
 
 ## 8. Audio
 
@@ -137,8 +154,9 @@ because a screen exists.
 | Text-to-speech | `AVSpeechSynthesizer` | 🔵 `app/audio/AndroidSpeechService.kt` — `TextToSpeech`; the radio path renders via `synthesizeToFile` (a WAV) because Android has no `write(_:)`, then decodes and processes identically | 🔵 |
 | Per-facility voices, pilot/ATIS voices | `VoiceCatalog.swift`, `SpeechService.swift` | Voice selection ported; the curated iOS voice list (Karen/Daniel/Moira/Rishi/Samantha) does not exist on Android — the picker offers the device's installed voices, English first | 🔵 |
 | Speech rate mapping | iOS absolute rate | 🔵 Android's rate is a multiplier; the iOS default maps to 1.0 so an untouched slider sounds the same | 🔵 |
-| Push-to-talk recognition | `SFSpeechRecognizer` | 🔵 `SpeechRecognizer`, on-device where available | ⬜ |
-| Ambient chatter | `Chatter/*.swift` (1175) | `core/chatter/` | ⬜ |
+| Push-to-talk recognition | `SFSpeechRecognizer` | 🔵 `app/audio/PushToTalkRecognizer.kt` — `SpeechRecognizer` with `EXTRA_PREFER_OFFLINE`, so a pilot's transmissions are never sent to a speech service. With no on-device model it fails with a reason rather than falling back to the network | 🟡 |
+| Ambient chatter | `Chatter/*.swift` (1175) | `core/chatter/` (pacing, script generation, ducking, PTT interaction) + `app/audio/AndroidChatterRadio.kt` | ✅ 26 tests |
+| Chatter as the background keep-alive | iOS: the chatter audio session is what keeps the process alive | 🔵 **Not so here.** The foreground service keeps the flight running and needs no audio; chatter is only ever a feature. Playing near-silent audio to stay alive is what Play policy treats as abuse. This is why the Live Flight Update and chatter are **independent** settings on Android where iOS interlocks them | 🔵 |
 
 ## 9. Subscriptions
 
@@ -166,16 +184,18 @@ because a screen exists.
 | --- | --- | --- | --- |
 | Tab shell (ATC, Flight, Weather, Settings, Diagnostics) | `ContentView.swift` | `ui/screens/AppShell.kt` — same tabs, same order, Material 3 navigation bar | ✅ type-checked |
 | Shared components (card, pill, data row, action button, frequency button) | `Components.swift` | `ui/components/Components.kt` | ✅ |
-| ATC screen | `ATCView.swift` (681) | `ui/screens/AtcScreen.kt` — same cards in the same order, copy verbatim | 🟡 |
-| Flight screen | `FlightView.swift` | `ui/screens/FlightScreen.kt` | 🟡 |
-| Subscription screen | `SubscriptionView.swift` | `ui/screens/SubscriptionScreen.kt` | 🟡 |
-| Weather screen | `WeatherView.swift` | — | ⬜ |
-| Settings screen | `SettingsView.swift` (542) | — | ⬜ |
-| Diagnostics screen | `DiagnosticsView.swift` | — | ⬜ |
-| Flights list | `FlightsListView.swift` | — | ⬜ |
-| Phraseology profiles | `PhraseologyProfilesView.swift` | — | ⬜ |
-| Taxi map | `TaxiMapView.swift` (468) | `ui/map/` — canvas and projection ready; layers pending | 🟠 |
-| Route map + radar overlay | `RouteMapView.swift`, `RadarOverlayRenderer.swift` | `ui/map/` — same | 🟠 |
+| ATC screen | `ATCView.swift` (681) | `ui/screens/AtcScreen.kt` — same cards in the same order, copy verbatim | 🟡 type-checked |
+| Flight screen | `FlightView.swift` | `ui/screens/FlightScreen.kt` | 🟡 type-checked |
+| Subscription screen | `SubscriptionView.swift` | `ui/screens/SubscriptionScreen.kt` | 🟡 type-checked |
+| Weather screen | `WeatherView.swift` | `ui/screens/WeatherScreen.kt` — same cards, same legends, disclaimer copy verbatim | 🟡 type-checked |
+| Settings screen | `SettingsView.swift` (542) | `ui/screens/SettingsScreen.kt` — same sections, labels and footers | 🟡 type-checked |
+| Diagnostics screen | `DiagnosticsView.swift` | `ui/screens/DiagnosticsScreen.kt` | 🟡 type-checked |
+| Phraseology profiles | `PhraseologyProfilesView.swift` | `ui/screens/PhraseologyProfilesScreen.kt` — swipe-to-delete behind an EditButton becomes an explicit per-row delete, and `ShareLink` becomes the system share sheet | 🟡 type-checked |
+| Flights list | `FlightsListView.swift` | **Not built.** `SavedFlightStore` is ported and tested; the screen that lists them is not | ⬜ |
+| Taxi map | `TaxiMapView.swift` (468) | `ui/map/TaxiMapLayers.kt` — only the geometry the route touches is drawn, the same restriction iOS adopted after overlay volume crashed MapKit | 🟡 type-checked |
+| Route map | `RouteMapView.swift` | `ui/map/RouteMapLayers.kt` — the iOS drawing order preserved exactly, because the order is what says which things the pilot must act on | 🟡 type-checked |
+| Radar raster overlay on the map | `RadarOverlayRenderer.swift` | Not composited onto the canvas yet — see the Weather section | ⬜ |
+| Pull-to-refresh on Weather | `.refreshable` | 🔵 A refresh action in the top bar. Compose's pull-to-refresh is still experimental in the pinned BOM, and a screen whose only way to load weather is an unstable API is the wrong trade | 🔵 |
 | SimBrief | `SimBriefBrowserView.swift` (SFSafariViewController) | 🔵 `simbrief/SimBriefLauncher.kt` — Custom Tabs, the direct counterpart. A WebView would reintroduce the exact focus problem iOS moved away from | 🟡 |
 | SF Symbols | throughout | 🔵 `ui/components/Icons.kt` maps semantic keys to Material Symbols; each substitution is commented with the SF Symbol it replaces | ✅ |
 | Dynamic colour | n/a | 🔵 **Deliberately off.** Material You would let the wallpaper repaint the app and break the visual-identity parity this port is for | ✅ |
@@ -217,15 +237,56 @@ because a screen exists.
 
 ## Known parity gaps
 
-1. **The telemetry-driven automatic ATC loop** is the largest single gap. Its component
-   rules — the read-back gate, flow ordering, button availability, the state machine,
-   phase detection — are ported and tested; the loop that calls them on each snapshot is
-   not yet complete.
-2. **Weather deviation, radar overlays, ATIS, taxi routing, runway crossings, Mock Mode,
-   session persistence and ambient chatter** are not yet ported. These are the rows
-   marked ⬜, and they are substantial: roughly 12,000 lines of Swift between them.
-3. **Five screens** (Weather, Settings, Diagnostics, Flights, Phraseology profiles) and
-   the two map layer sets are not yet built.
-4. **`:app` has never been compiled.** See the note at the top.
-5. **No physical-device testing** has happened: there was no Android device, emulator or
-   SDK available, and no Infinite Flight installation to connect to.
+Stated plainly, and none of them hidden behind a ✅ elsewhere in this file.
+
+1. **`:app` has never been compiled.** No Android SDK, no Google Maven. The Compose
+   screens are type-checked; everything touching an Android API is not. This is the
+   single biggest risk in the port and the first item on the release checklist.
+2. **No physical-device or emulator testing.** No device, no emulator, and no Infinite
+   Flight installation to connect to. Nothing in the port has been *heard* — the radio
+   effect chain, the TTS voices, the chatter mix and the squelch bursts are all ported
+   maths that has never been played.
+3. **The radar raster is not drawn on the route map.** Provider selection, URL building,
+   fetching and sampling are all ported and tested, and the vector cells and advisory
+   shading do draw; compositing the fetched image onto the canvas is not done.
+4. **The Flights list screen** is not built (the store behind it is).
+5. **Play In-App Review** is not called. The engagement counting that decides *when* to
+   ask is ported; the Play API call itself is not.
+6. **The go-around re-establish loop** is not wired into the airborne ladder: the action
+   and its phraseology are ported, but after a go-around the automatic flow does not yet
+   hold for the pilot to re-establish with Approach the way iOS does.
+7. **EUMETNET OPERA rendering stays off**, exactly as it is on iOS. Not a gap so much as
+   a carried-across decision, recorded here so it is not mistaken for one.
+
+## What was verified, and how
+
+| | |
+| --- | --- |
+| `:core` compile | ✅ `./gradlew -c settings-core.gradle.kts :core:compileKotlin` |
+| `:core` tests | ✅ **818 tests, 64 classes, 0 failures, 0 skipped** |
+| Compose screens type-check | ✅ `./gradlew -c settings-uicheck.gradle.kts :uicheck:compileKotlin` |
+| `:app` compile | ❌ not possible here |
+| Instrumented tests | ❌ not possible here |
+| Device / emulator | ❌ none available |
+| Release AAB | ❌ requires the Android SDK; the Gradle configuration for it is in place |
+
+### `:core` tests by area
+
+| Area | Tests |
+| --- | --- |
+| Weather (parsers, service, deviation, radar, session) | 232 |
+| Airport surface and taxi routing | 133 |
+| Phraseology (both packs, airlines, profiles, validator) | 96 |
+| ATIS | 90 |
+| Infinite Flight Connect | 81 |
+| Flight session (incl. the gate-to-gate scenario) | 30 |
+| Geo and heading solving | 27 |
+| Ambient chatter | 26 |
+| Persistence | 23 |
+| Center sectors | 17 |
+| Map projection | 14 |
+| Mock Mode | 12 |
+| Settings | 12 |
+| Live Flight Update | 10 |
+| Airports | 8 |
+| Legal strings and attribution | 7 |
