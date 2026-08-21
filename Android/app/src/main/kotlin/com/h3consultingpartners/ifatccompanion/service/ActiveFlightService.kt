@@ -98,7 +98,22 @@ class ActiveFlightService : LifecycleService() {
 
         lifecycleScope.launch {
             controller.liveUpdate.collectLatest { update ->
-                if (!canPostNotifications()) return@collectLatest
+                // From Android 13 POST_NOTIFICATIONS is a runtime permission, and a denial
+                // makes notify() a silent no-op rather than an error. MainActivity asks for
+                // it, but the pilot is free to say no — and then the Live Flight Update
+                // never appears while the service itself keeps running perfectly well.
+                //
+                // Written out here rather than extracted into a helper because lint's
+                // MissingPermission check only looks inside the calling method: the
+                // identical guard behind a one-line helper read better and was invisible
+                // to it, which is exactly what turned this job red.
+                val permitted = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+                    ContextCompat.checkSelfPermission(
+                        this@ActiveFlightService,
+                        Manifest.permission.POST_NOTIFICATIONS,
+                    ) == PackageManager.PERMISSION_GRANTED
+                if (!permitted) return@collectLatest
+
                 // Re-post rather than rebuild the whole foreground state: the platform
                 // treats an update to the same id as an update, and the channel is silent,
                 // so the card refreshes without ever alerting.
@@ -117,18 +132,6 @@ class ActiveFlightService : LifecycleService() {
             }
         }
     }
-
-    /**
-     * From Android 13 POST_NOTIFICATIONS is a runtime permission, and a denial makes
-     * `notify()` a silent no-op rather than an error. MainActivity asks for it, but the
-     * pilot is free to say no — and then the Live Flight Update simply never appears
-     * while the service itself keeps running perfectly well. Checking here keeps that
-     * an explicit, readable decision instead of an invisible one.
-     */
-    private fun canPostNotifications(): Boolean =
-        Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
-            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
-            PackageManager.PERMISSION_GRANTED
 
     private fun stopSelfSafely() {
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
