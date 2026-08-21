@@ -251,8 +251,18 @@ Stated plainly, and none of them hidden behind a ✅ elsewhere in this file.
    build-breaking**, including an app that would never have spoken a word (the TTS
    engine was never initialised), a paywall whose buttons could never enable (the
    BillingClient was never started), and a billing path that revoked Live access from
-   paying customers. All 16 are fixed. A static review is not a compiler, so this
-   lowers the risk rather than removing it.
+   paying customers.
+
+   A **second** review then went over those fixes — a fix to uncompiled code is just
+   more uncompiled code — and found seven more, one of them caused by the first round:
+   the ATIS rewrite had deleted `speakChatter()` while its caller remained, which alone
+   would have failed the build. It also found push-to-talk keying its gesture on the
+   state its own press handler flips (so the mic latched open), background chatter that
+   was never started, a render loop that could wedge the speech pump permanently, and
+   the flight session split across two dispatchers.
+
+   All 23 are fixed. A static review is not a compiler, so this lowers the risk rather
+   than removing it — and the second round is the evidence for exactly that.
 2. **No physical-device or emulator testing.** No device, no emulator, and no Infinite
    Flight installation to connect to. Nothing in the port has been *heard* — the radio
    effect chain, the TTS voices, the chatter mix and the squelch bursts are all ported
