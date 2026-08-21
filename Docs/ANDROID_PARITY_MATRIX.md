@@ -16,7 +16,7 @@ because a screen exists.
 | 🔵 **Android-native substitution** | Deliberately different because the platform is, with the difference stated. |
 
 > **Verification status of the two modules.** `:core` is compiled and its tests are run —
-> **828 tests across 65 classes, 0 failures, 0 skipped** — and the per-area counts below
+> **830 tests across 65 classes, 0 failures, 0 skipped** — and the per-area counts below
 > are real.
 >
 > `:app` is now compiled too, by CI (`.github/workflows/android.yml`): `assembleDebug`
@@ -117,12 +117,12 @@ because a screen exists.
 | Surface cache (75-day refresh) | `AirportSurfaceCache.swift` | `core/surface/AirportSurfaceCache.kt` over `FileStore` | ✅ |
 | Provider, failover, backoff, stale-serve | `AirportSurfaceProvider.swift` | `core/surface/AirportSurfaceProvider.kt` — endpoint failover order, 90 s query budget, per-airport backoff, request coalescing | ✅ |
 | Aircraft size classes, stand identifiers | `AircraftSizeClass.swift`, `StandIdentifier.swift` | `core/surface/` | ✅ |
-| Surface graph + routing | `SurfaceGraph*.swift`, `TaxiRouteEngine.swift` (1030) | `core/surface/routing/TaxiRouteEngine.kt` — A* that never chooses on distance alone: penalties push routes off unnecessary runway crossings, closed and unnamed segments, and opening 180° pivots. **The engine is correct and tested; `:app` never routes on it** — `AirportSurfaceCoordinator` is constructed nowhere, so no route is ever computed | 🔌 |
+| Surface graph + routing | `SurfaceGraph*.swift`, `TaxiRouteEngine.swift` (1030) | `core/surface/routing/TaxiRouteEngine.kt` — A* that never chooses on distance alone: penalties push routes off unnecessary runway crossings, closed and unnamed segments, and opening 180° pivots. `AirportSurfaceCoordinator` is constructed in `AppGraph` and driven from the flight's own states, so routes are computed. Its async work runs on `Dispatchers.Default` — A* on the main thread was a previous ANR | 🟡 |
 | Route tracking, off-route, recalculation | `RouteTracker.swift` | `core/surface/routing/RouteTracker.kt` | ✅ |
 | Runway-crossing state machine | `RunwayCrossingState.swift` | `core/surface/routing/RunwayCrossingState.kt` — the read-back is what authorises the crossing | ✅ |
 | Route confidence | `SurfaceConfidenceEvaluator.swift` | `core/surface/routing/SurfaceConfidenceEvaluator.kt`; a low-confidence route draws dashed on the map rather than being presented as fact | ✅ |
 | Automatic gate assignment | `GateAssignment.swift` (622) | `core/surface/routing/GateAssignment.kt` | ✅ |
-| Taxi phraseology | `TaxiPhraseology.swift` | `core/surface/routing/TaxiPhraseology.kt` — referenced only from `AirportSurfaceCoordinator`, which `:app` never constructs, so route-aware clearances ("taxi to runway 36 via A, B, hold short of 27") never fire; the state machine falls back to the generic `taxiToRunway` | 🔌 |
+| Taxi phraseology | `TaxiPhraseology.swift` | `core/surface/routing/TaxiPhraseology.kt` — reached through `FlightSessionCoordinator`'s `taxiContextProvider`, which fills the `taxiway` / `crossingRunway` / `parkingTaxiway` fields `buildContext` used to hardcode empty. With no route it degrades to the generic form | ✅ 2 tests |
 | Surface coordinator (map lifecycle) | `AirportSurfaceCoordinator.swift` (1565) | `core/surface/routing/AirportSurfaceCoordinator.kt` | ✅ |
 | Surface session (which fields load, and what is said when they can't) | part of the same file | `core/surface/SurfaceSessionController.kt` — an Overpass outage is recorded and reported, never thrown: the taxi map simply doesn't draw and taxi phrasing stays generic | ✅ 8 tests |
 
@@ -198,7 +198,7 @@ because a screen exists.
 | Diagnostics screen | `DiagnosticsView.swift` | `ui/screens/DiagnosticsScreen.kt` | 🟡 type-checked |
 | Phraseology profiles | `PhraseologyProfilesView.swift` | `ui/screens/PhraseologyProfilesScreen.kt` — swipe-to-delete behind an EditButton becomes an explicit per-row delete, and `ShareLink` becomes the system share sheet | 🟡 type-checked |
 | Flights list | `FlightsListView.swift` | **Not built.** `SavedFlightStore` is ported and tested; the screen that lists them is not | ⬜ |
-| Taxi map | `TaxiMapView.swift` (468) | `ui/map/TaxiMapLayers.kt` — the layers are written and type-checked, but `taxiMapModel` never populates `route`, `crossings`, `holdingPositions` or `routeConfidence`, so **no route, hold-short bar or crossing is ever drawn**. It also draws every runway at the field rather than only those the route touches, which is the restriction iOS adopted after overlay volume crashed MapKit | 🔌 |
+| Taxi map | `TaxiMapView.swift` (468) | `ui/map/TaxiMapLayers.kt` — draws the route, hold-short bars and crossings, and carries the coordinator's `crossingActions` / `offRouteActions` plus a read-back button — without which `AWAITING_PILOT_READBACK` would wedge a taxi that reached a runway. `relevantRunways` is filtered to the runways the route touches, the restriction iOS adopted after overlay volume crashed MapKit | 🟡 |
 | Route map | `RouteMapView.swift` | `ui/map/RouteMapLayers.kt` — the iOS drawing order preserved exactly, because the order is what says which things the pilot must act on | 🟡 type-checked |
 | Radar raster overlay on the map | `RadarOverlayRenderer.swift` | Not composited onto the canvas yet — see the Weather section | ⬜ |
 | Pull-to-refresh on Weather | `.refreshable` | 🔵 A refresh action in the top bar. Compose's pull-to-refresh is still experimental in the pinned BOM, and a screen whose only way to load weather is an unstable API is the wrong trade | 🔵 |
