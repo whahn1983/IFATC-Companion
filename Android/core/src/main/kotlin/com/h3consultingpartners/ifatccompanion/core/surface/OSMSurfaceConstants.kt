@@ -2,6 +2,7 @@ package com.h3consultingpartners.ifatccompanion.core.surface
 
 import com.h3consultingpartners.ifatccompanion.core.config.AppConfig
 import com.h3consultingpartners.ifatccompanion.core.net.AppHttp
+import com.h3consultingpartners.ifatccompanion.core.ui.LegalStrings
 
 /**
  * Central configuration for the OpenStreetMap airport-surface feature.
@@ -25,14 +26,22 @@ object OSMSurface {
 
     // MARK: - Provider identity
 
-    /** Human-readable name of the airport-surface data provider. */
-    const val PROVIDER_NAME = "OpenStreetMap contributors"
+    /**
+     * Human-readable name of the airport-surface data provider.
+     *
+     * Provider identity, licence wording and the visible attribution are pinned once in
+     * [LegalStrings.OpenStreetMap] — the ODbL is an obligation, not a courtesy, and
+     * attribution that drifts is attribution that fails. These aliases exist so the
+     * surface pipeline reads the way the Swift does (`OSMSurface.providerName`) without
+     * a second copy of the strings.
+     */
+    const val PROVIDER_NAME = LegalStrings.OpenStreetMap.PROVIDER_NAME
 
     /** The license OSM data is distributed under (NOT CC BY 4.0). */
-    const val LICENSE_NAME = "Open Database License (ODbL) 1.0"
+    const val LICENSE_NAME = LegalStrings.OpenStreetMap.LICENSE_NAME
 
     /** Short license identifier used in compact diagnostics/labels. */
-    const val LICENSE_SHORT_NAME = "ODbL 1.0"
+    const val LICENSE_SHORT_NAME = LegalStrings.OpenStreetMap.LICENSE_SHORT_NAME
 
     // MARK: - Visible attribution
 
@@ -40,19 +49,19 @@ object OSMSurface {
      * The exact wording shown directly on the taxi map, in Settings, and in
      * diagnostics. Kept identical everywhere so attribution reads consistently.
      */
-    const val ATTRIBUTION_TEXT = "Surface data © OpenStreetMap contributors"
+    const val ATTRIBUTION_TEXT = LegalStrings.OpenStreetMap.ATTRIBUTION_TEXT
 
     /**
      * The bare copyright line some compact contexts use ("© OpenStreetMap
      * contributors"). Prefer [ATTRIBUTION_TEXT] where space allows.
      */
-    const val ATTRIBUTION_SHORT = "© OpenStreetMap contributors"
+    const val ATTRIBUTION_SHORT = LegalStrings.OpenStreetMap.ATTRIBUTION_SHORT
 
     /** The OpenStreetMap copyright & license page the visible attribution links to. */
-    const val COPYRIGHT_URL = AppConfig.Links.OPENSTREETMAP_COPYRIGHT
+    const val COPYRIGHT_URL = LegalStrings.OpenStreetMap.COPYRIGHT_URL
 
     /** Canonical ODbL 1.0 license text, linked from the detailed legal/data-source page. */
-    const val ODBL_LICENSE_URL = AppConfig.Links.ODBL_LICENSE
+    const val ODBL_LICENSE_URL = LegalStrings.OpenStreetMap.LICENSE_URL
 
     /**
      * Where the pilot can access the relevant ODbL notice and the transformation /
@@ -60,7 +69,7 @@ object OSMSurface {
      * place — the IFATC Companion documentation on GitHub (renders the Markdown doc).
      * Swap this for the GitHub Pages HTML mirror if/when one is published.
      */
-    const val PUBLIC_DOCUMENTATION_URL = AppConfig.Links.OPENSTREETMAP_LICENSING_DOC
+    const val PUBLIC_DOCUMENTATION_URL = LegalStrings.OpenStreetMap.DOCUMENTATION_URL
 
     // MARK: - Overpass access
 
@@ -190,8 +199,7 @@ object OSMSurface {
      * The simulation-only disclaimer shown wherever surface maps / routes / crossing
      * instructions appear.
      */
-    const val SIMULATION_DISCLAIMER =
-        "Airport surface maps, taxi routes, and runway-crossing instructions are for flight simulation only and must not be used for real-world aviation."
+    const val SIMULATION_DISCLAIMER = LegalStrings.OpenStreetMap.SIMULATION_DISCLAIMER
 
     /** A short note that OSM data may not match Infinite Flight scenery. */
     const val MISMATCH_NOTE =
