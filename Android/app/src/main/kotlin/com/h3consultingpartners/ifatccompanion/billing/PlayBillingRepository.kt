@@ -27,6 +27,7 @@ import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticLevel
 import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticsSink
 import com.h3consultingpartners.ifatccompanion.core.platform.KeyValueStore
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -98,6 +99,11 @@ class PlayBillingRepository(
 
     private val billingClient: BillingClient = BillingClient.newBuilder(context.applicationContext)
         .setListener(purchasesUpdatedListener)
+        // The Play Store service drops the binding routinely — when it self-updates, when
+        // the system reclaims it, or after a long idle. Without this the client stays dead
+        // until the process restarts: refreshPurchases() returns early on !isReady and
+        // launchBillingFlow answers SERVICE_DISCONNECTED without ever showing a sheet.
+        .enableAutoServiceReconnection()
         .enablePendingPurchases(
             // The Lifetime purchase is a one-time product, and Play can hold one pending
             // while a delayed payment form clears. Without this the client refuses to
@@ -248,21 +254,45 @@ class PlayBillingRepository(
         }
     }
 
-    /** Re-query Play's purchase records and re-evaluate entitlement. */
-    suspend fun refreshPurchases() {
-        if (!billingClient.isReady) return
+    /**
+     * Re-query Play's purchase records and re-evaluate entitlement. Returns whether the
+     * sweep was *complete* — see [handlePurchases] for why that distinction is the whole
+     * safety of this class.
+     */
+    suspend fun refreshPurchases(): Boolean {
+        if (!billingClient.isReady) return false
         val subscriptions = queryPurchases(BillingClient.ProductType.SUBS)
         val oneTime = queryPurchases(BillingClient.ProductType.INAPP)
-        handlePurchases(subscriptions + oneTime, authoritative = true)
+
+        // Only a sweep that actually succeeded saw everything the account owns, so only a
+        // sweep that actually succeeded is allowed to revoke. A failed query used to
+        // return an empty list, which is indistinguishable from "owns nothing" — so a
+        // pilot with no signal was dropped out of Live Connected Mode, and because that
+        // path wrote through to the cache, every later offline launch read a poisoned
+        // false and showed unentitled too.
+        val complete = subscriptions != null && oneTime != null
+
+        // Still hand over whatever did come back: a grant from the half that succeeded is
+        // honoured, and any purchase in it is acknowledged (Play refunds anything left
+        // unacknowledged for three days). Only revocation is withheld.
+        handlePurchases(subscriptions.orEmpty() + oneTime.orEmpty(), authoritative = complete)
+
+        if (!complete && !_state.value.hasLiveAccess) {
+            // Nothing in the partial result granted access. Hold the last entitlement Play
+            // confirmed and mark it cached, rather than writing a false negative.
+            applyEntitlement(cachedEntitlement(), fromCache = true)
+        }
+        return complete
     }
 
-    private suspend fun queryPurchases(type: String): List<Purchase> {
+    /** Null means the query failed — which is not the same as owning nothing. */
+    private suspend fun queryPurchases(type: String): List<Purchase>? {
         val result = billingClient.queryPurchasesAsync(
             QueryPurchasesParams.newBuilder().setProductType(type).build(),
         )
         if (result.billingResult.responseCode != BillingClient.BillingResponseCode.OK) {
             log(DiagnosticLevel.WARNING, "Purchase query failed: ${describe(result.billingResult)}")
-            return emptyList()
+            return null
         }
         return result.purchasesList
     }
@@ -330,20 +360,36 @@ class PlayBillingRepository(
             null
         }
 
-        val productParams = BillingFlowParams.ProductDetailsParams.newBuilder()
-            .setProductDetails(details)
-            .apply { if (offerToken != null) setOfferToken(offerToken) }
-            .build()
+        // Auto-reconnection is asynchronous and backs off, so a tap that lands inside the
+        // reconnect window still needs to wait for the binding. `scope` is Dispatchers
+        // .Default and launchBillingFlow must be called from the main thread, so say so.
+        scope.launch(Dispatchers.Main) {
+            if (!connect()) {
+                setPhase(PurchasePhase.Failed(EntitlementState.BILLING_UNAVAILABLE_MESSAGE))
+                return@launch
+            }
+            // The Activity is captured across a suspension point; Play must never be asked
+            // to show a sheet over one that has gone away.
+            if (activity.isFinishing || activity.isDestroyed) {
+                setPhase(PurchasePhase.Idle)
+                return@launch
+            }
 
-        val result = billingClient.launchBillingFlow(
-            activity,
-            BillingFlowParams.newBuilder()
-                .setProductDetailsParamsList(listOf(productParams))
-                .build(),
-        )
-        if (result.responseCode != BillingClient.BillingResponseCode.OK) {
-            log(DiagnosticLevel.WARNING, "Could not launch billing flow: ${describe(result)}")
-            setPhase(PurchasePhase.Failed(EntitlementState.PURCHASE_FAILED_MESSAGE))
+            val productParams = BillingFlowParams.ProductDetailsParams.newBuilder()
+                .setProductDetails(details)
+                .apply { if (offerToken != null) setOfferToken(offerToken) }
+                .build()
+
+            val result = billingClient.launchBillingFlow(
+                activity,
+                BillingFlowParams.newBuilder()
+                    .setProductDetailsParamsList(listOf(productParams))
+                    .build(),
+            )
+            if (result.responseCode != BillingClient.BillingResponseCode.OK) {
+                log(DiagnosticLevel.WARNING, "Could not launch billing flow: ${describe(result)}")
+                setPhase(PurchasePhase.Failed(EntitlementState.PURCHASE_FAILED_MESSAGE))
+            }
         }
     }
 
@@ -358,11 +404,37 @@ class PlayBillingRepository(
                 setPhase(PurchasePhase.Failed(EntitlementState.RESTORE_FAILED_MESSAGE))
                 return@launch
             }
-            refreshPurchases()
+            // Reload products too. If the cold-start load failed, this is the only path
+            // that can repopulate them — and it is also the only place productLoadError is
+            // ever cleared, so without it a successful restore still leaves the "billing
+            // unavailable" banner on screen.
+            loadProducts()
+            val complete = refreshPurchases()
             setPhase(
-                if (_state.value.hasLiveAccess) PurchasePhase.Purchased else PurchasePhase.Idle,
+                when {
+                    _state.value.hasLiveAccess -> PurchasePhase.Purchased
+                    // A failed sweep is not "you own nothing" — saying Idle here is
+                    // indistinguishable from a successful restore that found nothing.
+                    !complete -> PurchasePhase.Failed(EntitlementState.RESTORE_FAILED_MESSAGE)
+                    else -> PurchasePhase.Idle
+                },
             )
         }
+    }
+
+    /**
+     * Called when the paywall is shown. Reconnects and reloads, which is what rescues a
+     * customer whose cold-start product load failed — until now nothing re-ran it, so
+     * every Buy button stayed dead for the rest of the process.
+     */
+    suspend fun onPaywallShown() {
+        // Clear only a stale terminal line. Wiping Purchased or Pending would erase
+        // exactly the state a returning customer needs to see.
+        when (_state.value.purchasePhase) {
+            is PurchasePhase.Cancelled, is PurchasePhase.Failed -> setPhase(PurchasePhase.Idle)
+            else -> Unit
+        }
+        refresh()
     }
 
     /** Reset any transient purchase status back to idle (e.g. when the sheet reopens). */

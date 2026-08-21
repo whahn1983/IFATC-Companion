@@ -247,6 +247,7 @@ fun FlightViewModel.settingsActions(
 fun FlightViewModel.subscriptionActions(onClose: () -> Unit) = SubscriptionScreenActions(
     onPurchase = ::onPurchase,
     onRestore = ::onRestorePurchases,
+    onRetryProducts = ::onSubscriptionScreenShown,
     // Android has no in-app "manage subscription" sheet: Play Store's own subscriptions
     // page is the sanctioned destination, and Apple's URL would be wrong here.
     onManage = { onOpenLink(AppConfig.Billing.MANAGE_SUBSCRIPTIONS_URL); onClose() },

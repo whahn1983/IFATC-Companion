@@ -45,6 +45,9 @@ data class SubscriptionScreenActions(
     val onManage: () -> Unit,
     val onOpenTerms: () -> Unit,
     val onOpenPrivacy: () -> Unit,
+    /** Retry loading products — the way out for someone already on this screen when
+     *  connectivity comes back. */
+    val onRetryProducts: () -> Unit,
 )
 
 /**
@@ -72,7 +75,7 @@ fun SubscriptionScreen(
         item { StatusBanner(state) }
 
         state.productLoadError?.let { message ->
-            item { ErrorCard(message) }
+            item { ErrorCard(message, actions.onRetryProducts) }
         }
 
         // Ordered monthly, annual, lifetime — the order both platforms show them in.
@@ -143,7 +146,7 @@ private fun StatusBanner(state: EntitlementState) {
 }
 
 @Composable
-private fun ErrorCard(message: String) {
+private fun ErrorCard(message: String, onRetry: () -> Unit) {
     Card {
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Icon(
@@ -151,7 +154,10 @@ private fun ErrorCard(message: String) {
                 contentDescription = null,
                 tint = IFATCTheme.semantic.connecting,
             )
-            Text(text = message, style = MaterialTheme.typography.bodyMedium)
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(text = message, style = MaterialTheme.typography.bodyMedium)
+                TextButton(onClick = onRetry) { Text("Try again") }
+            }
         }
     }
 }

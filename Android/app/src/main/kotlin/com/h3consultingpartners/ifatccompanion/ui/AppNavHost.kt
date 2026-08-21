@@ -118,13 +118,20 @@ fun AppNavHost(
                 modifier = modifier,
             )
 
-            SettingsDestination.SUBSCRIPTION -> SubscriptionScreen(
-                state = entitlements,
-                actions = viewModel.subscriptionActions(
-                    onClose = { settingsDestination = SettingsDestination.ROOT },
-                ),
-                modifier = modifier,
-            )
+            SettingsDestination.SUBSCRIPTION -> {
+                // Entitlements load once per process, in Application.onCreate. If Play was
+                // not bindable then, the product list is empty and every Buy button is
+                // dead — and nothing else ever retries. Keyed on Unit so it runs once per
+                // visit to the paywall, not once per recomposition.
+                LaunchedEffect(Unit) { viewModel.onSubscriptionScreenShown() }
+                SubscriptionScreen(
+                    state = entitlements,
+                    actions = viewModel.subscriptionActions(
+                        onClose = { settingsDestination = SettingsDestination.ROOT },
+                    ),
+                    modifier = modifier,
+                )
+            }
 
             SettingsDestination.PHRASEOLOGY_PROFILES -> PhraseologyProfilesScreen(
                 model = viewModel.phraseologyProfilesModel(ui, profiles),

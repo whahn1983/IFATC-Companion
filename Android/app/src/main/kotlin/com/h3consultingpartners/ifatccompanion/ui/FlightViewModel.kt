@@ -374,6 +374,16 @@ class FlightViewModel(
         viewModelScope.launch { graph.entitlements.restorePurchases() }
     }
 
+    /**
+     * Entitlements are otherwise loaded exactly once per process, in Application.onCreate.
+     * If Play was not bindable at that moment — mid self-update, or the common cold-boot
+     * race — the product list stayed empty and every Buy button stayed dead for the life
+     * of the process. Refreshing when the paywall appears is what recovers from that.
+     */
+    fun onSubscriptionScreenShown() {
+        viewModelScope.launch { graph.entitlements.onPaywallShown() }
+    }
+
     // endregion
 
     // region Phraseology profiles
