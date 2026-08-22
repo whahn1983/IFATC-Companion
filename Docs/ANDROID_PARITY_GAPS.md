@@ -14,8 +14,8 @@ verified by hand against both sources before this document was written: the chec
 
 ## Progress
 
-91 of the 100 are closed and three are partly closed; the rest stand. **All 37 rated high
-are closed** — every gap a pilot meets in a normal flight. What remains is 4 medium and 2
+92 of the 100 are closed and four are partly closed; the rest stand. **All 37 rated high
+are closed** — every gap a pilot meets in a normal flight. What remains is 3 medium and 1
 low. Each closed entry below carries a ✅ (or 🟡) line naming what closes it and, where a
 piece is still open, what that piece is — so this document stays the record of what the
 audit found *and* of what has been done about it rather than being quietly rewritten.
@@ -544,6 +544,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** The Settings toggle (SettingsScreen.kt:92-99) calls `update { it.copy(mockMode = on) }` → `FlightViewModel.updateSettings` (FlightViewModel.kt:807-816), which does `settingsRepository.replace(settings)`, reconfigures chatter and rebuilds the phraseology engine — and never calls `graph.setMockMode(...)`. Only the Diagnostics toggle (`onToggleMockMode`, FlightViewModel.kt:957-959) reaches it. Nothing else in `:app` observes `settings.mockMode` to drive the transport. So flipping Mock Mode off in Settings leaves the mock feed running and the session "active" (the `endSession()` at AppGraph.kt:502 never fires), and flipping it on in Settings never calls `mockFeed.start()`; only the flag and the UI labels change.
 
 **The Weather Diagnostics card is a different card: `WeatherProviderDiagnostics` is constructed nowhere, so the wind, conflict, deviation and radar-data-usage rows do not exist on Android**  
+🟡 Partly closed: the card is now built through `WeatherProviderDiagnostics` and prints the precip source, coverage, both last-update times, hazards, sampled cells, the route conflict, the rejoin fix and the deviation state. Two groups of rows stay out because their upstream is genuinely absent, not because they are unwired: the wind-triangle rows (Android derives headings from `departureGuidance`'s true→magnetic conversion and solves no wind triangle, so there is no second estimate to cross-check) and the OPERA byte counters (OPERA rendering is deliberately off on both platforms, so they would read zero). A row reading "—" would suggest a check that exists and failed.  
 *Behaves differently* · iOS: `IFATCCompanion/Views/DiagnosticsView.swift:137-176 (`weatherDiagnosticsCard`), fed by IFATCCompanion/App/AppModel.swift:6227-6300 (`updateWeatherDiagnostics`) and published at AppModel.swift:375`
 
 - **iOS:** The Diagnostics screen's Weather Diagnostics card prints eighteen named rows from `model.weatherDiagnostics`: Precip source, Overlay coverage, Last radar update, Radar data (OPERA) — the last-download / session-total byte counters that measure real cellular usage — Last aviation wx update, Hazards detected, Sampled radar cells, Route conflict (with the monitoring / on-flight-path / discarded-excursion wording composed at AppModel.swift:6244-6283), Rejoin fix, Deviation state, Wind in use, Sim-reported wind, Solved wind, Reported vs solved, Magnetic variation, Last weather vector and Departure heading, plus a provider-error line and a coverage message. The wind rows exist specifically so a vector that comes out wrong can be checked against Infinite Flight's own panel (WeatherProviderDiagnostics.swift:23-45).
@@ -717,6 +718,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 ### Audio, billing, review
 
 **An audio route change never re-forms the radio graph**  
+✅ Closed: `RadioAudioEngine` registers an `AudioDeviceCallback` while the graph is running and routes the change into `AmbientChatterService.onAudioRouteChanged`, which bounces the engine and re-applies the duck.  
 *Ported, not wired* · iOS: `IFATCCompanion/Chatter/AmbientChatterService.swift:86-90 (the .AVAudioEngineConfigurationChange observer) and :393-400 (onConfigChange, which stops, restarts and re-ducks the engine)`
 
 - **iOS:** When the audio route changes — headphones in or out, a Bluetooth headset connecting — the service bounces the engine so the graph re-forms against the new hardware format, then re-applies the duck state. The chatter keeps playing on the new device.

@@ -2,9 +2,11 @@ package com.h3consultingpartners.ifatccompanion.audio
 
 import android.content.Context
 import android.media.AudioAttributes
+import android.media.AudioDeviceCallback
+import android.media.AudioDeviceInfo
 import android.media.AudioFocusRequest
-import android.media.AudioManager
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioTrack
 import com.h3consultingpartners.ifatccompanion.core.audio.RadioAudio
 import kotlinx.coroutines.CompletableDeferred
@@ -41,6 +43,12 @@ class RadioAudioEngine(
      * `:core` already implements and tests, would never fire on Android.
      */
     private val onInterruption: (began: Boolean) -> Unit = {},
+    /**
+     * Told when the audio route changes — headphones in or out, a Bluetooth headset
+     * connecting. Wired to `AmbientChatterService.onAudioRouteChanged`, which bounces the
+     * engine so the graph re-forms against the new device and re-applies the duck.
+     */
+    private val onRouteChanged: () -> Unit = {},
 ) {
 
     private val sampleRate = RadioAudio.SAMPLE_RATE
@@ -138,6 +146,30 @@ class RadioAudioEngine(
      * no foreground service involved at all.
      */
     @Synchronized
+    /**
+     * Watches for the output device changing under a running graph.
+     *
+     * An `AudioTrack` is built against the device that was current when it was created, so
+     * unplugging headphones mid-flight leaves the track writing into a device that is gone
+     * — the write starts returning an error and the loop tears the whole bed down for
+     * good. Bouncing and rebuilding is what iOS does on its own configuration-change
+     * notification, and it is what keeps the radio on the new device.
+     *
+     * Registered only while the graph is running, so an idle app is not woken by every
+     * headset the user connects.
+     */
+    private val deviceCallback = object : AudioDeviceCallback() {
+        override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) = routeChanged()
+        override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) = routeChanged()
+
+        private fun routeChanged() {
+            if (!running.get()) return
+            onRouteChanged()
+        }
+    }
+
+    private var deviceCallbackRegistered = false
+
     fun start() {
         // compareAndSet, not get-then-set: two callers racing here — the chatter service
         // and a transmission arriving at the same moment — would otherwise both pass the
@@ -158,6 +190,7 @@ class RadioAudioEngine(
         renderTrack = buildTrack(minBuffer).also { it.play() }
         burstTrack = buildTrack(minBuffer).also { it.play() }
         applyLevels()
+        registerDeviceCallback()
 
         renderJob = scope.launch(Dispatchers.Default) {
             var generator = RadioAudio.BedGenerator()
@@ -234,6 +267,7 @@ class RadioAudioEngine(
     @Synchronized
     fun stop() {
         running.set(false)
+        unregisterDeviceCallback()
         abandonFocus()
         renderJob?.cancel()
         renderJob = null
@@ -242,6 +276,22 @@ class RadioAudioEngine(
         burstTrack?.release()
         burstTrack = null
         while (true) (pending.poll() ?: break).finished.complete(Unit)
+    }
+
+    private fun registerDeviceCallback() {
+        if (deviceCallbackRegistered) return
+        val manager = context.getSystemService(AudioManager::class.java) ?: return
+        // Null handler: the platform posts to the main looper, which is where every other
+        // callback in this class already lands.
+        runCatching { manager.registerAudioDeviceCallback(deviceCallback, null) }
+            .onSuccess { deviceCallbackRegistered = true }
+    }
+
+    private fun unregisterDeviceCallback() {
+        if (!deviceCallbackRegistered) return
+        deviceCallbackRegistered = false
+        val manager = context.getSystemService(AudioManager::class.java) ?: return
+        runCatching { manager.unregisterAudioDeviceCallback(deviceCallback) }
     }
 
     /** The pilot's chatter volume setting, 0…1. */

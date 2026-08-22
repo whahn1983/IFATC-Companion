@@ -234,7 +234,7 @@ fun AppNavHost(
 
         AppTab.DIAGNOSTICS -> DiagnosticsScreen(
             model = viewModel.diagnosticsModel(
-                session, settings, weather, ui, diagnosticsLog, connect, surface,
+                session, settings, weather, ui, diagnosticsLog, connect, surface, deviation,
             ),
             actions = viewModel.diagnosticsActions(),
             modifier = modifier,

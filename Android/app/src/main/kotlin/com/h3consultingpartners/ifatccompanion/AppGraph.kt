@@ -232,6 +232,11 @@ class AppGraph private constructor(
             // Route the platform's focus loss/gain into the chatter service's own
             // interruption hooks, which :core already implements.
             onInterruption = { began -> if (began) chatter.onInterruptionBegan() else chatter.onInterruptionEnded() },
+            // Headphones in or out, a Bluetooth headset connecting: the AudioTrack was
+            // built against the device that has just gone, so the write starts erroring
+            // and the loop tears the bed down for good rather than moving to the new one.
+            // :core already implements the bounce; nothing called it.
+            onRouteChanged = { chatter.onAudioRouteChanged() },
         )
     }
 

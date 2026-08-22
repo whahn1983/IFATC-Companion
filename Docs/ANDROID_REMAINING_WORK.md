@@ -45,8 +45,8 @@ is precisely why it survived this long, and why the 🔌 status exists.
 controller reply on any frequency**, **Say Again never makes the controller repeat**, and
 **Unable is answered with silence**.
 
-**Status: 91 of the 100 are closed and three are partly closed, and all 37 rated high are
-done.** What remains is 4 medium and 2 low, listed with their evidence in
+**Status: 92 of the 100 are closed and four are partly closed, and all 37 rated high are
+done.** What remains is 3 medium and 1 low, listed with their evidence in
 `ANDROID_PARITY_GAPS.md`. None of them stops a gate-to-gate flight.
 
 The deliberate differences that remain are recorded in `ANDROID_PARITY_MATRIX.md` (🔵) and

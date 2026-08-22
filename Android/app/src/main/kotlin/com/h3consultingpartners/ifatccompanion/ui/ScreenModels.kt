@@ -16,6 +16,7 @@ import com.h3consultingpartners.ifatccompanion.core.session.FlightSessionState
 import com.h3consultingpartners.ifatccompanion.core.session.PilotActionPresentation
 import com.h3consultingpartners.ifatccompanion.core.settings.AppSettings
 import com.h3consultingpartners.ifatccompanion.core.weather.TurbulenceSeverity
+import com.h3consultingpartners.ifatccompanion.core.weather.WeatherProviderDiagnostics
 import com.h3consultingpartners.ifatccompanion.core.surface.SurfaceSessionState
 import com.h3consultingpartners.ifatccompanion.core.surface.routing.AirportSurfaceState
 import com.h3consultingpartners.ifatccompanion.core.weather.WeatherSessionState
@@ -387,6 +388,7 @@ fun FlightViewModel.diagnosticsModel(
     diagnosticsLog: List<DiagnosticRecord>,
     connect: IFConnectState,
     surface: SurfaceSessionState,
+    deviation: WeatherDeviationController.State = WeatherDeviationController.State(),
 ): DiagnosticsScreenModel {
     return DiagnosticsScreenModel(
         mockMode = settings.mockMode,
@@ -397,7 +399,7 @@ fun FlightViewModel.diagnosticsModel(
         phaseDebug = session.phaseDebug,
         atisSummary = atisDiagnosticsSummary(weather),
         weatherEndpointText = weather.status,
-        weatherDiagnostics = weatherDiagnosticRows(weather),
+        weatherDiagnostics = weatherDiagnosticRows(weather, deviation),
         showSampledRadarCells = ui.showSampledRadarCells,
         discoveredStateCount = connect.manifestEntries.size,
         resolvedMappingCount = resolvedMappingCount(),
@@ -437,18 +439,67 @@ private fun atisDiagnosticsSummary(weather: WeatherSessionState): String? {
     ).filter { it.isNotEmpty() }.joinToString(" · ")
 }
 
-private fun weatherDiagnosticRows(weather: WeatherSessionState): List<Pair<String, String>> = listOf(
-    "METARs" to listOfNotNull(
-        weather.departureMetar, weather.destinationMetar, weather.alternateMetar,
-    ).size.toString(),
-    "PIREPs" to weather.pireps.size.toString(),
-    "SIGMETs" to "${weather.routeSigmets.size} on route / ${weather.sigmets.size} total",
-    "Ride index" to "${(weather.rideAssessment.index * 100).toInt()}%",
-    "Overlay layer" to weather.radarOverlay.layerLabel,
-    "Overlay source" to weather.radarOverlay.sourceDescription,
-    "Sampled cells" to weather.radarOverlay.sampledCells.size.toString(),
-    "Mock cells" to weather.radarOverlay.mockCells.size.toString(),
-)
+/**
+ * The Weather Diagnostics card.
+ *
+ * Built through the ported [WeatherProviderDiagnostics], which carries the panel's own
+ * wording and computed strings and which nothing constructed — so the Android card showed
+ * eight rows of its own invention and none of the ones a pilot actually needs when a
+ * deviation looks wrong: the route conflict, the deviation state, the rejoin fix, the
+ * provider error, and the radar byte counters that measure real cellular usage.
+ *
+ * The wind-triangle rows iOS prints (solved wind, sim-reported wind, the signed difference,
+ * magnetic variation, last weather vector) are deliberately absent rather than shown empty:
+ * Android derives its headings from `departureGuidance`'s true→magnetic conversion and
+ * solves no wind triangle, so there is no second estimate to cross-check against and a row
+ * reading "—" would only suggest the check exists and failed. Recorded in
+ * Docs/ANDROID_PARITY_GAPS.md.
+ */
+private fun weatherDiagnosticRows(
+    weather: WeatherSessionState,
+    deviation: WeatherDeviationController.State,
+): List<Pair<String, String>> {
+    val overlay = weather.radarOverlay
+    val d = WeatherProviderDiagnostics(
+        radarSource = overlay.sourceDescription,
+        radarCoverageAvailable = overlay.coverageAvailable,
+        lastRadarUpdateMillis = overlay.lastUpdatedMillis,
+        lastAviationUpdateMillis = weather.lastUpdateMillis,
+        hazardCount = deviation.hazards.size,
+        routeConflictStatus = deviation.conflict?.let { conflict ->
+            "${conflict.severity.name.lowercase()} ahead, " +
+                "${conflict.distanceAheadNM.roundToInt()} NM at " +
+                "${conflict.centerClock} o'clock"
+        } ?: "No conflict",
+        selectedRejoinFix = deviation.rejoinMarker?.name,
+        lastDeviationStateRawValue = deviation.context.state.rawValue,
+        coverageMessage = overlay.unavailableMessage.takeIf { !overlay.coverageAvailable },
+    )
+
+    return listOfNotNull(
+        "Precip source" to d.radarSource,
+        "Overlay coverage" to d.coverageText,
+        "Overlay layer" to overlay.layerLabel,
+        "Last radar update" to formatClockTime(d.lastRadarUpdateMillis),
+        "Last aviation wx update" to formatClockTime(d.lastAviationUpdateMillis),
+        "METARs" to listOfNotNull(
+            weather.departureMetar, weather.destinationMetar, weather.alternateMetar,
+        ).size.toString(),
+        "PIREPs" to weather.pireps.size.toString(),
+        "SIGMETs" to "${weather.routeSigmets.size} on route / ${weather.sigmets.size} total",
+        "Ride index" to "${(weather.rideAssessment.index * 100).toInt()}%",
+        "Hazards detected" to d.hazardCount.toString(),
+        "Sampled radar cells" to overlay.sampledCells.size.toString(),
+        "Mock cells" to overlay.mockCells.size.toString(),
+        "Route conflict" to d.routeConflictStatus,
+        d.selectedRejoinFix?.let { "Rejoin fix" to it },
+        "Deviation state" to d.lastDeviationStateRawValue,
+        d.radarDataUsageText?.let { "Radar data" to it },
+        d.providerError?.let { "Provider error" to it },
+        d.coverageMessage?.let { "Coverage" to it },
+    )
+}
+
 
 // endregion
 
