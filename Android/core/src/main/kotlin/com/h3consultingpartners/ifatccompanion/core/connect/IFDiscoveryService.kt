@@ -388,11 +388,6 @@ class IFDiscoveryService(
 }
 
 /**
- * The discovery seam the connect manager depends on. Concrete implementation is
- * [IFDiscoveryService]; tests substitute a stub so the manager's reconnect and
- * rediscovery rules can be exercised without touching the network.
- */
-/**
  * Whatever the platform needs held for inbound broadcast to reach a bound socket.
  *
  * On Android that is a `WifiManager.MulticastLock`: without one several OEM Wi-Fi drivers
@@ -415,6 +410,11 @@ interface BroadcastReceiveHold {
     }
 }
 
+/**
+ * The discovery seam the connect manager depends on. Concrete implementation is
+ * [IFDiscoveryService]; tests substitute a stub so the manager's reconnect and
+ * rediscovery rules can be exercised without touching the network.
+ */
 interface IFDeviceDiscovering {
     /** Begin searching. [onFound] is called at most once per [start]. */
     fun start(onFound: (IFDiscoveryService.Device) -> Unit)

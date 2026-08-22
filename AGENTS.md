@@ -187,7 +187,12 @@ that nothing in the build graph declares, so losing it would look like a renderi
 device and nowhere else.
 
 `cancel-in-progress: true` means **pushing a follow-up commit kills the run in flight**.
-Batch your pushes. Three CI runs were wasted learning this.
+Batch your pushes. Five CI runs were wasted learning this.
+
+The `paths:` filter does **not** save you here. On a `pull_request` event GitHub evaluates
+it against the whole PR diff, not the pushed commit — so once the PR touches `Android/**`,
+even a commit that changes only `AGENTS.md` re-runs the workflow and cancels whatever was
+in flight. Batching is the only thing that helps.
 
 ---
 
@@ -320,6 +325,41 @@ lines of `RasterImage.kt`, which is where `RasterImageDecoder.decode` is declare
 interface has a second member — `decodeScaled` — twenty lines further down. CI found it
 after four minutes. **Read a whole interface before implementing it**, not the part of it
 your call site happens to need.
+
+A sixth, and the worst of them, because it was not a typing mistake at all. A scripted
+insertion anchored on a *declaration line* (`fun start() {`) rather than on the KDoc above
+it, so the new block landed **between `@Synchronized` and the function it annotates**. Two
+defects from one edit: the annotation bound to a property (`This annotation is not
+applicable to target 'member property with backing field'`), and `start()` silently lost
+its lock — the lock its own comment says is what stops a generation being built while
+`stop()` tears one down. Had the annotation landed somewhere legal, that race would have
+shipped unnoticed. A sweep for the same pattern found two more: a KDoc orphaned from
+`IFDeviceDiscovering` and one from `noteAtisTuned`, each now documenting the *new*
+declaration instead of the one it was written for.
+
+**Anchor an insertion on the whole declaration, doc comment and annotations included — not
+on the line that happens to be unique.** After any scripted edit, check that no annotation
+is followed by a comment and no KDoc is followed by another KDoc:
+
+```bash
+python3 - <<'EOF'
+import subprocess, os, re
+files = subprocess.run(['git','diff','--name-only','HEAD','--','Android'],
+                       capture_output=True, text=True).stdout.split()
+for f in files:
+    if not f.endswith('.kt') or not os.path.exists(f): continue
+    lines = open(f).read().split('\n')
+    for i, l in enumerate(lines):
+        j = i + 1
+        while j < len(lines) and lines[j].strip() == '': j += 1
+        if j >= len(lines): continue
+        nxt = lines[j].strip()
+        if re.fullmatch(r'@[A-Za-z][\w.]*(\(.*\))?', l.strip()) and nxt.startswith(('/**','/*')):
+            print(f"{f}:{i+1} annotation orphaned from its declaration")
+        if l.strip() == '*/' and nxt.startswith('/**'):
+            print(f"{f}:{i+1} KDoc documents nothing")
+EOF
+```
 
 And a fifth: two one-line changes in `:app` cost another four-minute round trip. A `Float`
 was passed where the callee wanted a `Double` — `speakChatter(text, voiceId, volume: Double)`

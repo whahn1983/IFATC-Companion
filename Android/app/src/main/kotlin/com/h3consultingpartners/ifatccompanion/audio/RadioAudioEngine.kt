@@ -139,14 +139,6 @@ class RadioAudioEngine(
     }
 
     /**
-     * Start the engine. Safe to call repeatedly.
-     *
-     * Audio focus is taken here rather than by the caller: the engine is the thing that
-     * knows when sound is actually being produced, and it runs for background chatter with
-     * no foreground service involved at all.
-     */
-    @Synchronized
-    /**
      * Watches for the output device changing under a running graph.
      *
      * An `AudioTrack` is built against the device that was current when it was created, so
@@ -173,6 +165,14 @@ class RadioAudioEngine(
 
     private var deviceCallbackRegistered = false
 
+    /**
+     * Start the engine. Safe to call repeatedly.
+     *
+     * Audio focus is taken here rather than by the caller: the engine is the thing that
+     * knows when sound is actually being produced, and it runs for background chatter with
+     * no foreground service involved at all.
+     */
+    @Synchronized
     fun start() {
         // compareAndSet, not get-then-set: two callers racing here — the chatter service
         // and a transmission arriving at the same moment — would otherwise both pass the

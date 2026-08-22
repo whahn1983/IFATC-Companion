@@ -477,11 +477,6 @@ class WeatherSessionController(
     }
 
     /**
-     * Record the information code the pilot has actually received by tuning ATIS, per
-     * phase. Until they tune, no code is reported to ATC — the app never claims the pilot
-     * has information it only fetched in the background.
-     */
-    /**
      * The pilot tuned a controller, so they have moved on from the ATIS for this phase.
      *
      * Guarded on an ATIS actually being available: an early tune, before the feed has
@@ -495,6 +490,11 @@ class WeatherSessionController(
         }
     }
 
+    /**
+     * Record the information code the pilot has actually received by tuning ATIS, per
+     * phase. Until they tune, no code is reported to ATC — the app never claims the pilot
+     * has information it only fetched in the background.
+     */
     fun noteAtisTuned(arrival: Boolean) {
         val atis = if (arrival) _state.value.arrivalAtis else _state.value.departureAtis
         val letter = atis?.letter(arrival) ?: return
