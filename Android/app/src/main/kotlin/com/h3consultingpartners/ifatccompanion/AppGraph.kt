@@ -682,10 +682,36 @@ class AppGraph private constructor(
 
     fun onActivityResumed(activity: Activity) {
         currentActivity = WeakReference(activity)
+        reconnectAfterTimeAway()
     }
 
     fun onActivityPaused(activity: Activity) {
         if (currentActivity?.get() === activity) currentActivity = null
+        backgroundedAtMillis = clock.nowMillis()
+    }
+
+    /** When the app last went to the background, for the returning reconnect. */
+    private var backgroundedAtMillis: Long? = null
+
+    /**
+     * Tear the Infinite Flight link down and rebuild it after a real spell in the
+     * background, as iOS does on returning to the foreground.
+     *
+     * The socket does not survive being frozen. A doze'd or suspended process keeps a
+     * TCP connection that looks alive and delivers nothing, or delivers a fix minutes
+     * stale — which is the same discontinuity `FlightSessionCoordinator` guards against
+     * from the other end. Rebuilding is the only reliable way back.
+     *
+     * Gated on a minimum time away so it does not fire for a permission dialog, a Custom
+     * Tab, or the billing flow — all of which pause the Activity for a second or two and
+     * none of which break the link.
+     */
+    private fun reconnectAfterTimeAway() {
+        val away = backgroundedAtMillis ?: return
+        backgroundedAtMillis = null
+        if (clock.nowMillis() - away < FOREGROUND_RECONNECT_THRESHOLD_MILLIS) return
+        if (settingsRepository.state.value.mockMode) return
+        flightSource.refreshConnection()
     }
 
     fun activityOrNull(): Activity? = currentActivity?.get()
@@ -858,6 +884,13 @@ class AppGraph private constructor(
     )
 
     companion object {
+        /**
+         * How long the app must have been away before returning rebuilds the Infinite
+         * Flight link. Long enough that a permission dialog, a Custom Tab or the billing
+         * flow does not trigger it; short enough that a genuine background spell does.
+         */
+        const val FOREGROUND_RECONNECT_THRESHOLD_MILLIS = 5_000L
+
         // lint flags a static field that can reach a Context. It cannot see that create()
         // only ever stores context.applicationContext, which lives exactly as long as the
         // process does, so there is no Activity or View to leak. Suppressed rather than

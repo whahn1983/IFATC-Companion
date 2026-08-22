@@ -41,6 +41,7 @@ import com.h3consultingpartners.ifatccompanion.core.phraseology.PhraseologyProfi
 import com.h3consultingpartners.ifatccompanion.core.phraseology.RampPhraseologyEngine
 import com.h3consultingpartners.ifatccompanion.core.platform.Clock
 import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticCategory
+import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticLevel
 import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticsSink
 import com.h3consultingpartners.ifatccompanion.core.settings.AppSettings
 import com.h3consultingpartners.ifatccompanion.core.weather.deviation.WeatherDeviationController
@@ -329,6 +330,7 @@ class FlightSessionCoordinator(
         if (!aircraft.hasUsableTelemetry) return
 
         val previous = _state.value
+        val jumped = telemetryJumped(previous.aircraftState, aircraft)
         val detection = phaseDetector.detect(
             state = aircraft,
             plan = previous.flightPlan,
@@ -337,8 +339,15 @@ class FlightSessionCoordinator(
         )
 
         captureDepartureFieldElevation(aircraft, previous)
-        updateCenterSector(aircraft)
-        updateWeatherDeviation(aircraft, detection.phase)
+        // Position-driven decisions stand down for the tick after a jump. The aircraft did
+        // not fly the intervening ground track, so crossing a sector boundary or a weather
+        // corridor in one step means the app was not watching — not that anything happened.
+        // Replaying it produces a hand-off to a sector already left behind and a reroute
+        // around weather already passed.
+        if (!jumped) {
+            updateCenterSector(aircraft)
+            updateWeatherDeviation(aircraft, detection.phase)
+        }
 
         _state.update {
             it.copy(
@@ -358,6 +367,57 @@ class FlightSessionCoordinator(
         advanceAutomaticFlow(aircraft, detection.phase)
         recomputeDerivedState()
     }
+
+    /**
+     * Whether this fix is further from the last one than the aircraft could have flown.
+     *
+     * Two things produce one. A socket that froze and then snapped forward — Infinite
+     * Flight paused, the phone asleep, the link stalled — and the app returning from the
+     * background, where the poll simply was not running. Either way the ground track
+     * between the two fixes was never flown, so anything derived from crossing it is
+     * fiction.
+     *
+     * The threshold is generous on purpose: three times the distance the reported
+     * groundspeed could cover in the elapsed time, plus a nautical mile of slack for a
+     * stationary aircraft and for clock jitter. Anything under that is ordinary motion.
+     * Marked from the *reported* timestamps rather than wall time, so a slow tick and a
+     * frozen socket are told apart.
+     */
+    private fun telemetryJumped(previous: AircraftState, current: AircraftState): Boolean {
+        // Stamped before anything can return, so the clock keeps running through fixes
+        // that carry no usable position. Recorded inside the guards it lagged a tick, and
+        // the elapsed time for the fix that actually jumped read as zero.
+        val previousMillis = lastTelemetryMillis
+        lastTelemetryMillis = clock.nowMillis()
+
+        val from = previous.coordinate?.takeIf { it.isValid } ?: return false
+        val to = current.coordinate?.takeIf { it.isValid } ?: return false
+        val elapsedSeconds = previousMillis
+            ?.let { (clock.nowMillis() - it).coerceAtLeast(0L) / 1000.0 }
+            ?: 0.0
+
+        // A discontinuity is defined by time having passed without the motion being
+        // reported. With no measurable elapsed time there is no basis for the judgement —
+        // the first fix of a session, two fixes in the same tick — so it is not one.
+        if (elapsedSeconds < MINIMUM_JUMP_ELAPSED_SECONDS) return false
+
+        val speed = maxOf(previous.groundSpeed ?: 0.0, current.groundSpeed ?: 0.0)
+        val plausibleNM = speed * (elapsedSeconds / 3600.0) * TELEMETRY_JUMP_FACTOR +
+            TELEMETRY_JUMP_SLACK_NM
+        val movedNM = Geo.distanceNM(from, to)
+        if (movedNM <= plausibleNM) return false
+
+        diagnostics.log(
+            DiagnosticCategory.STATE,
+            level = DiagnosticLevel.WARNING,
+            message = "Telemetry jumped ${movedNM.roundToInt()} NM in " +
+                "${elapsedSeconds.roundToInt()}s — resyncing",
+        )
+        return true
+    }
+
+    /** When the last usable fix arrived, for the jump test. */
+    private var lastTelemetryMillis: Long? = null
 
     /**
      * The departure field's elevation, captured from on-ground telemetry (MSL − AGL,
@@ -2985,6 +3045,17 @@ class FlightSessionCoordinator(
 
         /** The heading vectors fall back to with no telemetry at all. */
         const val FALLBACK_VECTOR_HEADING = 270.0
+
+        /**
+         * How much further than the reported groundspeed allows a fix may move before it
+         * is treated as a discontinuity rather than as flying. iOS uses the same factor
+         * and slack.
+         */
+        const val TELEMETRY_JUMP_FACTOR = 3.0
+        const val TELEMETRY_JUMP_SLACK_NM = 1.0
+
+        /** Below this the elapsed time is not a usable denominator, so no jump is called. */
+        const val MINIMUM_JUMP_ELAPSED_SECONDS = 1.0
 
         /**
          * How long an aircraft holds on the runway before Tower clears it for take-off.

@@ -14,8 +14,8 @@ verified by hand against both sources before this document was written: the chec
 
 ## Progress
 
-90 of the 100 are closed and three are partly closed; the rest stand. **All 37 rated high
-are closed** — every gap a pilot meets in a normal flight. What remains is 5 medium and 2
+91 of the 100 are closed and three are partly closed; the rest stand. **All 37 rated high
+are closed** — every gap a pilot meets in a normal flight. What remains is 4 medium and 2
 low. Each closed entry below carries a ✅ (or 🟡) line naming what closes it and, where a
 piece is still open, what that piece is — so this document stays the record of what the
 audit found *and* of what has been done about it rather than being quietly rewritten.
@@ -372,6 +372,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** buildContext passes constants: `DEFAULT_CENTER_FREQUENCY = 133.4`, `DEFAULT_GROUND_FREQUENCY = 121.9`, `DEFAULT_DEPARTURE_FREQUENCY = 124.35` (FlightSessionCoordinator.kt:1618-1624), and `frequencyFor(CENTER, c)` returns `c.centerFrequency`, so the sector's own frequency never reaches the context. Only `announceCenterSectorHandoff` (line 1419) uses `crossing.to.frequency`; the Center tune button and the Departure→Center hand-off both read 133.4 regardless of sector.
 
 **No telemetry-discontinuity detection and no forced reconnect on returning to the foreground**  
+✅ Closed: `telemetryJumped` stands the sector tracker and the weather-deviation flow down for any fix that moved further than the reported groundspeed allows, and `AppGraph.onActivityResumed` rebuilds the Infinite Flight link after a real spell in the background.  
 *Absent* · iOS: `IFATCCompanion/App/AppModel.swift:1699 (handleReturnToForeground), :1717 (detectTelemetryDiscontinuity), :1692 (markBackgrounded)`
 
 - **iOS:** Returning from the background tears the Connect link down and restarts it, and marks the next fix as a resync; separately, any fix that moved farther than groundspeed × elapsed × 3 + 1 NM is treated as a frozen socket snapping forward. The resulting `telemetryJumped` flag makes position-driven weather decisions stand down for that tick instead of replaying turns flown during the gap.
