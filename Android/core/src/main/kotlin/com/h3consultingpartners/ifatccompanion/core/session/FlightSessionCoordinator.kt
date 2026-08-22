@@ -2072,6 +2072,7 @@ class FlightSessionCoordinator(
      */
     fun captureSnapshot(): SessionSnapshot {
         val current = _state.value
+        val atisReceipt = weatherAnswers.atisReceipt()
         return SessionSnapshot(
             atcState = current.atcState,
             stateMachineCurrent = stateMachine.current,
@@ -2093,6 +2094,13 @@ class FlightSessionCoordinator(
             monitoringTower = current.monitoringTower,
             gateMonitored = current.gateMonitored,
             weatherDeviation = weatherDeviation?.state?.value?.context,
+            // Not the broadcast — that is re-fetched — but what the pilot did with it.
+            reportedDepartureInfo = atisReceipt.reportedDeparture,
+            reportedArrivalInfo = atisReceipt.reportedArrival,
+            departureInfoAppended = atisReceipt.departureReported,
+            arrivalInfoAppended = atisReceipt.arrivalReported,
+            departureATISDismissed = atisReceipt.departureDismissed,
+            arrivalATISDismissed = atisReceipt.arrivalDismissed,
             atcCommunicationStarted = current.atcCommunicationStarted,
             flightPlan = current.flightPlan,
             tunedFacility = current.currentFacility,
@@ -2160,6 +2168,20 @@ class FlightSessionCoordinator(
         // and its "clear of weather" button vanish when the link drops mid-diversion and the
         // pilot is left flying an approved reroute the app has forgotten about.
         snapshot.weatherDeviation?.let { weatherDeviation?.restore(it) }
+        // The information code the pilot copied, and whether they have already given it.
+        // Without this a relaunch mid-taxi silently drops the code and puts the ATIS
+        // button back, so the pilot reports a letter they have not listened to — or
+        // reports the same one twice.
+        weatherAnswers.restoreAtisReceipt(
+            AtisReceipt(
+                reportedDeparture = snapshot.reportedDepartureInfo,
+                reportedArrival = snapshot.reportedArrivalInfo,
+                departureReported = snapshot.departureInfoAppended ?: false,
+                arrivalReported = snapshot.arrivalInfoAppended ?: false,
+                departureDismissed = snapshot.departureATISDismissed ?: false,
+                arrivalDismissed = snapshot.arrivalATISDismissed ?: false,
+            ),
+        )
         recomputeDerivedState()
         diagnostics.log(
             DiagnosticCategory.SESSION,

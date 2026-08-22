@@ -80,6 +80,18 @@ interface WeatherAnswering {
      */
     fun atisInfoWord(arriving: Boolean): String?
 
+    /**
+     * The ATIS receipt bookkeeping, for the session snapshot.
+     *
+     * What survives a reconnect is not the broadcast — that is re-fetched — but what the
+     * pilot *did* with it: which code they copied, whether they have already reported it,
+     * and whether they have tuned away. Without it a relaunch mid-taxi silently loses the
+     * information code and puts the ATIS button back.
+     */
+    fun atisReceipt(): AtisReceipt = AtisReceipt()
+
+    fun restoreAtisReceipt(receipt: AtisReceipt) = Unit
+
     /** No weather engine attached: every request is unanswerable and nothing is blocked. */
     object None : WeatherAnswering {
         override suspend fun rideReport(callsign: PhraseologyEngine.Callsign): ATCTransmission? = null
@@ -104,3 +116,18 @@ interface WeatherAnswering {
         override fun atisInfoWord(arriving: Boolean): String? = null
     }
 }
+
+/**
+ * What the pilot has done with the ATIS on this flight, per phase.
+ *
+ * Every field is what a reconnect cannot re-derive: the broadcast comes back on the next
+ * fetch, but whether the pilot listened to it, reported it, and moved on does not.
+ */
+data class AtisReceipt(
+    val reportedDeparture: String? = null,
+    val reportedArrival: String? = null,
+    val departureReported: Boolean = false,
+    val arrivalReported: Boolean = false,
+    val departureDismissed: Boolean = false,
+    val arrivalDismissed: Boolean = false,
+)

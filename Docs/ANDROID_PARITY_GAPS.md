@@ -14,11 +14,11 @@ verified by hand against both sources before this document was written: the chec
 
 ## Progress
 
-92 of the 100 are closed and four are partly closed; the rest stand. **All 37 rated high
-are closed** — every gap a pilot meets in a normal flight. What remains is 3 medium and 1
-low. Each closed entry below carries a ✅ (or 🟡) line naming what closes it and, where a
-piece is still open, what that piece is — so this document stays the record of what the
-audit found *and* of what has been done about it rather than being quietly rewritten.
+**96 of the 100 are closed and the remaining four are partly closed. Nothing is left
+open.** Each closed entry below carries a ✅ naming what closes it; each 🟡 says which piece
+is still out and why — in every case because the thing it depends on is genuinely absent or
+deliberately off, not because it is unwired. This document stays the record of what the audit found *and* of what has been done
+about it, rather than being quietly rewritten.
 
 The closed set was deliberately taken worst-first rather than easiest-first: the app had
 no data source in either mode, no flight plan, no Infinite Flight link, no entitlement
@@ -345,6 +345,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 ### Session orchestration and models
 
 **ATIS receipt state does not survive a reconnect — six snapshot fields are never written or read**  
+✅ Closed: `WeatherAnswering.atisReceipt` / `restoreAtisReceipt` is the seam, and `captureSnapshot` / `restore` write and read all six fields. An older snapshot with them missing restores as nothing reported rather than claiming a code the pilot never heard.  
 *Absent* · iOS: `IFATCCompanion/App/AppModel.swift:3563-3568 (currentSnapshot writes reportedDepartureInfo/reportedArrivalInfo/departureInfoAppended/arrivalInfoAppended/departureATISDismissed/arrivalATISDismissed), :3692-3699 (apply restores all six), plus :3723-3726 for departureATIS/arrivalATIS/lastArrivalATISAttempt`
 
 - **iOS:** After a reconnect the pilot still "has" information X: the taxi request and the Approach check-in keep appending it, it is not re-reported if it already was, the ATIS tune button stays dismissed, and the ATIS card is populated from the snapshot rather than blank until the next fetch.
@@ -567,6 +568,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** IFConnectManager polls and publishes liveATC correctly (IFConnectManager.kt:509-511, reader.readATCStatus), but nothing ever copies it into FlightSessionState.liveATC. FlightSessionCoordinator wires connect.onState and connect.onFlightPlan (FlightSessionCoordinator.kt:197-198) and nothing else; FlightSessionState.liveATC (FlightSessionState.kt:76) has no writer, so it stays LiveATCStatus.none for the whole flight. computeStandby (FlightSessionCoordinator.kt:1241-1246) therefore always reads false on the live branch, and the Diagnostics "Live ATC" row (ScreenModels.kt:315 → DiagnosticsScreen.kt:116) always renders the none-state summary. The mock branch (simulateStaffedATC) is wired and works; only the live half is missing.
 
 **Mock Mode taxis the bundled synthetic field, never the real OSM airport — prepareSimulatedSurfaces has no caller**  
+✅ Closed: `FlightSourceController.startMock` fires `prepareMockSurfaces`, which pre-caches the demo route's own extracts through `AirportSurfaceCoordinator.prepareSimulatedSurfaces` — kicked off with the feed rather than awaited, so the demo starts now and picks the real field up as it lands.  
 *Ported, not wired* · iOS: `IFATCCompanion/AirportSurface/AirportSurfaceCoordinator.swift:266-286 (prepareSimulatedSurfaces) and :288-295 (storeSimulatedSurface); IFATCCompanion/App/AppModel.swift:853-866 (prefetchAirportSurfaces, mock branch)`
 
 - **iOS:** When Mock Mode is on, iOS pre-caches the real OSM extracts for the demo's own origin and destination (KIAH and KMSP) and records their reference coordinates, so the simulated taxi runs on the actual airport — the demo taxis Houston's real taxiways, not a synthetic stand-in. It falls back to the synthetic field only when a real extract genuinely can't be produced.
@@ -631,6 +633,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** `ScreenModels.kt:143-147` shows the banner whenever `weather.routeSigmets` is non-empty — ignoring `weatherDeviationAlerts`, ignoring radar precipitation conflicts entirely, and ignoring the on-final case — with the text "<hazard> along your route". `ScreenModels.kt:118` wires the tap to `onContactAtcAboutWeather`, which is `FlightViewModel.kt:535: fun onContactAtcAboutWeather() = coordinator.performPilotAction(PilotAction.RIDE_REPORT)` — a ride report, not the weather advisory.
 
 **The ATIS tune button uses different wording, never dismisses, and lights up as the active frequency — and `ATISSession`'s ported helpers are used by nothing**  
+✅ Closed: the subtitle reads "Info B" / "Listen", the button is never drawn as the tuned frequency, it leaves the grid once the pilot tunes any controller for that phase, and the receipt reads "KIAH departure information Alpha — added to your taxi request."  
 *Behaves differently* · iOS: `IFATCCompanion/App/AppModel.swift:8254-8258 (`atisButtonVisible`), :8262 (`atisButtonActive` is hard-coded false, with the comment explaining why), :8277-8280 (`atisButtonSubtitle` → "Info B" / "Listen"), :8285-8294 (`atisReceiptSummary` → "KLAX arrival information Bravo — added to your check-in."); consumed at IFATCCompanion/Views/ATCView.swift:430-467`
 
 - **iOS:** The ATIS button's subtitle reads "Info B" or "Listen"; it is never drawn as the active/tuned frequency; it leaves the grid once the pilot tunes any controller for that phase; and the receipt underneath reads "KLAX arrival information Bravo — added to your check-in."
@@ -680,6 +683,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 ### Session orchestration and models
 
 **A saved flight carries no Diagnostics log, and there is no way to restore one**  
+✅ Closed: `saveCurrentFlight` attaches `DiagnosticsSnapshot.from(...)` — saved flights only, never the continuously-written auto-resume snapshot — and `DiagnosticsStore.restore` puts it back through the store's own buffer, so a line logged afterwards appends rather than replacing it.  
 *Absent* · iOS: `IFATCCompanion/App/AppModel.swift:3602 (snapshotForSaving attaches `diagnostics.captureSnapshot()`), :3771 (`if let log = snap.diagnostics { diagnostics.restore(log) }`)`
 
 - **iOS:** Saving a flight attaches the Diagnostics log to the snapshot (deliberately only for saved flights, not the auto-resume one), and loading it back restores the log so the flight's history is inspectable.

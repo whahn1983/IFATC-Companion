@@ -69,6 +69,13 @@ class FlightSourceController(
     private val unbindSavedFlight: () -> Unit = {},
     /** A calm window in which a rating prompt is allowed. Self-limited by the caller. */
     private val reviewBeforeFirstCall: () -> Unit = {},
+    /**
+     * Pre-cache the real OSM extracts for the demo route's own airports, so the simulated
+     * taxi runs on the actual field rather than the tiny synthetic stand-in. Fired at the
+     * start of a mock session, because that is when the endpoints are known and there is
+     * time to fetch before the taxi begins.
+     */
+    private val prepareMockSurfaces: () -> Unit = {},
 ) {
 
     private val settings: AppSettings get() = settingsProvider()
@@ -206,6 +213,11 @@ class FlightSourceController(
             if (coordinator.state.value.simulateStaffedATC) coordinator.mockStaffedStatus() else LiveATCStatus.none,
         )
         mock.start()
+        // Kicked off with the feed, not awaited: the fetch is a network round trip and the
+        // demo must start now. The coordinator falls back to the synthetic field for any
+        // airport whose extract has not landed by the time the taxi starts, and picks the
+        // real one up on the next load.
+        prepareMockSurfaces()
         diagnostics.log(DiagnosticCategory.SESSION, message = "Mock simulator feed started.")
         armWeatherRefresh(immediately = true)
         // Fresh session, connected and idle before the first ATC call — one of the two calm

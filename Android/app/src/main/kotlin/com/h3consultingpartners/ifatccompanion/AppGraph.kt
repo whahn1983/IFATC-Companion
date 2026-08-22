@@ -179,6 +179,11 @@ class AppGraph private constructor(
             diagnostics = diagnostics,
             session = { flightSessionCoordinator.state.value },
             captureSnapshot = { flightSessionCoordinator.captureSnapshot() },
+            // Attached to a saved flight only, so the flight's history stays inspectable
+            // after it is loaded back. DiagnosticsSnapshot has been in the schema since
+            // the port began with nothing writing or reading one.
+            diagnosticsLog = { diagnostics.records.value },
+            restoreDiagnostics = { diagnostics.restore(it) },
             resetSession = {
                 flightSessionCoordinator.resetForNewFlight()
                 // Everything the coordinator does not own. iOS resets all of this inside one
@@ -612,6 +617,19 @@ class AppGraph private constructor(
             unbindSavedFlight = { savedFlightStore.setActive(null) },
             reviewBeforeFirstCall = {
                 reviewLauncher.requestIfAppropriate(ReviewRequestManager.Trigger.BEFORE_FIRST_CALL)
+            },
+            // The demo taxis Houston's real taxiways, not a synthetic stand-in.
+            // prepareSimulatedSurfaces had no caller, so simulatedReferences was always
+            // empty outside tests and loadSimulatedSurface took the synthetic branch
+            // every time — the path whose own KDoc says it exists to stop exactly that.
+            prepareMockSurfaces = {
+                val route = mockFeed.route
+                surfaceRouting.prepareSimulatedSurfaces(
+                    listOf(
+                        route.departure to AirportDatabase.coordinate(route.departure),
+                        route.destination to AirportDatabase.coordinate(route.destination),
+                    ),
+                )
             },
         )
     }

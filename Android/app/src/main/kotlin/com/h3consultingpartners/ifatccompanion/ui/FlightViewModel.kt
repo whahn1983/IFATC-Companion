@@ -531,7 +531,17 @@ class FlightViewModel(
         }
     }
 
-    fun onTune(facility: ATCFacility) = coordinator.tuneTo(facility)
+    /**
+     * Tune a controller.
+     *
+     * Doing so is also how the pilot leaves the ATIS: it is a one-way broadcast they have
+     * finished with, and its button drops out of the frequency grid rather than sitting
+     * there for the rest of the flight.
+     */
+    fun onTune(facility: ATCFacility) {
+        graph.weather.noteLeftAtisFrequency(arrival = session.value.hasDeparted)
+        coordinator.tuneTo(facility)
+    }
 
     /**
      * Tuning ATIS is what makes the pilot *have* the information code — it is only from

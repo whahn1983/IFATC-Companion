@@ -112,17 +112,22 @@ fun FlightViewModel.atcModel(
         // can call the ramp — building the grid from ATCFacility.entries put a second one
         // in the grid whenever they were already tuned to it.
         tunableFacilities = AtcFlowOrder.tunableFacilities.filter { it in session.relevantFacilities },
-        atisButtonVisible = atis != null,
-        atisButtonSubtitle = atis?.letter(arrivalPhaseAtis)
-            ?.let { "Information ${ATISPhraseology.phoneticLetter(it)}" }
-            .orEmpty(),
+        // Hidden once the pilot has tuned a controller for this phase: ATIS is a
+        // broadcast they have finished with, and leaving it in the grid puts a button
+        // there that no longer does anything for them.
+        atisButtonVisible = atis != null && !weather.atisDismissed(arrivalPhaseAtis),
+        // "Info B" / "Listen" — the ported wording, not "Information Bravo" and an empty
+        // string. The grid cell is narrow and the code is what the pilot is looking for.
+        atisButtonSubtitle = atis?.letter(arrivalPhaseAtis)?.let { "Info $it" } ?: "Listen",
         // ATIS is a broadcast, not a facility, so "active" means the pilot has actually
         // tuned it for this phase and will report its code — not that they are on some
         // ATIS frequency, which does not exist.
-        atisButtonActive = atisReceiptSummary(weather, arrivalPhaseAtis) != null,
+        // Never drawn as the tuned frequency. ATIS is a one-way broadcast: the pilot is
+        // not *on* it, and filling the button in says they are talking to someone.
+        atisButtonActive = false,
         atisAirport = atisAirport,
         atisIsArrival = arrivalPhaseAtis,
-        atisReceiptSummary = atisReceiptSummary(weather, arrivalPhaseAtis),
+        atisReceiptSummary = atisReceiptSummary(weather, arrivalPhaseAtis, atisAirport),
         holdToTalkEnabled = settings.holdToTalkEnabled,
         isListening = ui.isListening,
         partialSpeech = ui.speechPartial,
@@ -157,13 +162,22 @@ fun FlightViewModel.atcActions(onRequestMicrophone: () -> Boolean) = AtcScreenAc
  * Empty until they have tuned it — the app never claims the pilot has information it only
  * fetched in the background.
  */
-private fun atisReceiptSummary(weather: WeatherSessionState, arrival: Boolean): String? {
+private fun atisReceiptSummary(
+    weather: WeatherSessionState,
+    arrival: Boolean,
+    airport: String,
+): String? {
     val reported = if (arrival) {
         weather.atisDiagnostics.reportedArrival
     } else {
         weather.atisDiagnostics.reportedDeparture
     } ?: return null
-    return "Reporting information ${ATISPhraseology.phoneticLetter(reported)}"
+    val word = ATISPhraseology.phoneticLetter(reported)
+    val kind = if (arrival) "arrival" else "departure"
+    // Named where it will actually be said, which is the point of the line: the code goes
+    // on the taxi request on departure and on the Approach check-in on arrival.
+    val where = if (arrival) "check-in" else "taxi request"
+    return "$airport $kind information $word — added to your $where."
 }
 
 private fun smootherAltitudeTitle(weather: WeatherSessionState): String? {

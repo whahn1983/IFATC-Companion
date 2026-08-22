@@ -149,7 +149,10 @@ jobs:
 
       - name: Assemble debug
         working-directory: Android
-        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
+        # No --stacktrace: every failure this job has ever caught was a Kotlin
+        # compile error, and 160 lines of Gradle internals after it push the
+        # "e: file://…" lines out of any readable tail of the log.
+        run: ./gradlew :app:assembleDebug --no-daemon
 
       # Lint is a separate step so a compile failure is not mistaken for a lint failure,
       # and so lint still runs when the build succeeds.
@@ -166,7 +169,7 @@ jobs:
       # unsigned bundle exercises minification just as well as a signed one.
       - name: Bundle release (exercises R8 and resource shrinking)
         working-directory: Android
-        run: ./gradlew :app:bundleRelease --no-daemon --stacktrace
+        run: ./gradlew :app:bundleRelease --no-daemon
 
       # The route map's coastlines are a Java resource inside :core, not an Android res/
       # entry, so nothing in the build graph declares them and no compiler error appears if

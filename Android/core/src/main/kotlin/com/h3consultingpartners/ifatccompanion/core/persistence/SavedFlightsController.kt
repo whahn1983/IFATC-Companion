@@ -1,6 +1,7 @@
 package com.h3consultingpartners.ifatccompanion.core.persistence
 
 import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticCategory
+import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticRecord
 import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticsSink
 import com.h3consultingpartners.ifatccompanion.core.session.FlightSessionState
 import com.h3consultingpartners.ifatccompanion.core.session.SavedFlightBinding
@@ -31,6 +32,17 @@ class SavedFlightsController(
     /** Drop the crash-resume snapshot, so a cleared flight does not come back on relaunch. */
     private val clearResumableSession: () -> Unit,
     private val settings: () -> Boolean,
+    /**
+     * The diagnostics log as it stands, attached to a *saved* flight only.
+     *
+     * Deliberately not on the auto-resume snapshot, which is written continuously and
+     * whose job is to get the conversation back — carrying five hundred log lines through
+     * every write would cost far more than it is worth there. A saved flight is a
+     * deliberate act, and the log is what makes it inspectable afterwards.
+     */
+    private val diagnosticsLog: () -> List<DiagnosticRecord> = { emptyList() },
+    /** Put a saved flight's log back when it is loaded. */
+    private val restoreDiagnostics: (DiagnosticsSnapshot) -> Unit = {},
 ) {
 
     /** What the session needs to know about this library. Fed to the coordinator. */
@@ -55,7 +67,9 @@ class SavedFlightsController(
      */
     fun saveCurrentFlight(): SavedFlight? {
         if (!session().canSaveCurrentFlight) return null
-        val snapshot = captureSnapshot()
+        val snapshot = captureSnapshot().copy(
+            diagnostics = DiagnosticsSnapshot.from(diagnosticsLog()),
+        )
         val boundId = store.activeFlightID.value
         val existing = boundId?.let(store::flight)
         if (boundId != null && existing != null) {
@@ -130,6 +144,7 @@ class SavedFlightsController(
         if (session().mockMode) return false
         resetSession()
         restoreSession(flight.snapshot)
+        flight.snapshot.diagnostics?.let(restoreDiagnostics)
         store.setActive(flight.id)
         diagnostics.log(
             DiagnosticCategory.SESSION,

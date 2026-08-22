@@ -159,8 +159,11 @@ class RadioAudioEngine(
      * headset the user connects.
      */
     private val deviceCallback = object : AudioDeviceCallback() {
-        override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) = routeChanged()
-        override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) = routeChanged()
+        // Non-null parameters: the platform annotates both arrays @NonNull, and an
+        // override that widens them to nullable does not match the base signature.
+        override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) = routeChanged()
+
+        override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>) = routeChanged()
 
         private fun routeChanged() {
             if (!running.get()) return

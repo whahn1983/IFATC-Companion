@@ -1,5 +1,6 @@
 package com.h3consultingpartners.ifatccompanion.core.diagnostics
 
+import com.h3consultingpartners.ifatccompanion.core.persistence.DiagnosticsSnapshot
 import com.h3consultingpartners.ifatccompanion.core.platform.Clock
 import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticCategory
 import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticLevel
@@ -53,6 +54,27 @@ class DiagnosticsStore(
 
     /** The whole log as shareable plain text, for the Diagnostics screen's share action. */
     fun exportText(): String = _records.value.joinToString("\n") { format(it) }
+
+    /**
+     * Replace the log with the one saved alongside a flight.
+     *
+     * Loading a saved flight puts the app back where that flight was, and the log is part
+     * of that: it is what makes a flight's history inspectable after the fact, which is the
+     * whole reason a saved flight carries one. Capped like any other run, so a long saved
+     * log cannot push the store past its bound.
+     */
+    fun restore(snapshot: DiagnosticsSnapshot) {
+        val records = snapshot.toRecords().takeLast(capacity)
+        // Through the buffer, not straight to the flow: the buffer is what the next log()
+        // appends to, so filling only the flow would publish the saved log once and then
+        // have the very next line replace it with a one-entry list.
+        val published = synchronized(lock) {
+            buffer.clear()
+            buffer.addAll(records)
+            buffer.toList()
+        }
+        _records.value = published
+    }
 
     companion object {
         /**

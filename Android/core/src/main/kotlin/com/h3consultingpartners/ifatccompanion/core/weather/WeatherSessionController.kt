@@ -7,6 +7,7 @@ import com.h3consultingpartners.ifatccompanion.core.atis.ATISService
 import com.h3consultingpartners.ifatccompanion.core.atis.ATISPhraseology
 import com.h3consultingpartners.ifatccompanion.core.model.ATCTransmission
 import com.h3consultingpartners.ifatccompanion.core.phraseology.PhraseologyEngine
+import com.h3consultingpartners.ifatccompanion.core.session.AtisReceipt
 import com.h3consultingpartners.ifatccompanion.core.session.WeatherAnswering
 import com.h3consultingpartners.ifatccompanion.core.weather.deviation.RideReportEngine
 import com.h3consultingpartners.ifatccompanion.core.geo.Coordinate
@@ -58,9 +59,19 @@ data class WeatherSessionState(
     val departureAtis: AirportATIS? = null,
     val arrivalAtis: AirportATIS? = null,
     val atisDiagnostics: ATISDiagnostics = ATISDiagnostics(),
+    /**
+     * Whether the pilot has moved on from the ATIS for each phase — set when they tune any
+     * controller for it. The tune button leaves the frequency grid; the code they captured
+     * stays, because having listened is not something tuning Ground undoes.
+     */
+    val departureAtisDismissed: Boolean = false,
+    val arrivalAtisDismissed: Boolean = false,
     val status: String = "Not loaded",
     val lastUpdateMillis: Long? = null,
-)
+) {
+    fun atisDismissed(arrival: Boolean): Boolean =
+        if (arrival) arrivalAtisDismissed else departureAtisDismissed
+}
 
 /**
  * Owns the weather half of the iOS `AppModel`: the aviation-weather fetch, the ride-report
@@ -470,6 +481,20 @@ class WeatherSessionController(
      * phase. Until they tune, no code is reported to ATC — the app never claims the pilot
      * has information it only fetched in the background.
      */
+    /**
+     * The pilot tuned a controller, so they have moved on from the ATIS for this phase.
+     *
+     * Guarded on an ATIS actually being available: an early tune, before the feed has
+     * arrived, must not permanently hide an ATIS that turns up a minute later.
+     */
+    fun noteLeftAtisFrequency(arrival: Boolean) {
+        val available = if (arrival) _state.value.arrivalAtis else _state.value.departureAtis
+        if (available == null) return
+        _state.update {
+            if (arrival) it.copy(arrivalAtisDismissed = true) else it.copy(departureAtisDismissed = true)
+        }
+    }
+
     fun noteAtisTuned(arrival: Boolean) {
         val atis = if (arrival) _state.value.arrivalAtis else _state.value.departureAtis
         val letter = atis?.letter(arrival) ?: return
@@ -502,6 +527,30 @@ class WeatherSessionController(
      * background is not information the pilot has. Marks the leg reported, so the second
      * taxi request or check-in is bare rather than claiming the code twice.
      */
+    override fun atisReceipt(): AtisReceipt = AtisReceipt(
+        reportedDeparture = _state.value.atisDiagnostics.reportedDeparture,
+        reportedArrival = _state.value.atisDiagnostics.reportedArrival,
+        departureReported = departureInfoReported,
+        arrivalReported = arrivalInfoReported,
+        departureDismissed = _state.value.departureAtisDismissed,
+        arrivalDismissed = _state.value.arrivalAtisDismissed,
+    )
+
+    override fun restoreAtisReceipt(receipt: AtisReceipt) {
+        departureInfoReported = receipt.departureReported
+        arrivalInfoReported = receipt.arrivalReported
+        _state.update {
+            it.copy(
+                atisDiagnostics = it.atisDiagnostics.copy(
+                    reportedDeparture = receipt.reportedDeparture ?: it.atisDiagnostics.reportedDeparture,
+                    reportedArrival = receipt.reportedArrival ?: it.atisDiagnostics.reportedArrival,
+                ),
+                departureAtisDismissed = receipt.departureDismissed,
+                arrivalAtisDismissed = receipt.arrivalDismissed,
+            )
+        }
+    }
+
     override fun atisInfoWord(arriving: Boolean): String? {
         if (arriving) {
             if (arrivalInfoReported) return null
