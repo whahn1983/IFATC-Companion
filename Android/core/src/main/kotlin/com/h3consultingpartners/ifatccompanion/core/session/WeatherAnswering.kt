@@ -69,6 +69,17 @@ interface WeatherAnswering {
     /** SIGMETs whose area lies along the route — the only ones that raise an advisory. */
     fun routeSigmets(): List<SIGMET>
 
+    /**
+     * The phonetic information word the pilot reports for this leg — "Alpha" — **once**,
+     * and only once an ATIS has actually been tuned.
+     *
+     * The pilot says it on the departure taxi request and on the first Approach check-in of
+     * the arrival. Returns null when there is nothing to report: no ATIS received, or the
+     * code already reported on this leg. Reading it marks the leg reported, which is why it
+     * lives with whoever holds the ATIS rather than with the caller.
+     */
+    fun atisInfoWord(arriving: Boolean): String?
+
     /** No weather engine attached: every request is unanswerable and nothing is blocked. */
     object None : WeatherAnswering {
         override suspend fun rideReport(callsign: PhraseologyEngine.Callsign): ATCTransmission? = null
@@ -89,5 +100,7 @@ interface WeatherAnswering {
         override fun radarOverlay(): RadarOverlayModel = RadarOverlayModel()
 
         override fun routeSigmets(): List<SIGMET> = emptyList()
+
+        override fun atisInfoWord(arriving: Boolean): String? = null
     }
 }

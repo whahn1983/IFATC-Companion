@@ -4,6 +4,7 @@ import com.h3consultingpartners.ifatccompanion.core.airports.AirportDatabase
 import com.h3consultingpartners.ifatccompanion.core.atis.AirportATIS
 import com.h3consultingpartners.ifatccompanion.core.atis.ATISDiagnostics
 import com.h3consultingpartners.ifatccompanion.core.atis.ATISService
+import com.h3consultingpartners.ifatccompanion.core.atis.ATISPhraseology
 import com.h3consultingpartners.ifatccompanion.core.model.ATCTransmission
 import com.h3consultingpartners.ifatccompanion.core.phraseology.PhraseologyEngine
 import com.h3consultingpartners.ifatccompanion.core.session.WeatherAnswering
@@ -472,6 +473,9 @@ class WeatherSessionController(
     fun noteAtisTuned(arrival: Boolean) {
         val atis = if (arrival) _state.value.arrivalAtis else _state.value.departureAtis
         val letter = atis?.letter(arrival) ?: return
+        // Re-tuning re-arms the report: the letter may have changed, and a pilot who tunes
+        // again before calling has the newer one to give.
+        if (arrival) arrivalInfoReported = false else departureInfoReported = false
         _state.update {
             it.copy(
                 atisDiagnostics = if (arrival) {
@@ -481,6 +485,34 @@ class WeatherSessionController(
                 },
             )
         }
+    }
+
+    /**
+     * Whether the code for each leg has already gone out on the radio. Not part of the
+     * published state: nothing renders it, and it is the answer to "have I said this yet",
+     * which only [atisInfoWord] asks.
+     */
+    private var departureInfoReported = false
+    private var arrivalInfoReported = false
+
+    /**
+     * The phonetic information word for this leg — once.
+     *
+     * Only a code the pilot actually *tuned* is ever reported; a report fetched in the
+     * background is not information the pilot has. Marks the leg reported, so the second
+     * taxi request or check-in is bare rather than claiming the code twice.
+     */
+    override fun atisInfoWord(arriving: Boolean): String? {
+        if (arriving) {
+            if (arrivalInfoReported) return null
+            val letter = _state.value.atisDiagnostics.reportedArrival ?: return null
+            arrivalInfoReported = true
+            return ATISPhraseology.phoneticLetter(letter)
+        }
+        if (departureInfoReported) return null
+        val letter = _state.value.atisDiagnostics.reportedDeparture ?: return null
+        departureInfoReported = true
+        return ATISPhraseology.phoneticLetter(letter)
     }
 
     /** Within [ARRIVAL_ATIS_RANGE_NM] of the destination, the arrival ATIS becomes relevant. */

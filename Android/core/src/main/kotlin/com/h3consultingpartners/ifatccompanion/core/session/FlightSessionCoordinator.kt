@@ -15,6 +15,7 @@ import com.h3consultingpartners.ifatccompanion.core.atc.PilotIntentParser
 import com.h3consultingpartners.ifatccompanion.core.atc.PilotResponseEngine
 import com.h3consultingpartners.ifatccompanion.core.atc.RunwayLineupDetector
 import com.h3consultingpartners.ifatccompanion.core.atc.TaxiRoutePlanner
+import com.h3consultingpartners.ifatccompanion.core.atis.ATISSession
 import com.h3consultingpartners.ifatccompanion.core.connect.IFConnectConnectionState
 import com.h3consultingpartners.ifatccompanion.core.connect.IFConnectManager
 import com.h3consultingpartners.ifatccompanion.core.connect.LiveATCStatus
@@ -905,6 +906,12 @@ class FlightSessionCoordinator(
             previous != ATCState.RUNWAY_EXIT &&
             previous != ATCState.FINAL &&
             fromFacility != toFacility &&
+            // Telling a pilot to contact the frequency they are already on is noise. It
+            // happens after the ramp controller's own hand-off to Ground: the pilot moves
+            // the radio, asks Ground for the taxi clearance, and the state machine —
+            // still seeing the previous state as a Ramp one — would announce the hand-off
+            // a second time.
+            current.currentFacility != toFacility &&
             toFacility != ATCFacility.CLEARANCE &&
             toFacility != ATCFacility.RAMP &&
             current.latestTransmission != null
@@ -1077,7 +1084,7 @@ class FlightSessionCoordinator(
         if (current.monitoringTower && !current.hasDeparted && facility == ATCFacility.TOWER) {
             val context = buildContext(ATCState.LINE_UP_WAIT)
             post(
-                pilotEngine.requestHandoff(
+                checkInCall(
                     c = context,
                     facility = ATCFacility.TOWER,
                     currentAltitude = checkInAltitude(),
@@ -1101,7 +1108,7 @@ class FlightSessionCoordinator(
             awaitingCenterSectorCheckIn = false
             val context = buildContext(stateMachine.current)
             post(
-                pilotEngine.requestHandoff(
+                checkInCall(
                     c = context,
                     facility = ATCFacility.CENTER,
                     currentAltitude = checkInAltitude(),
@@ -1131,7 +1138,7 @@ class FlightSessionCoordinator(
         if (target == null || target == stateMachine.current) {
             val context = buildContext(stateMachine.current)
             post(
-                pilotEngine.requestHandoff(
+                checkInCall(
                     c = context,
                     facility = facility,
                     currentAltitude = checkInAltitude(),
@@ -1151,7 +1158,7 @@ class FlightSessionCoordinator(
         // controller's. `advanceAndPost` updates it afterwards, so building the call first
         // is what keeps "with you at eight thousand" true when it is said.
         post(
-            pilotEngine.requestHandoff(
+            checkInCall(
                 c = context,
                 facility = facility,
                 currentAltitude = checkInAltitude(),
@@ -1172,6 +1179,62 @@ class FlightSessionCoordinator(
             post(engine.radarContact(cs = context.callsign, facility = facility), speakIt = true)
         }
         recomputeDerivedState()
+    }
+
+    /**
+     * At a field with a ramp layer, Taxi on the Ramp frequency is a hand-off, not a
+     * clearance.
+     *
+     * "Push complete, ready to taxi" / "proceed to the movement-area boundary, contact
+     * Ground on 121.8 at spot 5" — then the radio moves to Ground and the pilot asks *them*
+     * for the taxi clearance. Two steps, because that is how a ramp-controlled field
+     * actually works and because the ramp controller has no authority over the movement
+     * area they would otherwise be clearing the aircraft into.
+     *
+     * Deliberately no state advance: the conversation is still at the same point, only the
+     * frequency has changed. Returns true when it handled the tap.
+     */
+    private fun handOffDepartureRampToGround(context: ATCContext, current: FlightSessionState): Boolean {
+        if (current.hasDeparted) return false
+        if (current.currentFacility != ATCFacility.RAMP) return false
+        if (context.rampProfile.rampType == RampType.NONE) return false
+
+        post(rampEngine.pushComplete(context.callsign), speakIt = shouldSpeakPilot(settingsProvider()))
+        post(
+            rampEngine.contactGround(
+                cs = context.callsign,
+                groundFrequency = context.groundFrequency,
+                spot = context.rampSpot,
+            ),
+            speakIt = true,
+        )
+        tuneTo(ATCFacility.GROUND, manual = false)
+        return true
+    }
+
+    /**
+     * The pilot's check-in call, carrying the ATIS information code on the first Approach
+     * check-in of an arrival — "…with you at seven thousand, information Bravo".
+     *
+     * Only Approach: on departure the code goes on the taxi request instead, and reporting
+     * it twice on one leg is exactly what the ATIS session's one-shot bookkeeping prevents.
+     */
+    private fun checkInCall(
+        c: ATCContext,
+        facility: ATCFacility,
+        currentAltitude: Int?,
+        targetAltitude: Int,
+        onGround: Boolean,
+    ): ATCTransmission {
+        val tx = pilotEngine.requestHandoff(
+            c = c,
+            facility = facility,
+            currentAltitude = currentAltitude,
+            targetAltitude = targetAltitude,
+            onGround = onGround,
+        )
+        if (facility != ATCFacility.APPROACH) return tx
+        return ATISSession.appendingATISInfo(tx, weatherAnswers.atisInfoWord(arriving = true))
     }
 
     /**
@@ -1245,7 +1308,7 @@ class FlightSessionCoordinator(
         val current = _state.value
         val context = buildContext(ATCState.APPROACH)
         post(
-            pilotEngine.requestHandoff(
+            checkInCall(
                 c = context,
                 facility = ATCFacility.APPROACH,
                 currentAltitude = checkInAltitude(),
@@ -1295,7 +1358,20 @@ class FlightSessionCoordinator(
             PilotAction.CLEARANCE -> pilotEngine.requestClearance(context)
             PilotAction.PUSHBACK -> pilotEngine.requestPushback(context)
             PilotAction.ENGINE_START -> pilotEngine.requestEngineStart(context)
-            PilotAction.TAXI -> pilotEngine.requestTaxi(context)
+            PilotAction.TAXI -> {
+                // At a field with a ramp layer, Taxi on the Ramp frequency is not a taxi
+                // request at all: the ramp controller reports the push complete and hands
+                // the aircraft to Ground at the movement-area boundary, and the pilot then
+                // asks Ground for the clearance. Android used to answer it in one step,
+                // with Ramp itself issuing a Ground taxi clearance.
+                if (handOffDepartureRampToGround(context, current)) return
+                // "…request taxi, information Alpha". One-shot: the code is only reported
+                // once per leg, so a second taxi request is bare.
+                ATISSession.appendingATISInfo(
+                    pilotEngine.requestTaxi(context),
+                    weatherAnswers.atisInfoWord(arriving = false),
+                )
+            }
             PilotAction.READY -> pilotEngine.readyForDeparture(context)
             PilotAction.TAKEOFF -> pilotEngine.requestTakeoff(context)
             PilotAction.REQUEST_HIGHER -> {
@@ -1527,8 +1603,39 @@ class FlightSessionCoordinator(
         _state.update { it.copy(awaitingGateArrival = false) }
         arrivalGatePosition = null
         advanceAndPost(ATCState.PARKED, announceHandoff = false)
+        announceFlightComplete()
         recomputeDerivedState()
     }
+
+    /**
+     * The block-in line that ends the transcript: "United 598 parked at B44. Flight complete."
+     *
+     * Not a radio call — a `SYSTEM` line, which is why it is not spoken. Without it the
+     * transcript simply stopped at the taxi-in clearance and nothing in the app ever said
+     * the flight was over.
+     *
+     * Once per flight. `flightCompleteAnnounced` is cleared by [reset], so the next flight
+     * gets its own; a second parking event on the same flight does not.
+     */
+    private fun announceFlightComplete() {
+        if (flightCompleteAnnounced) return
+        flightCompleteAnnounced = true
+        val context = buildContext(ATCState.PARKED, arrivalOverride = true)
+        val gate = context.gate.trim()
+        val where = if (gate.isEmpty()) "parked at the gate" else "parked at $gate"
+        post(
+            ATCTransmission.create(
+                sender = ATCTransmission.Sender.SYSTEM,
+                facility = ATCFacility.RAMP,
+                displayText = "${context.callsign.display} $where. Flight complete.",
+                spokenText = "${context.callsign.spoken} $where. Flight complete.",
+                timestampMillis = clock.nowMillis(),
+            ),
+            speakIt = false,
+        )
+    }
+
+    private var flightCompleteAnnounced = false
 
     /** Slow enough that the stand is the next thing to happen, but not yet stopped. */
     private fun isSlowingAtGate(aircraft: AircraftState): Boolean =
@@ -2005,6 +2112,7 @@ class FlightSessionCoordinator(
         arrivalGatePosition = null
         departureFieldElevationMSL = 0.0
         liftoffAltitudeMSL = 0.0
+        flightCompleteAnnounced = false
 
         val plan = _state.value.flightPlan
         _state.value = FlightSessionState(

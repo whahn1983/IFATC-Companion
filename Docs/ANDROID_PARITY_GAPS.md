@@ -14,8 +14,8 @@ verified by hand against both sources before this document was written: the chec
 
 ## Progress
 
-73 of the 100 are closed and three are partly closed; the rest stand. **All 37 rated high
-are closed** — every gap a pilot meets in a normal flight. What remains is 11 medium and 13
+76 of the 100 are closed and three are partly closed; the rest stand. **All 37 rated high
+are closed** — every gap a pilot meets in a normal flight. What remains is 9 medium and 12
 low. Each closed entry below carries a ✅ (or 🟡) line naming what closes it and, where a
 piece is still open, what that piece is — so this document stays the record of what the
 audit found *and* of what has been done about it rather than being quietly rewritten.
@@ -442,6 +442,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** `buildContext` passes the constant `DEFAULT_CENTER_FREQUENCY = 133.4` (FlightSessionCoordinator.kt:1513, companion at :1611). `applyCenterSector` (line 1400) updates the sector *name* on the engine but never the context frequency, so only the Center-to-Center crossing call uses `crossing.to.frequency`; the initial Departure→Center hand-off always says 133.4. Android's other defaults also differ from iOS: ground 121.9 vs 121.8, departure 124.35 vs 124.3, Center fallback 133.4 vs 132.45 — all spoken aloud in hand-offs.
 
 **Ramp never hands the pilot to Ground after the push**  
+✅ Closed: `handOffDepartureRampToGround` posts `pushComplete` and `contactGround`, moves the radio to Ground and leaves the flow where it was; the pilot then asks Ground for the clearance. `buildContext` fills `rampSpot`, and the duplicate state-machine hand-off is suppressed.  
 *Ported, not wired* · iOS: `IFATCCompanion/App/AppModel.swift:4802-4809 (requestTaxi) and 4836-4853 (onDepartureRampPreTaxi, handOffDepartureRampToGround)`
 
 - **iOS:** At an airport with a ramp layer, tapping Taxi while still on the Ramp frequency does *not* produce a taxi clearance. `handOffDepartureRampToGround()` posts `rampEngine.pushComplete(cs:)` and `rampEngine.contactGround(cs:groundFrequency:spot:)` ("push complete, contact Ground on 121.8 at spot 5"), moves the tuned facility to Ground, and leaves the flow where it was. The pilot then re-requests taxi on Ground for the actual clearance — a two-step sequence.
@@ -461,6 +462,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** `maybeIssueTakeoffClearance` (FlightSessionCoordinator.kt:529-546) tests `isLinedUp || isDepartingRoll || phase == TAKEOFF` and calls `advanceAndPost` immediately. There is no timer, no lined-up-and-stopped distinction and no cancellation path, so the clearance arrives the moment the nose swings onto the centreline rather than a beat after the aircraft settles.
 
 **The ATIS information letter is never added to the taxi request or the Approach check-in**  
+✅ Closed: `WeatherAnswering.atisInfoWord` is the one-shot seam — the taxi request and the first Approach check-in of an arrival carry the code, and only a code the pilot actually tuned.  
 *Ported, not wired* · iOS: `IFATCCompanion/App/AppModel.swift:4814-4818 (taxi) and 4732-4757 (Approach check-in), with 8437-8460 (consumeATISInfoWord, appendingATISInfo)`
 
 - **iOS:** The pilot reports the ATIS code on the initial taxi request ("…request taxi, information Alpha") and on the first Approach check-in on arrival ("…with you at seven thousand, information Bravo"). Each is one-shot and only once the corresponding ATIS has actually been received.
@@ -693,6 +695,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 ### ATC, phraseology, en-route
 
 **No "flight complete" block-in line at the end of the flight**  
+✅ Closed: `announceFlightComplete` posts a `SYSTEM` line — "United 598 parked at B44. Flight complete." — once per flight, unspoken.  
 *Absent* · iOS: `IFATCCompanion/App/AppModel.swift:2893-2904 (announceArrival)`
 
 - **iOS:** Once the aircraft is actually parked at the gate with the brake set, iOS posts a `.system` transmission into the transcript — "United 598 parked at B44. Flight complete." — exactly once per flight, and uses that same moment as the review-prompt trigger.

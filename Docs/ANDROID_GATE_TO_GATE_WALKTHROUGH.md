@@ -30,11 +30,11 @@ pilot lines are not decoration: remove one and the flow stops there, on both pla
 | 6 | Pilot | Ramp | Ramp, United 598, request engine start. |
 | 7 | ATC | Ramp | United 598, start approved. |
 | 8 | Pilot | Ramp | Start approved, United 598. |
-| 9 | Pilot | Ground | Ground, United 598, request taxi. |
-| 10 | ATC | Ramp | United 598, contact Ground on 121.800. |
-| 11 | ATC | Ground | United 598, taxi to runway 27 via A, E. Contact Tower when ready. |
-| 12 | Pilot | Ground | Taxi to runway 27 via A, E, United 598. |
-| 13 | Pilot | Ground | Ground, United 598, request taxi. |
+| 9 | Pilot | Ramp | Ramp, United 598, push complete, ready to taxi. |
+| 10 | ATC | Ramp | United 598, proceed to the movement-area boundary, contact Ground 121.800. |
+| 11 | Pilot | Ramp | Proceed to the movement-area boundary, contact Ground 121.800, United 598. |
+| 12 | Pilot | Ground | Ground, United 598, request taxi. |
+| 13 | ATC | Ground | United 598, taxi to runway 27 via A, E. Contact Tower when ready. |
 | 14 | Pilot | Ground | Taxi to runway 27 via A, E, United 598. |
 | 15 | Pilot | Tower | Tower, United 598, holding short runway 27, ready for departure. |
 | 16 | ATC | Ground | United 598, contact Tower on 118.300. |
