@@ -118,6 +118,23 @@ because `BitmapFactory` cannot live in `ui/map`).
 `app/simbrief`. Changes to any of those are compiled only by CI, at four minutes a round
 trip — so read the declaration you are calling, including its parameter *types*.
 
+**`ScreenModels.kt` is the one worth rescuing.** It is where most of the CI-only compile
+errors have happened, and it imports nothing Android-specific — every import is `:core`,
+`java.*`, `kotlin.*`, `androidx.compose.*`, or the app's own `ui/map` and `ui/screens`
+packages, all three of which `:uicheck` already compiles. The single blocker is that its
+twenty-odd functions are extensions on `FlightViewModel`, which extends
+`androidx.lifecycle.ViewModel`. Two ways out, for an agent with network access to try (it
+needs to resolve a new artifact, so it cannot be done offline):
+
+1. Add `androidx.lifecycle:lifecycle-viewmodel` (the KMP/JVM publication, not the `-android`
+   one) to `:uicheck` and pull `FlightViewModel.kt` into its source set. Check first
+   whether the rest of that file stays Android-free.
+2. Or make the mapping functions take the values they read rather than the ViewModel, so
+   `ScreenModels.kt` has no Android receiver at all. Larger diff, but it also makes the
+   mapping layer directly unit-testable, which it is not today.
+
+Either would have caught three of this session's four CI-only failures before the push.
+
 ---
 
 ## 3. Commands that actually work here
