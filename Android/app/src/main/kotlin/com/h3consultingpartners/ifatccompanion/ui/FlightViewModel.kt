@@ -710,6 +710,23 @@ class FlightViewModel(
      */
     fun onCrossingReadback() = coordinator.readBack()
 
+    /** Open the taxi map full screen, and close it again. */
+    fun onExpandTaxiMap() {
+        graph.surfaceRouting.mapExpanded = true
+    }
+
+    fun onCollapseTaxiMap() {
+        graph.surfaceRouting.mapExpanded = false
+    }
+
+    /**
+     * Read back the last controller call, from the taxi map.
+     *
+     * The same method the Responses grid's button calls, so a taxi or crossing clearance
+     * can be acknowledged without scrolling back up to it.
+     */
+    fun onReadBack() = coordinator.readBack()
+
     /**
      * What the weather-deviation flow currently says: the mint line, the faint previews,
      * the response card's buttons and its status line.

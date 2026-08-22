@@ -384,15 +384,15 @@ class WeatherDeviationController(
                 rejoinCap = cap,
             )
             val end = conflict?.deviationPath?.lastOrNull()
-            val usable = conflict != null && conflict.deviationPath.size >= 2 &&
+            val usable = conflict != null && end != null && conflict.deviationPath.size >= 2 &&
                 // Only a line that actually rounds weather, never a degenerate line drawn out
                 // in clear air, and whose apex sits alongside the system rather than bulging
                 // off across a route bend.
                 detector.pathEngagesWeather(conflict.deviationPath, hazards) &&
                 detector.previewApexHugsWeather(conflict.deviationPath, listOf(detectPosition) + ahead, hazards) &&
-                end != null && end.isValid && Geo.distanceNM(detectPosition, end) > 1
+                end.isValid && Geo.distanceNM(detectPosition, end) > 1
 
-            if (usable && conflict != null && end != null) {
+            if (usable) {
                 results += conflict
                 startPoint = end
                 continue
@@ -1170,8 +1170,11 @@ class WeatherDeviationController(
     private fun activeRideSigmet(inputs: Inputs): SIGMET? {
         if (flyableConflict() != null) return null
         return inputs.routeSigmets
-            .filter { it.turbulenceSeverity != null || (it.hazard ?: it.raw).uppercase().contains("ICE") }
-            .maxByOrNull { it.turbulenceSeverity?.rawValue ?: 0 }
+            .filter {
+                it.category == SIGMET.Category.TURBULENCE ||
+                    it.category == SIGMET.Category.ICING_OR_MOUNTAIN_WAVE
+            }
+            .maxByOrNull { it.turbulenceSeverity.rawValue }
     }
 
     private fun rideSigmetSituation(sigmet: SIGMET): WeatherDeviationEngine.Situation {

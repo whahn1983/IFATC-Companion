@@ -34,6 +34,7 @@ import com.h3consultingpartners.ifatccompanion.ui.screens.PhraseologyProfilesMod
 import com.h3consultingpartners.ifatccompanion.ui.screens.SettingsScreenActions
 import com.h3consultingpartners.ifatccompanion.ui.screens.SettingsScreenModel
 import com.h3consultingpartners.ifatccompanion.ui.screens.SubscriptionScreenActions
+import com.h3consultingpartners.ifatccompanion.ui.screens.TaxiMapCardModel
 import com.h3consultingpartners.ifatccompanion.ui.screens.VoiceOption
 import com.h3consultingpartners.ifatccompanion.ui.screens.WeatherScreenActions
 import com.h3consultingpartners.ifatccompanion.ui.screens.WeatherScreenModel
@@ -468,6 +469,31 @@ fun FlightViewModel.routeMapModel(
  * The taxi map's model. Only the runways the route touches are included — see the note on
  * [TaxiMap] for why that restriction exists rather than drawing the whole field.
  */
+/**
+ * The card around the taxi map: what it is routing to, how good the route is, what is wrong
+ * with it, and how many runways it crosses.
+ *
+ * `AirportSurfaceState.offRoute`, `.taxiMapVisible` and `.mapExpanded` were computed by the
+ * routing coordinator and read by no UI at all, so an aircraft that wandered off its
+ * assigned route was told nothing.
+ */
+fun FlightViewModel.taxiMapCardModel(
+    routing: AirportSurfaceState,
+): TaxiMapCardModel {
+    val route = routing.route
+    return TaxiMapCardModel(
+        kind = routing.kind,
+        destinationLabel = route?.destinationLabel.orEmpty()
+            .replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.US) else it.toString() },
+        routeConfidence = routing.routeConfidence,
+        taxiwayText = route?.taxiwaysText?.let { "Via $it" }.orEmpty(),
+        crossingCount = route?.crossings?.size ?: 0,
+        offRoute = routing.offRoute,
+        nextInstruction = routing.nextInstruction,
+        expanded = routing.mapExpanded,
+    )
+}
+
 fun FlightViewModel.taxiMapModel(
     session: FlightSessionState,
     surface: SurfaceSessionState,

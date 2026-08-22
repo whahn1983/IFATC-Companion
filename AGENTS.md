@@ -295,6 +295,12 @@ argument. **`:app` wiring files (`AppGraph`, `FlightViewModel`, `ScreenModels`,
 before pushing changes to them, open every `:core` declaration they call and check its
 visibility and its defaults.
 
+And a fourth time, differently: `BitmapRasterDecoder` was written against the first 68
+lines of `RasterImage.kt`, which is where `RasterImageDecoder.decode` is declared. The
+interface has a second member — `decodeScaled` — twenty lines further down. CI found it
+after four minutes. **Read a whole interface before implementing it**, not the part of it
+your call site happens to need.
+
 **"Tests pass" is not "the feature works".** `CenterSectorDatabase` had 17 passing tests and
 was constructed nowhere. `SurfaceSessionController.refresh` had exactly one caller — a
 Settings row most pilots never open — so the taxi map read "Taxi route pending" from launch

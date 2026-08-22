@@ -14,7 +14,7 @@ verified by hand against both sources before this document was written: the chec
 
 ## Progress
 
-46 of the 100 are closed and two are half-closed; the rest stand. Each closed entry below
+47 of the 100 are closed and two are half-closed; the rest stand. Each closed entry below
 carries a ✅ line naming what closes it, so this document stays the record of what the
 audit found *and* of what has been done about it rather than being quietly rewritten.
 
@@ -290,6 +290,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** `SettingsScreen.kt:90-127` renders the Host, Port and Auto-discover controls but there is no Connect/Reconnect button and no connection-state line. More seriously the controls are inert: `settings.host` has exactly one reader in the whole app (`SettingsScreen.kt:102`), `settings.autoDiscover` has none outside `SettingsKeys.kt`, and no code in `:app` ever calls `IFConnectManager.connect(...)` (IFConnectManager.kt:148) or `startAutoDiscover(...)` (:705) — the only call `:app` makes on the manager is `connect.disconnect()`.
 
 **Taxi map is drawn without its card: no title, no header chips, no off-route banner, no Expand/Recalculate/Read Back, and no OpenStreetMap attribution**  
+✅ Closed: `TaxiMapCard` adds the title, the destination and confidence chips, the taxiway sequence, the crossing count, the off-route banner, the Expand / Recalculate / Read Back row, the OpenStreetMap attribution and the simulation-only line — and `ExpandedTaxiMap` is the full-screen view, with the attribution repeated.  
 *Absent* · iOS: `IFATCCompanion/Views/TaxiMapView.swift:33 (Card titled "Taxi Map (Simulated)"), :35 + :103-134 (TaxiMapHeader — destination pill, confidence pill, "Via …", crossing count), :36 + :54-66 (off-route banner), :79-99 (Expand / Recalculate / Read Back), :43 + :174-190 (TaxiMapFooter — tappable OSM attribution + simulation-only line), :193-255 (ExpandedTaxiMap)`
 
 - **iOS:** The taxi map lives inside a titled Card with a header row (assigned gate/runway, route confidence, taxiway sequence, crossing count), an orange "Off assigned taxi route" banner when `surface.offRoute`, a controls row (Expand → full-screen map, Recalculate, Read Back), and a footer carrying the tappable OpenStreetMap attribution link plus "Simulation only — not for real-world aviation. OSM data may not match Infinite Flight scenery." The attribution is also repeated inside the expanded map.

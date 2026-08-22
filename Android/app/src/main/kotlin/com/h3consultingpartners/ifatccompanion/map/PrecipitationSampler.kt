@@ -13,6 +13,8 @@ import com.h3consultingpartners.ifatccompanion.core.weather.radar.PrecipitationO
 import com.h3consultingpartners.ifatccompanion.core.weather.radar.RadarImageSampler
 import com.h3consultingpartners.ifatccompanion.core.weather.radar.RasterImage
 import com.h3consultingpartners.ifatccompanion.core.weather.radar.RasterImageDecoder
+import kotlin.math.max
+import kotlin.math.roundToInt
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -136,27 +138,60 @@ class PrecipitationSampler(
  * .none` for the same reason.
  */
 object BitmapRasterDecoder : RasterImageDecoder {
+
     override fun decode(data: ByteArray, width: Int, height: Int): RasterImage? {
-        if (data.isEmpty() || width <= 0 || height <= 0) return null
-        val decoded = runCatching {
-            BitmapFactory.decodeByteArray(data, 0, data.size, BitmapFactory.Options().apply {
-                inPreferredConfig = Bitmap.Config.ARGB_8888
-            })
-        }.getOrNull() ?: return null
-        val scaled = runCatching {
-            if (decoded.width == width && decoded.height == height) {
+        if (width <= 0 || height <= 0) return null
+        return read(data) { it.scaledTo(width, height) }
+    }
+
+    /**
+     * The OPERA composite path, which does not know the raster's pixel dimensions in
+     * advance: decode at the natural size and downsample only if the longest side would
+     * otherwise be larger than the caller can hold.
+     */
+    override fun decodeScaled(data: ByteArray, maxDimension: Int): RasterImage? {
+        if (maxDimension <= 0) return null
+        return read(data) { decoded ->
+            val longest = max(decoded.width, decoded.height)
+            if (longest <= maxDimension) {
                 decoded
             } else {
-                decoded.scale(width, height, filter = false)
+                val factor = maxDimension.toDouble() / longest
+                decoded.scaledTo(
+                    max(1, (decoded.width * factor).roundToInt()),
+                    max(1, (decoded.height * factor).roundToInt()),
+                )
             }
+        }
+    }
+
+    private inline fun read(data: ByteArray, scale: (Bitmap) -> Bitmap?): RasterImage? {
+        if (data.isEmpty()) return null
+        val decoded = runCatching {
+            BitmapFactory.decodeByteArray(
+                data,
+                0,
+                data.size,
+                BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.ARGB_8888 },
+            )
         }.getOrNull() ?: return null
+        val scaled = runCatching { scale(decoded) }.getOrNull()
+        if (scaled == null) {
+            decoded.recycle()
+            return null
+        }
+        val width = scaled.width
+        val height = scaled.height
         val pixels = IntArray(width * height)
-        runCatching { scaled.getPixels(pixels, 0, width, 0, 0, width, height) }
-            .getOrElse { return null }
+        val read = runCatching { scaled.getPixels(pixels, 0, width, 0, 0, width, height) }.isSuccess
         if (scaled !== decoded) scaled.recycle()
         decoded.recycle()
+        if (!read) return null
         return ArrayRasterImage(width, height, pixels)
     }
+
+    private fun Bitmap.scaledTo(width: Int, height: Int): Bitmap =
+        if (this.width == width && this.height == height) this else scale(width, height, filter = false)
 }
 
 /** A decoded image held as a flat ARGB array, row-major with row 0 at the top. */

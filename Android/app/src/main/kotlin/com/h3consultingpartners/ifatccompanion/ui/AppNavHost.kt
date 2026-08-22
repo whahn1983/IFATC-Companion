@@ -11,7 +11,6 @@ import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.h3consultingpartners.ifatccompanion.core.session.FlightSessionState
 import com.h3consultingpartners.ifatccompanion.ui.map.RouteMap
-import com.h3consultingpartners.ifatccompanion.ui.map.TaxiMap
 import com.h3consultingpartners.ifatccompanion.ui.screens.AppTab
 import com.h3consultingpartners.ifatccompanion.ui.screens.AtcDestination
 import com.h3consultingpartners.ifatccompanion.ui.screens.AtcScreen
@@ -20,7 +19,9 @@ import com.h3consultingpartners.ifatccompanion.ui.screens.FlightScreen
 import com.h3consultingpartners.ifatccompanion.ui.screens.FlightsScreen
 import com.h3consultingpartners.ifatccompanion.ui.screens.PhraseologyProfilesScreen
 import com.h3consultingpartners.ifatccompanion.ui.screens.SettingsScreen
+import com.h3consultingpartners.ifatccompanion.ui.screens.ExpandedTaxiMap
 import com.h3consultingpartners.ifatccompanion.ui.screens.SubscriptionScreen
+import com.h3consultingpartners.ifatccompanion.ui.screens.TaxiMapCard
 import com.h3consultingpartners.ifatccompanion.ui.screens.WeatherDeviationCard
 import com.h3consultingpartners.ifatccompanion.ui.screens.WeatherScreen
 
@@ -98,6 +99,22 @@ fun AppNavHost(
         onAtcDestination(AtcDestination.ROOT)
     }
 
+    // System back closes the full-screen map rather than leaving the app.
+    BackHandler(enabled = routing.mapExpanded) { viewModel.onCollapseTaxiMap() }
+
+    // The full-screen taxi map sits over everything, so a pilot reading a complex field is
+    // not doing it in a card-sized window.
+    if (routing.mapExpanded) {
+        ExpandedTaxiMap(
+            map = viewModel.taxiMapModel(session, surface, routing),
+            nextInstruction = routing.nextInstruction,
+            onDismiss = viewModel::onCollapseTaxiMap,
+            onOpenLink = viewModel::onOpenLink,
+            modifier = modifier,
+        )
+        return
+    }
+
     when (tab) {
         AppTab.ATC -> if (atcDestination == AtcDestination.FLIGHTS) {
             FlightsScreen(
@@ -117,17 +134,24 @@ fun AppNavHost(
             actions = viewModel.atcActions(onRequestMicrophone),
             modifier = modifier,
             taxiMap = {
-                TaxiMap(
-                    model = viewModel.taxiMapModel(session, surface, routing),
-                    // Both action lists come straight off the coordinator's state. The
-                    // crossing one is what releases AWAITING_PILOT_READBACK, so without it
-                    // a taxi that reaches a runway never continues.
-                    actions = routing.crossingActions + routing.offRouteActions,
-                    awaitingCrossingReadback = routing.awaitingCrossingReadback,
-                    nextInstruction = routing.nextInstruction,
-                    onAction = viewModel::onTaxiAction,
-                    onCrossingReadback = viewModel::onCrossingReadback,
-                )
+                // Only while a taxi is actually under way, which is what `taxiMapVisible`
+                // has always said and nothing read.
+                if (routing.taxiMapVisible) {
+                    TaxiMapCard(
+                        model = viewModel.taxiMapCardModel(routing),
+                        map = viewModel.taxiMapModel(session, surface, routing),
+                        // Both action lists come straight off the coordinator's state. The
+                        // crossing one is what releases AWAITING_PILOT_READBACK, so without
+                        // it a taxi that reaches a runway never continues.
+                        actions = routing.crossingActions + routing.offRouteActions,
+                        awaitingCrossingReadback = routing.awaitingCrossingReadback,
+                        onAction = viewModel::onTaxiAction,
+                        onCrossingReadback = viewModel::onCrossingReadback,
+                        onExpand = viewModel::onExpandTaxiMap,
+                        onReadBack = viewModel::onReadBack,
+                        onOpenLink = viewModel::onOpenLink,
+                    )
+                }
             },
             weatherDeviationCard = {
                 WeatherDeviationCard(
