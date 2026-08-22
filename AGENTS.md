@@ -321,6 +321,15 @@ ways, say which.
 its own line. `DrawScope` works in pixels — write `dp` and call `.toPx()`, and take label
 clearance from the height the text actually measured.
 
+**A doc saying a thing is ported is not evidence it is.** `ANDROID_REMAINING_WORK.md`
+described the review engagement counting as "ported and tested"; grep found no review code
+in `:core` at all. Check before you build on a claim, including one this file makes.
+
+**Read the state machine before writing a test about it.** A test asserting that a sector
+crossing goes unannounced "under another controller" used a climbing aircraft — and `CLIMB`
+maps to Center, so the behaviour it called a bug was correct. `AtcFlowOrder.controller` is
+the authority on who owns the radio in a given state; a plausible-sounding altitude is not.
+
 **Hardcoded colours break one theme.** `Color(0x33FFFFFF)` on a near-white light-theme
 surface is nothing at all. Base-map ink now comes from `IFATCSemanticColors`, which has
 `light` and `dark` variants. Every new drawing colour must too.
@@ -331,6 +340,9 @@ surface is nothing at all. Base-map ink now comes from `IFATCSemanticColors`, wh
 
 `Docs/ANDROID_REMAINING_WORK.md` is the live list, in the order it is worth doing, with
 honest sizes. `Docs/GOOGLE_PLAY_RELEASE_CHECKLIST.md` covers store mechanics.
+
+**Feature parity with iOS is complete.** Every capability the iOS app has is built and
+wired. What is left is verification, tests for the rows that have none, and store mechanics.
 
 The gate everything else is behind: **nothing in this port has ever run on hardware, and
 nothing has been heard.** The radio effect chain, the TTS voices, the chatter mix and the
