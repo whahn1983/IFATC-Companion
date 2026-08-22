@@ -14,7 +14,7 @@ verified by hand against both sources before this document was written: the chec
 
 ## Progress
 
-44 of the 100 are closed and two are half-closed; the rest stand. Each closed entry below
+46 of the 100 are closed and two are half-closed; the rest stand. Each closed entry below
 carries a ✅ line naming what closes it, so this document stays the record of what the
 audit found *and* of what has been done about it rather than being quietly rewritten.
 
@@ -65,6 +65,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 ### Session orchestration and models
 
 **Automatic gate assignment never runs, though the Settings toggle for it ships**  
+✅ Closed: `AutoGateController` runs the picker on an endpoint change, on a gate edit, when the aircraft comes to rest, and on the Settings toggle — and drops a gate assigned at another airport before reading anything.  
 *Ported, not wired* · iOS: `IFATCCompanion/App/AppModel.swift:3094 (autoAssignGatesIfNeeded), :3035 (updateAutoGatesFromTelemetry), :3261 (autoAssignGate), :3203 (mayAutoAssignGate), :3129 (dropForeignAutoGates), :3052 (retryFailedAutoGatesIfDue)`
 
 - **iOS:** With "Assign gates automatically" on, the app picks a stand from the OSM surface for the departure and arrival, stamps it so it is never allowed to overwrite a gate the pilot typed, re-runs when the aircraft parks somewhere new, upgrades a guessed gate once the aircraft's parked position is known, drops stamps belonging to a different airport, and retries reads that failed.
@@ -238,6 +239,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 ### Airport surface, Connect, Mock Mode
 
 **Auto-assign gates is a dead toggle — GateAssigner.assign is never called from :app or :core**  
+✅ Closed — see `AutoGateController`.  
 *Ported, not wired* · iOS: `IFATCCompanion/AirportSurface/GateAssignment.swift:460/474 (GateAssigner.assign); IFATCCompanion/App/AppModel.swift:3094 (autoAssignGatesIfNeeded), :3261-3290 (autoAssignGate), :3243 (applyAutoAssignedGate), :3129-3149 (dropForeignAutoGates), :3163-3189 (applyAutoGateSettingChange / clearAutoAssignedGates); IFATCCompanion/Views/SettingsView.swift:411`
 
 - **iOS:** With the "Auto-assign gates" toggle on, iOS fills a blank departure/arrival gate from the field's OSM stand data: it drops any automatic gate stamped for a different airport, fetches the surface via airportSurface.surfaceModel(icao:reference:) (AppModel.swift:3275), runs GateAssigner.assign against a FlightContext (callsign, airline, aircraft type/size class, and the aircraft's parked position when it is stopped on the ground), writes the chosen stand into settings.departureGate/arrivalGate with an AutoGateStamp so a later pass may replace it and a pilot edit takes it back, logs the rationale, upgrades a chosen departure gate to the stand the aircraft is actually parked on, gives the fields back when the toggle is switched off, and re-tries via onSurfaceAvailable with a read-failure cap.

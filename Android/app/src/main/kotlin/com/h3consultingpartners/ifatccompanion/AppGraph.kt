@@ -41,7 +41,10 @@ import com.h3consultingpartners.ifatccompanion.core.settings.SettingsRepository
 import com.h3consultingpartners.ifatccompanion.core.surface.AirportSurfaceCache
 import com.h3consultingpartners.ifatccompanion.core.surface.AirportSurfaceProvider
 import com.h3consultingpartners.ifatccompanion.core.surface.SurfaceSessionController
+import com.h3consultingpartners.ifatccompanion.core.airports.AirportDatabase
 import com.h3consultingpartners.ifatccompanion.core.surface.routing.AirportSurfaceCoordinator
+import com.h3consultingpartners.ifatccompanion.core.surface.routing.AutoGateController
+import com.h3consultingpartners.ifatccompanion.core.surface.routing.GateRole
 import com.h3consultingpartners.ifatccompanion.core.surface.routing.TaxiKind
 import com.h3consultingpartners.ifatccompanion.core.weather.AviationWeatherService
 import com.h3consultingpartners.ifatccompanion.core.weather.WeatherSessionController
@@ -185,6 +188,7 @@ class AppGraph private constructor(
                 weather.clearSmootherAltitude()
                 weatherDeviation.reset()
                 precipitationSampler.reset()
+                autoGates.reset()
                 // The link is bound to whatever flight was live when it opened: after a
                 // swap in the sim it keeps serving the previous aircraft's position and
                 // plan. This is the same thing the Reconnect button does by hand, which is
@@ -344,6 +348,58 @@ class AppGraph private constructor(
      * and all, despite the store being built to restore any snapshot under six hours old.
      */
     val sessionStore: SessionStateStore by lazy { SessionStateStore(fileStore, clock) }
+
+    /**
+     * Fills a blank gate field from the airport's own stand data.
+     *
+     * `GateAssigner` — the stand picker, its operator matching, its size classes and its
+     * tie-breaking — was ported with tests and called from nowhere, so the "Assign gates
+     * automatically" switch in Settings wrote a boolean nobody read: a blank gate stayed
+     * blank, and the taxi route had no stand to route to or from.
+     */
+    val autoGates: AutoGateController by lazy {
+        AutoGateController(
+            clock = clock,
+            diagnostics = diagnostics,
+            settingsProvider = { settingsRepository.state.value },
+            planProvider = { flightSessionCoordinator.state.value.flightPlan },
+            aircraftProvider = { flightSessionCoordinator.state.value.aircraftState },
+            // Once the taxi is under way the departure gate is where the aircraft actually
+            // is, and reassigning it then would re-route the pilot mid-push.
+            taxiHasBegun = { surfaceRouting.state.value.kind != TaxiKind.NONE },
+            surfaceProvider = { icao, reference -> surfaceRouting.surfaceModel(icao, reference) },
+            referenceProvider = { icao ->
+                val plan = flightSessionCoordinator.state.value.flightPlan
+                when {
+                    icao.equals(plan.departure, ignoreCase = true) -> plan.departureCoordinate
+                    icao.equals(plan.destination, ignoreCase = true) -> plan.destinationCoordinate
+                    else -> null
+                } ?: AirportDatabase.coordinate(icao)
+            },
+            writeGate = { role, gate, stamp ->
+                when (role) {
+                    GateRole.DEPARTURE -> {
+                        settingsRepository.setDepartureGate(gate)
+                        settingsRepository.setAutoAssignedDepartureGate(stamp)
+                    }
+                    GateRole.ARRIVAL -> {
+                        settingsRepository.setArrivalGate(gate)
+                        settingsRepository.setAutoAssignedArrivalGate(stamp)
+                    }
+                }
+                // The plan is what the taxi route and the clearances read, so a gate that
+                // only reached the settings field would still leave the route with nothing
+                // to route to.
+                val plan = flightSessionCoordinator.state.value.flightPlan
+                flightSessionCoordinator.applyFlightPlan(
+                    when (role) {
+                        GateRole.DEPARTURE -> plan.copy(departureGate = gate)
+                        GateRole.ARRIVAL -> plan.copy(arrivalGate = gate)
+                    },
+                )
+            },
+        )
+    }
 
     /**
      * Turns the live precipitation image into the cells the deviation flow routes around.

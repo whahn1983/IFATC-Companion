@@ -151,7 +151,21 @@ class FlightViewModel(
                     // METARs, TAF, ride assessment, SIGMETs — was never given any data.
                     graph.weather.refresh()
                     graph.weather.recomputeRideItems()
+                    // Both fields' stands are now knowable, so fill any blank gate from the
+                    // airport's own stand data — and drop one assigned at the airport this
+                    // flight has just stopped flying to.
+                    graph.autoGates.assignIfNeeded()
                 }
+        }
+
+        // The moment the aircraft comes to rest is the moment its stand can be read off its
+        // position rather than guessed, and it is also where a failed extract read gets its
+        // retry. Cheap: everything below the transition is a map lookup.
+        viewModelScope.launch {
+            session
+                .map { it.aircraftState }
+                .distinctUntilChanged()
+                .collect { graph.autoGates.onTelemetry(it) }
         }
     }
 
@@ -782,6 +796,10 @@ class FlightViewModel(
                 manualOverride = true,
             ),
         )
+        // A gate field the pilot has just *cleared* is blank again, so it is the automatic
+        // assignment's to fill. Everything else about the edit leaves the assignment a
+        // no-op, so this is safe to run on every commit.
+        viewModelScope.launch { graph.autoGates.assignIfNeeded() }
     }
 
     /** A misfiled pair is common enough on a turn-around to deserve one tap. */
@@ -886,8 +904,14 @@ class FlightViewModel(
         // particular order, and the entitlement decides whether leaving Mock Mode is
         // allowed at all. Compared before the write, because the controller persists the
         // mode itself and reads the previous value to decide.
-        val modeChanged = settingsRepository.state.value.mockMode != settings.mockMode
+        val previous = settingsRepository.state.value
+        val modeChanged = previous.mockMode != settings.mockMode
+        val autoGatesChanged = previous.autoAssignGates != settings.autoAssignGates
         settingsRepository.replace(settings)
+        // Switching gate assignment on assigns straight away; switching it off gives the
+        // fields back — a gate the app filled in is the app's to withdraw, while one the
+        // pilot typed always stays.
+        if (autoGatesChanged) viewModelScope.launch { graph.autoGates.applySettingChange() }
         if (modeChanged) {
             graph.flightSource.toggleMockMode(
                 on = settings.mockMode,
