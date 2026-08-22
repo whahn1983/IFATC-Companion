@@ -16,7 +16,7 @@ because a screen exists.
 | 🔵 **Android-native substitution** | Deliberately different because the platform is, with the difference stated. |
 
 > **Verification status of the two modules.** `:core` is compiled and its tests are run —
-> **936 tests across 75 classes, 0 failures, 0 skipped** — and the per-area counts below
+> **942 tests across 76 classes, 0 failures, 0 skipped** — and the per-area counts below
 > are real.
 >
 > `:app` is now compiled too, by CI (`.github/workflows/android.yml`): `assembleDebug`
@@ -146,6 +146,7 @@ because a screen exists.
 | iOS capability | iOS files | Android | Status |
 | --- | --- | --- | --- |
 | Center sector database + tracker | `Enroute/*.swift` + `CenterSectors.json` | `core/enroute/`; the JSON is byte-identical and loaded from the classpath. `FlightSessionCoordinator` feeds every airborne fix to the tracker and publishes the sector's radio name, loading the ~550 KB database off-thread on the first fix that needs it | ✅ 19 tests |
+| Center-to-Center hand-offs | `AppModel.updateCenterSector` / `announceCenterSectorHandoff` | A crossing issues a frequency hand-off naming the next sector, held (never dropped) until the radio is clear — no read-back outstanding, no hand-off pending, no go-around being flown. The check-in that follows is answered with radar contact rather than the next clearance, and the working sector survives a reconnect so a hand-off already made is not re-announced | ✅ 6 tests |
 | Mock Mode scripted flight | `MockSimulatorFeed.swift` | `core/mock/MockSimulatorFeed.kt` — the same demo flight, KIAH → KMSP at FL370, to the digit | ✅ 12 tests |
 | Session resume | `SessionStateStore.swift` | `core/persistence/SessionStateStore.kt`, wired in `AppGraph.warmUp()`. `FlightSessionCoordinator.captureSnapshot()` writes on every new transmission and `restore()` reads on launch; a mock snapshot is never restored into a live flight, or the reverse, and a deliberate Stop clears it | ✅ 25 tests |
 | Saved flights | `SavedFlightStore.swift` | `core/persistence/SavedFlightStore.kt` — **never constructed in `:app`**; nothing saves or reads a flight | 🔌 23 tests total in the package |
@@ -286,7 +287,7 @@ Stated plainly, and none of them hidden behind a ✅ elsewhere in this file.
 | | |
 | --- | --- |
 | `:core` compile | ✅ `./gradlew -c settings-core.gradle.kts :core:compileKotlin` |
-| `:core` tests | ✅ **936 tests, 75 classes, 0 failures, 0 skipped** |
+| `:core` tests | ✅ **942 tests, 76 classes, 0 failures, 0 skipped** |
 | Compose screens type-check | ✅ `./gradlew -c settings-uicheck.gradle.kts :uicheck:compileKotlin` |
 | `:app` compile | ❌ not possible here |
 | Instrumented tests | ❌ not possible here |

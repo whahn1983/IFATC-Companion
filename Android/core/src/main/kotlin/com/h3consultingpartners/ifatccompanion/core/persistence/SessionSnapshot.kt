@@ -67,6 +67,15 @@ data class SessionSnapshot(
      * Optional so snapshots written before this field decode cleanly.
      */
     val centerSectorID: String? = null,
+
+    /**
+     * Whether a Center-to-Center hand-off is waiting on the pilot to check in.
+     *
+     * Persisted because it changes what the *next* check-in means: without it a reconnect
+     * mid-hand-off answers the pilot's call-up with the next clearance in the flow instead
+     * of a radar-contact acknowledgement.
+     */
+    val awaitingCenterSectorCheckIn: Boolean? = null,
     /**
      * Whether Ground has already handed the departing aircraft to Tower to *monitor*
      * (the "monitor Tower on …" hand-off short of the runway), so a reconnect mid-taxi

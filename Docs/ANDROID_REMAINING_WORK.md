@@ -8,7 +8,7 @@ Sizes are the real cost including tests, not the size of the diff. "Needs a devi
 the work cannot be trusted without running it, and this repository's CI has no device or
 emulator: it compiles `:app`, gates Android Lint, and runs R8, and that is all it can do.
 
-Status at the time of writing: `:core` is **936 tests / 75 classes / 0 failures**; `:app`
+Status at the time of writing: `:core` is **942 tests / 76 classes / 0 failures**; `:app`
 compiles, lints clean under `abortOnError = true`, and produces a minified release bundle.
 
 ---
@@ -33,9 +33,14 @@ did nothing at all in the app, which is what the parity matrix's 🔌 status now
 
 ## 1. Features iOS has that Android does not
 
-| # | Work | Size | Notes |
-| --- | --- | --- | --- |
-| 1.1 | **Center sector hand-offs** | Medium (1–2 days) | The sector is named now. Still missing: the spoken crossing hand-off, tuning Center to the tracked sector's frequency, persisting the sector across a reconnect so it is not re-announced, and the `awaitingCenterSectorCheckIn` state that makes a post-handoff check-in a call-up rather than a request. |
+**None outstanding.** Every capability the iOS app has is now built and wired on Android.
+What that does *not* mean is that it works — see section 0, which is the gate all of it
+sits behind. A feature that has never run on hardware is not finished, however many tests
+it has, and this port has already found subsystems with passing tests that did nothing at
+all in the running app.
+
+The deliberate differences that remain are recorded in `ANDROID_PARITY_MATRIX.md` (🔵) and
+in section 4 below.
 
 ---
 

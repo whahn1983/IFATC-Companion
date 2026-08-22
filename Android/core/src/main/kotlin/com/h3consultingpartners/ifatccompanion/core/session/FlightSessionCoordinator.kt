@@ -13,6 +13,7 @@ import com.h3consultingpartners.ifatccompanion.core.atc.PilotIntentParser
 import com.h3consultingpartners.ifatccompanion.core.atc.PilotResponseEngine
 import com.h3consultingpartners.ifatccompanion.core.atc.RunwayLineupDetector
 import com.h3consultingpartners.ifatccompanion.core.connect.IFConnectManager
+import com.h3consultingpartners.ifatccompanion.core.enroute.CenterSector
 import com.h3consultingpartners.ifatccompanion.core.enroute.CenterSectorDatabase
 import com.h3consultingpartners.ifatccompanion.core.enroute.CenterSectorTracker
 import com.h3consultingpartners.ifatccompanion.core.geo.Coordinate
@@ -99,6 +100,14 @@ class FlightSessionCoordinator(
      * constructing it unchanged.
      */
     private val savedFlightBinding: () -> SavedFlightBinding = { SavedFlightBinding() },
+    /**
+     * The en-route sector map. Defaulted to the shared instance the app loads once.
+     *
+     * Injectable because the shipped dataset is the whole world and the behaviour worth
+     * testing is what happens at one boundary: a handful of known sectors makes a
+     * Center-to-Center hand-off assertable in a way the global set does not.
+     */
+    private val sectorDatabase: CenterSectorDatabase = CenterSectorDatabase.shared,
 ) {
 
     private val _state = MutableStateFlow(FlightSessionState())
@@ -124,6 +133,40 @@ class FlightSessionCoordinator(
      * Released by the pilot re-establishing with Approach.
      */
     private var goAroundInProgress = false
+
+    /** The sector the engines were last rebuilt for, so an unchanged fix rebuilds nothing. */
+    private var appliedCenterSector: CenterSector? = null
+
+    /**
+     * A confirmed sector crossing waiting for a free radio.
+     *
+     * Held rather than dropped: the pilot may owe a read-back, or a hand-off they have not
+     * checked in on may be outstanding, and cutting across either with a second controller's
+     * frequency change is how a pilot ends up on the wrong one. A second crossing while the
+     * radio is busy folds into this rather than queueing — the origin stays the sector the
+     * pilot was last *told* to contact, so what they hear is one hand-off, not two.
+     */
+    private var pendingCenterCrossing: CenterSectorTracker.Crossing? = null
+
+    /**
+     * Set from a Center-to-Center hand-off until the pilot checks in on the new frequency.
+     *
+     * It exists to stop the check-in advancing the conversation. A pilot calling up a new
+     * enroute sector is announcing themselves, not asking for the next clearance — and
+     * without this the cruise check-in is answered with the top-of-descent call, because
+     * descent is the next Center state after cruise.
+     */
+    private var awaitingCenterSectorCheckIn = false
+
+    /**
+     * A sector id carried by a restored session, resolved once the map finishes loading.
+     *
+     * A restore runs at launch, before the sector database has finished parsing in the
+     * background. Without this the tracker starts empty and the first fix after the load
+     * looks like entry into a brand-new sector — so a reconnect mid-cruise re-announces a
+     * hand-off the pilot already made.
+     */
+    private var pendingCenterSectorID: String? = null
 
     private val settings: AppSettings get() = settingsProvider()
 
@@ -629,6 +672,30 @@ class FlightSessionCoordinator(
             return
         }
 
+        // Calling up a new enroute sector after a Center-to-Center hand-off. The pilot is
+        // announcing themselves on a new frequency, not asking for the next clearance, so
+        // the conversation must not advance — falling through would answer a cruise check-in
+        // with the top-of-descent call, because descent is the next Center state after
+        // cruise.
+        if (awaitingCenterSectorCheckIn && facility == ATCFacility.CENTER) {
+            awaitingCenterSectorCheckIn = false
+            val context = buildContext(stateMachine.current)
+            post(
+                pilotEngine.requestHandoff(
+                    c = context,
+                    facility = ATCFacility.CENTER,
+                    currentAltitude = checkInAltitude(),
+                    targetAltitude = current.assignedAltitude,
+                    onGround = current.aircraftState.onGround ?: false,
+                ),
+                speakIt = settings.speakPilot,
+            )
+            post(engine.radarContact(cs = context.callsign, facility = ATCFacility.CENTER), speakIt = true)
+            _state.update { it.copy(pendingCheckInFacility = null) }
+            recomputeDerivedState()
+            return
+        }
+
         val tx = pilotEngine.requestHandoff(
             c = buildContext(stateMachine.current),
             facility = facility,
@@ -908,6 +975,7 @@ class FlightSessionCoordinator(
             mockMode = current.mockMode,
             savedAtMillis = clock.nowMillis(),
             centerSectorID = sectorTracker.current?.id,
+            awaitingCenterSectorCheckIn = awaitingCenterSectorCheckIn,
             monitoringTower = current.monitoringTower,
             atcCommunicationStarted = current.atcCommunicationStarted,
             flightPlan = current.flightPlan,
@@ -944,6 +1012,11 @@ class FlightSessionCoordinator(
             snapshot.arrivalGateLongitude,
         )
         goAroundInProgress = snapshot.goAroundInProgress ?: false
+        awaitingCenterSectorCheckIn = snapshot.awaitingCenterSectorCheckIn ?: false
+        // Resolved on the first fix after the sector map finishes loading — a restore runs at
+        // launch, before the background parse is done. Adopting it is what stops a reconnect
+        // mid-cruise re-announcing a hand-off the pilot already made.
+        pendingCenterSectorID = snapshot.centerSectorID
         snapshot.departureFieldElevationMSL?.let { departureFieldElevationMSL = it }
         snapshot.liftoffAltitudeMSL?.let { liftoffAltitudeMSL = it }
 
@@ -1017,6 +1090,10 @@ class FlightSessionCoordinator(
         sectorTracker.reset()
         sectorLoadRequested = false
         goAroundInProgress = false
+        awaitingCenterSectorCheckIn = false
+        pendingCenterCrossing = null
+        pendingCenterSectorID = null
+        applyCenterSector(null)
         arrivalGatePosition = null
         departureFieldElevationMSL = 0.0
         liftoffAltitudeMSL = 0.0
@@ -1258,7 +1335,7 @@ class FlightSessionCoordinator(
         if (aircraft.onGround != false) return
         val coordinate = aircraft.coordinate ?: return
 
-        val database = CenterSectorDatabase.shared
+        val database = sectorDatabase
         if (!database.isReady) {
             if (!sectorLoadRequested) {
                 sectorLoadRequested = true
@@ -1267,15 +1344,94 @@ class FlightSessionCoordinator(
             return
         }
 
-        sectorTracker.update(
+        // A restored session names the sector the pilot was working; adopt it as soon as the
+        // map can resolve it, so the next crossing is measured from there rather than read as
+        // a first entry.
+        pendingCenterSectorID?.let { restored ->
+            database.sector(restored)?.let { sector ->
+                pendingCenterSectorID = null
+                sectorTracker.adopt(sector)
+                applyCenterSector(sector)
+            }
+        }
+
+        // Every fix goes to the tracker whoever is working the flight: it needs an unbroken
+        // track to tell a flown boundary crossing from a position jump.
+        val crossing = sectorTracker.update(
             coordinate = coordinate,
             atMillis = clock.nowMillis(),
             database = database,
         )
-        val name = sectorTracker.current?.radioName
+        applyCenterSector(sectorTracker.current)
+
+        if (AtcFlowOrder.controller(stateMachine.current, _state.value.currentFacility) !=
+            ATCFacility.CENTER
+        ) {
+            // Departure and Approach own the radio at either end of the enroute leg. The
+            // sector still moves under the aircraft, but nobody says so — and a crossing made
+            // under another controller is never announced late: whoever hands the flight to
+            // Center names the sector it is in at that moment.
+            pendingCenterCrossing = null
+            return
+        }
+
+        if (crossing != null) {
+            pendingCenterCrossing = CenterSectorTracker.Crossing(
+                from = pendingCenterCrossing?.from ?: crossing.from,
+                to = crossing.to,
+            )
+        }
+        val pending = pendingCenterCrossing ?: return
+        // Wait for the radio: the last instruction read back, no hand-off outstanding, and no
+        // go-around being flown.
+        if (readbackGate.isClosed && !settings.mockMode) return
+        if (_state.value.pendingCheckInFacility != null) return
+        if (goAroundInProgress) return
+        pendingCenterCrossing = null
+        announceCenterSectorHandoff(pending)
+    }
+
+    /**
+     * Publish the working sector and make every engine that names a controller say it.
+     *
+     * The state machine keeps its own engine copy on purpose: rebuilding that here would
+     * reset the gate-to-gate cursor mid-flight, and none of its calls name the facility.
+     */
+    private fun applyCenterSector(sector: CenterSector?) {
+        if (sector?.id == appliedCenterSector?.id) return
+        appliedCenterSector = sector
+        engine = engine.copy(centerSectorName = sector?.radioName)
+        pilotEngine = PilotResponseEngine(engine)
+        onEngineRebuilt?.invoke(engine)
+        val name = sector?.radioName
         if (name != _state.value.centerSectorName) {
             _state.update { it.copy(centerSectorName = name) }
         }
+    }
+
+    /**
+     * The sector being left hands the flight to the next one.
+     *
+     * A plain frequency hand-off — "United 598, contact Memphis Center on 133.425" —
+     * attributed to Center, with the read-back that tunes the new sector. Deliberately no
+     * state advance: the same facility keeps working the aircraft, only the sector changes.
+     */
+    private fun announceCenterSectorHandoff(crossing: CenterSectorTracker.Crossing) {
+        val context = buildContext(stateMachine.current)
+        post(
+            engine.handoff(
+                cs = context.callsign,
+                from = ATCFacility.CENTER,
+                to = ATCFacility.CENTER,
+                frequency = crossing.to.frequency,
+            ),
+            speakIt = true,
+        )
+        awaitingCenterSectorCheckIn = true
+        diagnostics.log(
+            DiagnosticCategory.ATC,
+            message = "Center sector hand-off: ${crossing.from.id} → ${crossing.to.id}",
+        )
     }
 
     fun frequencyForFacility(facility: ATCFacility): Double =
