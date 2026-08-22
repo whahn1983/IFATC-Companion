@@ -36,6 +36,7 @@ import com.h3consultingpartners.ifatccompanion.core.persistence.SessionSnapshot
 import com.h3consultingpartners.ifatccompanion.core.phraseology.Phonetic
 import com.h3consultingpartners.ifatccompanion.core.phraseology.PhraseologyEngine
 import com.h3consultingpartners.ifatccompanion.core.phraseology.PhraseologyProcedure
+import com.h3consultingpartners.ifatccompanion.core.phraseology.PhraseologyProfile
 import com.h3consultingpartners.ifatccompanion.core.phraseology.RampPhraseologyEngine
 import com.h3consultingpartners.ifatccompanion.core.platform.Clock
 import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticCategory
@@ -153,6 +154,24 @@ class FlightSessionCoordinator(
      * of the surface subsystem.
      */
     private val groundHandoffSignals: () -> GroundHandoffSignals = { GroundHandoffSignals() },
+    /**
+     * The pilot's active custom-phraseology profile, if they have selected one.
+     *
+     * Read per rebuild rather than held, because selecting a profile — or editing the one
+     * already selected — has to change what the controller says on the next call. The whole
+     * Phraseology Profiles screen shipped and worked, and the engine's `profile` was never
+     * supplied by anything, so every template and custom airline call set in it was inert.
+     */
+    private val profileProvider: () -> PhraseologyProfile? = { null },
+    /**
+     * Authorize the runway crossing the pilot has just read back.
+     *
+     * The read-back and the authorization are one action, and the port had split them so
+     * that each path dropped the other half: the Read Back button posted the words and
+     * never authorized the crossing, and the taxi map's own button authorized it silently,
+     * with nothing on the frequency and nothing in the transcript.
+     */
+    private val authorizeCrossing: () -> Unit = {},
 ) {
 
     private val _state = MutableStateFlow(FlightSessionState())
@@ -283,6 +302,7 @@ class FlightSessionCoordinator(
     private fun buildEngine() = PhraseologyEngine(
         digitStyle = settings.digitStyle,
         mode = settings.phraseologyMode,
+        profile = profileProvider(),
     )
 
     // region Telemetry in
@@ -770,14 +790,23 @@ class FlightSessionCoordinator(
         val current = _state.value
         if (current.monitoringTower || current.hasDeparted || current.companionStandby) return
         if (stateMachine.current != ATCState.GROUND_TAXI) return
-        if (current.currentFacility != ATCFacility.GROUND) return
+        // `workingFacility`, not `currentFacility`: iOS keeps the tuned radio in a separate
+        // `tunedFacility` and lets `currentFacility` follow the state machine, so its
+        // `currentFacility == .ground` means "Ground is working this aircraft". On Android
+        // `currentFacility` *is* the radio, which after the Ramp → Ground hand-off is still
+        // on Ramp until the pilot tunes — so the same question is `workingFacility`.
+        if (current.workingFacility != ATCFacility.GROUND) return
         if (readbackGate.isClosed) return
 
         val signals = groundHandoffSignals()
         if (!signals.isDepartureSurface || !signals.approachingRunwayHandoff) return
         if (signals.awaitingCrossingReadback || signals.awaitingTaxiReadback) return
 
-        _state.update { it.copy(monitoringTower = true) }
+        // Ground has just moved the aircraft to Tower, so any check-in still owed to Ground
+        // is moot. Left standing it would keep `workingFacility` on Ground for the rest of
+        // the taxi, and a pilot who then calls Tower up would be answered as though they
+        // were calling Ground.
+        _state.update { it.copy(monitoringTower = true, pendingCheckInFacility = null) }
         val context = buildContext(ATCState.LINE_UP_WAIT)
         post(engine.monitorTower(context.callsign, context.towerFrequency), speakIt = true)
         recomputeDerivedState()
@@ -911,6 +940,26 @@ class FlightSessionCoordinator(
     fun readBack() {
         val current = _state.value
         val readback = current.latestTransmission?.readback
+
+        // A pending simulated runway-crossing clearance: reading it back is what authorizes
+        // the crossing, and never before. The crossing clearance carries its own read-back.
+        if (groundHandoffSignals().awaitingCrossingReadback) {
+            if (readback != null) {
+                post(
+                    ATCTransmission.create(
+                        sender = ATCTransmission.Sender.PILOT,
+                        facility = readback.facility,
+                        displayText = readback.displayText,
+                        spokenText = readback.spokenText,
+                        timestampMillis = clock.nowMillis(),
+                    ),
+                    speakIt = settings.speakPilot,
+                )
+            }
+            authorizeCrossing()
+            return
+        }
+
         val tx = if (readback != null) {
             ATCTransmission.create(
                 sender = ATCTransmission.Sender.PILOT,

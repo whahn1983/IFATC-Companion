@@ -357,6 +357,11 @@ class AppGraph private constructor(
             // lambda runs during construction, and by the time either is invoked both are
             // built. Same arrangement as `speech` and `chatter` above.
             savedFlightBinding = { savedFlights.binding() },
+            // The pilot's custom phraseology, if they have selected a profile. The whole
+            // Profiles screen shipped — create, edit, import, share, select — and the
+            // engine's `profile` was supplied by nothing, so none of it changed a word.
+            profileProvider = { phraseologyProfiles.activeProfile },
+            authorizeCrossing = { surfaceRouting.crossingReadbackReceived() },
             // Who answers a Ride Report or Destination Weather request. The whole
             // RideReportEngine was ported, tested and constructed nowhere, so Center never
             // answered either one.

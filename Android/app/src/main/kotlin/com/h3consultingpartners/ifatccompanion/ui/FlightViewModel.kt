@@ -560,28 +560,60 @@ class FlightViewModel(
             var startedFor: ATCState? = null
             var sawReadback = false
             session.collect { state ->
-                val taxiing = state.atcState == ATCState.GROUND_TAXI ||
+                val departing = state.atcState == ATCState.GROUND_TAXI ||
                     state.atcState == ATCState.PUSHBACK_TAXI
+                // The arrival half never ran: only the two departure states were handled,
+                // always with the departure airport and always calling beginDeparture. So
+                // `route.isDeparture` was true for the whole flight, the taxi-in clearance
+                // could never be gate-routed, no arrival taxi map was ever drawn, and the
+                // arrival runway crossings were never issued.
+                val arriving = state.atcState == ATCState.GROUND_ARRIVAL ||
+                    state.atcState == ATCState.RUNWAY_EXIT
+                val taxiing = departing || arriving
                 val plan = state.flightPlan
 
                 if (taxiing && startedFor != state.atcState) {
+                    val previous = startedFor
                     startedFor = state.atcState
                     sawReadback = false
-                    val reference = plan.departureCoordinate ?: state.aircraftState.coordinate
+                    val icao = if (arriving) plan.destination else plan.departure
+                    val reference = (if (arriving) plan.destinationCoordinate else plan.departureCoordinate)
+                        ?: state.aircraftState.coordinate
                     val start = state.aircraftState.coordinate ?: reference
-                    if (reference != null && start != null && plan.departure.length >= 3) {
-                        graph.surfaceRouting.beginDeparture(
-                            icao = plan.departure,
-                            reference = reference,
-                            // The aircraft type comes from telemetry, not the plan — it is
-                            // what sizes the taxi route's turn radii.
-                            aircraftName = state.aircraftState.aircraftName,
-                            runway = plan.departureRunway.ifEmpty { plan.runway },
-                            gate = plan.departureGate,
-                            startCoordinate = start,
-                            mock = state.mockMode,
-                        )
-                        graph.surfaceRouting.taxiClearanceIssued(supersedeWhenRouteReady = true)
+                    when {
+                        reference == null || start == null || icao.length < 3 -> Unit
+                        // Already taxiing in — the runway-exit call started the arrival, and
+                        // reaching the taxi-in only re-anchors the route to where the
+                        // aircraft has actually rolled out to.
+                        arriving && previous == ATCState.RUNWAY_EXIT -> {
+                            graph.surfaceRouting.updateTaxiStart(start)
+                        }
+                        arriving -> {
+                            graph.surfaceRouting.beginArrival(
+                                icao = icao,
+                                reference = reference,
+                                aircraftName = state.aircraftState.aircraftName,
+                                gate = plan.arrivalGate,
+                                startCoordinate = start,
+                                mock = state.mockMode,
+                                arrivalRunway = plan.arrivalRunway.ifEmpty { plan.runway },
+                            )
+                            graph.surfaceRouting.taxiClearanceIssued(supersedeWhenRouteReady = true)
+                        }
+                        else -> {
+                            graph.surfaceRouting.beginDeparture(
+                                icao = icao,
+                                reference = reference,
+                                // The aircraft type comes from telemetry, not the plan — it is
+                                // what sizes the taxi route's turn radii.
+                                aircraftName = state.aircraftState.aircraftName,
+                                runway = plan.departureRunway.ifEmpty { plan.runway },
+                                gate = plan.departureGate,
+                                startCoordinate = start,
+                                mock = state.mockMode,
+                            )
+                            graph.surfaceRouting.taxiClearanceIssued(supersedeWhenRouteReady = true)
+                        }
                     }
                 }
 
@@ -627,8 +659,15 @@ class FlightViewModel(
         }
     }
 
-    /** Acknowledge a runway-crossing clearance — the release for the wedge above. */
-    fun onCrossingReadback() = graph.surfaceRouting.crossingReadbackReceived()
+    /**
+     * Acknowledge a runway-crossing clearance — the release for the wedge above.
+     *
+     * Routed through the session's own `readBack()` rather than straight to the surface
+     * coordinator, because reading back is a transmission: it has to appear in the
+     * transcript and go out over the radio, and only then authorize the crossing. Calling
+     * `crossingReadbackReceived()` here authorized it silently.
+     */
+    fun onCrossingReadback() = coordinator.readBack()
 
     // endregion
 
