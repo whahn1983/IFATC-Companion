@@ -11,6 +11,7 @@ import com.h3consultingpartners.ifatccompanion.core.billing.EntitlementState
 import com.h3consultingpartners.ifatccompanion.core.billing.SubscriptionProduct
 import com.h3consultingpartners.ifatccompanion.core.config.AppConfig
 import com.h3consultingpartners.ifatccompanion.core.geo.Coordinate
+import com.h3consultingpartners.ifatccompanion.core.geo.WindEstimator
 import com.h3consultingpartners.ifatccompanion.core.model.ATCFacility
 import com.h3consultingpartners.ifatccompanion.core.model.ATCState
 import com.h3consultingpartners.ifatccompanion.core.model.FlightPlan
@@ -1183,6 +1184,17 @@ class FlightViewModel(
     }
 
     fun mockRouteText(): String = with(graph.mockFeed.route) { "$departure → $destination" }
+
+    /**
+     * The two winds and the declination the Weather Diagnostics card prints.
+     *
+     * Read through rather than held: it is mutable per-tick state owned by the coordinator,
+     * and a snapshot taken here would be stale by the time the card recomposed.
+     */
+    fun windDiagnostics(): WindEstimator = coordinator.windDiagnostics()
+
+    /** How the departure heading in the takeoff clearance was arrived at. */
+    fun departureHeadingSummary(): String? = coordinator.departureHeadingSummary
 
     /** How many of the readings the app needs the field's manifest actually resolved. */
     fun resolvedMappingCount(): Int = graph.connect.mappingStore.resolvedCount

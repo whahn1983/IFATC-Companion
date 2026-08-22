@@ -14,17 +14,32 @@ verified by hand against both sources before this document was written: the chec
 
 ## Progress
 
-**99 of the 100 are closed. The one remainder is partly closed; nothing is open.** Each
-closed entry below carries a ✅ naming what closes it; the single 🟡 says which rows are
-still out and why — because the data behind them is genuinely absent or deliberately off,
-not because anything is unwired.
+**All 100 are closed. Nothing is partly closed; nothing is open.** Each entry below
+carries a ✅ naming what closes it.
 
-Three entries carried a 🟡 longer than they deserved. Two were closed under a duplicate
-entry elsewhere in this document and the note here was never updated — the chatter's
-frequency change, and the go-around pattern altitude. Checking a status line against the
-code is the only way to know it is still true; that is the same lesson this audit exists to
-record, pointing the other way. This document stays the record of what the audit found *and* of what has been done
-about it, rather than being quietly rewritten.
+Four entries carried a 🟡 longer than they deserved, and every one of them was a status
+line nobody had re-read rather than work nobody had done. Two were closed under a duplicate
+entry elsewhere in this document — the chatter's frequency change, and the go-around pattern
+altitude. The third, the Weather Diagnostics card, was held open on a claim about this port
+that was simply wrong: that Android "solves no wind triangle". Every input one needs — true
+airspeed, true heading, track, ground speed, and Infinite Flight's own reported wind — is
+read from IF Connect into `AircraftState`, and `HeadingSolver` had been ported in full and
+was already flying approach intercepts and departure guidance. What was missing was the
+per-tick owner iOS keeps on `AppModel`, so the deviation vectors were still being handed out
+as raw true bearings; `core/geo/WindEstimator.kt` is that owner. Writing it turned up a
+48th "ported, not wired": `HeadingSolver.VariationEstimate` — the corroborated declination
+that exists precisely because one torn pair of headings is the difference between a turn and
+"fly runway heading" — had **no call site anywhere**, and both places that needed a
+variation were latching whatever the last raw sample said. It now feeds the approach
+intercept and the departure vector alike. The fourth, OPERA, was never a gap at all — it
+is a carried-across decision (see below). Checking a status line against the code is the
+only way to know it is still true; that is the same lesson this audit exists to record,
+pointing the other way. This document stays the record of what the audit found *and* of what
+has been done about it, rather than being quietly rewritten.
+
+**EUMETNET OPERA rendering stays off, exactly as on iOS**, with the plumbing left in place.
+That is a product decision carried across, not a missing piece, so the byte counters it
+would feed reading nothing is the correct behaviour on both platforms.
 
 The closed set was deliberately taken worst-first rather than easiest-first: the app had
 no data source in either mode, no flight plan, no Infinite Flight link, no entitlement
@@ -47,7 +62,8 @@ The five gaps `ANDROID_REMAINING_WORK.md` tracked were real and are now closed. 
 not the whole list — they were the ones somebody had already noticed. This is the same
 failure the parity matrix's 🔌 status was introduced for, at a larger scale: **47 of the 100
 were subsystems that exist in `:core`, pass their tests, and were constructed nowhere in
-`:app`.**
+`:app`** — and closing the last of them turned up a 48th that the audit itself had missed,
+`HeadingSolver.VariationEstimate`.
 
 Nothing here is a compile error and nothing here fails a test. Every one of them is a
 feature that is present in the codebase and absent from the running app, or present in the
@@ -551,7 +567,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** The Settings toggle (SettingsScreen.kt:92-99) calls `update { it.copy(mockMode = on) }` → `FlightViewModel.updateSettings` (FlightViewModel.kt:807-816), which does `settingsRepository.replace(settings)`, reconfigures chatter and rebuilds the phraseology engine — and never calls `graph.setMockMode(...)`. Only the Diagnostics toggle (`onToggleMockMode`, FlightViewModel.kt:957-959) reaches it. Nothing else in `:app` observes `settings.mockMode` to drive the transport. So flipping Mock Mode off in Settings leaves the mock feed running and the session "active" (the `endSession()` at AppGraph.kt:502 never fires), and flipping it on in Settings never calls `mockFeed.start()`; only the flag and the UI labels change.
 
 **The Weather Diagnostics card is a different card: `WeatherProviderDiagnostics` is constructed nowhere, so the wind, conflict, deviation and radar-data-usage rows do not exist on Android**  
-🟡 Partly closed: the card is now built through `WeatherProviderDiagnostics` and prints the precip source, coverage, both last-update times, hazards, sampled cells, the route conflict, the rejoin fix and the deviation state. Two groups of rows stay out because their upstream is genuinely absent, not because they are unwired: the wind-triangle rows (Android derives headings from `departureGuidance`'s true→magnetic conversion and solves no wind triangle, so there is no second estimate to cross-check) and the OPERA byte counters (OPERA rendering is deliberately off on both platforms, so they would read zero). A row reading "—" would suggest a check that exists and failed.  
+✅ Closed: the card is built through `WeatherProviderDiagnostics` and prints all eighteen of iOS's rows — the precip source, coverage, both last-update times, hazards, sampled cells, the route conflict, the rejoin fix, the deviation state, the provider error, and, now that `WindEstimator` owns a per-tick wind and `FlightSessionCoordinator` records how the departure heading was arrived at, Solved wind, Sim-reported wind, Reported vs solved, Wind in use, Magnetic variation, Last weather vector and Departure heading. Each is dropped when its input is genuinely unknown rather than printed as "—", which would suggest a check that exists and failed. The only row group that never appears is the OPERA byte counters, and that is not a gap: OPERA rendering is a deliberate no on both platforms with the plumbing left in place, so the counter reads zero on iOS too.  
 *Behaves differently* · iOS: `IFATCCompanion/Views/DiagnosticsView.swift:137-176 (`weatherDiagnosticsCard`), fed by IFATCCompanion/App/AppModel.swift:6227-6300 (`updateWeatherDiagnostics`) and published at AppModel.swift:375`
 
 - **iOS:** The Diagnostics screen's Weather Diagnostics card prints eighteen named rows from `model.weatherDiagnostics`: Precip source, Overlay coverage, Last radar update, Radar data (OPERA) — the last-download / session-total byte counters that measure real cellular usage — Last aviation wx update, Hazards detected, Sampled radar cells, Route conflict (with the monitoring / on-flight-path / discarded-excursion wording composed at AppModel.swift:6244-6283), Rejoin fix, Deviation state, Wind in use, Sim-reported wind, Solved wind, Reported vs solved, Magnetic variation, Last weather vector and Departure heading, plus a provider-error line and a coverage message. The wind rows exist specifically so a vector that comes out wrong can be checked against Infinite Flight's own panel (WeatherProviderDiagnostics.swift:23-45).

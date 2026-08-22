@@ -16,7 +16,7 @@ because a screen exists.
 | 🔵 **Android-native substitution** | Deliberately different because the platform is, with the difference stated. |
 
 > **Verification status of the two modules.** `:core` is compiled and its tests are run —
-> **1058 tests across 93 classes, 0 failures, 0 skipped** — and the per-area counts below
+> **1075 tests across 94 classes, 0 failures, 0 skipped** — and the per-area counts below
 > are real.
 >
 > `:app` is now compiled too, by CI (`.github/workflows/android.yml`): `assembleDebug`
@@ -101,6 +101,7 @@ because a screen exists.
 | Shared HTTP conventions | `AppHTTP.swift` | `core/net/AppHttp.kt` | ✅ |
 | Route analysis, SIGMET corridor | `WeatherRouteAnalyzer.swift` | `core/weather/WeatherRouteAnalyzer.kt` | ✅ |
 | Provider diagnostics | `WeatherProviderDiagnostics.swift` | `core/weather/WeatherProviderDiagnostics.kt` | ✅ |
+| Wind triangle behind every assigned heading | `HeadingSolver.swift`, `AppModel.updateHeadingCorrections` / `trustReportedWind` | `core/geo/HeadingSolver.kt` solves wind from the ground-vs-air vector and converts true→magnetic; `core/geo/WindEstimator.kt` is the per-tick owner AppModel is on iOS — the bank guard on both inferred samples, the smoothing, the corroborated `VariationEstimate` (which had no call site at all), the stickiness when neither source has an opinion, and the cross-check that decides whether Infinite Flight's reported wind or the inferred one is steered by. Approach intercepts, departure guidance and the weather-deviation vectors all go through it, so a pilot flying the bug tracks the drawn line rather than drifting off it | ✅ 16 tests |
 | Turbulence model, ride reports | `TurbulenceModel.swift`, `RideReportEngine.swift` | `core/weather/deviation/` | ✅ 15 tests |
 | Route weather conflict detection | `RouteWeatherConflictDetector.swift` (2236) | `core/weather/deviation/RouteWeatherConflictDetector.kt` — every tuning constant carried at its exact value | ✅ |
 | Deviation engine + phraseology | `WeatherDeviationEngine.swift`, `WeatherDeviationPhraseology.swift` | `core/weather/deviation/` | ✅ 88 tests |
@@ -281,11 +282,9 @@ Stated plainly, and none of them hidden behind a ✅ elsewhere in this file.
    maths that has never been played.
 3. **100 parity gaps found by audit**, listed in `ANDROID_PARITY_GAPS.md` — 37 of them
    high, and 47 of them subsystems that existed in `:core` with passing tests and were
-   constructed nowhere in `:app`. **99 are now closed and the one remainder is partly
-   closed — none is open.** The single 🟡 there names the rows still out and why: the data
-   behind them is genuinely absent or deliberately off, not unwired. The rows below
-   describe what is *ported*; a ✅ or 🟡 on a row does not by itself mean the running app
-   reaches it.
+   constructed nowhere in `:app`. **All 100 are now closed — none partial, none open.**
+   The rows below describe what is *ported*; a ✅ on a row does not by itself mean the
+   running app reaches it.
 4. **EUMETNET OPERA rendering stays off**, exactly as it is on iOS. Not a gap so much as
    a carried-across decision, recorded here so it is not mistaken for one.
 
@@ -294,7 +293,7 @@ Stated plainly, and none of them hidden behind a ✅ elsewhere in this file.
 | | |
 | --- | --- |
 | `:core` compile | ✅ `./gradlew -c settings-core.gradle.kts :core:compileKotlin` |
-| `:core` tests | ✅ **1058 tests, 93 classes, 0 failures, 0 skipped** |
+| `:core` tests | ✅ **1075 tests, 94 classes, 0 failures, 0 skipped** |
 | Compose screens type-check | ✅ `./gradlew -c settings-uicheck.gradle.kts :uicheck:compileKotlin` |
 | `:app` compile | ❌ not possible here |
 | Instrumented tests | ❌ not possible here |

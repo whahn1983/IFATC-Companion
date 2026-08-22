@@ -25,6 +25,7 @@ import com.h3consultingpartners.ifatccompanion.core.enroute.CenterSectorTracker
 import com.h3consultingpartners.ifatccompanion.core.geo.Coordinate
 import com.h3consultingpartners.ifatccompanion.core.geo.Geo
 import com.h3consultingpartners.ifatccompanion.core.geo.HeadingSolver
+import com.h3consultingpartners.ifatccompanion.core.geo.WindEstimator
 import com.h3consultingpartners.ifatccompanion.core.geo.validCoordinateOrNull
 import com.h3consultingpartners.ifatccompanion.core.model.ATCFacility
 import com.h3consultingpartners.ifatccompanion.core.model.ATCState
@@ -32,6 +33,7 @@ import com.h3consultingpartners.ifatccompanion.core.model.ATCTransmission
 import com.h3consultingpartners.ifatccompanion.core.model.AircraftState
 import com.h3consultingpartners.ifatccompanion.core.model.FlightPhase
 import com.h3consultingpartners.ifatccompanion.core.model.FlightPlan
+import com.h3consultingpartners.ifatccompanion.core.model.Waypoint
 import com.h3consultingpartners.ifatccompanion.core.persistence.SavedFlightPolicy
 import com.h3consultingpartners.ifatccompanion.core.persistence.SessionSnapshot
 import com.h3consultingpartners.ifatccompanion.core.phraseology.Phonetic
@@ -45,6 +47,7 @@ import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticLevel
 import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticsSink
 import com.h3consultingpartners.ifatccompanion.core.settings.AppSettings
 import com.h3consultingpartners.ifatccompanion.core.weather.deviation.WeatherDeviationController
+import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.max
@@ -331,6 +334,11 @@ class FlightSessionCoordinator(
 
         val previous = _state.value
         val jumped = telemetryJumped(previous.aircraftState, aircraft)
+        // The wind the deviation vectors are crabbed for, and the declination they are
+        // converted by. Folded in before anything reads a heading; skipped on a jump,
+        // whose two fixes did not come from one continuous flight and would solve a wind
+        // out of the discontinuity.
+        if (!jumped) windEstimator.update(aircraft)
         val detection = phaseDetector.detect(
             state = aircraft,
             plan = previous.flightPlan,
@@ -418,6 +426,35 @@ class FlightSessionCoordinator(
 
     /** When the last usable fix arrived, for the jump test. */
     private var lastTelemetryMillis: Long? = null
+
+    /**
+     * The wind in force and the local declination, kept across ticks.
+     *
+     * Every piece of the arithmetic was ported into [HeadingSolver] and nothing ran it per
+     * sample, so the weather-deviation vectors were assigned as raw true bearings — no
+     * crab and no magnetic conversion. Approach intercepts and departure guidance already
+     * applied the declination; the deviation legs, which are the ones the solver was
+     * written for, applied neither.
+     */
+    private val windEstimator = WindEstimator(diagnostics)
+
+    /**
+     * The wind rows the Weather Diagnostics card prints.
+     *
+     * Exposed because those rows exist to be held up against Infinite Flight's own panel
+     * when an assigned heading looks wrong, and that comparison only means anything if the
+     * solved wind is solved *independently* of the one being steered by — so the panel
+     * shows both, and the difference between them.
+     */
+    fun windDiagnostics(): WindEstimator = windEstimator
+
+    /**
+     * How the departure heading in the takeoff clearance was arrived at, or null before one
+     * has been computed. Composed by [recordDepartureHeadingSummary]; the panel prints it
+     * verbatim.
+     */
+    var departureHeadingSummary: String? = null
+        private set
 
     /**
      * The departure field's elevation, captured from on-ground telemetry (MSL − AGL,
@@ -1615,6 +1652,7 @@ class FlightSessionCoordinator(
             // refresh, because the first recompute of a flight routinely runs before the
             // first radar frame has landed.
             radarCellsReady = settings.mockMode || weatherAnswers.radarOverlay().sampledCells.isNotEmpty(),
+            headings = windEstimator,
         )
     }
 
@@ -1909,7 +1947,9 @@ class FlightSessionCoordinator(
             finalCourse = finalCourse,
             aircraft = position,
             runwayReference = airport,
-            variationDegreesEast = HeadingSolver.variationDegreesEast(aircraft) ?: 0.0,
+            // The corroborated running estimate, not this tick's raw sample: one torn
+            // pair of headings would otherwise swing the intercept by its whole error.
+            variationDegreesEast = windEstimator.variationDegreesEast ?: 0.0,
         )
     }
 
@@ -2265,6 +2305,8 @@ class FlightSessionCoordinator(
         liftoffAltitudeMSL = 0.0
         flightCompleteAnnounced = false
         takeoffClearanceArmedAtMillis = null
+        windEstimator.reset()
+        departureHeadingSummary = null
 
         val plan = _state.value.flightPlan
         _state.value = FlightSessionState(
@@ -2936,31 +2978,81 @@ class FlightSessionCoordinator(
 
         val interceptFix = plan.initialDepartureFix(sid?.fixes.orEmpty(), origin)
         val intercept = interceptFix?.coordinate
-        val heading = if (origin != null && intercept != null &&
+        val trueCourse = if (origin != null && intercept != null &&
             Geo.distanceNM(origin, intercept) >= MINIMUM_DEPARTURE_FIX_DISTANCE_NM
         ) {
-            // The bearing is a *true* course (great-circle geometry) while the pilot flies a
-            // magnetic heading bug — and `clearedForTakeoff` compares this number against the
-            // runway's magnetic heading to decide whether to say "fly runway heading" at all,
-            // so leaving it in the true frame gets both the assignment and that decision
-            // wrong by the local declination.
-            HeadingSolver.assignedHeading(
-                trueCourse = Geo.bearing(origin, intercept),
-                // Inert on the ground, where the wind triangle is not solved; in practice
-                // this is a variation conversion.
-                wind = null,
-                trueAirspeed = null,
-                variationDegreesEast = HeadingSolver.variationDegreesEast(aircraft),
-            )
+            Geo.bearing(origin, intercept)
         } else {
-            0
+            null
         }
+        // The bearing is a *true* course (great-circle geometry) while the pilot flies a
+        // magnetic heading bug — and `clearedForTakeoff` compares this number against the
+        // runway's magnetic heading to decide whether to say "fly runway heading" at all,
+        // so leaving it in the true frame gets both the assignment and that decision
+        // wrong by the local declination. Taken through the estimator rather than
+        // [HeadingSolver] directly so the pair lands in the Diagnostics row; on the ground
+        // it holds no solved wind and no usable TAS, so this stays the variation conversion
+        // it has always been, and once airborne it crabs, which is what iOS does here too.
+        val heading = trueCourse?.let { windEstimator.assignedHeading(it) } ?: 0
+
+        recordDepartureHeadingSummary(
+            runway = runway,
+            runwayMarker = runwayMarker,
+            onRunwayPosition = onRunwayPosition,
+            fieldPosition = fieldPosition,
+            interceptFix = interceptFix,
+            trueCourse = trueCourse,
+            heading = heading,
+        )
+
         if (!runway.isKnown && heading == 0) {
             // Nothing named the runway and nothing located the fix, so there is no vector to
             // give and no runway heading worth measuring against. Left at zero deliberately.
             return DepartureGuidance(heading = 0, firstFixName = directFix?.name.orEmpty())
         }
         return DepartureGuidance(heading = heading, firstFixName = directFix?.name.orEmpty())
+    }
+
+    /**
+     * Record how the departure heading was arrived at, for the Diagnostics row.
+     *
+     * Every ingredient here has been the culprit at least once — the origin the bearing was
+     * measured from, the fix it targeted, the true→magnetic step, and the runway the "fly
+     * runway heading" test measures against (which is a guess from the wind whenever nothing
+     * named a runway). None of it is visible anywhere else, so a clearance that came out
+     * "fly runway heading" when it should have carried a turn could only be argued about.
+     */
+    private fun recordDepartureHeadingSummary(
+        runway: ResolvedRunway,
+        runwayMarker: Coordinate?,
+        onRunwayPosition: Coordinate?,
+        fieldPosition: Coordinate?,
+        interceptFix: Waypoint?,
+        trueCourse: Double?,
+        heading: Int,
+    ) {
+        val origin = when {
+            runwayMarker != null -> "runway marker"
+            onRunwayPosition != null -> "aircraft"
+            fieldPosition != null -> "field"
+            else -> "none"
+        }
+        val fix = when {
+            interceptFix == null -> "none"
+            interceptFix.coordinate == null -> "${interceptFix.name} (unlocated)"
+            else -> interceptFix.name
+        }
+        val vector = if (trueCourse != null) {
+            String.format(Locale.US, "true %03.0f° → %03d°", trueCourse, heading)
+        } else {
+            "no bearing → runway heading"
+        }
+        departureHeadingSummary = listOf(
+            "rwy ${runway.ident}" + if (runway.isKnown) "" else " (wind guess)",
+            "from $origin",
+            "fix $fix",
+            vector,
+        ).joinToString(" · ")
     }
 
     /**

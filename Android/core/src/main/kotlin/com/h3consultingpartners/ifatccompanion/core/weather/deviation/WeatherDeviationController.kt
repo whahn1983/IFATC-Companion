@@ -5,6 +5,7 @@ import com.h3consultingpartners.ifatccompanion.core.airports.ProcedureParser
 import com.h3consultingpartners.ifatccompanion.core.atc.ApproachIntercept
 import com.h3consultingpartners.ifatccompanion.core.geo.Coordinate
 import com.h3consultingpartners.ifatccompanion.core.geo.Geo
+import com.h3consultingpartners.ifatccompanion.core.geo.WindEstimator
 import com.h3consultingpartners.ifatccompanion.core.geo.validCoordinateOrNull
 import com.h3consultingpartners.ifatccompanion.core.model.ATCFacility
 import com.h3consultingpartners.ifatccompanion.core.model.ATCState
@@ -89,6 +90,17 @@ class WeatherDeviationController(
          * cells are set synchronously.
          */
         val radarCellsReady: Boolean = true,
+        /**
+         * Turns a leg's **true** course into the heading the pilot dials in: crabbed into
+         * the wind so the aircraft's *track* lies along the drawn line, then converted into
+         * the magnetic frame the heading bug reads.
+         *
+         * Passed in rather than solved here because the estimate is smoothed across
+         * telemetry ticks and the flight session is what sees them. Null in tests and
+         * wherever the sim exposes too little to solve either correction, in which case
+         * every heading below is the rounded true bearing — exactly the old behaviour.
+         */
+        val headings: WindEstimator? = null,
     )
 
     /** The rejoin fix marker drawn at the end of the mint line. */
@@ -639,7 +651,7 @@ class WeatherDeviationController(
 
         val result = engine.beginDeviationTurn(
             cs = callsign(inputs),
-            heading = heading,
+            heading = assignedHeading(inputs, heading.toDouble()),
             maintainAltitude = maintainAltitude(inputs),
             context = context,
             facility = weatherFacility(inputs),
@@ -678,7 +690,7 @@ class WeatherDeviationController(
         val isFinalTurn = index >= path.size - 2
         val result = engine.rejoinTurn(
             cs = callsign(inputs),
-            heading = heading,
+            heading = assignedHeading(inputs, heading.toDouble()),
             rejoinFix = context.rejoinFix,
             finalTurn = isFinalTurn,
             context = context,
@@ -929,6 +941,10 @@ class WeatherDeviationController(
         }
         context.deviationStartLatitude = first.latitude
         context.deviationStartLongitude = first.longitude
+        // Stored **true**, like every other piece of turn geometry here: it is compared
+        // against `deviationStartLegBearing` for the turn size and against the aircraft's
+        // track by the never-reverse guard, and a crabbed magnetic heading in either
+        // comparison mixes frames. The correction goes on where the number is spoken.
         context.deviationStartHeading = ApproachIntercept.normalizedHeading(Geo.bearing(first, second))
         context.deviationStartLegBearing = Geo.bearing(position, first)
     }
@@ -954,6 +970,8 @@ class WeatherDeviationController(
         context.vectorApexLatitude = apex.latitude
         context.vectorApexLongitude = apex.longitude
         context.vectorLegBearing = Geo.bearing(previous, apex)
+        // True, for the same reason as `deviationStartHeading`: `vectorLegBearing` and the
+        // never-reverse guard are both true-frame comparisons.
         context.pendingRejoinHeading = ApproachIntercept.normalizedHeading(Geo.bearing(apex, next))
     }
 
@@ -1296,6 +1314,23 @@ class WeatherDeviationController(
     }
 
     /**
+     * A leg's true course as the heading to hand the pilot.
+     *
+     * The mint line is great-circle geometry, so its legs are *true* courses, and it asks
+     * the aircraft to follow a drawn path rather than merely point somewhere — so the
+     * number spoken has to be the heading that makes the aircraft's **track** lie along the
+     * leg. Without the crab the aircraft is flown on the leg's bearing and the wind walks
+     * it off the line for the leg's whole length; without the declination it is flown on a
+     * true bearing dialled into a magnetic bug.
+     *
+     * Falls back to the rounded true bearing when no estimator is attached, which is what
+     * every one of these three sites did before.
+     */
+    private fun assignedHeading(inputs: Inputs, trueCourse: Double): Int =
+        inputs.headings?.assignedHeading(trueCourse)
+            ?: ApproachIntercept.normalizedHeading(trueCourse)
+
+    /**
      * The heading to fly for a vector around weather.
      *
      * Preferring the bearing to the reroute's first turn vertex keeps the assigned heading
@@ -1307,7 +1342,7 @@ class WeatherDeviationController(
         val position = aircraftOrDeparture(inputs)
         val apex = activeConflict?.deviationPath?.getOrNull(1)?.takeIf { it.isValid }
         if (position != null && apex != null) {
-            return ApproachIntercept.normalizedHeading(Geo.bearing(position, apex))
+            return assignedHeading(inputs, Geo.bearing(position, apex))
         }
         val base = inputs.aircraft.heading ?: position?.let { currentCourse(inputs, it) } ?: 0.0
         val degrees = activeConflict?.recommendedDeviationDegrees ?: 20

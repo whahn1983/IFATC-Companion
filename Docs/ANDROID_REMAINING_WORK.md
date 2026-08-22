@@ -8,7 +8,7 @@ Sizes are the real cost including tests, not the size of the diff. "Needs a devi
 the work cannot be trusted without running it, and this repository's CI has no device or
 emulator: it compiles `:app`, gates Android Lint, and runs R8, and that is all it can do.
 
-Status at the time of writing: `:core` is **1058 tests / 93 classes / 0 failures**; `:app`
+Status at the time of writing: `:core` is **1075 tests / 94 classes / 0 failures**; `:app`
 compiles, lints clean under `abortOnError = true`, and produces a minified release bundle.
 
 ---
@@ -45,11 +45,15 @@ is precisely why it survived this long, and why the 🔌 status exists.
 controller reply on any frequency**, **Say Again never makes the controller repeat**, and
 **Unable is answered with silence**.
 
-**Status: 99 of the 100 are closed. The one remainder is partly closed; nothing is open.**
-It is the Weather Diagnostics card, listed in `ANDROID_PARITY_GAPS.md` with the rows still
-out and why: the wind-triangle rows need a wind triangle Android does not solve, and the
-OPERA byte counters would read zero because OPERA rendering is off on both platforms by
-decision.
+**Status: all 100 are closed. Nothing is partly closed; nothing is open.**
+The last to close was the Weather Diagnostics card, and it closed by fixing something
+larger than a card: Android had every wind-triangle input (true airspeed, true heading,
+track, ground speed and Infinite Flight's reported wind) and a fully ported `HeadingSolver`,
+but no per-tick owner of the result, so the weather-deviation flow was handing out raw true
+bearings — no crab, no magnetic conversion. `WindEstimator` is that owner, and the card's
+wind rows now read from it. The one row group still empty is the OPERA byte counters, which
+is correct rather than missing: OPERA rendering is off on both platforms by decision, with
+the plumbing left in place.
 
 The deliberate differences that remain are recorded in `ANDROID_PARITY_MATRIX.md` (🔵) and
 in section 4 below. None of the 100 is one of those.

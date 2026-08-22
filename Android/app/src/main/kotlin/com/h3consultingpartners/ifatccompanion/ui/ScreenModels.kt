@@ -7,6 +7,7 @@ import com.h3consultingpartners.ifatccompanion.core.config.AppConfig
 import com.h3consultingpartners.ifatccompanion.core.connect.IFConnectState
 import com.h3consultingpartners.ifatccompanion.core.geo.Coordinate
 import com.h3consultingpartners.ifatccompanion.core.geo.Geo
+import com.h3consultingpartners.ifatccompanion.core.geo.WindEstimator
 import com.h3consultingpartners.ifatccompanion.core.model.ATCFacility
 import com.h3consultingpartners.ifatccompanion.core.persistence.SavedFlight
 import com.h3consultingpartners.ifatccompanion.core.phraseology.PhraseologyProfilesState
@@ -413,7 +414,9 @@ fun FlightViewModel.diagnosticsModel(
         phaseDebug = session.phaseDebug,
         atisSummary = atisDiagnosticsSummary(weather),
         weatherEndpointText = weather.status,
-        weatherDiagnostics = weatherDiagnosticRows(weather, deviation),
+        weatherDiagnostics = weatherDiagnosticRows(
+            weather, deviation, windDiagnostics(), departureHeadingSummary(),
+        ),
         showSampledRadarCells = ui.showSampledRadarCells,
         discoveredStateCount = connect.manifestEntries.size,
         resolvedMappingCount = resolvedMappingCount(),
@@ -462,16 +465,19 @@ private fun atisDiagnosticsSummary(weather: WeatherSessionState): String? {
  * deviation looks wrong: the route conflict, the deviation state, the rejoin fix, the
  * provider error, and the radar byte counters that measure real cellular usage.
  *
- * The wind-triangle rows iOS prints (solved wind, sim-reported wind, the signed difference,
- * magnetic variation, last weather vector) are deliberately absent rather than shown empty:
- * Android derives its headings from `departureGuidance`'s true→magnetic conversion and
- * solves no wind triangle, so there is no second estimate to cross-check against and a row
- * reading "—" would only suggest the check exists and failed. Recorded in
- * Docs/ANDROID_PARITY_GAPS.md.
+ * The wind-triangle rows iOS prints — solved wind, sim-reported wind, the signed difference
+ * between them, magnetic variation, the last weather vector and the departure heading — are
+ * all here too, read from the coordinator's [WindEstimator]. Each is dropped when its input
+ * is genuinely unknown rather than printed as "—", which would suggest a check that exists
+ * and failed. The one row that never appears is the OPERA byte counters, and that is
+ * correct on both platforms: OPERA rendering is off by decision with the plumbing left in
+ * place, so there are no bytes to count.
  */
 private fun weatherDiagnosticRows(
     weather: WeatherSessionState,
     deviation: WeatherDeviationController.State,
+    wind: WindEstimator,
+    departureHeadingSummary: String?,
 ): List<Pair<String, String>> {
     val overlay = weather.radarOverlay
     val d = WeatherProviderDiagnostics(
@@ -488,6 +494,23 @@ private fun weatherDiagnosticRows(
         selectedRejoinFix = deviation.rejoinMarker?.name,
         lastDeviationStateRawValue = deviation.context.state.rawValue,
         coverageMessage = overlay.unavailableMessage.takeIf { !overlay.coverageAvailable },
+        // The two winds and the declination that turn a mint-line leg (a *true* course)
+        // into the heading spoken to the pilot. Both are shown, plus the signed difference
+        // between them, because these rows exist to be held up against Infinite Flight's
+        // own panel when an assigned heading looks wrong — and that only means anything if
+        // the solved wind is solved independently of the one being steered by.
+        solvedWindFromDegrees = wind.solved?.fromDegrees,
+        solvedWindKnots = wind.solved?.speedKnots,
+        reportedWindDirectionTrue = wind.reported?.fromDegrees,
+        reportedWindKnots = wind.reported?.speedKnots,
+        windSourceIsSimReported = wind.isSimReported,
+        magneticVariationEast = wind.variationDegreesEast,
+        // The two ends of the last correction actually applied. Printed as a pair rather
+        // than as the difference, because a vector pointing the wrong way and a leg that
+        // genuinely pointed there are indistinguishable from the crab alone.
+        lastAssignedTrueCourse = wind.lastAssignedTrueCourse,
+        lastAssignedHeading = wind.lastAssignedHeading,
+        departureHeadingSummary = departureHeadingSummary,
     )
 
     return listOfNotNull(
@@ -511,6 +534,13 @@ private fun weatherDiagnosticRows(
         d.radarDataUsageText?.let { "Radar data" to it },
         d.providerError?.let { "Provider error" to it },
         d.coverageMessage?.let { "Coverage" to it },
+        d.solvedWindText?.let { "Solved wind" to it },
+        d.reportedWindText?.let { "Sim-reported wind" to it },
+        d.reportedWindDeltaText?.let { "Reported vs solved" to it },
+        "Wind in use" to d.windSourceText,
+        d.magneticVariationText?.let { "Magnetic variation" to it },
+        d.assignedHeadingText?.let { "Last weather vector" to it },
+        d.departureHeadingSummary?.let { "Departure heading" to it },
     )
 }
 

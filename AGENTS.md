@@ -418,6 +418,27 @@ the authority on who owns the radio in a given state; a plausible-sounding altit
 surface is nothing at all. Base-map ink now comes from `IFATCSemanticColors`, which has
 `light` and `dark` variants. Every new drawing colour must too.
 
+**Wiring up a missing transform means finding *where* iOS applies it, not just that it
+does.** The weather-deviation legs were being handed to the pilot as raw true bearings, so
+`WindEstimator` was written to crab and convert them. The obvious place to apply it — where
+each leg's heading is computed and stored — is the wrong one: `deviationStartHeading` and
+`pendingRejoinHeading` are compared against the leg bearings for the turn size and against
+the aircraft's track by the never-reverse guard, and both comparisons are true-frame. iOS
+keeps the stored geometry true and applies `assignedHeading(forTrueCourse:)` only at the
+moment the number is *spoken*, and says so in a comment. Storing the corrected value instead
+would have thrown every turn size out by the crab plus the declination while every test
+still passed. When porting a conversion, read the iOS comment on the field, not only on the
+function. `WeatherDeviationControllerTest.theSpokenHeadingIsCorrectedButTheStoredTurnGeometryStaysTrue`
+now pins it.
+
+**A per-tick owner is a component too.** `HeadingSolver` was ported in full, tested, and
+correct — and produced nothing, because every function in it is pure over one sample and
+nothing held the running estimate between samples. Two of its pieces
+(`VariationEstimate`, the bank guard) had *no call site at all*, which no test could show:
+the class's own tests passed. When iOS keeps state on `AppModel` for a ported engine, that
+state is part of the port. Grep for each public member of a freshly wired engine and check
+something calls it.
+
 ---
 
 ## 9. What is left, and where to look

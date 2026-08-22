@@ -2,6 +2,7 @@ package com.h3consultingpartners.ifatccompanion.core.weather.deviation
 
 import com.h3consultingpartners.ifatccompanion.core.geo.Coordinate
 import com.h3consultingpartners.ifatccompanion.core.geo.Geo
+import com.h3consultingpartners.ifatccompanion.core.geo.WindEstimator
 import com.h3consultingpartners.ifatccompanion.core.model.ATCFacility
 import com.h3consultingpartners.ifatccompanion.core.model.ATCState
 import com.h3consultingpartners.ifatccompanion.core.model.ATCTransmission
@@ -240,6 +241,69 @@ class WeatherDeviationControllerTest {
         assertNotNull(
             context.committedDeviationPath,
             "the committed line is what stops the reroute shifting under the pilot",
+        )
+    }
+
+    /**
+     * The mint line is great-circle geometry, so its legs are **true** courses, while the
+     * pilot flies a magnetic bug in a wind. Both frames are needed, and which number lives
+     * where is not a detail: the stored turn geometry is compared against the leg bearings
+     * for the turn size and against the aircraft's track by the never-reverse guard, so a
+     * crabbed magnetic heading stored there silently corrupts both. The correction belongs
+     * only where the number is spoken.
+     */
+    @Test
+    fun theSpokenHeadingIsCorrectedButTheStoredTurnGeometryStaysTrue() {
+        val cells = listOf(stormOnCourse(150.0))
+
+        // True 010 reading magnetic 000 is ten degrees of easterly variation, and the track
+        // matches the heading, so the triangle solves calm and only the declination applies.
+        val level = AircraftState(
+            latitude = 40.0, longitude = -95.0,
+            altitudeMSL = 35_000.0, altitudeAGL = 35_000.0,
+            groundSpeed = 450.0, trueAirspeed = 450.0,
+            heading = 0.0, trueHeading = 10.0, track = 10.0,
+            onGround = false, bankAngle = 0.0,
+        )
+        val estimator = WindEstimator().apply { repeat(3) { update(level) } }
+        assertEquals(10.0, estimator.variationDegreesEast, "the fixture's own premise")
+
+        // "Vectors" is the response that gets a heading assigned rather than a number of
+        // degrees, so it is where the correction is visible; the same request arms the
+        // turn geometry, which is where it must *not* be.
+        fun run(headings: WindEstimator?): Pair<Int, WeatherDeviationContext> {
+            val flow = controller()
+            fun ins(at: Double) = inputs(cells, atAlongNM = at).copy(headings = headings)
+            flow.update(ins(110.0))
+            val emission = flow.perform(WeatherDeviationAction.REQUEST_VECTOR, ins(110.0))
+            val spoken = atc(emission).firstNotNullOfOrNull { tx ->
+                Regex("heading (\\d{3})").find(tx.displayText)?.groupValues?.get(1)?.toInt()
+            }
+            return assertNotNull(
+                spoken,
+                "no heading was assigned; said: " + atc(emission).joinToString(" | ") { it.displayText },
+            ) to flow.state.value.context
+        }
+
+        val (plainHeading, plain) = run(null)
+        val (correctedHeading, corrected) = run(estimator)
+
+        assertEquals(
+            ((plainHeading - 10) % 360 + 360) % 360,
+            correctedHeading,
+            "the spoken heading did not carry the declination",
+        )
+        assertTrue(
+            plain.deviationStartHeading != null || plain.pendingRejoinHeading != null,
+            "no turn was armed, so this test would pass on nothing",
+        )
+        assertEquals(
+            plain.deviationStartHeading, corrected.deviationStartHeading,
+            "the held beginning turn must stay in the true frame",
+        )
+        assertEquals(
+            plain.pendingRejoinHeading, corrected.pendingRejoinHeading,
+            "the armed interior turn must stay in the true frame",
         )
     }
 
