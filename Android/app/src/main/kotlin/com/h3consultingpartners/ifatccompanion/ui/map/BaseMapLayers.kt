@@ -9,6 +9,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.h3consultingpartners.ifatccompanion.core.geo.Coordinate
 import com.h3consultingpartners.ifatccompanion.core.map.CoastlineData
@@ -105,7 +106,7 @@ private fun DrawScope.drawCoastlines(frame: MapFrame, color: Color) {
         var previous: Offset? = null
         for (coordinate in line) {
             val point = frame.project(coordinate)
-            previous?.let { drawLine(color, it, point, strokeWidth = COASTLINE_STROKE) }
+            previous?.let { drawLine(color, it, point, strokeWidth = COASTLINE_STROKE.toPx()) }
             previous = point
         }
     }
@@ -128,6 +129,7 @@ private fun DrawScope.drawGraticule(
         MapProjection.UnitPoint(frame.viewport.maxX, frame.viewport.maxY),
     )
 
+    val inset = LABEL_INSET.toPx()
     for (line in MapGraticule.linesFor(frame.viewport)) {
         if (line.isParallel) {
             // Project at both edges rather than assuming a horizontal row of pixels: in
@@ -135,16 +137,20 @@ private fun DrawScope.drawGraticule(
             // projection ever changes.
             val start = frame.project(Coordinate(line.degrees, topLeft.longitude))
             val end = frame.project(Coordinate(line.degrees, bottomRight.longitude))
-            drawLine(lineColor, start, end, strokeWidth = GRATICULE_STROKE)
+            drawLine(lineColor, start, end, strokeWidth = GRATICULE_STROKE.toPx())
             textMeasurer?.let { measurer ->
-                drawGraticuleLabel(measurer, line.label, Offset(LABEL_INSET, start.y - LABEL_INSET * 2), labelColor)
+                // Sit the label clear of its own line, using the height the text actually
+                // measured rather than a guess: the text is in sp and everything placing it
+                // is in pixels, so a fixed clearance is only right at one density.
+                val height = measurer.labelHeight(line.label, labelColor)
+                drawGraticuleLabel(measurer, line.label, Offset(inset, start.y - height - inset), labelColor)
             }
         } else {
             val start = frame.project(Coordinate(topLeft.latitude, line.degrees))
             val end = frame.project(Coordinate(bottomRight.latitude, line.degrees))
-            drawLine(lineColor, start, end, strokeWidth = GRATICULE_STROKE)
+            drawLine(lineColor, start, end, strokeWidth = GRATICULE_STROKE.toPx())
             textMeasurer?.let { measurer ->
-                drawGraticuleLabel(measurer, line.label, Offset(start.x + LABEL_INSET, LABEL_INSET), labelColor)
+                drawGraticuleLabel(measurer, line.label, Offset(start.x + inset, inset), labelColor)
             }
         }
     }
@@ -159,19 +165,20 @@ private fun DrawScope.drawScaleBar(frame: MapFrame, color: Color, textMeasurer: 
     val barWidth = (bar.widthFraction * width).toFloat()
     if (barWidth <= 0f || barWidth > width) return
 
-    val y = height - SCALE_BAR_INSET
-    val left = SCALE_BAR_INSET
-    drawLine(color, Offset(left, y), Offset(left + barWidth, y), strokeWidth = SCALE_BAR_STROKE)
+    val stroke = SCALE_BAR_STROKE.toPx()
+    val tick = SCALE_TICK.toPx()
+    val inset = SCALE_BAR_INSET.toPx()
+    val y = height - inset
+    val left = inset
+    drawLine(color, Offset(left, y), Offset(left + barWidth, y), strokeWidth = stroke)
     // End ticks, so the bar reads as a measurement rather than an underline.
-    drawLine(color, Offset(left, y - SCALE_TICK), Offset(left, y + SCALE_TICK), strokeWidth = SCALE_BAR_STROKE)
-    drawLine(
-        color,
-        Offset(left + barWidth, y - SCALE_TICK),
-        Offset(left + barWidth, y + SCALE_TICK),
-        strokeWidth = SCALE_BAR_STROKE,
-    )
+    drawLine(color, Offset(left, y - tick), Offset(left, y + tick), strokeWidth = stroke)
+    drawLine(color, Offset(left + barWidth, y - tick), Offset(left + barWidth, y + tick), strokeWidth = stroke)
     textMeasurer?.let { measurer ->
-        drawGraticuleLabel(measurer, bar.label, Offset(left, y - SCALE_TICK - LABEL_HEIGHT), color)
+        // Clearance from the measured text, not a constant: the label is sized in sp and
+        // scales with the device's font setting, so a fixed gap puts it through the bar.
+        val height = measurer.labelHeight(bar.label, color)
+        drawGraticuleLabel(measurer, bar.label, Offset(left, y - tick - height), color)
     }
 }
 
@@ -222,18 +229,23 @@ private fun DrawScope.drawGraticuleLabel(
     text: String,
     at: Offset,
     color: Color,
-) {
-    val layout = measurer.measure(text, TextStyle(fontSize = LABEL_FONT_SIZE, color = color))
-    drawText(layout, topLeft = at)
-}
+) = drawText(measurer.measure(text, labelStyle(color)), topLeft = at)
 
-private const val COASTLINE_STROKE = 1.4f
-private const val GRATICULE_STROKE = 0.7f
-private const val SCALE_BAR_STROKE = 2f
-private const val SCALE_TICK = 5f
-private const val SCALE_BAR_INSET = 14f
-private const val LABEL_INSET = 4f
-private const val LABEL_HEIGHT = 14f
+/** The measured height of a label, so callers can reserve exactly what it needs. */
+private fun TextMeasurer.labelHeight(text: String, color: Color): Float =
+    measure(text, labelStyle(color)).size.height.toFloat()
+
+private fun labelStyle(color: Color) = TextStyle(fontSize = LABEL_FONT_SIZE, color = color)
+
+// All in dp and converted at draw time. DrawScope works in raw pixels, so a bare Float
+// here would be a hairline on a modern phone and the label placement — which is derived
+// from sp-sized text — would not line up with it at any density but one.
+private val COASTLINE_STROKE = 0.5.dp
+private val GRATICULE_STROKE = 0.5.dp
+private val SCALE_BAR_STROKE = 1.dp
+private val SCALE_TICK = 3.dp
+private val SCALE_BAR_INSET = 8.dp
+private val LABEL_INSET = 3.dp
 private const val IMAGERY_ALPHA = 0.85f
 
 /** Beyond this the underlay is a blur, and projecting it is far more work than it is worth. */

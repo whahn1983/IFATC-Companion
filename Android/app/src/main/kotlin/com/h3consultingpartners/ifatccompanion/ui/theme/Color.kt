@@ -103,6 +103,18 @@ data class IFATCSemanticColors(
     val runwayCrossing: Color,
     val gate: Color,
     val apron: Color,
+    /**
+     * The base map under the route: coastlines, the lat/lon grid, and the labels and
+     * attribution drawn over it.
+     *
+     * These have to come from the theme rather than be constants. The map card sits on the
+     * surface colour, which is near-white in light theme, so grid lines and labels defined
+     * as translucent white simply disappear there — including the NASA credit, which is
+     * shown precisely because it is asked for.
+     */
+    val mapCoastline: Color,
+    val mapGraticule: Color,
+    val mapGraticuleLabel: Color,
 ) {
     companion object {
         val light = IFATCSemanticColors(
@@ -133,6 +145,9 @@ data class IFATCSemanticColors(
             runwayCrossing = Color(0xFFD2610C),
             gate = Color(0xFF7A5AC7),
             apron = Color(0xFFCBD4CF),
+            mapCoastline = Color(0xFF7C8B96),
+            mapGraticule = Color(0x2E11181C),
+            mapGraticuleLabel = Color(0x8A11181C),
         )
 
         val dark = IFATCSemanticColors(
@@ -163,6 +178,9 @@ data class IFATCSemanticColors(
             runwayCrossing = Color(0xFFFFB870),
             gate = Color(0xFFCBB6FF),
             apron = Color(0xFF2A3138),
+            mapCoastline = Color(0xFF5A6B78),
+            mapGraticule = Color(0x33FFFFFF),
+            mapGraticuleLabel = Color(0x99FFFFFF),
         )
     }
 }

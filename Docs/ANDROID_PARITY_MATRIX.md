@@ -16,7 +16,7 @@ because a screen exists.
 | 🔵 **Android-native substitution** | Deliberately different because the platform is, with the difference stated. |
 
 > **Verification status of the two modules.** `:core` is compiled and its tests are run —
-> **830 tests across 65 classes, 0 failures, 0 skipped** — and the per-area counts below
+> **872 tests across 69 classes, 0 failures, 0 skipped** — and the per-area counts below
 > are real.
 >
 > `:app` is now compiled too, by CI (`.github/workflows/android.yml`): `assembleDebug`
@@ -204,7 +204,7 @@ because a screen exists.
 | Flights list | `FlightsListView.swift` | **Not built.** `SavedFlightStore` is ported and tested; the screen that lists them is not | ⬜ |
 | Taxi map | `TaxiMapView.swift` (468) | `ui/map/TaxiMapLayers.kt` — draws the route, hold-short bars and crossings, and carries the coordinator's `crossingActions` / `offRouteActions` plus a read-back button — without which `AWAITING_PILOT_READBACK` would wedge a taxi that reached a runway. `relevantRunways` is filtered to the runways the route touches, the restriction iOS adopted after overlay volume crashed MapKit | 🟡 |
 | Route map | `RouteMapView.swift` | `ui/map/RouteMapLayers.kt` — the iOS drawing order preserved exactly, because the order is what says which things the pilot must act on | 🟡 type-checked |
-| Route map base layer | MapKit's own base map | `ui/map/BaseMapLayers.kt` over `core/map/MapGraticule.kt`, `core/map/CoastlineData.kt` and `core/map/BaseImageryService.kt` — a graticule, a scale bar and bundled Natural Earth coastlines that need no network, plus a keyless NASA GIBS satellite underlay that degrades to them when there is no signal. Not a street map; see `Docs/ANDROID_MAPPING.md` | 🟢 |
+| Route map base layer | MapKit's own base map | `ui/map/BaseMapLayers.kt` over `core/map/MapGraticule.kt`, `core/map/CoastlineData.kt` and `core/map/BaseImageryService.kt` — a graticule, a scale bar and bundled Natural Earth coastlines that need no network, plus a keyless NASA GIBS satellite underlay that degrades to them when there is no signal. The three `:core` halves — graticule, coastline dataset, imagery service and window — are tested; `BaseMapLayers.kt` is drawing code in `:app` and is type-checked only. Not a street map; see `Docs/ANDROID_MAPPING.md` | 🟡 |
 | Radar raster overlay on the map | `RadarOverlayRenderer.swift` | Not composited onto the canvas yet — see the Weather section | ⬜ |
 | Pull-to-refresh on Weather | `.refreshable` | 🔵 A refresh action in the top bar. Compose's pull-to-refresh is still experimental in the pinned BOM, and a screen whose only way to load weather is an unstable API is the wrong trade | 🔵 |
 | SimBrief | `SimBriefBrowserView.swift` (SFSafariViewController) | 🔵 `simbrief/SimBriefLauncher.kt` — Custom Tabs, the direct counterpart. A WebView would reintroduce the exact focus problem iOS moved away from | 🟡 |
@@ -295,7 +295,7 @@ Stated plainly, and none of them hidden behind a ✅ elsewhere in this file.
 | | |
 | --- | --- |
 | `:core` compile | ✅ `./gradlew -c settings-core.gradle.kts :core:compileKotlin` |
-| `:core` tests | ✅ **819 tests, 65 classes, 0 failures, 0 skipped** |
+| `:core` tests | ✅ **872 tests, 69 classes, 0 failures, 0 skipped** |
 | Compose screens type-check | ✅ `./gradlew -c settings-uicheck.gradle.kts :uicheck:compileKotlin` |
 | `:app` compile | ❌ not possible here |
 | Instrumented tests | ❌ not possible here |

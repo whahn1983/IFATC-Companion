@@ -19,11 +19,17 @@ import com.h3consultingpartners.ifatccompanion.core.weather.radar.queryString
  * the three things that disqualified every commercial base map.
  *
  * **It is the only part of the base map that can fail**, and that is by design. The
- * coastlines are bundled and the graticule is arithmetic, so when this returns null — no
- * signal at altitude, GIBS unreachable, the request simply not finished — the map keeps
+ * coastlines are bundled and the graticule is arithmetic, so when this cannot deliver —
+ * no signal at altitude, GIBS unreachable, the request simply not finished — the map keeps
  * its coastlines, its grid and its scale bar. Losing imagery costs detail, never
- * legibility. Callers are expected to treat null as ordinary and not as an error worth
- * telling the pilot about.
+ * legibility.
+ *
+ * It reports **why** it failed rather than only that it did, because the two cases need
+ * opposite handling and look identical from outside. [ImageryResult.Unavailable] is the
+ * ordinary offline answer: say nothing, try again later. [ImageryResult.Rejected] means the
+ * service answered and refused — a layer identifier that no longer exists, an endpoint that
+ * moved — and that would otherwise be indistinguishable from being offline for the life of
+ * the app, on a device, with nothing recorded anywhere.
  *
  * `BlueMarble_ShadedRelief_Bathymetry` is the layer because it is **static**: it carries
  * no TIME dimension, so a request cannot go stale and there is nothing to keep refreshing.
@@ -35,24 +41,29 @@ class BaseImageryService(
     private val layerIdentifier: String = DEFAULT_LAYER,
 ) {
 
-    /**
-     * Imagery covering [bbox] at [size], or null when it cannot be had.
-     *
-     * Null is the expected offline answer, not a failure to report.
-     */
-    suspend fun imagery(bbox: RadarBoundingBox, size: PixelSize): ByteArray? {
-        val url = imageryUrl(bbox, size) ?: return null
+    /** Imagery covering [bbox] at [size], or why it could not be had. */
+    suspend fun imagery(bbox: RadarBoundingBox, size: PixelSize): ImageryResult {
+        val url = imageryUrl(bbox, size) ?: return ImageryResult.Unavailable
         val result = http.get(
             url,
             headers = mapOf("User-Agent" to AppHttp.userAgent),
             timeoutSeconds = TIMEOUT_SECONDS,
         )
-        val response = (result as? HttpResult.Success)?.response ?: return null
-        // A WMS error is a 4xx/5xx carrying an XML ServiceException, which is a non-empty
-        // body that is not an image. Rejecting it here keeps the decoder honest.
-        if (!response.isSuccess) return null
+        val response = when (result) {
+            is HttpResult.Success -> result.response
+            // No response reached us at all: offline, DNS, TLS, timeout. Ordinary.
+            is HttpResult.Failure -> return ImageryResult.Unavailable
+        }
+        // A WMS error is a 4xx/5xx carrying an XML ServiceException — a non-empty body that
+        // is not an image. Catching it here keeps it out of the decoder, and naming the
+        // status is what makes a wrong layer identifier findable instead of permanent.
+        if (!response.isSuccess) {
+            return ImageryResult.Rejected(response.status, "HTTP ${response.status}")
+        }
         val body = response.body
-        return if (body.isEmpty()) null else body
+        // A 200 with nothing in it is the service refusing in the politest possible way.
+        if (body.isEmpty()) return ImageryResult.Rejected(response.status, "empty body")
+        return ImageryResult.Image(body)
     }
 
     /**
@@ -104,5 +115,40 @@ class BaseImageryService(
          * and stricter reasons.
          */
         const val ATTRIBUTION = LegalStrings.BaseMap.IMAGERY_ATTRIBUTION_LONG
+    }
+}
+
+/**
+ * What [BaseImageryService.imagery] came back with.
+ *
+ * Three cases rather than a nullable, because "no signal" and "the service refused" call
+ * for opposite behaviour and are otherwise indistinguishable: one should be retried and
+ * never mentioned, the other should be recorded and never retried.
+ */
+sealed interface ImageryResult {
+
+    /** The encoded image, ready to decode. */
+    data class Image(val bytes: ByteArray) : ImageryResult {
+        override fun equals(other: Any?): Boolean =
+            other is Image && bytes.contentEquals(other.bytes)
+
+        override fun hashCode(): Int = bytes.contentHashCode()
+    }
+
+    /**
+     * Nothing to request, or no response reached us. The expected answer at altitude with
+     * no signal — worth retrying later, never worth telling the pilot about.
+     */
+    data object Unavailable : ImageryResult
+
+    /**
+     * The service answered and refused.
+     *
+     * This is the case that must not be silent. A layer identifier that stopped existing
+     * fails this way on every request forever, and looks exactly like being offline.
+     */
+    data class Rejected(val status: Int, val detail: String) : ImageryResult {
+        /** A throttle or a 5xx may pass; a 400 on a malformed request never will. */
+        val worthRetrying: Boolean get() = AppHttp.isRetryableStatus(status)
     }
 }

@@ -63,8 +63,15 @@ The three are independent by design, and the order matters: **C degrades to A an
 A pilot at altitude with no signal gets a graticule, a scale bar and real coastlines, and
 loses only the picture of the ground. `BaseImageryService.imagery` returns null for every
 failure — no route, no signal, a WMS `ServiceException`, an empty body, bytes that do not
-decode — and null simply leaves `BaseMapModel.imagery` unset. Nothing is reported to the
-pilot, because nothing has gone wrong that they can act on.
+decode — leaves `BaseMapModel.imagery` unset and nothing in the flight UI.
+
+It does distinguish *why*, because two cases that look identical from outside need opposite
+handling. Being offline is `ImageryResult.Unavailable`: retried on a widening delay (5 s,
+20 s, 60 s) and then given up on with a single Diagnostics line. The service answering and
+refusing is `ImageryResult.Rejected`, and that is recorded at WARNING — a layer identifier
+that stopped existing fails on every request forever and would otherwise be
+indistinguishable from having no signal, on a device, for the life of the app. Neither
+reaches the pilot's flight UI; both are findable in Diagnostics.
 
 None of this adds a provider relationship. GIBS is the same keyless service the
 precipitation estimate already calls, Natural Earth is public domain and shipped in the
@@ -134,6 +141,9 @@ The base map carries lighter obligations, and they are not the same as each othe
 Earth is **public domain**, so its credit is courtesy rather than a condition — it is shown
 anyway, because saying where data came from is worth doing whether or not a licence
 compels it. NASA asks that GIBS be credited wherever its imagery appears, so the route map
-shows "Imagery: NASA GIBS" **only when imagery is actually on screen** — crediting a source
-that is not being displayed would be its own kind of wrong. Both strings live in
+shows "Imagery: NASA GIBS" **whenever imagery has been fetched for the view** and omits it
+when none has. It is keyed on having the imagery rather than on the pixels reaching the
+screen, because `drawImagery` still declines when zoomed past its useful scale and tracking
+that would make the credit flicker while panning — over-crediting slightly is the safe
+direction; failing to credit imagery that is on screen is not. Both strings live in
 `LegalStrings.BaseMap` so the map, Settings and this document cannot drift apart.

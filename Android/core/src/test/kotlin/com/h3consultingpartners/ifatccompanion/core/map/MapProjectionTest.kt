@@ -173,4 +173,39 @@ class MapProjectionTest {
         assertTrue(MapProjection.tileZoom(tight, 1080f) > MapProjection.tileZoom(wide, 1080f))
         assertTrue(MapProjection.tileZoom(tight, 1080f) <= MapProjection.MAX_TILE_ZOOM)
     }
+
+    @Test
+    fun `the world corners frame the whole world without leaving it`() {
+        // This is what a map falls back to when it has nothing of its own to frame. If it
+        // ever produced no viewport, the map would draw nothing at all — including the
+        // layers that need no data.
+        val corners = MapProjection.WORLD_CORNERS
+        for (corner in corners) {
+            assertTrue(corner.isValid, "$corner is not a usable coordinate")
+            assertTrue(abs(corner.latitude) <= MapProjection.MAX_LATITUDE)
+        }
+        val viewport = MapProjection.fitting(
+            coordinates = corners,
+            canvasWidth = 1080f,
+            canvasHeight = 640f,
+            paddingFraction = 0.0,
+        )
+        assertNotNull(viewport, "the world must always be fittable")
+        // The whole world, not a sliver of it.
+        assertTrue(viewport.width >= 0.99, "world fit spans only ${viewport.width} in x")
+    }
+
+    @Test
+    fun `a wide short canvas shows the world in proportion rather than stretched`() {
+        // Going through fitting() rather than hard-coding the unit square is the entire
+        // reason WORLD_CORNERS is a coordinate pair: fitting applies the aspect correction.
+        val wide = MapProjection.fitting(MapProjection.WORLD_CORNERS, 1080f, 400f, 0.0)
+        assertNotNull(wide)
+        val canvasAspect = 400.0 / 1080.0
+        val viewportAspect = wide.height / wide.width
+        assertTrue(
+            abs(viewportAspect - canvasAspect) < 0.02,
+            "viewport aspect $viewportAspect does not match the canvas' $canvasAspect",
+        )
+    }
 }

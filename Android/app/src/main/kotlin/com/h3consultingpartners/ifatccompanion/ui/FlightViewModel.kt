@@ -16,6 +16,7 @@ import com.h3consultingpartners.ifatccompanion.core.model.ATCState
 import com.h3consultingpartners.ifatccompanion.core.model.FlightPlan
 import com.h3consultingpartners.ifatccompanion.core.phraseology.PhraseologyProfile
 import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticCategory
+import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticLevel
 import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticRecord
 import com.h3consultingpartners.ifatccompanion.core.session.FlightSessionCoordinator
 import com.h3consultingpartners.ifatccompanion.core.session.FlightSessionState
@@ -27,10 +28,13 @@ import com.h3consultingpartners.ifatccompanion.core.settings.SettingsRepository
 import com.h3consultingpartners.ifatccompanion.core.surface.routing.AirportSurfaceState
 import com.h3consultingpartners.ifatccompanion.core.surface.routing.TaxiMapAction
 import com.h3consultingpartners.ifatccompanion.core.weather.WeatherSessionState
+import com.h3consultingpartners.ifatccompanion.map.BaseMapImageryLoader
 import com.h3consultingpartners.ifatccompanion.ui.map.BaseMapModel
 import com.h3consultingpartners.ifatccompanion.ui.screens.FlightOverrides
 import com.h3consultingpartners.ifatccompanion.ui.screens.VoiceOption
 import kotlin.math.roundToInt
+import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -159,6 +163,14 @@ class FlightViewModel(
      * Blue Marble image with no time dimension, so there is nothing to keep current. That
      * makes a single request per route the right cadence rather than a compromise —
      * chasing the camera would put the map on the network for the whole flight.
+     *
+     * "One image per route" is not the same as "one attempt per route". A pilot who opens
+     * the app at the gate on a hotspot that has not associated yet, or in the seconds
+     * before mobile data attaches, gets a transport failure — and because the upstream is
+     * deduplicated on the route itself, nothing would ever ask again for a plan that does
+     * not change for three hours. So an unavailable answer is retried on a widening delay
+     * and then given up on; a refused one is not retried at all, because a request the
+     * service rejects will be rejected again.
      */
     private fun observeBaseMapImagery() {
         viewModelScope.launch {
@@ -166,13 +178,48 @@ class FlightViewModel(
                 .map(::baseMapCoverage)
                 .distinctUntilChanged()
                 .collectLatest { coordinates ->
-                    if (coordinates.isEmpty()) return@collectLatest
-                    val imagery = graph.baseMapImagery.load(coordinates) ?: return@collectLatest
-                    _baseMap.value = _baseMap.value.copy(
-                        imagery = imagery.image,
-                        imageryBounds = imagery.bounds,
-                    )
+                    if (coordinates.isNotEmpty()) loadBaseMapImagery(coordinates)
                 }
+        }
+    }
+
+    /**
+     * Attempt imagery for [coordinates] until it lands, is refused, or the attempts run out.
+     *
+     * Cancellation is the point of running this inside `collectLatest`: a new route
+     * cancels a pending retry mid-delay rather than racing the fetch for the new one.
+     */
+    private suspend fun loadBaseMapImagery(coordinates: List<Coordinate>) {
+        var attempt = 0
+        while (true) {
+            when (val outcome = graph.baseMapImagery.load(coordinates)) {
+                is BaseMapImageryLoader.Outcome.Loaded -> {
+                    _baseMap.value = _baseMap.value.copy(
+                        imagery = outcome.imagery.image,
+                        imageryBounds = outcome.imagery.bounds,
+                    )
+                    return
+                }
+
+                is BaseMapImageryLoader.Outcome.Rejected ->
+                    if (!outcome.retryable) return
+
+                BaseMapImageryLoader.Outcome.Unavailable -> Unit
+            }
+
+            attempt++
+            if (attempt >= BASE_MAP_IMAGERY_ATTEMPTS) {
+                // One line, once, at the end. Enough that a pilot who wonders why the map
+                // has no imagery can find out, without narrating an ordinary offline flight.
+                graph.diagnostics.log(
+                    category = DiagnosticCategory.WEATHER,
+                    level = DiagnosticLevel.INFO,
+                    message = "Base map imagery unavailable after $attempt attempts; " +
+                        "coastlines and grid are unaffected",
+                )
+                return
+            }
+            delay(BASE_MAP_IMAGERY_RETRY_DELAYS_SECONDS[attempt - 1].seconds)
         }
     }
 
@@ -194,12 +241,15 @@ class FlightViewModel(
         }
         if (planned.isNotEmpty()) return planned
         val here = state.aircraftState.coordinate?.takeIf(Coordinate::isValid) ?: return emptyList()
-        return listOf(
-            Coordinate(
-                latitude = here.latitude.roundToInt().toDouble(),
-                longitude = here.longitude.roundToInt().toDouble(),
-            ),
+        val rounded = Coordinate(
+            latitude = here.latitude.roundToInt().toDouble(),
+            longitude = here.longitude.roundToInt().toDouble(),
         )
+        // Rounding a position in the Gulf of Guinea can land on exactly (0, 0), which
+        // `Coordinate.isValid` treats as "no fix" — so the rounded point would be discarded
+        // and a perfectly good position would produce no imagery at all. In that one square
+        // the position is used unrounded, which costs a few extra fetches over open ocean.
+        return listOf(if (rounded.isValid) rounded else here)
     }
 
     // endregion
@@ -736,3 +786,15 @@ class FlightViewModel(
         }
     }
 }
+
+/**
+ * How long to wait before each retry of the base map's satellite underlay.
+ *
+ * Four attempts over about a minute and a half. Long enough to cover a phone that has not
+ * found a network yet at the gate; bounded because imagery is an enhancement and a
+ * genuinely offline flight must not keep waking the radio for it.
+ */
+private val BASE_MAP_IMAGERY_RETRY_DELAYS_SECONDS = listOf(5L, 20L, 60L)
+
+/** One more than the number of waits: the first attempt is not preceded by one. */
+private val BASE_MAP_IMAGERY_ATTEMPTS = BASE_MAP_IMAGERY_RETRY_DELAYS_SECONDS.size + 1

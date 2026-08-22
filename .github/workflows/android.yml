@@ -59,6 +59,38 @@ jobs:
         working-directory: Android
         run: ./gradlew -c settings-core.gradle.kts :core:test --no-daemon
 
+      # These figures are quoted in the docs as evidence of what is verified, and they had
+      # already drifted twice — a doc claiming 819 tests while 872 ran is a claim nobody
+      # can act on. Cheap to check, and the failure names the number to write.
+      - name: Documented test counts match the run
+        working-directory: Android
+        run: |
+          python3 - <<'EOF'
+          import glob, pathlib, re, sys, xml.etree.ElementTree as ET
+
+          tests = classes = 0
+          for path in glob.glob("core/build/test-results/test/*.xml"):
+              root = ET.parse(path).getroot()
+              classes += 1
+              tests += int(root.get("tests"))
+          print(f"ran {tests} tests across {classes} classes")
+
+          bad = []
+          for doc in ("../Docs/ANDROID_PARITY_MATRIX.md", "../Docs/ANDROID_REMAINING_WORK.md"):
+              text = pathlib.Path(doc).read_text()
+              for claimed_tests, claimed_classes in re.findall(
+                  r"\*\*(\d+) tests(?:,| across| /) (\d+) classes", text
+              ):
+                  if (int(claimed_tests), int(claimed_classes)) != (tests, classes):
+                      bad.append(f"{doc}: claims {claimed_tests} tests / {claimed_classes} classes")
+
+          if bad:
+              print(f"\nStale counts — should be {tests} tests / {classes} classes:")
+              print("\n".join("  " + line for line in bad))
+              sys.exit(1)
+          print("documented counts agree")
+          EOF
+
       # Only on failure: the HTML report says which assertion went, which the log does not.
       - name: Upload test report
         if: failure()

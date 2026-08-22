@@ -39,6 +39,18 @@ object MapProjection {
      */
     const val MAX_LATITUDE = 85.05112877980659
 
+    /**
+     * The whole world, as the two corners a fit can be built from.
+     *
+     * Used when a map has nothing of its own to frame yet. Going through [fitting] rather
+     * than hard-coding the unit square is what applies the canvas aspect correction, so a
+     * wide, short map card shows the world in proportion instead of stretched.
+     */
+    val WORLD_CORNERS: List<Coordinate> = listOf(
+        Coordinate(MAX_LATITUDE, -180.0),
+        Coordinate(-MAX_LATITUDE, 180.0),
+    )
+
     /** Project a coordinate into the 0…1 unit square. */
     fun toUnit(coordinate: Coordinate): UnitPoint {
         val latitude = coordinate.latitude.coerceIn(-MAX_LATITUDE, MAX_LATITUDE)

@@ -25,6 +25,7 @@ import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import com.h3consultingpartners.ifatccompanion.core.geo.Coordinate
+import com.h3consultingpartners.ifatccompanion.core.map.MapProjection
 import com.h3consultingpartners.ifatccompanion.core.model.AircraftState
 import com.h3consultingpartners.ifatccompanion.core.ui.LegalStrings
 import com.h3consultingpartners.ifatccompanion.core.weather.PIREP
@@ -33,6 +34,7 @@ import com.h3consultingpartners.ifatccompanion.core.weather.TurbulenceSeverity
 import com.h3consultingpartners.ifatccompanion.core.weather.deviation.WeatherIntensity
 import com.h3consultingpartners.ifatccompanion.core.weather.radar.RadarCell
 import com.h3consultingpartners.ifatccompanion.ui.theme.IFATCTheme
+import kotlin.math.roundToInt
 
 /** Everything the route map draws, already resolved to coordinates. */
 data class RouteMapModel(
@@ -82,22 +84,44 @@ fun RouteMap(
      */
     baseMap: BaseMapModel = BaseMapModel(),
 ) {
-    val state = rememberMapCanvasState()
+    // The world is the fallback frame, so the coastlines and graticule draw from the first
+    // layout pass even with no plan, no telemetry and no network. Without it the viewport
+    // stays null, MapCanvas skips its whole draw lambda, and the base map — the part that
+    // needs nothing fetched — is the first thing lost.
+    val state = rememberMapCanvasState(defaultFit = MapProjection.WORLD_CORNERS)
     val semantic = IFATCTheme.semantic
-    val textMeasurer = rememberTextMeasurer()
+    // The default LRU holds eight layouts and a graticule draws more labels than that in
+    // one frame, so the cache would be cycled through in the same order every frame and
+    // never hit. Sized past the worst case instead.
+    val textMeasurer = rememberTextMeasurer(cacheSize = LABEL_CACHE_SIZE)
 
-    // Re-fit when the route itself changes — not on every telemetry tick, which would
-    // fight the pilot's own panning.
-    val signature = remember(model.route, model.departure, model.destination) {
-        model.route.joinToString { "${it.latitude},${it.longitude}" } +
-            "|${model.departure}|${model.destination}"
-    }
-    LaunchedEffect(signature) {
-        val content = buildList {
+    // What to frame. The filed route first, because it does not move; failing that the
+    // aircraft, so a flight with an unresolvable plan still frames itself rather than the
+    // whole planet. AirportDatabase covers 21 airports, so "unresolvable" is the common
+    // case outside the United States, not an edge one.
+    val aircraft = model.aircraft.coordinate?.takeIf { it.isValid }
+    val planned = remember(model.route, model.departure, model.destination) {
+        buildList {
             addAll(model.route)
             model.departure?.let(::add)
             model.destination?.let(::add)
         }.filter { it.isValid }
+    }
+
+    // Re-fit when the route changes — not on every telemetry tick, which would fight the
+    // pilot's own panning. When only the aircraft is available the key is rounded, so it
+    // re-frames every tenth of a degree flown instead of every second.
+    val signature = remember(planned, aircraft) {
+        if (planned.isNotEmpty()) {
+            planned.joinToString { "${it.latitude},${it.longitude}" }
+        } else {
+            aircraft?.let {
+                "@${(it.latitude * 10).roundToInt()},${(it.longitude * 10).roundToInt()}"
+            }.orEmpty()
+        }
+    }
+    LaunchedEffect(signature) {
+        val content = planned.ifEmpty { listOfNotNull(aircraft) }
         if (content.isNotEmpty()) state.fitTo(content)
     }
 
@@ -113,9 +137,9 @@ fun RouteMap(
             drawBaseMap(
                 frame = frame,
                 model = baseMap,
-                coastlineColor = MAP_COASTLINE_COLOR,
-                graticuleColor = MAP_GRATICULE_COLOR,
-                labelColor = MAP_GRATICULE_LABEL_COLOR,
+                coastlineColor = semantic.mapCoastline,
+                graticuleColor = semantic.mapGraticule,
+                labelColor = semantic.mapGraticuleLabel,
                 textMeasurer = textMeasurer,
             )
             // 1. Precipitation (Mock Mode's vector systems).
@@ -186,8 +210,14 @@ fun RouteMap(
  * Who the ground under the route came from.
  *
  * Natural Earth is public domain, so its line is courtesy. NASA asks that GIBS be credited
- * wherever its imagery appears, so that half appears only when imagery is actually on
- * screen — crediting a source that is not being shown would be its own kind of wrong.
+ * wherever its imagery appears, so that half is shown whenever imagery has been fetched for
+ * this view and omitted when none has.
+ *
+ * Keyed on having the imagery rather than on the pixels reaching the screen. `drawImagery`
+ * still declines in a few cases — zoomed past its useful scale, projected entirely
+ * off-canvas — and tracking those here would make the credit flicker as the pilot pans.
+ * Crediting slightly more than is strictly on screen is the safe direction to err in; the
+ * unsafe one is failing to credit imagery that is.
  */
 @Composable
 private fun BaseMapCredit(baseMap: BaseMapModel, modifier: Modifier = Modifier) {
@@ -199,7 +229,7 @@ private fun BaseMapCredit(baseMap: BaseMapModel, modifier: Modifier = Modifier) 
     Text(
         text = parts.joinToString(" · "),
         style = MaterialTheme.typography.labelSmall,
-        color = MAP_GRATICULE_LABEL_COLOR,
+        color = IFATCTheme.semantic.mapGraticuleLabel,
         modifier = modifier,
     )
 }
@@ -354,7 +384,11 @@ private const val WAYPOINT_MARKER_RADIUS = 5f
 private const val PIREP_MARKER_RADIUS = 7f
 private const val AIRCRAFT_MARKER_SIZE = 9f
 
-/** Base-map ink. Muted on purpose: context must never compete with the route. */
-private val MAP_COASTLINE_COLOR = Color(0xFF5A6B78)
-private val MAP_GRATICULE_COLOR = Color(0x33FFFFFF)
-private val MAP_GRATICULE_LABEL_COLOR = Color(0x99FFFFFF)
+/**
+ * How many text layouts the measurer keeps.
+ *
+ * A graticule draws up to four parallels and four meridians plus a scale-bar label, and
+ * every one is a distinct string. Past the cache size the LRU is walked in the same order
+ * each frame and never hits, so the whole point of caching is lost inside the draw phase.
+ */
+private const val LABEL_CACHE_SIZE = 32

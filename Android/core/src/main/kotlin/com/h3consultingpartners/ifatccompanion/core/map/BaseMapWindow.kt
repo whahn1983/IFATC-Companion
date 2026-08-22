@@ -90,10 +90,11 @@ object BaseMapWindow {
     /**
      * The pixel size to request for [box], with the longer edge at [maxDimension].
      *
-     * The aspect ratio is taken in **Web Mercator**, not in degrees. A ten-degree-tall box
-     * at 60° N is far shorter on a Mercator map than a ten-degree-wide one, so sizing from
-     * the lat/lon spans would stretch the imagery vertically — subtly at the equator and
-     * badly at high latitude, which is where a lot of flying happens.
+     * The aspect ratio is taken in **Web Mercator**, not in degrees. Mercator stretches
+     * north–south by roughly `sec(latitude)`, so a ten-degree-tall box at 60° N is about
+     * twice as tall on the map as a ten-degree-wide one is wide. Sizing from the lat/lon
+     * spans would ask for a square image for that box and squash the result by half —
+     * negligibly at the equator, badly at the latitudes a lot of flying happens at.
      */
     fun pixelSize(box: RadarBoundingBox, maxDimension: Int = DEFAULT_MAX_DIMENSION): PixelSize {
         if (maxDimension <= 0) return PixelSize(0, 0)

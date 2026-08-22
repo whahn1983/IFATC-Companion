@@ -8,6 +8,7 @@ import com.h3consultingpartners.ifatccompanion.core.weather.radar.PixelSize
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -15,8 +16,12 @@ import kotlin.test.assertTrue
 /**
  * The imagery underlay is the only part of the base map that touches the network, so these
  * cover the two things that matter: that the request is well formed, and that every way it
- * can fail produces null rather than an exception — because null is what leaves the
- * coastlines and graticule on screen.
+ * can fail is reported as a result rather than thrown — because it is the result that
+ * leaves the coastlines and graticule on screen.
+ *
+ * The distinction between [ImageryResult.Unavailable] and [ImageryResult.Rejected] is
+ * pinned deliberately. Collapsing the two is what makes a layer identifier that stopped
+ * existing indistinguishable from being offline, on a device, forever.
  */
 class BaseImageryServiceTest {
 
@@ -91,35 +96,52 @@ class BaseImageryServiceTest {
 
     // endregion
 
-    // region Failure is null, never an exception
+    // region Every failure is a result, never an exception
 
     @Test
-    fun `a transport failure yields null`() = runTest {
+    fun `a transport failure is unavailable, not a rejection`() = runTest {
+        // Offline. Nothing is wrong with the request, so nothing should be recorded and
+        // the caller should try again later.
         val service = BaseImageryService(StubHttp(HttpResult.Failure("no network", null)))
-        assertNull(service.imagery(bbox, size))
+        assertEquals(ImageryResult.Unavailable, service.imagery(bbox, size))
     }
 
     @Test
-    fun `a WMS ServiceException yields null even though it has a body`() = runTest {
+    fun `a WMS ServiceException is a rejection carrying its status`() = runTest {
         // GIBS answers a bad request with 400 and an XML ServiceException. That body is
-        // not empty, so only the status distinguishes it from an image.
+        // not empty, so only the status distinguishes it from an image — and a 400 here
+        // means a layer identifier or a parameter that will be wrong on every future
+        // request too, which is exactly what must not be reported as "offline".
         val xml = "<ServiceExceptionReport/>".encodeToByteArray()
         val service = BaseImageryService(StubHttp(success(xml, status = 400)))
-        assertNull(service.imagery(bbox, size))
+        val result = service.imagery(bbox, size)
+        assertTrue(result is ImageryResult.Rejected, "expected a rejection, got $result")
+        assertEquals(400, result.status)
+        assertFalse(result.worthRetrying, "a 400 will be a 400 next time too")
     }
 
     @Test
-    fun `an empty body yields null rather than a zero-byte image`() = runTest {
+    fun `a server error is a rejection that is worth retrying`() = runTest {
+        val service = BaseImageryService(StubHttp(success(ByteArray(1), status = 503)))
+        val result = service.imagery(bbox, size)
+        assertTrue(result is ImageryResult.Rejected)
+        assertTrue(result.worthRetrying, "a 503 is transient")
+    }
+
+    @Test
+    fun `an empty body is a rejection rather than a zero-byte image`() = runTest {
         val service = BaseImageryService(StubHttp(success(ByteArray(0))))
         // A zero-byte "image" would reach the decoder and fail there instead, which is a
         // worse place to find out.
-        assertNull(service.imagery(bbox, size))
+        val result = service.imagery(bbox, size)
+        assertTrue(result is ImageryResult.Rejected, "expected a rejection, got $result")
+        assertEquals("empty body", result.detail)
     }
 
     @Test
     fun `a degenerate size never reaches the network`() = runTest {
         val http = StubHttp(success(byteArrayOf(1, 2, 3)))
-        assertNull(BaseImageryService(http).imagery(bbox, PixelSize(0, 0)))
+        assertEquals(ImageryResult.Unavailable, BaseImageryService(http).imagery(bbox, PixelSize(0, 0)))
         assertNull(http.lastUrl, "should not have issued a request")
     }
 
@@ -127,7 +149,9 @@ class BaseImageryServiceTest {
     fun `a good response returns its bytes`() = runTest {
         val bytes = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47)
         val service = BaseImageryService(StubHttp(success(bytes)))
-        assertEquals(bytes.toList(), service.imagery(bbox, size)?.toList())
+        val result = service.imagery(bbox, size)
+        assertTrue(result is ImageryResult.Image, "expected an image, got $result")
+        assertEquals(bytes.toList(), result.bytes.toList())
     }
 
     // endregion

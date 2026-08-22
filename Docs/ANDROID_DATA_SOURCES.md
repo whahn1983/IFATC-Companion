@@ -161,8 +161,8 @@ rules the iOS build applies:
 | **Key required** | **No.** |
 | **Cadence** | **One request per route**, not per viewport. The layer is static — it carries no `TIME` dimension — so there is nothing to keep current, and the requested window is padded well beyond the route so panning stays inside it. |
 | **Licence / commercial-use basis** | NASA imagery is generally not copyrighted and may be used for any purpose, including commercially, subject to NASA's media-usage guidelines (do not imply NASA endorsement). |
-| **Attribution** | "Imagery: NASA GIBS", shown on the map **only while imagery is actually displayed**, and in full in Settings. |
-| **When it fails** | Returns null and nothing is reported to the pilot. The graticule, the scale bar and the bundled coastlines all still draw, so no signal costs detail and never legibility. |
+| **Attribution** | "Imagery: NASA GIBS", shown on the map **whenever imagery has been fetched for the view**, and in full in Settings. |
+| **When it fails** | Nothing reaches the pilot's flight UI, and the graticule, scale bar and bundled coastlines all still draw — no signal costs detail, never legibility. The two failures are told apart: offline is retried (5 s, 20 s, 60 s) then noted once in Diagnostics; the service answering and refusing is recorded at WARNING, because a layer identifier that stopped existing would otherwise be indistinguishable from being offline forever. |
 | **Android implementation** | `core/map/BaseImageryService.kt`, `core/map/BaseMapWindow.kt`, `app/map/BaseMapImageryLoader.kt` |
 
 ---

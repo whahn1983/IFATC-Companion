@@ -112,6 +112,16 @@ data class MapFrame(
  */
 class MapCanvasState(
     val interactive: Boolean = true,
+    /**
+     * What to frame when the map has nothing of its own to frame.
+     *
+     * Without this the viewport stays null until [fitTo] is given a non-empty list, and
+     * `MapCanvas` skips its entire draw lambda — so a map whose content has not resolved
+     * draws *nothing at all*, base layers included. That is fine for the taxi map, which
+     * has no content until a route exists, and wrong for the route map, which has bundled
+     * coastlines and a graticule it could be showing meanwhile.
+     */
+    private val defaultFit: List<Coordinate> = emptyList(),
 ) {
     var viewport: MapProjection.Viewport? by mutableStateOf(null)
         private set
@@ -125,6 +135,15 @@ class MapCanvasState(
 
     internal fun onSizeChanged(size: IntSize) {
         canvasSize = size
+        // Nothing has asked for a frame yet, so adopt the default one. Promoting it to the
+        // pending fit rather than applying it once is what keeps the aspect correct across
+        // a rotation; [fitTo] replaces it as soon as there is real content to frame.
+        if (pendingFit.isEmpty() && defaultFit.isNotEmpty()) {
+            pendingFit = defaultFit
+            pendingPadding = MapProjection.DEFAULT_PADDING_FRACTION
+        }
+        // A fit cannot be applied before the canvas has a size, so the first layout pass is
+        // where it actually takes effect.
         if (pendingFit.isNotEmpty()) applyFit(pendingFit, pendingPadding)
     }
 
@@ -193,5 +212,7 @@ class MapCanvasState(
 }
 
 @Composable
-fun rememberMapCanvasState(interactive: Boolean = true): MapCanvasState =
-    remember(interactive) { MapCanvasState(interactive) }
+fun rememberMapCanvasState(
+    interactive: Boolean = true,
+    defaultFit: List<Coordinate> = emptyList(),
+): MapCanvasState = remember(interactive, defaultFit) { MapCanvasState(interactive, defaultFit) }
