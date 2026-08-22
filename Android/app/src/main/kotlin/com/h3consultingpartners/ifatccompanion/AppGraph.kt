@@ -139,9 +139,18 @@ class AppGraph private constructor(
         )
     }
 
-    /** The pilot's library of flights. Ported with tests since the start; wired only now. */
+    /**
+     * The pilot's library of flights. Ported with tests since the start; wired only now.
+     *
+     * `defaults` is the settings store rather than the constructor's in-memory default. It
+     * holds one value — which flight the session is bound to — and an in-memory one forgets
+     * it on every launch, so auto-save would stop writing to the flight being flown and the
+     * pilot would be warned it was unsaved for the rest of the flight.
+     *
+     * It loads itself in its own `init`; there is nothing to call here.
+     */
     val savedFlightStore: SavedFlightStore by lazy {
-        SavedFlightStore(files = fileStore, clock = clock).also { it.load() }
+        SavedFlightStore(files = fileStore, defaults = settingsStore, clock = clock)
     }
 
     /**

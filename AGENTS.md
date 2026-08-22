@@ -286,6 +286,15 @@ happen again otherwise.
 `grep -oP "^    val \w+"` matched a *second* data class in the same file. The code did not
 compile, and CI found it, not the author. Open the declaration you are describing.
 
+The same mistake, twice more: `SavedFlightStore.load()` was called from `AppGraph` when it
+is `private` *and* already runs in the store's own `init`; and the store was constructed
+with its default in-memory `defaults`, so the flight the session was bound to would have
+been forgotten on every launch. A grep hit shows a line, not a modifier and not a default
+argument. **`:app` wiring files (`AppGraph`, `FlightViewModel`, `ScreenModels`,
+`AppNavHost`, `MainActivity`) are compiled by CI alone** — a four-minute round trip — so
+before pushing changes to them, open every `:core` declaration they call and check its
+visibility and its defaults.
+
 **"Tests pass" is not "the feature works".** `CenterSectorDatabase` had 17 passing tests and
 was constructed nowhere. `SurfaceSessionController.refresh` had exactly one caller — a
 Settings row most pilots never open — so the taxi map read "Taxi route pending" from launch
