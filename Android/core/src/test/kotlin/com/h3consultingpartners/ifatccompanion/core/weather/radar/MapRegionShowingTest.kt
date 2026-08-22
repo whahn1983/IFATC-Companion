@@ -4,6 +4,7 @@ import com.h3consultingpartners.ifatccompanion.core.geo.Coordinate
 import com.h3consultingpartners.ifatccompanion.core.map.MapProjection
 import kotlin.math.abs
 import kotlin.test.Test
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -90,5 +91,33 @@ class MapRegionShowingTest {
             tight.longitudeDelta < wide.longitudeDelta,
             "zoomed in but still requesting ${tight.longitudeDelta}° vs ${wide.longitudeDelta}°",
         )
+    }
+}
+
+/**
+ * Mock Mode draws its own precipitation as polygons. Whether the fetched raster is also
+ * drawn is a one-line decision that would put two different weathers on the same map.
+ */
+class RadarRasterGateTest {
+
+    private val covered = RadarOverlayModel(isEnabled = true, coverageAvailable = true)
+
+    @Test
+    fun `the raster draws in live mode where a provider covers the route`() {
+        assertTrue(covered.shouldDisplayRaster(mockMode = false))
+    }
+
+    @Test
+    fun `the raster never draws in Mock Mode, whatever the coverage says`() {
+        // The trap: useMockProvider puts a covers-everywhere provider in front of the
+        // ladder, so coverageAvailable — and therefore shouldDisplay — is true in Mock
+        // Mode. Gating on shouldDisplay alone would draw the mock cells and a raster.
+        assertFalse(covered.shouldDisplayRaster(mockMode = true))
+    }
+
+    @Test
+    fun `the raster does not draw with the overlay switched off or no coverage`() {
+        assertFalse(covered.copy(isEnabled = false).shouldDisplayRaster(mockMode = false))
+        assertFalse(covered.copy(coverageAvailable = false).shouldDisplayRaster(mockMode = false))
     }
 }

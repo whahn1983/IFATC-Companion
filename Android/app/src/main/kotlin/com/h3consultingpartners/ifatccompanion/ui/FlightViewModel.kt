@@ -37,7 +37,6 @@ import com.h3consultingpartners.ifatccompanion.ui.screens.FlightOverrides
 import com.h3consultingpartners.ifatccompanion.ui.screens.VoiceOption
 import kotlin.math.roundToInt
 import kotlin.time.Duration.Companion.seconds
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -46,6 +45,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -120,6 +120,8 @@ class FlightViewModel(
         observeTaxi()
 
         observeBaseMapImagery()
+
+        observeRadarRaster()
 
         // Load the airport surface whenever the flight's endpoints change.
         //
@@ -277,26 +279,60 @@ class FlightViewModel(
      */
     val radarRaster: StateFlow<RadarRaster?> = _radarRaster.asStateFlow()
 
-    private var radarRequest: Job? = null
+    /** The region the map last settled on. Null until the pilot has looked at the map. */
+    private val radarRegion = MutableStateFlow<MapRegion?>(null)
 
     /**
-     * The route map has settled on a region; fetch precipitation for what is on screen.
+     * The route map has settled on a region; precipitation is fetched for what is on screen.
      *
-     * Requested for the visible region rather than the route, which is what iOS does — a
-     * pilot who zooms into the weather ahead should get that weather at full resolution and
-     * not a scaled-down picture of the whole leg. Unlike the satellite underlay this cannot
-     * be fetched once and kept: radar has a time dimension and goes stale, so the same
-     * region is re-requested when the pilot comes back to it.
-     *
-     * Cancelling the previous request rather than queueing behind it matters here: panning
-     * across a route produces a series of regions and only the last one is being looked at.
+     * The visible region rather than the route, which is what iOS does — a pilot who zooms
+     * into the weather ahead should get that weather at full resolution and not a
+     * scaled-down picture of the whole leg.
      */
     fun onRouteMapRegionSettled(region: MapRegion) {
-        if (!graph.weather.state.value.radarOverlay.shouldDisplay) return
-        radarRequest?.cancel()
-        radarRequest = viewModelScope.launch {
-            _radarRaster.value = graph.radarRaster.load(region, RADAR_RASTER_SIZE)
+        radarRegion.value = region
+    }
+
+    /**
+     * Keep the precipitation raster current for whatever region the map is showing.
+     *
+     * Unlike the satellite underlay this cannot be fetched once and kept: every provider
+     * serves "latest available" with no time parameter in the URL, so currency comes from
+     * re-requesting and from nothing else. A pilot who sets the map down and flies for an
+     * hour would otherwise be reading hour-old weather that looks exactly like fresh
+     * weather. iOS re-samples on a 60-second staleness check for the same reason.
+     *
+     * `collectLatest` cancels an in-flight fetch when the pilot moves the map, because only
+     * the region they are looking at now is worth waiting for.
+     */
+    private fun observeRadarRaster() {
+        viewModelScope.launch {
+            radarRegion.filterNotNull().collectLatest { region ->
+                while (true) {
+                    refreshRadarRaster(region)
+                    delay(RADAR_REFRESH_SECONDS.seconds)
+                }
+            }
         }
+    }
+
+    /**
+     * One attempt, keeping the last good image on failure.
+     *
+     * Blanking the map on a transient error is worse than showing weather a minute old: the
+     * pilot reads "no precipitation" from an empty overlay, which is a different and more
+     * dangerous statement than "the last picture we had". iOS makes the same choice in
+     * `sampleLivePrecipitation` — "keep the last good cells so the deviation line doesn't
+     * blink out on a transient error".
+     */
+    private suspend fun refreshRadarRaster(region: MapRegion) {
+        if (!graph.weather.state.value.radarOverlay.shouldDisplayRaster(settings.value.mockMode)) {
+            // Switched off, out of coverage, or Mock Mode — which draws its own
+            // precipitation, so a stale raster underneath it would be a second weather.
+            _radarRaster.value = null
+            return
+        }
+        graph.radarRaster.load(region, RADAR_RASTER_SIZE)?.let { _radarRaster.value = it }
     }
 
     // endregion
@@ -852,6 +888,16 @@ private val BASE_MAP_IMAGERY_RETRY_DELAYS_SECONDS = listOf(5L, 20L, 60L)
  * blob. iOS multiplies by `displayScale` and gets a bigger image for no more information.
  */
 private val RADAR_RASTER_SIZE = PixelSize(width = 1024, height = 512)
+
+/**
+ * How often the precipitation raster is re-requested for an unchanged region.
+ *
+ * iOS's steady-state re-sample interval. No provider puts a time parameter in its URL —
+ * they all serve "latest available" — so this interval is the only thing that makes the
+ * displayed weather current, and a longer one is indistinguishable on screen from a frozen
+ * one.
+ */
+private const val RADAR_REFRESH_SECONDS = 60L
 
 /** One more than the number of waits: the first attempt is not preceded by one. */
 private val BASE_MAP_IMAGERY_ATTEMPTS = BASE_MAP_IMAGERY_RETRY_DELAYS_SECONDS.size + 1

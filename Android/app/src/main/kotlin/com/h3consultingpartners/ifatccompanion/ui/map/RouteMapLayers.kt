@@ -224,13 +224,20 @@ fun RouteMap(
             }
             // 8. The aircraft.
             drawAircraft(frame, model.aircraft, semantic.aircraft)
-            // 9. Precipitation, over everything.
+            // 9. Precipitation, over everything — matching what iOS renders, not what it
+            //    appears to intend.
             //
-            //    Above the route rather than below it, which is where iOS puts it too —
-            //    a SwiftUI `.overlay` on the whole map, not a layer inside it. It looks
-            //    backwards next to the rule that context sits under content, and it is
-            //    not: precipitation is the one thing on this map the pilot may have to
-            //    act on, and it is translucent, so the route reads straight through it.
+            //    iOS applies its raster as a SwiftUI `.overlay` on the whole Map, so it
+            //    lands above the route, the markers and the aircraft. That is very likely
+            //    a MapKit constraint rather than a decision: `MapContentBuilder` cannot
+            //    host a bitmap beneath its annotations without dropping to a UIKit
+            //    MKOverlay, and iOS puts the *vector* form of the same data explicitly at
+            //    the very bottom of its layer list. This canvas has no such constraint and
+            //    could put it either way.
+            //
+            //    It goes on top because parity here means what the pilot sees when they
+            //    hold the two apps side by side. At 0.55 alpha the route reads straight
+            //    through it. If the iOS app ever moves it under the route, move it here.
             model.radarRaster?.let { raster ->
                 drawGeoRaster(frame, raster.image, raster.bounds, model.radarOpacity)
             }

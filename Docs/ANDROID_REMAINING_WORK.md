@@ -8,7 +8,7 @@ Sizes are the real cost including tests, not the size of the diff. "Needs a devi
 the work cannot be trusted without running it, and this repository's CI has no device or
 emulator: it compiles `:app`, gates Android Lint, and runs R8, and that is all it can do.
 
-Status at the time of writing: `:core` is **885 tests / 70 classes / 0 failures**; `:app`
+Status at the time of writing: `:core` is **888 tests / 71 classes / 0 failures**; `:app`
 compiles, lints clean under `abortOnError = true`, and produces a minified release bundle.
 
 ---

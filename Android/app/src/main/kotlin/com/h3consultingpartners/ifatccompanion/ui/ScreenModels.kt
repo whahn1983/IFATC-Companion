@@ -429,10 +429,12 @@ fun FlightViewModel.routeMapModel(
         routeSigmets = weather.routeSigmets.filter { it.area.size >= 3 },
         radarCells = weather.radarOverlay.mockCells,
         sampledCells = weather.radarOverlay.sampledCells,
-        // Gated here rather than in the layer: whether there is precipitation to show is a
-        // data question. Mock Mode's hand-authored cells ARE its precipitation, so showing
-        // a fetched raster as well would draw two different weathers at once.
-        radarRaster = radarRaster.takeIf { weather.radarOverlay.shouldDisplay },
+        // The ViewModel already refuses to fetch one when this is false; re-checking here
+        // is what makes a raster fetched a moment before the pilot switched to Mock Mode
+        // disappear on the next frame rather than lingering over the mock cells.
+        radarRaster = radarRaster.takeIf {
+            weather.radarOverlay.shouldDisplayRaster(session.mockMode)
+        },
         radarOpacity = weather.radarOverlay.opacity.toFloat(),
     )
 }

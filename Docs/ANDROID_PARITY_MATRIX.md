@@ -16,7 +16,7 @@ because a screen exists.
 | 🔵 **Android-native substitution** | Deliberately different because the platform is, with the difference stated. |
 
 > **Verification status of the two modules.** `:core` is compiled and its tests are run —
-> **885 tests across 70 classes, 0 failures, 0 skipped** — and the per-area counts below
+> **888 tests across 71 classes, 0 failures, 0 skipped** — and the per-area counts below
 > are real.
 >
 > `:app` is now compiled too, by CI (`.github/workflows/android.yml`): `assembleDebug`
@@ -292,7 +292,7 @@ Stated plainly, and none of them hidden behind a ✅ elsewhere in this file.
 | | |
 | --- | --- |
 | `:core` compile | ✅ `./gradlew -c settings-core.gradle.kts :core:compileKotlin` |
-| `:core` tests | ✅ **885 tests, 70 classes, 0 failures, 0 skipped** |
+| `:core` tests | ✅ **888 tests, 71 classes, 0 failures, 0 skipped** |
 | Compose screens type-check | ✅ `./gradlew -c settings-uicheck.gradle.kts :uicheck:compileKotlin` |
 | `:app` compile | ❌ not possible here |
 | Instrumented tests | ❌ not possible here |

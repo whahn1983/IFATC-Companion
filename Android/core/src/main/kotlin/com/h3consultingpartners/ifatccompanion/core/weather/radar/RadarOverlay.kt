@@ -206,4 +206,16 @@ data class RadarOverlayModel(
 
     /** Whether the overlay should actually be shown on the map right now. */
     val shouldDisplay: Boolean get() = isEnabled && coverageAvailable
+
+    /**
+     * Whether the fetched precipitation **raster** should be drawn.
+     *
+     * Mock Mode is excluded on top of [shouldDisplay], which it is not enough to rely on:
+     * `useMockProvider(true)` puts a provider that covers everywhere in front of the ladder,
+     * so `coverageAvailable` is true and `shouldDisplay` is true there. Mock Mode's
+     * hand-authored [mockCells] *are* its precipitation, so drawing a raster as well would
+     * put two different weathers on the map at once. iOS guards this the same way and for
+     * the same reason — `!settings.mockMode && radarOverlay.shouldDisplay`.
+     */
+    fun shouldDisplayRaster(mockMode: Boolean): Boolean = shouldDisplay && !mockMode
 }
