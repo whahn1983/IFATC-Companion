@@ -40,7 +40,7 @@ transpilation. The port is a re-implementation.
 
 ```
 Android/
-  core/        Pure Kotlin/JVM. The entire engine. 880 unit tests.
+  core/        Pure Kotlin/JVM. The entire engine. Nine hundred-odd unit tests.
   app/         Android: Compose UI, services, audio, billing, platform ports.
   uicheck/     Not shipped. Type-checks the pure Compose screens without the Android SDK.
 ```
@@ -122,7 +122,7 @@ because `BitmapFactory` cannot live in `ui/map`).
 Run from `Android/`. All three work with no Android SDK and no network beyond Maven Central.
 
 ```bash
-# The engine and its 880 tests. Run this after ANY :core change.
+# The engine and its tests. Run this after ANY :core change.
 ./gradlew -c settings-core.gradle.kts :core:test --no-daemon --offline
 
 # Type-check the pure Compose screens. Run this after ANY ui/ change.
