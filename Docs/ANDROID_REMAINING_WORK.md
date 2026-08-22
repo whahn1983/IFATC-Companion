@@ -33,14 +33,20 @@ did nothing at all in the app, which is what the parity matrix's 🔌 status now
 
 ## 1. Features iOS has that Android does not
 
-**None outstanding.** Every capability the iOS app has is now built and wired on Android.
-What that does *not* mean is that it works — see section 0, which is the gate all of it
-sits behind. A feature that has never run on hardware is not finished, however many tests
-it has, and this port has already found subsystems with passing tests that did nothing at
-all in the running app.
+**100, listed in `ANDROID_PARITY_GAPS.md`.** An adversarial sweep of the whole iOS source
+found them after this section had been declared empty — which it was, of the five gaps
+anybody had noticed. Those five were real and are closed; they were not the list.
+
+**47 of the 100 are "ported, not wired":** the code is in `:core`, its tests pass, and
+nothing in `:app` ever constructs it. Nothing here breaks a build or fails a test. That is
+precisely why it survived this long, and why the 🔌 status exists.
+
+37 are rated high — a pilot hits them in a normal flight. Among them: **a check-in gets no
+controller reply on any frequency**, **Say Again never makes the controller repeat**, and
+**Unable is answered with silence**.
 
 The deliberate differences that remain are recorded in `ANDROID_PARITY_MATRIX.md` (🔵) and
-in section 4 below.
+in section 4 below. None of the 100 is one of those.
 
 ---
 

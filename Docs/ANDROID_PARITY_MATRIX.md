@@ -279,7 +279,11 @@ Stated plainly, and none of them hidden behind a ✅ elsewhere in this file.
    Flight installation to connect to. Nothing in the port has been *heard* — the radio
    effect chain, the TTS voices, the chatter mix and the squelch bursts are all ported
    maths that has never been played.
-3. **EUMETNET OPERA rendering stays off**, exactly as it is on iOS. Not a gap so much as
+3. **100 parity gaps found by audit**, listed in `ANDROID_PARITY_GAPS.md` — 37 of them
+   high. 47 are subsystems that exist in `:core` with passing tests and are constructed
+   nowhere in `:app`. The rows below describe what is *ported*; a ✅ or 🟡 on a row does
+   not by itself mean the running app reaches it.
+4. **EUMETNET OPERA rendering stays off**, exactly as it is on iOS. Not a gap so much as
    a carried-across decision, recorded here so it is not mistaken for one.
 
 ## What was verified, and how
