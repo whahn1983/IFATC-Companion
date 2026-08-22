@@ -277,7 +277,11 @@ class AppGraph private constructor(
     }
 
     val weatherService: AviationWeatherService by lazy {
-        AviationWeatherService(http, clock = clock, diagnostics = diagnostics)
+        AviationWeatherService(http, clock = clock, diagnostics = diagnostics).also {
+            // The endpoint the pilot typed. Settings rendered the field and persisted it,
+            // and `configure` was called by nothing, so editing it changed nothing.
+            it.configure(baseUrl = settingsRepository.state.value.weatherBaseURL, diagnostics = diagnostics)
+        }
     }
 
     val atisService: ATISService by lazy {

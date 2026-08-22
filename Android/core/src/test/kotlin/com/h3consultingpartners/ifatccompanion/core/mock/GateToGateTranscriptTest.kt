@@ -95,8 +95,8 @@ class GateToGateTranscriptTest {
          */
         val EXPECTED = listOf(
         "PILOT|Clearance|Clearance, United 598, request IFR clearance to KMSP.",
-        "ATC|Clearance|United 598, cleared to KMSP via the filed route, climb via SID except maintain 5,000, expect FL370 one zero minutes after departure, departure frequency 124.350, squawk 4271. When ready for pushback, contact Ramp on 131.000.",
-        "PILOT|Clearance|Cleared to KMSP, climb via SID except maintain 5,000, squawk 4271, United 598.",
+        "ATC|Clearance|United 598, cleared to KMSP via the filed route, climb via SID except maintain 5,000, expect FL370 one zero minutes after departure, departure frequency 124.350, squawk 0133. When ready for pushback, contact Ramp on 131.000.",
+        "PILOT|Clearance|Cleared to KMSP, climb via SID except maintain 5,000, squawk 0133, United 598.",
         "PILOT|Ramp|Ramp, United 598, ready to push.",
         "ATC|Ramp|United 598, pushback approved, advise ready to taxi.",
         "PILOT|Ramp|Pushback approved, United 598.",

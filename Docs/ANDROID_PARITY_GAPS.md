@@ -14,15 +14,19 @@ verified by hand against both sources before this document was written: the chec
 
 ## Progress
 
-47 of the 100 are closed and two are half-closed; the rest stand. Each closed entry below
-carries a ✅ line naming what closes it, so this document stays the record of what the
+61 of the 100 are closed and three are partly closed; the rest stand. **All 37 rated high
+are closed** — every gap a pilot meets in a normal flight. What remains is 20 medium and 14
+low. Each closed entry below carries a ✅ (or 🟡) line naming what closes it and, where a
+piece is still open, what that piece is — so this document stays the record of what the
 audit found *and* of what has been done about it rather than being quietly rewritten.
 
-The closed set is deliberately the block that made the app unflyable rather than the
-easiest few: the app had no data source in either mode, no flight plan, no Infinite Flight
-link, no entitlement enforcement, six of the pilot's response buttons put a call in the
-transcript and left the frequency silent, and the whole simulated weather-deviation flow —
-4,800 lines of ported, tested logic — was constructed nowhere.
+The closed set was deliberately taken worst-first rather than easiest-first: the app had
+no data source in either mode, no flight plan, no Infinite Flight link, no entitlement
+enforcement, six of the pilot's response buttons put a call in the transcript and left the
+frequency silent, and the whole simulated weather-deviation flow — 4,800 lines of ported,
+tested logic — was constructed nowhere. With that block done, the settings whose switches
+rendered and controlled nothing followed: the endpoint field, "Keep screen awake", "Live
+flight notification", automatic gate assignment, and the chatter's runway pools.
 
 One thing inside the weather flow is deliberately still out: the recovery paths for a
 deviation already under way — the telemetry-discontinuity resync, the off-path re-plan, the
@@ -36,7 +40,7 @@ given rather than being re-vectored onto a new one. It is called out in
 The five gaps `ANDROID_REMAINING_WORK.md` tracked were real and are now closed. They were
 not the whole list — they were the ones somebody had already noticed. This is the same
 failure the parity matrix's 🔌 status was introduced for, at a larger scale: **47 of the 100
-are subsystems that exist in `:core`, pass their tests, and are constructed nowhere in
+were subsystems that exist in `:core`, pass their tests, and were constructed nowhere in
 `:app`.**
 
 Nothing here is a compile error and nothing here fails a test. Every one of them is a
@@ -194,6 +198,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 ### Audio, billing, review
 
 **Ambient chatter is never ducked under a real ATC call**  
+✅ Closed: `IFATCCompanionApplication` collects `speech.isSpeaking` into `chatter.setDucked`, and `AndroidChatterRadio` now speaks at `engine.chatterSpeechLevel` so the duck reaches the voice and not only the static bed.  
 *Ported, not wired* · iOS: `IFATCCompanion/App/AppModel.swift:1365-1369 (speech.$isSpeaking.removeDuplicates().sink { self?.chatter.setDucked(speaking) }); the level it drives is IFATCCompanion/Chatter/RadioAudioEngine.swift:199-207`
 
 - **iOS:** Whenever any real ATC/ATIS/pilot call is speaking, AppModel ducks the ambient chatter — the chatter voice mixer goes to 0 and the static bed drops to chatterLevel * 0.05, a faint hiss — and restores it when the call ends. docs/BackgroundChatter.md states this under "Interaction with the rest of the app → Ducking" as the reason real calls stay clear.
@@ -353,6 +358,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** `SessionSnapshot.weatherDeviation` is declared (SessionSnapshot.kt:88) and never written by captureSnapshot nor read by restore. `WeatherDeviationContext` appears only inside core/weather/deviation/, never in the session or persistence path.
 
 **Background chatter never learns the field's runways, and does not react to a frequency change**  
+🟡 Half-closed: the runway pools are bound through `ChatterRunwayResolver`, so the chatter names runways the field actually has. Ending the exchange on the old frequency mid-call is still open — `AmbientChatterService.facilityDidChange` has no caller.  
 *Ported, not wired* · iOS: `IFATCCompanion/App/AppModel.swift:1156-1170 (configureChatter binds both facility *and* runways, and pipes $currentFacility into chatter.facilityDidChange), :1178-1194 (chatterRunwayContext)`
 
 - **iOS:** The chatter references the real active runways for whichever field is in play — parsed out of that field's ATIS by ATISRunwayParser and reconciled against the OSM runway inventory — and when the pilot changes frequency, chatter on the old frequency is ended mid-exchange and chatter for the new one begins.
@@ -371,6 +377,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** MainActivity's `onStart`/`onResume` do only notification-rationale and billing-Activity work (MainActivity.kt:211-234); nothing calls `connect.disconnect()`+reconnect on foreground return, and no `markBackgrounded` equivalent exists. There is no jump test anywhere: `grep` for discontinuity/telemetryJumped finds only an unrelated comment in CenterSectorTracker. IFConnectManager.kt:507 even carries a comment about "the forced reconnect — the one the app performs on returning from the background", which no code performs.
 
 **Ramp pushback never names a push direction or a spot**  
+✅ Closed: `buildContext` fills `pushDirection` from the ramp profile's first default push direction and `rampSpot` from its first spot name when the field uses spots.  
 *Absent* · iOS: `IFATCCompanion/App/AppModel.swift:4146-4147 (`pushDirection = rampProfile.defaultPushDirections.first ?? ""`, `rampSpot = rampProfile.usesSpots ? (rampProfile.defaultSpotNames.first ?? "") : ""`)`
 
 - **iOS:** At a field whose ramp profile supplies them, the push clearance says "push tail west approved" and the Ramp→Ground hand-off names the spot; without a profile it falls back to the generic "push approved, advise ready to taxi".
@@ -404,6 +411,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** buildContext never sets `approachDefaultAltitude`, so it stays at `DEFAULT_APPROACH_ALTITUDE = 3_000` (ATCContext.kt). `ATCStateMachine.kt:172`, `PilotResponseEngine.kt:127` and `FlightSessionCoordinator.kt:744` (the go-around pattern altitude) and :1267 all read that sea-level constant. At a high-elevation destination Approach assigns and the go-around climbs to an altitude below the ground.
 
 **The squawk code is a fixed 4271 instead of one derived from the flight number**  
+✅ Closed: `deterministicSquawk(plan)` derives `(abs(n) * 7 + 1) % 4096` formatted as octal, stepping over the codes that mean something else (7500/7600/7700/7777/1200).  
 *Behaves differently* · iOS: `IFATCCompanion/App/AppModel.swift:4191-4194 (`deterministicSquawk()` = `String(format: "%04o", (abs(n) * 7 + 1) % 4096)` over the digits of the flight number)`
 
 - **iOS:** Every flight gets its own beacon code, spoken in the IFR clearance and read back — and, being octal, it is always a legal squawk. UAL598 and UAL2210 get different codes.
@@ -465,18 +473,21 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** AmbientChatterService.facilityDidChange(facility) has no caller anywhere in :app. Because the loop reads facilityProvider() only once per exchange, a mid-exchange switch leaves the old frequency's controller line and its read-back to play out in full on the new frequency, and the full inter-exchange gap (5–14 s at MODERATE) is waited out before chatter for the new facility begins. shouldAbandonExchange is implemented and unit-tested in :core and reachable from nothing.
 
 **Ambient chatter voice plays at half the iOS level; the correctly-computed level is never used**  
+✅ Closed: `AndroidChatterRadio.speak` passes `engine.chatterSpeechLevel` — `chatterLevel * 2.0`, zero while ducked — instead of the raw `chatterVolume`.  
 *Behaves differently* · iOS: `IFATCCompanion/Chatter/RadioAudioEngine.swift:199 (let voice: Float = ducked ? 0 : chatterLevel * 2.0, applied to speechMixer.outputVolume at :208)`
 
 - **iOS:** The chatter voice sits at chatterVolume * 2.0 (clamped to 1). At the 0.16 default that is 0.32 — deliberately well above the static bed so the background calls read as half-audible traffic rather than mush. The buffers themselves are rendered at the utterance default of 1.0; the ×2 lives entirely in the mixer.
 - **Android:** RadioAudioEngine.kt:264-268 computes exactly the right value — RadioAudio.chatterLevels(chatterLevel, ducked, transmitting).voice — into `chatterSpeechLevel`, and its own KDoc at :291 says "chatter passes [chatterSpeechLevel] instead". Nothing reads it. AndroidChatterRadio.kt:86 passes `configured.chatterVolume` raw into speech.speakChatter(...), which forwards it to radio.playProcessed(rendered, volume) where the samples are multiplied by it (RadioAudioEngine.kt:299-300). The chatter voice therefore plays at chatterVolume, i.e. about 6 dB quieter than iOS, while the static bed around it is at the iOS level — so the mix is wrong in both directions, and the voice is thin under its own static. (Passing chatterSpeechLevel would also carry the duck-to-zero, which is the separate gap above.)
 
 **Chatter names invented runways: the runway pools are never bound**  
+✅ Closed — see `ChatterRunwayResolver` above.  
 *Ported, not wired* · iOS: `IFATCCompanion/App/AppModel.swift:1158-1159 (chatter.bindContext(facility:runways:)) feeding chatterRunwayContext() at AppModel.swift:1176+; consumed at IFATCCompanion/Chatter/AmbientChatterService.swift:248-250`
 
 - **iOS:** Every loop cycle the service refreshes the generator's runwayIdents from the loaded OSM surface of the airport in play (origin pre-departure/climb, destination once descending/arriving) and departureRunwayIdents / arrivalRunwayIdents from that field's ATIS. So background Ground never taxis a jet to a runway the field lacks, Tower clears takeoffs on a departure runway and landings on an arrival runway, and Approach's clearances match the arrival field. docs/BackgroundChatter.md calls this out at length ("Runway references are grounded in the real field").
 - **Android:** IFATCCompanionApplication.kt:55 calls chatter.bindContext(facility = { ... }) and omits the `runways` argument, so runwaysProvider keeps its default { ChatterRunwayContext() }. All three pools stay empty for the whole flight and ChatterScriptGenerator falls through to its random-runway fallback (core/.../ChatterScriptGenerator.kt:348, :359, :368) on every call — the app happily says "cleared for takeoff runway one eight" at a field with no runway 18, which is precisely the behaviour the iOS feature exists to prevent. The plumbing (ChatterRunwayContext, the three generator fields, AirportSurfaceCoordinator.cachedRunwayIdents) is ported and tested.
 
 **The "Live flight notification" Settings toggle has no effect**  
+✅ Closed: `startTheForegroundServiceWithTheFlight` combines `isSessionActive` with `liveActivityEnabled`, and `ActiveFlightService.dismiss` takes the notification down without ending the flight.  
 *Ported, not wired* · iOS: `IFATCCompanion/App/AppModel.swift:1284-1291 (updateLiveActivityRunState: if settings.liveActivityEnabled { liveActivity.start(...) } else { liveActivity.end() }), driven from applyChatterSettings at :1233-1239 and the settings observer at :1356-1359`
 
 - **iOS:** Turning the toggle on starts the Live Activity; turning it off ends it immediately, and refreshLiveActivity() (:1295-1298) refuses to push while it is off. The default is false (AppSettings.swift:352), so a user who never touches it never gets the card.
@@ -564,24 +575,28 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** `SettingsScreen.kt:359-365` renders the toggle; `satelliteDeviationsEnabled` has no reader outside the settings plumbing and the Settings screen, and there is no equivalent of `applySatelliteDeviationSettingChange()`.
 
 **"Keep screen awake" toggle renders but is read by nothing**  
+✅ Closed: `MainActivity` collects `keepScreenAwake` and adds or clears `FLAG_KEEP_SCREEN_ON` on the window.  
 *Ported, not wired* · iOS: `IFATCCompanion/Views/SettingsView.swift:115; AppModel.swift:1148 (`UIApplication.shared.isIdleTimerDisabled = settings.keepScreenAwake`) and :1351 (observed)`
 
 - **iOS:** Disables the idle timer so the companion's screen never locks — the setting defaults on precisely because Infinite Flight drops the Connect link when the companion device locks.
 - **Android:** `SettingsScreen.kt:119-124` renders the toggle; `keepScreenAwake` has no reader outside the settings plumbing, and the app never sets `FLAG_KEEP_SCREEN_ON` or `Modifier`/`View.keepScreenOn` anywhere.
 
 **"Live flight notification" toggle renders but is read by nothing**  
+✅ Closed — same fix as the toggle gap above.  
 *Ported, not wired* · iOS: `IFATCCompanion/Views/SettingsView.swift:274; AppSettings.swift:222-234`
 
 - **iOS:** Turns the live-updating Lock Screen / Dynamic Island flight activity on and off.
 - **Android:** `SettingsScreen.kt:311-316` renders the toggle, but `liveActivityEnabled` has no reader anywhere in `app/src/main` or `core/src/main` outside the settings plumbing — `ActiveFlightService` / `FlightNotifications` never consult it, so the Live Flight Update appears whenever a flight is running regardless of the switch. (The documented 🔵 divergence at Docs/ANDROID_PARITY_MATRIX.md:170 is only that the notification is *independent of chatter* on Android, not that its own toggle is ignored.)
 
 **Flight screen's "Distance to Dest" shows the distance to the nearest airport, not to the destination**  
+✅ Closed: `distanceToDestinationNM` resolves the destination through Infinite Flight's reported position, then `AirportDatabase`, then the plan's last located fix, and measures to that.  
 *Behaves differently* · iOS: `IFATCCompanion/Views/FlightView.swift:48 and :199-209 (`distanceToDest` resolves the destination via AirportDatabase → `flightPlan.destinationCoordinate` → last located fix, then `Geo.distanceNM(from: pos, to: dest)`)`
 
 - **iOS:** Reads the great-circle distance from the aircraft to the destination airport, so it counts down through the flight.
 - **Android:** `ScreenModels.kt:162-163` sets `distanceToDestination = session.aircraftState.nearestAirportDistanceNM?.let { "${it.toInt()} NM" }`. `nearestAirportDistanceNM` (AircraftState.kt:76) is the distance to whichever airport is nearest — the mock feed sets it to the departure for the first half of the flight and the destination for the second (MockSimulatorFeed.kt:185-189). So the row labelled "Distance to Dest" (FlightScreen.kt:114) counts *up* away from the departure field for the first half of every flight.
 
 **SIGMET/PIREP "Endpoint" field renders but the weather service is never configured with it**  
+✅ Closed: `AppGraph` configures `AviationWeatherService` with `settings.weatherBaseURL` at construction, and `FlightViewModel.updateSettings` re-configures it when the field changes.  
 *Ported, not wired* · iOS: `IFATCCompanion/Views/SettingsView.swift:294-299; AppModel.swift:745 (`AviationWeatherService(baseURL: settings.weatherBaseURL)`) and :1059 (`weatherService.configure(baseURL: settings.weatherBaseURL, …)`)`
 
 - **iOS:** The typed base URL is what the aviation-weather service actually fetches METARs, TAFs, PIREPs and SIGMETs from, re-applied via `configure` when it changes.
@@ -621,6 +636,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 ### Weather and ATIS
 
 **ATISRunwayParser is ported but never called, so background chatter names random runways instead of the field's active ones**  
+✅ Closed: `ChatterRunwayResolver` picks the field in play, parses the ATIS through `ATISRunwayParser` and reconciles it against the OSM runway inventory; `bindContext` is called with both `facility` and `runways`.  
 *Ported, not wired* · iOS: `IFATCCompanion/App/AppModel.swift:1178 chatterRunwayContext → :1185 ATISRunwayParser.activeRunways(atis), :1206-1210 reconcileRunways, :1216 orderedRunwayUnion; bound at AppModel.swift:1158-1159 chatter.bindContext(facility:runways:)`
 
 - **iOS:** Feeds the ambient chatter the runways of the airport currently in play: the ATIS's active departure/arrival runways parsed out of the D-ATIS text, reconciled against the field's OSM runway set so a parse slip can never make the chatter name a runway that is not there, falling back to the full OSM runway set and only then to a random runway.
@@ -674,6 +690,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** Nothing in the Android coordinator posts a completion transmission. `FlightSessionState.flightHasEnded` is a pure derivation (`atcState == ATCState.PARKED`, FlightSessionState.kt:169) and `arrivalAnnounced` in both the snapshot and the saved-flight policy is fed from it (FlightSessionCoordinator.kt:968, 1200) rather than from an announcement, so the transcript simply stops at the taxi-in clearance.
 
 **Squawk is a fixed 4271 rather than derived from the flight number**  
+✅ Closed — see `deterministicSquawk` above.  
 *Behaves differently* · iOS: `IFATCCompanion/App/AppModel.swift:4191-4194 (deterministicSquawk) and 4158`
 
 - **iOS:** `deterministicSquawk()` derives a per-flight code from the flight number — `String(format: "%04o", (abs(n) * 7 + 1) % 4096)` — so the IFR clearance reads a different, valid octal squawk for each flight and the read-back echoes it.
@@ -730,6 +747,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** `DiagnosticsScreen.kt` has an "Export surface diagnostics" button (:245-248) but no export of the log itself, and the shell's top bar shows no action on the Diagnostics tab (MainActivity.kt:185-194 only adds actions when `onAtc`). `DiagnosticsStore.exportText()` exists at core/.../diagnostics/DiagnosticsStore.kt:55 and has no caller.
 
 **Flight screen's "Airport Proximity" drops the distance, and the ATC header's "Airport" goes blank instead of falling back**  
+✅ Closed: `airportProximityText` renders "KIAH (12 NM)", and both it and the ATC header fall back to the filed departure before any telemetry, then to an em-dash.  
 *Behaves differently* · iOS: `IFATCCompanion/Views/FlightView.swift:215-219 (`"\(near) (\(Int(d.rounded())) NM)"`); IFATCCompanion/Views/ATCView.swift:250-252 (`nearestAirport ?? (flightPlan.departure.isEmpty ? "—" : flightPlan.departure)`)`
 
 - **iOS:** Flight shows "KIAH (12 NM)"; the ATC header's Airport stat falls back to the filed departure ICAO, then to an em-dash, so it is never empty.

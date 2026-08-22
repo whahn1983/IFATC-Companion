@@ -16,7 +16,7 @@ because a screen exists.
 | 🔵 **Android-native substitution** | Deliberately different because the platform is, with the difference stated. |
 
 > **Verification status of the two modules.** `:core` is compiled and its tests are run —
-> **1011 tests across 83 classes, 0 failures, 0 skipped** — and the per-area counts below
+> **1015 tests across 84 classes, 0 failures, 0 skipped** — and the per-area counts below
 > are real.
 >
 > `:app` is now compiled too, by CI (`.github/workflows/android.yml`): `assembleDebug`
@@ -280,9 +280,11 @@ Stated plainly, and none of them hidden behind a ✅ elsewhere in this file.
    effect chain, the TTS voices, the chatter mix and the squelch bursts are all ported
    maths that has never been played.
 3. **100 parity gaps found by audit**, listed in `ANDROID_PARITY_GAPS.md` — 37 of them
-   high. 47 are subsystems that exist in `:core` with passing tests and are constructed
-   nowhere in `:app`. The rows below describe what is *ported*; a ✅ or 🟡 on a row does
-   not by itself mean the running app reaches it.
+   high, and 47 of them subsystems that existed in `:core` with passing tests and were
+   constructed nowhere in `:app`. **61 are now closed, including all 37 rated high**; 20
+   medium and 14 low remain, each still carrying its own entry there. The rows below
+   describe what is *ported*; a ✅ or 🟡 on a row does not by itself mean the running app
+   reaches it.
 4. **EUMETNET OPERA rendering stays off**, exactly as it is on iOS. Not a gap so much as
    a carried-across decision, recorded here so it is not mistaken for one.
 
@@ -291,7 +293,7 @@ Stated plainly, and none of them hidden behind a ✅ elsewhere in this file.
 | | |
 | --- | --- |
 | `:core` compile | ✅ `./gradlew -c settings-core.gradle.kts :core:compileKotlin` |
-| `:core` tests | ✅ **1011 tests, 83 classes, 0 failures, 0 skipped** |
+| `:core` tests | ✅ **1015 tests, 84 classes, 0 failures, 0 skipped** |
 | Compose screens type-check | ✅ `./gradlew -c settings-uicheck.gradle.kts :uicheck:compileKotlin` |
 | `:app` compile | ❌ not possible here |
 | Instrumented tests | ❌ not possible here |

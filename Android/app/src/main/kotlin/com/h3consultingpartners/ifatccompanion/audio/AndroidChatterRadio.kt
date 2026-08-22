@@ -83,7 +83,13 @@ class AndroidChatterRadio(
             } else {
                 configured.controllerVoiceID(facility)
             }
-            speech.speakChatter(line.spokenText, voiceId, configured.chatterVolume)
+            // The engine's own level, not the raw setting: RadioAudio.chatterLevels puts
+            // the chatter voice at chatterLevel * 2.0, and at zero while a real call is
+            // ducking it. Passing chatterVolume straight through played the ambient voice
+            // about 6 dB under the iOS level — thin beneath its own static, which sits at
+            // the iOS level — and, worse, left it talking straight through a controller
+            // clearance even with the duck applied, because the duck only reached the bed.
+            speech.speakChatter(line.spokenText, voiceId, engine.chatterSpeechLevel)
         }
 
     /**

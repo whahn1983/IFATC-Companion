@@ -929,6 +929,14 @@ class FlightViewModel(
         // fields back — a gate the app filled in is the app's to withdraw, while one the
         // pilot typed always stays.
         if (autoGatesChanged) viewModelScope.launch { graph.autoGates.applySettingChange() }
+        // The weather endpoint is what the service fetches from, so a typed change has to
+        // reach it rather than only the settings store.
+        if (previous.weatherBaseURL != settings.weatherBaseURL) {
+            graph.weatherService.configure(
+                baseUrl = settings.weatherBaseURL,
+                diagnostics = graph.diagnostics,
+            )
+        }
         if (modeChanged) {
             graph.flightSource.toggleMockMode(
                 on = settings.mockMode,

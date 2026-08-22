@@ -1,6 +1,7 @@
 package com.h3consultingpartners.ifatccompanion
 
 import android.app.Application
+import com.h3consultingpartners.ifatccompanion.core.chatter.ChatterRunwayResolver
 import com.h3consultingpartners.ifatccompanion.core.net.AppHttp
 import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticCategory
 import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticLevel
@@ -52,7 +53,41 @@ class IFATCCompanionApplication : Application() {
         val chatter = graph.chatter
         // The chatter needs to know which frequency it is simulating; the coordinator is
         // the only thing that knows.
-        chatter.bindContext(facility = { graph.flightSessionCoordinator.state.value.currentFacility })
+        chatter.bindContext(
+            facility = { graph.flightSessionCoordinator.state.value.currentFacility },
+            // And which runways it may name. Without this the generator falls through to its
+            // random-runway fallback on every call, so the simulated traffic is cleared onto
+            // runways the field does not have — contradicting the ATIS the app just read.
+            runways = {
+                val session = graph.flightSessionCoordinator.state.value
+                val weather = graph.weather.state.value
+                val icao = ChatterRunwayResolver.airport(
+                    plan = session.flightPlan,
+                    facility = session.currentFacility,
+                    phase = session.phase,
+                )
+                ChatterRunwayResolver.context(
+                    icao = icao,
+                    fieldRunways = graph.surface.runwayIdents(icao),
+                    atis = ChatterRunwayResolver.reportFor(
+                        icao = icao,
+                        departure = weather.departureAtis,
+                        arrival = weather.arrivalAtis,
+                    ),
+                )
+            },
+        )
+
+        // Duck the ambient chatter under a real ATC call. With the radio effect off the two
+        // genuinely overlap — the controller's line goes out through TextToSpeech while the
+        // chatter bed and voice keep playing — and with it on they are serialized, so a
+        // clearance waits behind whatever chatter line is on the air. Either way the pilot
+        // does not get the clear call iOS gives them.
+        graph.sessionScope.launch {
+            graph.speech.isSpeaking
+                .distinctUntilChanged()
+                .collect { speaking -> chatter.setDucked(speaking) }
+        }
 
         graph.sessionScope.launch {
             combine(
@@ -85,17 +120,32 @@ class IFATCCompanionApplication : Application() {
      */
     private fun startTheForegroundServiceWithTheFlight() {
         graph.applicationScope.launch {
-            graph.activeFlightController.isSessionActive.collect { active ->
-                if (!active) return@collect
-                runCatching { ActiveFlightService.start(this@IFATCCompanionApplication) }
-                    .onFailure { error ->
+            // Gated on the pilot's own switch as well as on the flight. "Live flight
+            // notification" rendered in Settings and was read by nothing, so the update
+            // appeared whenever a flight was running whatever the switch said.
+            combine(
+                graph.activeFlightController.isSessionActive,
+                graph.settingsRepository.state.map { it.liveActivityEnabled },
+            ) { active, enabled -> active && enabled }
+                .distinctUntilChanged()
+                .collect { shouldRun ->
+                    val result = runCatching {
+                        if (shouldRun) {
+                            ActiveFlightService.start(this@IFATCCompanionApplication)
+                        } else {
+                            // Dismiss, not stop: the switch says the pilot does not want
+                            // the update, not that they want the flight ended.
+                            ActiveFlightService.dismiss(this@IFATCCompanionApplication)
+                        }
+                    }
+                    result.onFailure { error ->
                         graph.diagnostics.log(
                             DiagnosticCategory.SESSION,
                             level = DiagnosticLevel.WARNING,
-                            message = "Could not start the flight service: ${error.message}",
+                            message = "Could not update the flight service: ${error.message}",
                         )
                     }
-            }
+                }
         }
     }
 }

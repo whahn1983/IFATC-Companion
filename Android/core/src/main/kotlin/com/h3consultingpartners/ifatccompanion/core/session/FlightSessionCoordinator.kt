@@ -2473,7 +2473,7 @@ class FlightSessionCoordinator(
             initialClimbAltitude = elevationAwareInitialClimbFt(),
             windDirection = windDirection,
             windSpeed = windSpeed,
-            squawk = DEFAULT_SQUAWK,
+            squawk = deterministicSquawk(plan),
             runway = runway,
             runwayIsKnown = resolvedRunway.isKnown,
             taxiway = taxi.taxiways,
@@ -2501,6 +2501,26 @@ class FlightSessionCoordinator(
             starProcedure = star,
             approachProcedure = approach,
         )
+    }
+
+    /**
+     * The beacon code assigned in the IFR clearance.
+     *
+     * Derived from the flight number so every flight gets its own, and formatted in **octal**
+     * so it is always a legal squawk — no digit above 7. Every clearance the Android app
+     * issued assigned a fixed 4271, which is also a code iOS never produces.
+     *
+     * Codes with a meaning of their own are stepped over rather than assigned: a controller
+     * that hands a pilot 7700 has told them to declare an emergency, and 1200 is the VFR
+     * conspicuity code, not a discrete assignment.
+     */
+    private fun deterministicSquawk(plan: FlightPlan): String {
+        val digits = plan.flightNumber.filter { it.isDigit() }
+        val number = digits.toIntOrNull() ?: SQUAWK_FALLBACK_SEED
+        var code = (abs(number) * 7 + 1) % 4096
+        // Bounded: at most one step per reserved code, and they are far apart in octal.
+        while (code.toString(8).padStart(4, '0') in RESERVED_SQUAWKS) code = (code + 1) % 4096
+        return code.toString(8).padStart(4, '0')
     }
 
     /** A runway in use, and whether anything actually knows it is the runway in use. */
@@ -2752,7 +2772,15 @@ class FlightSessionCoordinator(
         /** The heading vectors fall back to with no telemetry at all. */
         const val FALLBACK_VECTOR_HEADING = 270.0
 
-        const val DEFAULT_SQUAWK = "4271"
+        /** The seed a plan with no numeric flight number falls back to. iOS uses the same. */
+        const val SQUAWK_FALLBACK_SEED = 4271
+
+        /**
+         * Beacon codes that carry a meaning of their own and are never assigned as a
+         * discrete code: the three emergencies, the military intercept code, and the VFR
+         * and SVFR conspicuity codes.
+         */
+        val RESERVED_SQUAWKS = setOf("7500", "7600", "7700", "7777", "1200", "1255", "0000")
 
         // Simulated frequencies, matching the iOS defaults. Real per-facility
         // frequencies are not published as open data for every field.

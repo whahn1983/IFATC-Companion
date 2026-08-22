@@ -8,7 +8,7 @@ Sizes are the real cost including tests, not the size of the diff. "Needs a devi
 the work cannot be trusted without running it, and this repository's CI has no device or
 emulator: it compiles `:app`, gates Android Lint, and runs R8, and that is all it can do.
 
-Status at the time of writing: `:core` is **1011 tests / 83 classes / 0 failures**; `:app`
+Status at the time of writing: `:core` is **1015 tests / 84 classes / 0 failures**; `:app`
 compiles, lints clean under `abortOnError = true`, and produces a minified release bundle.
 
 ---
@@ -37,13 +37,17 @@ did nothing at all in the app, which is what the parity matrix's 🔌 status now
 found them after this section had been declared empty — which it was, of the five gaps
 anybody had noticed. Those five were real and are closed; they were not the list.
 
-**47 of the 100 are "ported, not wired":** the code is in `:core`, its tests pass, and
-nothing in `:app` ever constructs it. Nothing here breaks a build or fails a test. That is
-precisely why it survived this long, and why the 🔌 status exists.
+**47 of the 100 were "ported, not wired":** the code was in `:core`, its tests passed, and
+nothing in `:app` ever constructed it. Nothing there broke a build or failed a test. That
+is precisely why it survived this long, and why the 🔌 status exists.
 
-37 are rated high — a pilot hits them in a normal flight. Among them: **a check-in gets no
+37 were rated high — a pilot hits them in a normal flight. Among them: **a check-in gets no
 controller reply on any frequency**, **Say Again never makes the controller repeat**, and
 **Unable is answered with silence**.
+
+**Status: 61 of the 100 are closed and three are partly closed, and all 37 rated high are
+done.** What remains is 20 medium and 14 low, listed with their evidence in
+`ANDROID_PARITY_GAPS.md`. None of them stops a gate-to-gate flight.
 
 The deliberate differences that remain are recorded in `ANDROID_PARITY_MATRIX.md` (🔵) and
 in section 4 below. None of the 100 is one of those.

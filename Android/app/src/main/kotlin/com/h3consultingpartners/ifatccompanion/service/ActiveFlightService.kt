@@ -102,6 +102,16 @@ class ActiveFlightService : LifecycleService() {
                 return START_NOT_STICKY
             }
 
+            // Take the notification down without touching the flight. What "Live flight
+            // notification" off means: the pilot does not want the update, not that they
+            // want the flight ended — and the wake lock goes with it, which is the honest
+            // consequence of switching off the thing that was holding the session alive in
+            // the background.
+            ACTION_DISMISS -> {
+                stopSelfSafely()
+                return START_NOT_STICKY
+            }
+
             ACTION_PERFORM -> {
                 intent.getStringExtra(EXTRA_ACTION_ID)
                     ?.let(LiveFlightAction::fromId)
@@ -187,6 +197,7 @@ class ActiveFlightService : LifecycleService() {
         private const val WAKE_LOCK_TIMEOUT_MILLIS = 12L * 60L * 60L * 1000L
 
         private const val ACTION_STOP = "com.h3consultingpartners.ifatccompanion.STOP_FLIGHT"
+        private const val ACTION_DISMISS = "com.h3consultingpartners.ifatccompanion.DISMISS_LIVE_UPDATE"
         private const val ACTION_PERFORM = "com.h3consultingpartners.ifatccompanion.PERFORM_LIVE_ACTION"
         private const val EXTRA_ACTION_ID = "action_id"
 
@@ -203,6 +214,20 @@ class ActiveFlightService : LifecycleService() {
             context.startService(
                 Intent(context, ActiveFlightService::class.java).setAction(ACTION_STOP),
             )
+        }
+
+        /**
+         * Take the Live Flight Update down, leaving the flight running.
+         *
+         * The pilot's "Live flight notification" switch. Distinct from [stop], which is the
+         * notification's own Stop action and genuinely ends the session.
+         */
+        fun dismiss(context: Context) {
+            runCatching {
+                context.startService(
+                    Intent(context, ActiveFlightService::class.java).setAction(ACTION_DISMISS),
+                )
+            }
         }
 
         fun performAction(context: Context, action: LiveFlightAction) {

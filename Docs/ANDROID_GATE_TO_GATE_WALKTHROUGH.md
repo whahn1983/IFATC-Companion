@@ -22,8 +22,8 @@ pilot lines are not decoration: remove one and the flow stops there, on both pla
 | # | Who | Frequency | Transmission |
 | --- | --- | --- | --- |
 | 0 | Pilot | Clearance | Clearance, United 598, request IFR clearance to KMSP. |
-| 1 | ATC | Clearance | United 598, cleared to KMSP via the filed route, climb via SID except maintain 5,000, expect FL370 one zero minutes after departure, departure frequency 124.350, squawk 4271. When ready for pushback, contact Ramp on 131.000. |
-| 2 | Pilot | Clearance | Cleared to KMSP, climb via SID except maintain 5,000, squawk 4271, United 598. |
+| 1 | ATC | Clearance | United 598, cleared to KMSP via the filed route, climb via SID except maintain 5,000, expect FL370 one zero minutes after departure, departure frequency 124.350, squawk 0133. When ready for pushback, contact Ramp on 131.000. |
+| 2 | Pilot | Clearance | Cleared to KMSP, climb via SID except maintain 5,000, squawk 0133, United 598. |
 | 3 | Pilot | Ramp | Ramp, United 598, ready to push. |
 | 4 | ATC | Ramp | United 598, pushback approved, advise ready to taxi. |
 | 5 | Pilot | Ramp | Pushback approved, United 598. |

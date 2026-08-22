@@ -6,6 +6,7 @@ import com.h3consultingpartners.ifatccompanion.core.billing.EntitlementState
 import com.h3consultingpartners.ifatccompanion.core.config.AppConfig
 import com.h3consultingpartners.ifatccompanion.core.connect.IFConnectState
 import com.h3consultingpartners.ifatccompanion.core.geo.Coordinate
+import com.h3consultingpartners.ifatccompanion.core.geo.Geo
 import com.h3consultingpartners.ifatccompanion.core.model.ATCFacility
 import com.h3consultingpartners.ifatccompanion.core.persistence.SavedFlight
 import com.h3consultingpartners.ifatccompanion.core.phraseology.PhraseologyProfilesState
@@ -42,6 +43,7 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import kotlin.math.roundToInt
 
 /**
  * The adapter layer between the engine and the screens.
@@ -74,7 +76,10 @@ fun FlightViewModel.atcModel(
         callsignPlaceholder = plan.callsign.ifEmpty { "e.g. UAL123" },
         departureGate = ui.draftDepartureGate,
         arrivalGate = ui.draftArrivalGate,
-        nearestAirport = session.aircraftState.nearestAirport.orEmpty(),
+        // Falls back to the filed departure so the header names a field before any
+        // telemetry has placed the aircraft, rather than rendering as an empty string.
+        nearestAirport = session.aircraftState.nearestAirport
+            ?: plan.departure.ifEmpty { EM_DASH },
         assignedAltitudeText = formatAltitude(session.assignedAltitude),
         facilityLabel = session.currentFacility.title,
         connectionText = session.connectionState.detailedTitle,
@@ -165,6 +170,39 @@ private fun weatherBannerText(
 
 // region Flight
 
+/**
+ * The nearest field and how far it is — "KIAH (12 NM)".
+ *
+ * The distance was being dropped, so the row read just the ICAO. Falls back to the filed
+ * departure before any telemetry has placed the aircraft, and to an em-dash when nothing
+ * knows where it is.
+ */
+private fun airportProximityText(session: FlightSessionState): String {
+    val airport = session.aircraftState.nearestAirport
+        ?: session.flightPlan.departure.ifEmpty { null }
+        ?: return EM_DASH
+    val distance = session.aircraftState.nearestAirportDistanceNM ?: return airport
+    return "$airport (${distance.roundToInt()} NM)"
+}
+
+/**
+ * Great-circle distance from the aircraft to the destination field, in NM.
+ *
+ * The destination is resolved the way every other consumer resolves it: Infinite Flight's
+ * own reported position first, then the built-in hub table, then the plan's last located
+ * fix. Null when neither the aircraft nor the destination is placed.
+ */
+private fun distanceToDestinationNM(session: FlightSessionState): Double? {
+    val position = session.aircraftState.coordinate?.takeIf(Coordinate::isValid) ?: return null
+    val plan = session.flightPlan
+    val destination = plan.destinationCoordinate?.takeIf(Coordinate::isValid)
+        ?: AirportDatabase.coordinate(plan.destination)?.takeIf(Coordinate::isValid)
+        ?: plan.waypoints.lastOrNull { it.coordinate?.isValid == true }?.coordinate
+        ?: return null
+    return Geo.distanceNM(position, destination)
+}
+
+
 fun FlightViewModel.flightModel(
     session: FlightSessionState,
     settings: AppSettings,
@@ -174,11 +212,13 @@ fun FlightViewModel.flightModel(
     flightPlan = session.flightPlan,
     phase = session.phase,
     activeRunway = session.flightPlan.runway,
-    distanceToDestination = session.aircraftState.nearestAirportDistanceNM
-        ?.let { "${it.toInt()} NM" } ?: EM_DASH,
+    // To the *destination*, not to whichever airport happens to be nearest. The row is
+    // labelled "Distance to Dest" and the nearest airport is the departure for the first
+    // half of every flight, so it counted up and away from the field it had just left.
+    distanceToDestination = distanceToDestinationNM(session)?.let { "${it.toInt()} NM" } ?: EM_DASH,
     nextWaypoint = session.flightPlan
         .nextWaypoint(session.aircraftState.coordinate)?.name ?: EM_DASH,
-    airportProximity = session.aircraftState.nearestAirport ?: EM_DASH,
+    airportProximity = airportProximityText(session),
     cruiseAltitudeText = formatAltitude(session.flightPlan.cruiseAltitude),
     overrides = ui.overrides,
     mockMode = settings.mockMode,

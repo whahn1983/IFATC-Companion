@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -27,6 +28,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.core.content.ContextCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.h3consultingpartners.ifatccompanion.AppGraph
 import com.h3consultingpartners.ifatccompanion.R
@@ -35,6 +37,9 @@ import com.h3consultingpartners.ifatccompanion.ui.screens.AppTab
 import com.h3consultingpartners.ifatccompanion.ui.screens.AtcDestination
 import com.h3consultingpartners.ifatccompanion.ui.screens.ClearFlightConfirmation
 import com.h3consultingpartners.ifatccompanion.ui.theme.IFATCCompanionTheme
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 
 /**
  * The app's single Activity.
@@ -83,6 +88,22 @@ class MainActivity : ComponentActivity() {
         installSplashScreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        // Keep the screen on while the app is open, when the pilot asks for it. The setting
+        // defaults on precisely because Infinite Flight drops the Connect link when the
+        // companion device locks — and the toggle shipped in Settings with no reader at all.
+        lifecycleScope.launch {
+            graph.settingsRepository.state
+                .map { it.keepScreenAwake }
+                .distinctUntilChanged()
+                .collect { awake ->
+                    if (awake) {
+                        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    } else {
+                        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    }
+                }
+        }
 
         setContent {
             val viewModel: FlightViewModel = viewModel(factory = FlightViewModel.factory(graph))
