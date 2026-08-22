@@ -14,6 +14,7 @@ import com.h3consultingpartners.ifatccompanion.billing.PlayBillingRepository
 import com.h3consultingpartners.ifatccompanion.core.atis.ATISService
 import com.h3consultingpartners.ifatccompanion.core.chatter.AmbientChatterService
 import com.h3consultingpartners.ifatccompanion.core.connect.IFConnectManager
+import com.h3consultingpartners.ifatccompanion.core.connect.IFDiscoveryService
 import com.h3consultingpartners.ifatccompanion.core.diagnostics.DiagnosticsStore
 import com.h3consultingpartners.ifatccompanion.core.map.BaseImageryService
 import com.h3consultingpartners.ifatccompanion.core.map.CoastlineData
@@ -52,6 +53,7 @@ import com.h3consultingpartners.ifatccompanion.core.weather.deviation.WeatherDev
 import com.h3consultingpartners.ifatccompanion.core.weather.radar.PrecipitationOverlayService
 import com.h3consultingpartners.ifatccompanion.data.AndroidFileStore
 import com.h3consultingpartners.ifatccompanion.data.DataStoreKeyValueStore
+import com.h3consultingpartners.ifatccompanion.data.WifiMulticastHold
 import com.h3consultingpartners.ifatccompanion.map.BaseMapImageryLoader
 import com.h3consultingpartners.ifatccompanion.map.PrecipitationSampler
 import com.h3consultingpartners.ifatccompanion.map.RadarRasterLoader
@@ -256,6 +258,13 @@ class AppGraph private constructor(
             scope = sessionScope,
             clock = clock,
             diagnostics = diagnostics,
+            // Constructed here rather than defaulted so the broadcast path gets its
+            // multicast lock: without one, several OEM Wi-Fi drivers drop inbound
+            // broadcast before the socket sees it, and only the TCP sweep was ever live.
+            discovery = IFDiscoveryService(
+                scope = sessionScope,
+                broadcastHold = WifiMulticastHold(context, diagnostics),
+            ),
         )
     }
 

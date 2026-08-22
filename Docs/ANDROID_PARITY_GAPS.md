@@ -14,8 +14,8 @@ verified by hand against both sources before this document was written: the chec
 
 ## Progress
 
-85 of the 100 are closed and three are partly closed; the rest stand. **All 37 rated high
-are closed** — every gap a pilot meets in a normal flight. What remains is 5 medium and 7
+90 of the 100 are closed and three are partly closed; the rest stand. **All 37 rated high
+are closed** — every gap a pilot meets in a normal flight. What remains is 5 medium and 2
 low. Each closed entry below carries a ✅ (or 🟡) line naming what closes it and, where a
 piece is still open, what that piece is — so this document stays the record of what the
 audit found *and* of what has been done about it rather than being quietly rewritten.
@@ -722,6 +722,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** AmbientChatterService.onAudioRouteChanged() (core/.../chatter/AmbientChatterService.kt:330-335) is written and documented as being "for :app to call from the platform's own audio-focus callbacks", and nothing calls it. :app registers no AudioDeviceCallback and no ACTION_AUDIO_BECOMING_NOISY receiver. Its sibling hooks onInterruptionBegan/Ended are wired (AppGraph.kt:212, from RadioAudioEngine's focus listener); the route-change one is not. The only route-change handling that exists is RadioAudioEngine.kt:193-207, which treats the resulting negative AudioTrack.write() as fatal and calls stop() — tearing the bed down for good rather than bouncing and restarting it as iOS does.
 
 **No way to cut a spoken transmission short**  
+✅ Closed — same Stop action as above.  
 *Absent* · iOS: `IFATCCompanion/Views/ATCView.swift:51-55 (a toolbar stop.circle.fill button, shown while speech.isSpeaking, calling speech.stop())`
 
 - **iOS:** While the app is speaking, the ATC screen's toolbar shows a stop button that immediately silences the current call and drops the queued ones — useful for a long ATIS or a clearance the pilot has already read.
@@ -753,6 +754,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 ### Airport surface, Connect, Mock Mode
 
 **No WifiManager.MulticastLock is ever acquired, though the manifest permission exists solely for it**  
+✅ Closed: `BroadcastReceiveHold` is the seam, `WifiMulticastHold` the Android implementation, and `AppGraph` constructs `IFDiscoveryService` with it — held for the discovery window only.  
 *Absent* · iOS: `IFATCCompanion/Connect/IFDiscoveryService.swift:100-155 (openSocket + the repeating sendPermissionPing that keeps inbound local traffic flowing on iOS)`
 
 - **iOS:** iOS goes to some length to keep the UDP-broadcast discovery path alive: it binds a BSD socket on 15000 with SO_BROADCAST and re-sends a broadcast ping every two seconds specifically so the Local Network permission is granted and inbound datagrams are not dropped.
@@ -761,6 +763,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 ### Screens and settings
 
 **Diagnostics cannot be shared or exported — only the surface subset can**  
+✅ Closed: an Export action on the Log card shares `DiagnosticsStore.exportText()` through the system share sheet.  
 *Ported, not wired* · iOS: `IFATCCompanion/Views/DiagnosticsView.swift:29-35 (`ShareLink(item: diagnostics.exportText())` in the toolbar)`
 
 - **iOS:** A share button in the Diagnostics toolbar exports the whole diagnostics log.
@@ -774,12 +777,14 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** `ScreenModels.kt:166` sets `airportProximity = session.aircraftState.nearestAirport ?: EM_DASH` — the distance in `nearestAirportDistanceNM` is dropped. `ScreenModels.kt:74` sets `nearestAirport = session.aircraftState.nearestAirport.orEmpty()`, so before any telemetry the ATC header's Airport field renders as an empty string rather than the departure ICAO or an em-dash.
 
 **No way to stop a transmission mid-speech from the ATC screen**  
+✅ Closed: a Stop action appears in the ATC top bar while `isSpeaking`. It also flushes the radio engine's queue, without which a rendered call plays out in full after TextToSpeech has already stopped.  
 *Absent* · iOS: `IFATCCompanion/Views/ATCView.swift:51-55 (`if speech.isSpeaking { Button { speech.stop() } label: { Image(systemName: "stop.circle.fill") } }`)`
 
 - **iOS:** While the synthesizer is speaking, a stop button appears in the ATC toolbar so a long ATIS or clearance can be cut short.
 - **Android:** `MainActivity.kt:185-194` builds the ATC top-bar actions as exactly two buttons — Clear Flight and Flights — with no stop control, and nothing in the UI observes speech state. `AndroidSpeechService` exposes `isSpeaking` (AndroidSpeechService.kt:112) and `stop()` (:369); the only caller of `speech.stop()` is AppGraph.kt:176 (lifecycle teardown).
 
 **Route map draws smooth PIREPs that iOS filters out**  
+✅ Closed: only reports of more than smooth air are plotted, so every dot on the map means something.  
 *Behaves differently* · iOS: `IFATCCompanion/Views/RouteMapView.swift:44-46 (`model.pireps.filter { ($0.coordinate?.isValid ?? false) && ($0.turbulence ?? .smooth) > .smooth }`)`
 
 - **iOS:** Only PIREPs reporting more than smooth air are plotted, so every dot on the map means something.

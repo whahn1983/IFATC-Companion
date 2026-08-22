@@ -172,6 +172,15 @@ class RadioAudioEngine(
             while (isActive && running.get()) {
                 generator = RadioAudio.fillStaticBed(block, generator, bedGain)
 
+                // The pilot asked for silence. Abandon whatever is on the air and
+                // everything queued behind it — completing each so no caller is left
+                // awaiting a transmission that will never finish.
+                if (flushRequested.getAndSet(false)) {
+                    current?.finished?.complete(Unit)
+                    current = null
+                    while (true) (pending.poll() ?: break).finished.complete(Unit)
+                }
+
                 if (current == null) current = pending.poll()
                 val playing = current
                 if (playing != null) {
@@ -266,6 +275,20 @@ class RadioAudioEngine(
         bedGain = levels.bed
         chatterSpeechLevel = levels.voice
     }
+
+    /**
+     * Drop the transmission on the air and everything queued behind it.
+     *
+     * The Stop control: with the radio effect on, a rendered call is already samples in
+     * this engine's queue by the time it is audible, so stopping TextToSpeech alone leaves
+     * it playing out in full. The static bed is left running — the radio is still on, the
+     * pilot only wanted the talking to stop.
+     */
+    fun flushTransmissions() {
+        flushRequested.set(true)
+    }
+
+    private val flushRequested = AtomicBoolean(false)
 
     /** Fire the dull PTT key-down "thump" (pilot presses the mic key). */
     fun playKeyClick() = playBurst(keyClick)

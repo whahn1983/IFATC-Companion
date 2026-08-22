@@ -371,6 +371,10 @@ class AndroidSpeechService(
     fun stop() {
         while (queue.tryReceive().isSuccess) Unit
         tts?.stop()
+        // With the radio effect on, a call is already rendered samples in the radio
+        // engine's queue by the time it is audible, so stopping TextToSpeech alone lets it
+        // play out in full — the pilot presses Stop and nothing happens.
+        radio.flushTransmissions()
         utteranceCompletions.values.forEach { it.complete(false) }
         utteranceCompletions.clear()
         _isSpeaking.value = false

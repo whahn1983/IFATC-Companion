@@ -15,6 +15,7 @@ import com.h3consultingpartners.ifatccompanion.core.session.AtcFlowOrder
 import com.h3consultingpartners.ifatccompanion.core.session.FlightSessionState
 import com.h3consultingpartners.ifatccompanion.core.session.PilotActionPresentation
 import com.h3consultingpartners.ifatccompanion.core.settings.AppSettings
+import com.h3consultingpartners.ifatccompanion.core.weather.TurbulenceSeverity
 import com.h3consultingpartners.ifatccompanion.core.surface.SurfaceSessionState
 import com.h3consultingpartners.ifatccompanion.core.surface.routing.AirportSurfaceState
 import com.h3consultingpartners.ifatccompanion.core.weather.WeatherSessionState
@@ -417,6 +418,7 @@ fun FlightViewModel.diagnosticsActions() = DiagnosticsScreenActions(
     onToggleSimulateStaffedATC = ::onToggleSimulateStaffedATC,
     onToggleSampledRadarCells = ::onToggleSampledRadarCells,
     onClearLog = ::onClearDiagnosticsLog,
+    onExportLog = ::onExportDiagnosticsLog,
     onExportSurfaceDiagnostics = ::onExportSurfaceDiagnostics,
 )
 
@@ -512,7 +514,13 @@ fun FlightViewModel.routeMapModel(
         nextWaypoint = nextWaypoint?.coordinate?.takeIf(Coordinate::isValid),
         nextWaypointName = nextWaypoint?.name.orEmpty(),
         aircraft = session.aircraftState,
-        pireps = weather.pireps.filter { it.coordinate?.isValid == true },
+        // Only reports of more than smooth air are plotted, so every dot on the map means
+        // something. Drawing the smooth ones put green "nothing here" markers under a
+        // legend whose first entry is "Light/chop".
+        pireps = weather.pireps.filter {
+            it.coordinate?.isValid == true &&
+                (it.turbulence ?: TurbulenceSeverity.SMOOTH) > TurbulenceSeverity.SMOOTH
+        },
         routeSigmets = weather.routeSigmets.filter { it.area.size >= 3 },
         radarCells = weather.radarOverlay.mockCells,
         sampledCells = weather.radarOverlay.sampledCells,

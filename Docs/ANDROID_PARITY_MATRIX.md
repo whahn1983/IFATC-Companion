@@ -281,8 +281,8 @@ Stated plainly, and none of them hidden behind a ✅ elsewhere in this file.
    maths that has never been played.
 3. **100 parity gaps found by audit**, listed in `ANDROID_PARITY_GAPS.md` — 37 of them
    high, and 47 of them subsystems that existed in `:core` with passing tests and were
-   constructed nowhere in `:app`. **85 are now closed, including all 37 rated high**; 5
-   medium and 7 low remain, each still carrying its own entry there. The rows below
+   constructed nowhere in `:app`. **90 are now closed, including all 37 rated high**; 5
+   medium and 2 low remain, each still carrying its own entry there. The rows below
    describe what is *ported*; a ✅ or 🟡 on a row does not by itself mean the running app
    reaches it.
 4. **EUMETNET OPERA rendering stays off**, exactly as it is on iOS. Not a gap so much as

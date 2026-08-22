@@ -78,6 +78,9 @@ class FlightViewModel(
 
     val diagnosticsLog: StateFlow<List<DiagnosticRecord>> = graph.diagnostics.records
 
+    /** Whether a transmission is on the air right now — what the Stop control keys off. */
+    val isSpeaking: StateFlow<Boolean> = graph.speech.isSpeaking
+
     /**
      * Everything on screen that is *not* a fact about the flight: text a pilot is part-way
      * through typing, which sheet is open, whether the microphone is listening.
@@ -1010,6 +1013,17 @@ class FlightViewModel(
         }
     }
 
+    /**
+     * Cut the transmission on the air short.
+     *
+     * A long ATIS or a full clearance is a lot to sit through when the pilot has already
+     * read it. Drops the queue too: they asked for silence, not for the next line to start
+     * a beat early.
+     */
+    fun onStopSpeaking() {
+        graph.speech.stop()
+    }
+
     fun onClearAirportCache() {
         viewModelScope.launch { graph.surface.clearCache() }
     }
@@ -1139,6 +1153,19 @@ class FlightViewModel(
     }
 
     fun onClearDiagnosticsLog() = graph.diagnostics.clear()
+
+    /**
+     * Share the whole diagnostics log.
+     *
+     * The screen could already export the *surface* subset, which is the narrow one; the
+     * log itself — the connection trace, the ATC flow, the weather fetches, which is what
+     * anyone diagnosing a problem actually needs — had a ported `exportText()` with no
+     * caller at all. Nothing leaves the device unless the pilot picks a destination in the
+     * share sheet.
+     */
+    fun onExportDiagnosticsLog() {
+        graph.shareText(subject = "IFATC Companion diagnostics", text = graph.diagnostics.exportText())
+    }
 
     fun onExportSurfaceDiagnostics() {
         graph.shareText(subject = "Airport surface diagnostics", text = graph.surface.exportText())

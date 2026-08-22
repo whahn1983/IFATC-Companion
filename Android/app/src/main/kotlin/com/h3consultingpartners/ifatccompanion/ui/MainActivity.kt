@@ -13,6 +13,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
@@ -112,6 +113,7 @@ class MainActivity : ComponentActivity() {
             IFATCCompanionTheme(darkTheme = isSystemInDarkTheme()) {
                 var tab by remember { mutableStateOf(AppTab.ATC) }
                 val session by viewModel.session.collectAsStateWithLifecycle()
+                val speaking by viewModel.isSpeaking.collectAsStateWithLifecycle()
 
                 if (explainNotifications) {
                     AlertDialog(
@@ -205,6 +207,17 @@ class MainActivity : ComponentActivity() {
                     },
                     topBarActions = {
                         if (onAtc && atcDestination == AtcDestination.ROOT) {
+                            // Only while something is actually on the air, as iOS does —
+                            // a permanently visible Stop is a control that does nothing
+                            // most of the time.
+                            if (speaking) {
+                                IconButton(onClick = viewModel::onStopSpeaking) {
+                                    Icon(
+                                        Icons.Filled.Close,
+                                        contentDescription = "Stop the transmission",
+                                    )
+                                }
+                            }
                             IconButton(onClick = { confirmClearFlight = true }) {
                                 Icon(Icons.Filled.Refresh, contentDescription = "Clear Flight")
                             }

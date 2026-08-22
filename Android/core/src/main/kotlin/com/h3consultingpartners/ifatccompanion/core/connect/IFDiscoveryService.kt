@@ -52,6 +52,12 @@ import java.util.concurrent.atomic.AtomicBoolean
 class IFDiscoveryService(
     private val scope: CoroutineScope,
     private val bonjour: IFBonjourBrowsing = IFBonjourBrowsing.unavailable,
+    /**
+     * Held for the lifetime of a discovery window so inbound broadcast actually reaches
+     * the socket. Absent by default, which is what `:core` and every test want; the app
+     * layer supplies the real `WifiManager.MulticastLock`.
+     */
+    private val broadcastHold: BroadcastReceiveHold = BroadcastReceiveHold.none,
 ) : IFDeviceDiscovering {
 
     /** A device answering on the Connect API port. */
@@ -71,6 +77,7 @@ class IFDiscoveryService(
         stop() // idempotent teardown, exactly as the Swift's `start` begins with `stop()`
         this.onFound = onFound
         didReport.set(false)
+        broadcastHold.acquire()
         bonjour.start { device -> report(device) }
         job = scope.launch {
             coroutineScope {
@@ -82,6 +89,7 @@ class IFDiscoveryService(
 
     override fun stop() {
         onFound = null
+        broadcastHold.release()
         bonjour.stop()
         job?.cancel()
         job = null
@@ -384,6 +392,29 @@ class IFDiscoveryService(
  * [IFDiscoveryService]; tests substitute a stub so the manager's reconnect and
  * rediscovery rules can be exercised without touching the network.
  */
+/**
+ * Whatever the platform needs held for inbound broadcast to reach a bound socket.
+ *
+ * On Android that is a `WifiManager.MulticastLock`: without one several OEM Wi-Fi drivers
+ * filter inbound broadcast to 255.255.255.255 before the socket sees it, which looks
+ * exactly like Infinite Flight not broadcasting at all. The manifest has declared
+ * `ACCESS_WIFI_STATE` and `CHANGE_WIFI_MULTICAST_STATE` for this since the port began and
+ * nothing acquired one, so of the three discovery paths only the TCP sweep was ever live.
+ *
+ * A seam because `:core` cannot touch `android.net.wifi`. Calls are paired with the
+ * discovery window and must be safe to repeat.
+ */
+interface BroadcastReceiveHold {
+    fun acquire()
+    fun release()
+
+    /** No hold needed, or none available. */
+    object none : BroadcastReceiveHold {
+        override fun acquire() = Unit
+        override fun release() = Unit
+    }
+}
+
 interface IFDeviceDiscovering {
     /** Begin searching. [onFound] is called at most once per [start]. */
     fun start(onFound: (IFDiscoveryService.Device) -> Unit)

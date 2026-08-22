@@ -64,6 +64,7 @@ data class DiagnosticsScreenActions(
     val onToggleSimulateStaffedATC: (Boolean) -> Unit,
     val onToggleSampledRadarCells: (Boolean) -> Unit,
     val onClearLog: () -> Unit,
+    val onExportLog: () -> Unit,
     val onExportSurfaceDiagnostics: () -> Unit,
 )
 
@@ -258,6 +259,14 @@ fun DiagnosticsScreen(
             Card(title = "Log (${model.log.size})", icon = Icons.Filled.Terminal) {
                 Row(modifier = Modifier.fillMaxWidth()) {
                     Spacer(Modifier.weight(1f))
+                    // The whole log, not the surface subset the card below exports:
+                    // the connection trace and the ATC flow are what anyone diagnosing
+                    // a problem needs. Nothing leaves the device unless the pilot picks
+                    // a destination in the share sheet.
+                    TextButton(onClick = actions.onExportLog) {
+                        Icon(Icons.Filled.IosShare, contentDescription = null)
+                        Text("  Export")
+                    }
                     TextButton(onClick = actions.onClearLog) {
                         Icon(Icons.Filled.Delete, contentDescription = null)
                         Text("  Clear")
