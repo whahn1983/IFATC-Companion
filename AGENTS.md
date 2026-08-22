@@ -242,7 +242,7 @@ that has none, or strip them from a file built around them.
 
 ### Tests
 Every `:core` test should assert behaviour that matters and carry a comment saying what
-breaking it would cost. There are 880 of them and they are the only thing standing between a
+breaking it would cost. There are nine hundred-odd of them, and they are the only thing between a
 change and a device.
 
 **A test that does not exercise the production path cannot catch the bug it was written
@@ -350,7 +350,7 @@ squelch bursts are ported maths that has never reached a speaker. There are no i
 tests. CI compiles `:app`, gates Lint and runs R8, and that is the limit of what it can
 prove.
 
-Treat "compiles, lints clean, 880 tests pass" as the floor, not the finish line.
+Treat "compiles, lints clean, every test passes" as the floor, not the finish line.
 
 ---
 
