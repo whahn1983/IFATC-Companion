@@ -652,9 +652,66 @@ class FlightSessionCoordinator(
         }
     }
 
-    fun sayAgain() = postPilot { pilotEngine.sayAgain(it, _state.value.workingFacility) }
+    /**
+     * "Say again" — and then the controller actually says it again.
+     *
+     * Re-posting the last controller call is the whole point of the button. Without it the
+     * pilot asks for a repeat and the frequency stays silent, which is worse than not
+     * offering the button at all: they now believe they missed it twice.
+     *
+     * A copy is posted rather than the original transmission, so the transcript shows two
+     * calls and the repeat carries its own read-back for the gate to key on.
+     */
+    fun sayAgain() {
+        if (_state.value.companionStandby) return
+        postPilot { pilotEngine.sayAgain(it, _state.value.workingFacility) }
+        val last = _state.value.lastControllerCall ?: return
+        post(
+            ATCTransmission.create(
+                sender = ATCTransmission.Sender.ATC,
+                facility = last.facility,
+                displayText = last.displayText,
+                spokenText = last.spokenText,
+                timestampMillis = clock.nowMillis(),
+                readback = last.readback,
+            ),
+            speakIt = true,
+            allowRepeat = true,
+        )
+    }
 
-    fun unable() = postPilot { pilotEngine.unable(it, _state.value.workingFacility) }
+    /**
+     * "Unable" — and the controller answers with something the pilot can actually fly.
+     *
+     * A deterministic alternative rather than silence: the controller holds the higher of
+     * the current assignment and the initial-climb altitude and asks the pilot to advise
+     * when able. Silence after "unable" leaves the aircraft with a clearance it has just
+     * refused and no replacement, which is the one state the app must never leave a pilot in.
+     */
+    fun unable() {
+        if (_state.value.companionStandby) return
+        val context = buildContext(stateMachine.current)
+        postPilot { pilotEngine.unable(it, _state.value.workingFacility) }
+        val facility = _state.value.workingFacility
+        val target = maxOf(_state.value.assignedAltitude, context.initialClimbAltitude)
+        val display = engine.formatAltDisplay(target)
+        val spoken = engine.spokenAltitude(target)
+        post(
+            ATCTransmission.create(
+                sender = ATCTransmission.Sender.ATC,
+                facility = facility,
+                displayText = "${context.callsign.display}, roger, maintain $display, advise able to comply.",
+                spokenText = "${context.callsign.spoken}, roger, maintain $spoken, advise able to comply.",
+                timestampMillis = clock.nowMillis(),
+                readback = ATCTransmission.Readback(
+                    displayText = "Maintain $display, ${context.callsign.display}.",
+                    spokenText = "Maintain $spoken, ${context.callsign.spoken}.",
+                    facility = facility,
+                ),
+            ),
+            speakIt = true,
+        )
+    }
 
     fun checkIn() {
         // The guard belongs here and not only in performPilotAction: the UI calls this
@@ -696,15 +753,61 @@ class FlightSessionCoordinator(
             return
         }
 
-        val tx = pilotEngine.requestHandoff(
-            c = buildContext(stateMachine.current),
-            facility = facility,
-            currentAltitude = checkInAltitude(),
-            targetAltitude = current.assignedAltitude,
-            onGround = current.aircraftState.onGround ?: false,
-        )
-        post(tx, speakIt = settings.speakPilot)
+        // Checking in satisfies any hand-off the controller prompted: the new controller now
+        // speaks for itself, so the semi-automatic flow resumes.
         _state.update { it.copy(pendingCheckInFacility = null) }
+
+        // What this frequency has for the pilot next. Nothing ahead means a plain call-up,
+        // which is answered with radar contact rather than with nothing — a check-in that
+        // goes unanswered is the pilot talking to a frequency that does not exist.
+        val target = AtcFlowOrder.nextStateWorkedBy(
+            facility = facility,
+            current = stateMachine.current,
+            fallback = current.currentFacility,
+        )
+        if (target == null || target == stateMachine.current) {
+            val context = buildContext(stateMachine.current)
+            post(
+                pilotEngine.requestHandoff(
+                    c = context,
+                    facility = facility,
+                    currentAltitude = checkInAltitude(),
+                    targetAltitude = current.assignedAltitude,
+                    onGround = current.aircraftState.onGround ?: false,
+                ),
+                speakIt = settings.speakPilot,
+            )
+            post(engine.radarContact(cs = context.callsign, facility = facility), speakIt = true)
+            recomputeDerivedState()
+            return
+        }
+
+        if (!target.isManualGroundFlow) _state.update { it.copy(hasDeparted = true) }
+        val context = buildContext(target)
+        // The pilot reports altitude against the assignment still in force — the previous
+        // controller's. `advanceAndPost` updates it afterwards, so building the call first
+        // is what keeps "with you at eight thousand" true when it is said.
+        post(
+            pilotEngine.requestHandoff(
+                c = context,
+                facility = facility,
+                currentAltitude = checkInAltitude(),
+                targetAltitude = current.assignedAltitude,
+                onGround = current.aircraftState.onGround ?: false,
+            ),
+            speakIt = settings.speakPilot,
+        )
+        // announceHandoff = false: the pilot moved the radio themselves, so the controller
+        // answers directly rather than opening with a "contact …" they have already acted on.
+        val before = _state.value.transcript.size
+        advanceAndPost(target, announceHandoff = false)
+        if (_state.value.transcript.size == before) {
+            // The advance had nothing to say — the state machine has already made that
+            // call, or the target is not ahead of where the conversation is. The pilot
+            // still called up, so the frequency still answers: silence after a check-in
+            // reads as a dead app, and the pilot has no way to tell it from a missed reply.
+            post(engine.radarContact(cs = context.callsign, facility = facility), speakIt = true)
+        }
         recomputeDerivedState()
     }
 
@@ -1108,11 +1211,16 @@ class FlightSessionCoordinator(
         diagnostics.log(DiagnosticCategory.SESSION, message = "Started a new flight")
     }
 
-    fun post(tx: ATCTransmission, speakIt: Boolean = true) {
+    fun post(tx: ATCTransmission, speakIt: Boolean = true, allowRepeat: Boolean = false) {
         // A controller call that would only repeat the last one, and which the pilot has
         // already acknowledged, adds nothing. A call that went unanswered is never held —
         // re-issuing it is how an unheard instruction gets through.
-        if (tx.sender == ATCTransmission.Sender.ATC &&
+        //
+        // `allowRepeat` is for the one case where repeating is the entire point: the pilot
+        // asked the controller to say again. Without it the guard silently swallows the
+        // repeat and "say again" does nothing at all.
+        if (!allowRepeat &&
+            tx.sender == ATCTransmission.Sender.ATC &&
             ATCTransmission.isAcknowledgedRepeat(tx, _state.value.transcript)
         ) {
             return

@@ -95,7 +95,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **iOS:** `requestApproach()` posts the pilot request and then Approach answers: `engine.clearedApproach(cs:procedure:runway:)` (or the string form), with `pilotEngine.readback(for: .final, context:)` attached as the read-back so the Read Back button echoes the approach clearance.
 - **Android:** `performPilotAction` (FlightSessionCoordinator.kt:844) posts `pilotEngine.requestApproach(context)` only. `engine.clearedApproach` is reached solely from `ATCStateMachine` when telemetry advances the state to FINAL, never from the pilot's request.
 
-**Check In gets no controller reply on any frequency**  
+**Check In gets no controller reply on any frequency** ✅ FIXED  
 *Absent* · iOS: `IFATCCompanion/App/AppModel.swift:4728-4770 (requestHandoff), with IFATCCompanion/App/AppModel.swift:2619-2626 (nextState(workedBy:after:))`
 
 - **iOS:** After the pilot's check-in, iOS looks up `nextState(workedBy: facility, after: stateMachine.current)` — the next state in the gate-to-gate order worked by the frequency just tuned — and calls `advanceAndPost(to: target, announceHandoff: false)` so the controller answers with its instruction. If nothing is ahead for that controller it posts `engine.radarContact(cs:facility:)` instead, so a check-in is *always* answered.
@@ -435,13 +435,13 @@ running app and behaving differently from the iOS build the pilot is comparing a
 
 ### Found by the completeness pass
 
-**"Say Again" never makes the controller repeat the call**  
+**"Say Again" never makes the controller repeat the call** ✅ FIXED  
 *Absent* · iOS: `IFATCCompanion/App/AppModel.swift:4451-4460`
 
 - **iOS:** `sayAgain()` posts the pilot's "say again" and then re-posts the last ATC transmission verbatim — same display text, spoken text and read-back — with `speak: true`, so the controller actually repeats the instruction the pilot missed (AppModel.swift:4454-4459). (The same is done for the weather-frequency variant at AppModel.swift:8080-8090.)
 - **Android:** `FlightSessionCoordinator.sayAgain()` is `fun sayAgain() = postPilot { pilotEngine.sayAgain(it, _state.value.workingFacility) }` (core/session/FlightSessionCoordinator.kt:655) — the pilot's half only. Nothing re-posts or re-speaks `latestTransmission`, so the Say Again button (PilotActionPresentation.kt:80 → FlightViewModel.kt:485) produces a pilot call and silence. There is a separate Replay control on the transmission card (`actions.onReplay`, AtcScreen.kt:165), but that is the iOS speaker button, not Say Again, and it puts nothing on the frequency.
 
-**"Unable" gets no controller reply — the pilot transmits and the frequency stays silent**  
+**"Unable" gets no controller reply — the pilot transmits and the frequency stays silent** ✅ FIXED  
 *Absent* · iOS: `IFATCCompanion/App/AppModel.swift:4462-4476`
 
 - **iOS:** `unable()` posts the pilot's "unable" and then a deterministic controller answer built inline: "<callsign>, roger, maintain <alt>, advise able to comply." spoken with `Phonetic.altitude`, carrying its own read-back ("Maintain <alt>, <callsign>.") on the current facility, posted with `speak: true`. The altitude is `max(assignedAltitude, c.initialClimbAltitude)`.

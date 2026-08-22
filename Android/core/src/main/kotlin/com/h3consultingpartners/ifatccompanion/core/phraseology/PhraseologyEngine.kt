@@ -727,6 +727,14 @@ data class PhraseologyEngine(
     // MARK: - Helpers
 
     /** Display form of an altitude: "FL370" above transition, else "5,000". */
+    /**
+     * The spoken form of an altitude in this engine's phraseology mode.
+     *
+     * A companion to [formatAltDisplay], so a caller building a transmission by hand cannot
+     * pair a FAA-style display with an ICAO-style read-out by forgetting to thread `icao`.
+     */
+    fun spokenAltitude(feet: Int): String = Phonetic.altitude(feet, icao = icao)
+
     fun formatAltDisplay(feet: Int): String {
         // 18,000 ft — hard-coded here, separate from `Phonetic.altitude`'s parameter.
         if (feet >= 18000) return "FL${String.format(Locale.US, "%03d", feet / 100)}"

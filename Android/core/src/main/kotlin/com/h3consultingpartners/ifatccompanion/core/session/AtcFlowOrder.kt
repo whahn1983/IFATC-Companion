@@ -87,6 +87,26 @@ object AtcFlowOrder {
      * pilot can tune ahead for the upcoming hand-off without every facility cluttering
      * the page (Tower doesn't appear until the taxi is underway).
      */
+    /**
+     * The next state ahead of [current] that [facility] works, or the last one it works when
+     * there is nothing ahead.
+     *
+     * This is what lets a check-in be *answered*. The pilot tunes a frequency and calls up;
+     * the controller replies with whatever it has for them next. Falling back to the last
+     * state that facility works is what makes a re-check-in on a frequency the flight has
+     * already passed still find a sensible context to speak from, rather than returning null
+     * and leaving the pilot talking to nobody.
+     */
+    fun nextStateWorkedBy(
+        facility: ATCFacility,
+        current: ATCState,
+        fallback: ATCFacility,
+    ): ATCState? {
+        val start = flowIndex(current)?.plus(1) ?: 0
+        flowOrder.drop(start).firstOrNull { controller(it, fallback) == facility }?.let { return it }
+        return flowOrder.lastOrNull { controller(it, fallback) == facility }
+    }
+
     fun nextDistinctFacility(current: ATCState, currentFacility: ATCFacility): ATCFacility? {
         val idx = flowIndex(current) ?: return null
         for (state in flowOrder.drop(idx + 1)) {
