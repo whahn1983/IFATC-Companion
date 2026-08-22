@@ -14,7 +14,7 @@ verified by hand against both sources before this document was written: the chec
 
 ## Progress
 
-43 of the 100 are closed and two are half-closed; the rest stand. Each closed entry below
+44 of the 100 are closed and two are half-closed; the rest stand. Each closed entry below
 carries a ✅ line naming what closes it, so this document stays the record of what the
 audit found *and* of what has been done about it rather than being quietly rewritten.
 
@@ -317,6 +317,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** FlightSessionCoordinator.performPilotAction handles PilotAction.RIDE_REPORT by posting only the pilot half (pilotEngine.requestRideReports(context)) and onPilotRequest returns for it, so no ATC reply is generated. RideReportEngine.kt exists in :core with the phraseology strings verbatim ("no significant ride reports along your route at this time." at lines 40-41, "smooth ride reported along your route." at 56-57) but is constructed nowhere. The pilot transmits and the frequency stays silent. The same button is reached from the Weather tab (FlightViewModel.kt:535 onContactAtcAboutWeather → PilotAction.RIDE_REPORT).
 
 **Live radar raster is never sampled into precipitation cells — RadarImageSampler has no call site in :app, so sampledCells is always empty**  
+✅ Closed: `PrecipitationSampler` fetches the corridor image, decodes it through a `BitmapFactory`-backed `RasterImageDecoder`, and hands the cells to `WeatherSessionController.noteSampledCells`.  
 *Ported, not wired* · iOS: `IFATCCompanion/App/AppModel.swift:6047 sampleLivePrecipitation (:6099 RadarImageSampler.mercatorSampleSize, :6111 RadarImageSampler.cells), :5955 maybeResamplePrecipitation; IFATCCompanion/Weather/RadarImageSampler.swift`
 
 - **iOS:** Fetches a NOAA/OPERA base-reflectivity image for the whole flight-plan corridor (aircraft plus every fix ahead, widened ~60 NM), sized to the corridor bbox's exact Web-Mercator aspect ratio at ~2 NM/pixel, classifies pixels by the reflectivity colour ramp (IMERG rate palette for an opted-in satellite estimate), clusters moderate-and-warmer returns into cells, resamples on a ~60 s staleness check while airborne and in the foreground, and keeps the last good cells on a fetch/decode failure. Those cells are what the whole deviation flow runs on, what the Diagnostics "sampled cells" count reports, and what the opt-in "Show sampled cells on map" toggle draws.

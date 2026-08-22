@@ -1404,6 +1404,12 @@ class FlightSessionCoordinator(
             assignedAltitude = current.assignedAltitude,
             overlay = weatherAnswers.radarOverlay(),
             routeSigmets = weatherAnswers.routeSigmets(),
+            // Mock Mode's cells are set synchronously, so they are always ready. A live
+            // sample is ready once it has actually produced cells — freezing the locked
+            // reroute set before then is what leaves the mint lines missing until a manual
+            // refresh, because the first recompute of a flight routinely runs before the
+            // first radar frame has landed.
+            radarCellsReady = settings.mockMode || weatherAnswers.radarOverlay().sampledCells.isNotEmpty(),
         )
     }
 

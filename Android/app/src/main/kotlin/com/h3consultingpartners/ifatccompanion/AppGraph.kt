@@ -50,6 +50,7 @@ import com.h3consultingpartners.ifatccompanion.core.weather.radar.PrecipitationO
 import com.h3consultingpartners.ifatccompanion.data.AndroidFileStore
 import com.h3consultingpartners.ifatccompanion.data.DataStoreKeyValueStore
 import com.h3consultingpartners.ifatccompanion.map.BaseMapImageryLoader
+import com.h3consultingpartners.ifatccompanion.map.PrecipitationSampler
 import com.h3consultingpartners.ifatccompanion.map.RadarRasterLoader
 import com.h3consultingpartners.ifatccompanion.review.PlayReviewLauncher
 import com.h3consultingpartners.ifatccompanion.service.ActiveFlightController
@@ -183,6 +184,7 @@ class AppGraph private constructor(
                 surfaceRouting.clear()
                 weather.clearSmootherAltitude()
                 weatherDeviation.reset()
+                precipitationSampler.reset()
                 // The link is bound to whatever flight was live when it opened: after a
                 // swap in the sim it keeps serving the previous aircraft's position and
                 // plan. This is the same thing the Reconnect button does by hand, which is
@@ -342,6 +344,22 @@ class AppGraph private constructor(
      * and all, despite the store being built to restore any snapshot under six hours old.
      */
     val sessionStore: SessionStateStore by lazy { SessionStateStore(fileStore, clock) }
+
+    /**
+     * Turns the live precipitation image into the cells the deviation flow routes around.
+     *
+     * `RadarImageSampler` is ported with its own tests and had no caller: outside Mock Mode
+     * there was no cell data for any deviation to be computed from, the Diagnostics
+     * "sampled cells" row always read zero, and the sampled-cell map layer never drew.
+     */
+    val precipitationSampler: PrecipitationSampler by lazy {
+        PrecipitationSampler(
+            overlays = precipitationOverlay,
+            weather = weather,
+            clock = clock,
+            diagnostics = diagnostics,
+        )
+    }
 
     /**
      * The simulated weather-deviation flow: the storms on the route, the reroute drawn

@@ -23,11 +23,14 @@ import com.h3consultingpartners.ifatccompanion.core.weather.deviation.RideAssess
 import com.h3consultingpartners.ifatccompanion.core.weather.deviation.TurbulenceModel
 import com.h3consultingpartners.ifatccompanion.core.weather.radar.MapRegion
 import com.h3consultingpartners.ifatccompanion.core.weather.radar.PrecipitationOverlayService
+import com.h3consultingpartners.ifatccompanion.core.weather.radar.RadarCell
 import com.h3consultingpartners.ifatccompanion.core.weather.radar.RadarOverlayModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlin.math.PI
+import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
 
@@ -382,6 +385,36 @@ class WeatherSessionController(
 
     override fun radarOverlay(): RadarOverlayModel = _state.value.radarOverlay
 
+    /**
+     * Adopt the precipitation cells a live radar sample produced.
+     *
+     * The one writer of `sampledCells`, which until now was only ever set to the empty
+     * list — so the whole deviation flow had no cells to run on outside Mock Mode, the
+     * Diagnostics "Sampled cells" row always read zero, and the sampled-cell map layer never
+     * drew anything. An empty result is ignored rather than adopted: a fetch or decode
+     * failure must not blank a good sample, which is the difference between "the radar
+     * hiccuped" and "the storms went away".
+     */
+    fun noteSampledCells(cells: List<RadarCell>) {
+        if (cells.isEmpty()) return
+        _state.update { it.copy(radarOverlay = it.radarOverlay.copy(sampledCells = cells)) }
+    }
+
+    /**
+     * The corridor a live radar sample covers: the aircraft and the route still ahead,
+     * widened so weather whose body sits off the centreline — but whose edge crosses the
+     * route — is still captured.
+     */
+    fun precipitationSampleRegion(padNM: Double = CORRIDOR_PAD_NM): MapRegion? {
+        val region = precipitationRegion() ?: return null
+        val padLatitude = padNM / 60.0
+        val padLongitude = padNM / (60.0 * max(0.2, cos(region.centerLatitude * PI / 180)))
+        return region.copy(
+            latitudeDelta = region.latitudeDelta + 2 * padLatitude,
+            longitudeDelta = region.longitudeDelta + 2 * padLongitude,
+        )
+    }
+
     override fun routeSigmets(): List<SIGMET> = _state.value.routeSigmets
 
     /**
@@ -590,6 +623,12 @@ class WeatherSessionController(
     // endregion
 
     companion object {
+        /**
+         * How far past the route the sampled corridor reaches, so weather whose body sits
+         * off the centreline but whose edge crosses the route is still captured.
+         */
+        const val CORRIDOR_PAD_NM = 60.0
+
         /** Beyond this the arrival field's ATIS is not yet relevant, so it isn't fetched. */
         const val ARRIVAL_ATIS_RANGE_NM = 100.0
 

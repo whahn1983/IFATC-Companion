@@ -11,7 +11,9 @@ import com.h3consultingpartners.ifatccompanion.core.net.HttpResponse
 import com.h3consultingpartners.ifatccompanion.core.net.HttpResult
 import com.h3consultingpartners.ifatccompanion.core.platform.MutableClock
 import com.h3consultingpartners.ifatccompanion.core.settings.AppSettings
+import com.h3consultingpartners.ifatccompanion.core.weather.deviation.WeatherIntensity
 import com.h3consultingpartners.ifatccompanion.core.weather.radar.PrecipitationOverlayService
+import com.h3consultingpartners.ifatccompanion.core.weather.radar.RadarCell
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -353,6 +355,65 @@ class WeatherSessionControllerTest {
         controller.updateFlightContext(houstonToMinneapolis, AircraftState.empty, FlightPhase.CRUISE)
         assertNull(controller.computeSmootherAltitude())
     }
+
+    // endregion
+
+    // region Live precipitation cells
+
+    /**
+     * The cells a live radar sample produced are what the whole deviation flow runs on
+     * outside Mock Mode. `sampledCells` used to be written in exactly one place, and only
+     * ever to the empty list.
+     */
+    @Test
+    fun sampledCellsAreAdopted() {
+        val controller = controller(FakeHttp())
+
+        controller.noteSampledCells(listOf(cell(40.0, -95.0)))
+
+        assertEquals(1, controller.state.value.radarOverlay.sampledCells.size)
+    }
+
+    /**
+     * A fetch or decode failure must not blank a good sample. "The radar hiccuped" and "the
+     * storms went away" are different statements, and only one of them is safe to make.
+     */
+    @Test
+    fun anEmptySampleDoesNotBlankTheLastGoodOne() {
+        val controller = controller(FakeHttp())
+        controller.noteSampledCells(listOf(cell(40.0, -95.0)))
+
+        controller.noteSampledCells(emptyList())
+
+        assertEquals(1, controller.state.value.radarOverlay.sampledCells.size)
+    }
+
+    /**
+     * The sampled corridor reaches past the route on every side, so weather whose body sits
+     * off the centreline but whose edge crosses the route is still captured.
+     */
+    @Test
+    fun theSampleRegionIsWiderThanTheRoute() {
+        val controller = controller(FakeHttp())
+        controller.updateFlightContext(houstonToMinneapolis, AircraftState.empty, FlightPhase.CRUISE)
+        val plain = controller.precipitationRegion()
+        val padded = controller.precipitationSampleRegion()
+
+        assertNotNull(plain)
+        assertNotNull(padded)
+        assertTrue(padded.latitudeDelta > plain.latitudeDelta)
+        assertTrue(padded.longitudeDelta > plain.longitudeDelta)
+    }
+
+    private fun cell(latitude: Double, longitude: Double) = RadarCell(
+        polygon = listOf(
+            Coordinate(latitude, longitude),
+            Coordinate(latitude + 0.2, longitude),
+            Coordinate(latitude + 0.2, longitude + 0.2),
+            Coordinate(latitude, longitude + 0.2),
+        ),
+        intensity = WeatherIntensity.HEAVY,
+    )
 
     // endregion
 }

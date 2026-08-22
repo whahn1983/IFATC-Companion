@@ -126,6 +126,8 @@ class FlightViewModel(
 
         observeRadarRaster()
 
+        observePrecipitationSampling()
+
         observeAutoSave()
 
         observeReviewMoments()
@@ -312,6 +314,30 @@ class FlightViewModel(
      * `collectLatest` cancels an in-flight fetch when the pilot moves the map, because only
      * the region they are looking at now is worth waiting for.
      */
+    /**
+     * Keep the live precipitation cells current while the app is on screen.
+     *
+     * Gated on the foreground rather than run from the session scope, because these are the
+     * megabyte-scale composite fetches and iOS gates them the same way — a flight running in
+     * the background on the foreground service keeps its last good cells rather than fetching
+     * a new picture nobody is looking at. Mock Mode has its own cells and never samples.
+     */
+    private fun observePrecipitationSampling() {
+        viewModelScope.launch {
+            while (true) {
+                val overlay = graph.weather.state.value.radarOverlay
+                val airborne = session.value.aircraftState.onGround == false
+                if (!settings.value.mockMode && overlay.shouldDisplay && airborne) {
+                    val sampled = runCatching { graph.precipitationSampler.sampleIfStale() }.getOrDefault(false)
+                    // Fresh cells change what the reroute has to round, so the locked set is
+                    // re-solved against them rather than held from the previous sample.
+                    if (sampled) graph.weatherDeviation.invalidateLockedDeviations()
+                }
+                delay(PRECIPITATION_SAMPLE_CHECK_SECONDS.seconds)
+            }
+        }
+    }
+
     private fun observeRadarRaster() {
         viewModelScope.launch {
             radarRegion.filterNotNull().collectLatest { region ->
@@ -1099,6 +1125,12 @@ private val RADAR_RASTER_SIZE = PixelSize(width = 1024, height = 512)
  * one.
  */
 private const val RADAR_REFRESH_SECONDS = 60L
+
+/**
+ * How often the sampler is *asked*. It samples only when its own staleness gate says
+ * so, so this is the polling cadence, not the fetch cadence.
+ */
+private const val PRECIPITATION_SAMPLE_CHECK_SECONDS = 20L
 
 /** One more than the number of waits: the first attempt is not preceded by one. */
 private val BASE_MAP_IMAGERY_ATTEMPTS = BASE_MAP_IMAGERY_RETRY_DELAYS_SECONDS.size + 1
