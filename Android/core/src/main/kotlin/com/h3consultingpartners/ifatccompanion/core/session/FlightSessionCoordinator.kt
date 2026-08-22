@@ -6,6 +6,7 @@ import com.h3consultingpartners.ifatccompanion.core.airports.RampProfile
 import com.h3consultingpartners.ifatccompanion.core.airports.RunwayDatabase
 import com.h3consultingpartners.ifatccompanion.core.atc.ATCContext
 import com.h3consultingpartners.ifatccompanion.core.atc.ATCStateMachine
+import com.h3consultingpartners.ifatccompanion.core.atc.GoAroundPattern
 import com.h3consultingpartners.ifatccompanion.core.atc.PhaseDetector
 import com.h3consultingpartners.ifatccompanion.core.atc.PilotIntent
 import com.h3consultingpartners.ifatccompanion.core.atc.PilotIntentParser
@@ -113,6 +114,16 @@ class FlightSessionCoordinator(
      */
     private val sectorTracker = CenterSectorTracker()
     private var sectorLoadRequested = false
+
+    /**
+     * Whether a go-around is being flown.
+     *
+     * While it is set the automatic flow is held: the missed-approach climb would otherwise
+     * be read straight back through the cleared-approach call while the aircraft is still
+     * in the pattern, so the pilot would be cleared to land on a runway they just abandoned.
+     * Released by the pilot re-establishing with Approach.
+     */
+    private var goAroundInProgress = false
 
     private val settings: AppSettings get() = settingsProvider()
 
@@ -307,6 +318,16 @@ class FlightSessionCoordinator(
         // once the aircraft is actually lined up on the runway.
         if (stateMachine.current.isManualGroundFlow) {
             maybeIssueTakeoffClearance(aircraft)
+            return
+        }
+
+        // A go-around has reset the conversation for another approach. Hold everything
+        // automatic until the pilot re-establishes with Approach, so the climb away from
+        // the runway is not immediately re-advanced back through the approach sequence.
+        if (goAroundInProgress) {
+            // The radio stays where the pilot left it — on Android `currentFacility` *is*
+            // the tuned facility, so only the conversational cursor needs re-syncing.
+            _state.update { it.copy(atcState = stateMachine.current) }
             return
         }
 
@@ -593,17 +614,134 @@ class FlightSessionCoordinator(
     fun unable() = postPilot { pilotEngine.unable(it, _state.value.workingFacility) }
 
     fun checkIn() {
+        // The guard belongs here and not only in performPilotAction: the UI calls this
+        // directly, and so does the spoken-command path, so a staffed controller could
+        // otherwise be talked over by a check-in the pilot pressed a button for.
+        if (_state.value.companionStandby) return
         val current = _state.value
         val facility = current.workingFacility
+
+        // Re-establishing with Approach on the missed-approach leg. Handled before the
+        // generic check-in so it is not collapsed into a plain radar-contact re-check-in,
+        // which would leave the aircraft in the pattern with no clearance to come back.
+        if (goAroundInProgress && facility == ATCFacility.APPROACH) {
+            resumeApproachAfterGoAround()
+            return
+        }
+
         val tx = pilotEngine.requestHandoff(
             c = buildContext(stateMachine.current),
             facility = facility,
-            currentAltitude = current.aircraftState.altitudeMSL?.roundToInt(),
+            currentAltitude = checkInAltitude(),
             targetAltitude = current.assignedAltitude,
             onGround = current.aircraftState.onGround ?: false,
         )
         post(tx, speakIt = settings.speakPilot)
         _state.update { it.copy(pendingCheckInFacility = null) }
+        recomputeDerivedState()
+    }
+
+    /**
+     * The altitude a pilot reports checking in: live MSL to the nearest hundred, or null
+     * when there is no usable reading.
+     *
+     * Null and zero are not the same thing here. A null routes the phraseology to its
+     * "checking in" branch, while a zero reports the aircraft level at sea level — which is
+     * what this said before, on every check-in where telemetry had not arrived yet.
+     */
+    private fun checkInAltitude(): Int? {
+        val msl = _state.value.aircraftState.altitudeMSL ?: return null
+        if (msl <= 0) return null
+        return (msl / 100).roundToInt() * 100
+    }
+
+    /**
+     * The pilot goes around.
+     *
+     * Tower vectors the aircraft onto the crosswind leg at pattern altitude and hands it to
+     * Approach; the automatic flow then holds until the pilot checks in there. The state
+     * machine is deliberately left where it was — the radio stays on Tower until the pilot
+     * reads back and switches, which is what the read-back's `tuneTo` does.
+     */
+    fun goAround() {
+        if (_state.value.companionStandby) return
+        val context = buildContext(ATCState.APPROACH)
+        // A go-around supersedes any read-back still pending on the landing clearance:
+        // the clearance it was answering no longer exists.
+        readbackGate.reset()
+        postPilot { pilotEngine.goAround(it) }
+
+        // Pattern altitude is 3,000 ft above the field in MSL, rounded up to the next
+        // thousand — the terminal fallback the context already computes, so a high field
+        // does not get a pattern that flies into it.
+        val patternAltitude = context.approachDefaultAltitude
+        val runway = context.approachProcedure?.runway ?: context.runway
+        val heading = GoAroundPattern.crosswindHeading(
+            runwayHeading = RunwayDatabase.headingForRunway(runway)?.roundToInt()
+                ?: GoAroundPattern.FALLBACK_RUNWAY_HEADING,
+            leftTraffic = GoAroundPattern.LEFT_TRAFFIC,
+        )
+        post(
+            engine.goAround(
+                cs = context.callsign,
+                runway = runway,
+                leftTraffic = GoAroundPattern.LEFT_TRAFFIC,
+                crosswindHeading = heading,
+                patternAltitude = patternAltitude,
+                approachFrequency = context.approachFrequency,
+            ),
+            speakIt = true,
+        )
+        goAroundInProgress = true
+        _state.update { it.copy(assignedAltitude = patternAltitude) }
+        recomputeDerivedState()
+    }
+
+    /**
+     * The pilot re-establishes with Approach after a go-around.
+     *
+     * Approach holds the pattern altitude Tower assigned and clears the aircraft to continue
+     * inbound, and the conversation is rewound to the approach — so the whole
+     * cleared-approach → Tower → cleared-to-land sequence replays from here, driven by the
+     * same established-on-final detection as the first time. That replay is the point: a
+     * go-around that ended the flight's ATC would leave the pilot in a pattern with nobody
+     * to talk to.
+     */
+    private fun resumeApproachAfterGoAround() {
+        goAroundInProgress = false
+        val current = _state.value
+        val context = buildContext(ATCState.APPROACH)
+        post(
+            pilotEngine.requestHandoff(
+                c = context,
+                facility = ATCFacility.APPROACH,
+                currentAltitude = checkInAltitude(),
+                targetAltitude = current.assignedAltitude,
+                onGround = current.aircraftState.onGround ?: false,
+            ),
+            speakIt = settings.speakPilot,
+        )
+        post(
+            engine.continueInbound(
+                cs = context.callsign,
+                altitude = current.assignedAltitude,
+                procedure = context.approachProcedure,
+                approach = context.approachName,
+                runway = context.runway,
+            ),
+            speakIt = true,
+        )
+        stateMachine.restore(ATCState.APPROACH)
+        _state.update {
+            it.copy(
+                atcState = ATCState.APPROACH,
+                // iOS clears its separate `tunedFacility` here; on Android the radio and
+                // the working facility are the same field, so pointing it at Approach is
+                // both halves of that.
+                currentFacility = ATCFacility.APPROACH,
+                pendingCheckInFacility = null,
+            )
+        }
         recomputeDerivedState()
     }
 
@@ -639,7 +777,14 @@ class FlightSessionCoordinator(
             PilotAction.APPROACH -> pilotEngine.requestApproach(context)
             PilotAction.RIDE_REPORT -> pilotEngine.requestRideReports(context)
             PilotAction.DEST_WX -> pilotEngine.requestWeather(context, context.plan.destination)
-            PilotAction.GO_AROUND -> pilotEngine.goAround(context)
+            PilotAction.GO_AROUND -> {
+                // Not just the pilot's call: the go-around is a whole exchange — Tower's
+                // pattern vector, the pattern altitude, the hold on the automatic flow, and
+                // the replay when the pilot re-establishes. Posting only the pilot half is
+                // what left the aircraft climbing away with nobody answering.
+                goAround()
+                return
+            }
             PilotAction.CHECK_IN -> {
                 checkIn()
                 return
@@ -754,6 +899,7 @@ class FlightSessionCoordinator(
             assignedAltitude = current.assignedAltitude,
             hasDeparted = current.hasDeparted,
             arrivalAnnounced = current.flightHasEnded,
+            goAroundInProgress = goAroundInProgress,
             awaitingGateArrival = current.isArrivalRamp,
             manualTuning = current.manualTuning,
             transcript = current.transcript,
@@ -797,6 +943,7 @@ class FlightSessionCoordinator(
             snapshot.arrivalGateLatitude,
             snapshot.arrivalGateLongitude,
         )
+        goAroundInProgress = snapshot.goAroundInProgress ?: false
         snapshot.departureFieldElevationMSL?.let { departureFieldElevationMSL = it }
         snapshot.liftoffAltitudeMSL?.let { liftoffAltitudeMSL = it }
 
@@ -869,6 +1016,7 @@ class FlightSessionCoordinator(
         readbackGate.reset()
         sectorTracker.reset()
         sectorLoadRequested = false
+        goAroundInProgress = false
         arrivalGatePosition = null
         departureFieldElevationMSL = 0.0
         liftoffAltitudeMSL = 0.0

@@ -15,6 +15,7 @@ lifecycle = "2.9.4"
 navigationCompose = "2.9.5"
 datastore = "1.1.7"
 billing = "8.0.0"
+playReview = "2.0.2"
 work = "2.10.5"
 coreKtx = "1.17.0"
 appcompat = "1.7.1"
@@ -37,6 +38,8 @@ kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-t
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
 okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
 okhttp-mockwebserver = { module = "com.squareup.okhttp3:mockwebserver", version.ref = "okhttp" }
+
+play-review = { module = "com.google.android.play:review", version.ref = "playReview" }
 
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
 androidx-appcompat = { module = "androidx.appcompat:appcompat", version.ref = "appcompat" }

@@ -130,6 +130,9 @@ dependencies {
     implementation(libs.androidx.browser)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.billing.ktx)
+    // Play's in-app review flow. A store control, not analytics: it collects nothing, needs
+    // no key or account, and the app never learns whether a prompt was shown.
+    implementation(libs.play.review)
 
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)

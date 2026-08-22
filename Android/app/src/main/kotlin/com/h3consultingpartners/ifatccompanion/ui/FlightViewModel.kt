@@ -19,6 +19,7 @@ import com.h3consultingpartners.ifatccompanion.core.phraseology.PhraseologyProfi
 import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticCategory
 import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticLevel
 import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticRecord
+import com.h3consultingpartners.ifatccompanion.core.review.ReviewRequestManager
 import com.h3consultingpartners.ifatccompanion.core.session.FlightSessionCoordinator
 import com.h3consultingpartners.ifatccompanion.core.session.FlightSessionState
 import com.h3consultingpartners.ifatccompanion.core.session.PilotAction
@@ -125,6 +126,8 @@ class FlightViewModel(
         observeRadarRaster()
 
         observeAutoSave()
+
+        observeReviewMoments()
 
         // Load the airport surface whenever the flight's endpoints change.
         //
@@ -408,6 +411,57 @@ class FlightViewModel(
                     if (size == 0) return@collect
                     graph.savedFlights.autoSave()
                 }
+        }
+    }
+
+    // endregion
+
+    // region Rating prompt
+
+    /**
+     * Ask the pilot to rate the app, at the two moments the product allows and never
+     * otherwise.
+     *
+     * Both are calm: connected and idle at the gate before the first ATC call of a session,
+     * and arrived and parked with the flight finished. Never mid-flight — a pilot asked to
+     * rate the app while being vectored is being interrupted at exactly the moment the app
+     * is supposed to be useful. `ReviewRequestManager` applies every other gate; this only
+     * decides *when the moment has arrived*.
+     */
+    private fun observeReviewMoments() {
+        viewModelScope.launch {
+            var countedThisFlight = false
+            var askedBeforeFirstCall = false
+            session.collect { state ->
+                if (state.flightHasEnded) {
+                    // Exactly once per completed flight: the engagement gate is what keeps a
+                    // brand-new pilot out of the prompt, and double-counting brings the first
+                    // ask forward past the point the product rule chose.
+                    if (!countedThisFlight) {
+                        countedThisFlight = true
+                        graph.reviewDecision.recordFlightCompleted()
+                        graph.reviewLauncher.requestIfAppropriate(
+                            ReviewRequestManager.Trigger.AFTER_FLIGHT_COMPLETE,
+                        )
+                    }
+                    return@collect
+                }
+                countedThisFlight = false
+
+                // Connected, at the gate, nothing said yet. The transcript emptying is what
+                // makes this "before the first call" rather than "any time on the ground".
+                val atTheGateBeforeAnyCall = state.atcState == ATCState.CONNECTED_IDLE &&
+                    state.transcript.isEmpty() &&
+                    !state.hasDeparted
+                if (atTheGateBeforeAnyCall && !askedBeforeFirstCall) {
+                    askedBeforeFirstCall = true
+                    graph.reviewLauncher.requestIfAppropriate(
+                        ReviewRequestManager.Trigger.BEFORE_FIRST_CALL,
+                    )
+                } else if (!atTheGateBeforeAnyCall) {
+                    askedBeforeFirstCall = false
+                }
+            }
         }
     }
 

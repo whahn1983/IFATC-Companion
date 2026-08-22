@@ -30,6 +30,7 @@ import com.h3consultingpartners.ifatccompanion.core.platform.Clock
 import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticCategory
 import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticLevel
 import com.h3consultingpartners.ifatccompanion.core.platform.FileStore
+import com.h3consultingpartners.ifatccompanion.core.review.ReviewRequestManager
 import com.h3consultingpartners.ifatccompanion.core.session.FlightSessionCoordinator
 import com.h3consultingpartners.ifatccompanion.core.session.TaxiClearanceContext
 import com.h3consultingpartners.ifatccompanion.core.settings.AppSettings
@@ -45,6 +46,7 @@ import com.h3consultingpartners.ifatccompanion.data.AndroidFileStore
 import com.h3consultingpartners.ifatccompanion.data.DataStoreKeyValueStore
 import com.h3consultingpartners.ifatccompanion.map.BaseMapImageryLoader
 import com.h3consultingpartners.ifatccompanion.map.RadarRasterLoader
+import com.h3consultingpartners.ifatccompanion.review.PlayReviewLauncher
 import com.h3consultingpartners.ifatccompanion.service.ActiveFlightController
 import com.h3consultingpartners.ifatccompanion.service.FlightSessionActiveFlightController
 import java.io.File
@@ -118,6 +120,24 @@ class AppGraph private constructor(
     }
 
     val settingsRepository: SettingsRepository by lazy { SettingsRepository(settingsStore) }
+
+    /**
+     * When to ask the pilot to rate the app, and the Play flow that does the asking.
+     *
+     * Kept on the settings store rather than a store of its own: the keys are the same ones
+     * iOS uses, so the two platforms' vocabularies stay in step.
+     */
+    val reviewDecision: ReviewRequestManager by lazy {
+        ReviewRequestManager(settingsStore, clock).also { it.noteAppStarted() }
+    }
+
+    val reviewLauncher: PlayReviewLauncher by lazy {
+        PlayReviewLauncher(
+            decide = reviewDecision,
+            diagnostics = diagnostics,
+            activity = ::activityOrNull,
+        )
+    }
 
     /** The pilot's library of flights. Ported with tests since the start; wired only now. */
     val savedFlightStore: SavedFlightStore by lazy {
