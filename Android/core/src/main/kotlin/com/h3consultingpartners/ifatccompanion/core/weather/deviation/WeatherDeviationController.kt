@@ -161,7 +161,12 @@ class WeatherDeviationController(
     fun update(inputs: Inputs): Emission {
         hazards = buildHazards(inputs)
         val position = aircraftOrDeparture(inputs)
-        if (position == null) {
+        // Off the radar network and not opted in: the overlay image still shows, but no
+        // reroute is drawn from it. The NASA estimate is ~10 km, hours latent and cannot
+        // grade severity, so a deviation built on it would be a confident-looking line
+        // around weather nobody has actually observed. "Deviations from satellite
+        // estimate" is the pilot's opt-in, and it was read by nothing.
+        if (position == null || deviationsAreSuppressed(inputs)) {
             activeConflict = null
             publish(inputs)
             return Emission.none
@@ -188,6 +193,15 @@ class WeatherDeviationController(
         publish(inputs)
         return emission
     }
+
+    /**
+     * Whether the current precipitation source may drive a deviation at all.
+     *
+     * True only for a satellite estimate the pilot has not opted into — true observed
+     * radar always may, and Mock Mode's deterministic cells are not an estimate.
+     */
+    private fun deviationsAreSuppressed(inputs: Inputs): Boolean =
+        inputs.overlay.isSatelliteEstimate && !settingsProvider().satelliteDeviationsEnabled
 
     /** A pilot tap on one of the response card's buttons. */
     fun perform(action: WeatherDeviationAction, inputs: Inputs): Emission {

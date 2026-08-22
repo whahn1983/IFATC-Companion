@@ -14,8 +14,8 @@ verified by hand against both sources before this document was written: the chec
 
 ## Progress
 
-80 of the 100 are closed and three are partly closed; the rest stand. **All 37 rated high
-are closed** — every gap a pilot meets in a normal flight. What remains is 7 medium and 10
+85 of the 100 are closed and three are partly closed; the rest stand. **All 37 rated high
+are closed** — every gap a pilot meets in a normal flight. What remains is 5 medium and 7
 low. Each closed entry below carries a ✅ (or 🟡) line naming what closes it and, where a
 piece is still open, what that piece is — so this document stays the record of what the
 audit found *and* of what has been done about it rather than being quietly rewritten.
@@ -399,6 +399,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** Availability is gated on `current.smootherAltitudeLabel != null` (FlightSessionCoordinator.kt:1191), and `FlightSessionState.smootherAltitudeLabel` (FlightSessionState.kt:106) is never assigned anywhere — so `ACCEPT_SMOOTHER_ALTITUDE` is never in `availableActions` and AtcScreen's label branch at line 477 is dead. Even if it were offered, `performPilotAction` returns without acting (FlightSessionCoordinator.kt:859-863). The suggestion itself does exist on the weather side (`WeatherSessionState.suggestedSmootherAltitude`), so the two halves are simply not joined.
 
 **The Live Flight Update never shows the weather advisory**  
+✅ Closed: `LiveFlightUpdateProjection.from` takes the deviation flow's banner, and `AppGraph` feeds it from `WeatherDeviationController.state` — the notification's slot was already built to render it.  
 *Absent* · iOS: `IFATCCompanion/App/AppModel.swift:1317 (`weatherAlert: activeWeatherConflict != nil ? "Weather ahead on route" : nil`)`
 
 - **iOS:** When a route-weather conflict is active, the Live Activity carries a "Weather ahead on route" line, so a pilot with the phone locked sees it.
@@ -500,6 +501,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** The Android Settings screen shows a toggle with the identical label — SettingsLabels.LIVE_ACTIVITY = "Live flight notification" (core/.../settings/SettingsLabels.kt:95), rendered at SettingsScreen.kt:312-316 — which persists liveActivityEnabled, and no production code ever reads it. ActiveFlightService posts and re-posts the Live Flight Update for the whole session regardless (ActiveFlightService.kt:120-158). Flipping it off changes nothing the pilot can see. (Android must post *a* foreground-service notification, but nothing gates the flight card's content, its Read Back / Check In actions, or the Android-16 promoted-ongoing request on the setting the pilot was given.)
 
 **The Live Flight Update never shows the weather advisory**  
+✅ Closed: `LiveFlightUpdateProjection.from` takes the deviation flow's banner, and `AppGraph` feeds it from `WeatherDeviationController.state` — the notification's slot was already built to render it.  
 *Absent* · iOS: `IFATCCompanion/App/AppModel.swift:1317 (weatherAlert: activeWeatherConflict != nil ? "Weather ahead on route" : nil), on the ContentState field declared at IFATCCompanion/LiveActivity/CompanionActivityAttributes.swift:65`
 
 - **iOS:** While a route weather conflict is active, the Lock Screen / Dynamic Island card carries the line "Weather ahead on route" — the one warning that reaches the pilot with the phone in their pocket.
@@ -578,6 +580,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 ### Screens and settings
 
 **"Deviations from satellite estimate" toggle renders but is read by nothing**  
+✅ Closed: `WeatherDeviationController` suppresses the deviation while the source is a satellite estimate the pilot has not opted into; the overlay image still shows. A change to the toggle invalidates the locked deviations so the route is re-solved.  
 *Ported, not wired* · iOS: `IFATCCompanion/Views/SettingsView.swift:324-326 (toggle, whose setter also calls `model.applySatelliteDeviationSettingChange()`); AppSettings.swift:290-296`
 
 - **iOS:** Opts in to driving the deviation flow from the NASA satellite estimate where there is no radar coverage, and immediately re-applies the change to the running session.
@@ -725,12 +728,14 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** AndroidSpeechService.stop() exists and drains the queue correctly, but no UI reaches it: FlightViewModel exposes no stop-speech action and AtcScreen renders no such control. The underlying isSpeaking StateFlow is published and collected by nothing, so the app cannot even show the indicator that gates the button on iOS.
 
 **The Live Flight Update falls back to a different default callsign**  
+✅ Closed: `DEFAULT_CALLSIGN` is "IFATC", matching iOS.  
 *Behaves differently* · iOS: `IFATCCompanion/App/AppModel.swift:1324-1328 (notificationCallsign(): settings.callsign, else airline+flightNumber, else "IFATC")`
 
 - **iOS:** With no callsign and no airline/flight number set, the Live Activity is labelled "IFATC".
 - **Android:** LiveFlightUpdateProjection.kt:34-35 uses the same two-step fallback but ends at DEFAULT_CALLSIGN = "Flight" (:74). The string is on the notification twice — inside flightTitle ("IFATC Companion · Flight", :40) and as the subText when the route is empty (FlightNotifications.kt:96) — so a pilot who has not filled in a flight plan sees different wording from the iOS card.
 
 **The pilot's own transmissions lose their distinguishing pitch offset**  
+✅ Closed: `applyVoice` takes the call's `isPilot` and drops the pitch 8%, so own-ship read-backs stay distinct from the controller even on a shared system voice.  
 *Behaves differently* · iOS: `IFATCCompanion/Speech/SpeechService.swift:105-108 (utterance.pitchMultiplier = isPilot ? min(max(basePitch * 0.92, 0.5), 2.0) : basePitch)`
 
 - **iOS:** Own-ship pilot calls are spoken 8% below the configured pitch, with the stated purpose of keeping the pilot audibly distinct from the controller even when the two share a system voice (the common case, since both fall back to defaultVoiceID).

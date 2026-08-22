@@ -8,8 +8,10 @@ import com.h3consultingpartners.ifatccompanion.core.platform.Clock
 import com.h3consultingpartners.ifatccompanion.core.session.FlightSessionCoordinator
 import com.h3consultingpartners.ifatccompanion.core.session.PilotAction
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 
@@ -28,6 +30,11 @@ class FlightSessionActiveFlightController(
     scope: CoroutineScope,
     private val clock: Clock = Clock.system,
     private val onStopRequested: () -> Unit = {},
+    /**
+     * The live route-weather banner, if any. A flow rather than a value because the Live
+     * Flight Update has to change when the weather does, not only when the flight does.
+     */
+    private val weatherAlert: StateFlow<String?> = MutableStateFlow(null),
 ) : ActiveFlightController {
 
     /**
@@ -45,9 +52,10 @@ class FlightSessionActiveFlightController(
         .map { it.atcCommunicationStarted && !it.sessionEnded && it.atcState != ATCState.PARKED }
         .stateIn(scope, SharingStarted.Eagerly, false)
 
-    override val liveUpdate: StateFlow<LiveFlightUpdate?> = coordinator.state
-        .map { LiveFlightUpdateProjection.from(it, clock.nowMillis()) }
-        .stateIn(scope, SharingStarted.Eagerly, null)
+    override val liveUpdate: StateFlow<LiveFlightUpdate?> =
+        combine(coordinator.state, weatherAlert) { session, alert ->
+            LiveFlightUpdateProjection.from(session, clock.nowMillis(), weatherAlert = alert)
+        }.stateIn(scope, SharingStarted.Eagerly, null)
 
     override fun performLiveAction(action: LiveFlightAction) {
         when (action) {

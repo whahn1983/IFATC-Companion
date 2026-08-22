@@ -28,7 +28,16 @@ object LiveFlightUpdateProjection {
      *    the companion is silent, and a notification action would be the one way it could
      *    still talk over them.
      */
-    fun from(state: FlightSessionState, nowMillis: Long): LiveFlightUpdate {
+    fun from(
+        state: FlightSessionState,
+        nowMillis: Long,
+        /**
+         * The deviation flow's own banner while a route-weather conflict is live. Passed
+         * in rather than read from [state], which carries no weather at all: the flight
+         * session and the weather engine share only the flight plan, deliberately.
+         */
+        weatherAlert: String? = null,
+    ): LiveFlightUpdate {
         val plan = state.flightPlan
         val aircraft = state.aircraftState
         val callsign = plan.callsign.ifEmpty {
@@ -52,7 +61,10 @@ object LiveFlightUpdateProjection {
             nextFacility = state.pendingCheckInFacility
                 ?.takeIf { it != state.currentFacility }
                 ?.title,
-            weatherAlert = null,
+            // The one warning that reaches a pilot with the phone in their pocket. It
+            // was hardcoded null, so the slot the notification is built to render — and
+            // renders correctly — stayed permanently blank.
+            weatherAlert = weatherAlert,
             canReadBack = !standby && state.awaitingReadback,
             canCheckIn = !standby && PilotAction.CHECK_IN in state.availableActions,
             standby = standby,
@@ -70,6 +82,10 @@ object LiveFlightUpdateProjection {
 
     private const val ROUTE_ARROW = "→"
 
-    /** Shown before a flight plan names the aircraft, so the card is never blank. */
-    const val DEFAULT_CALLSIGN = "Flight"
+    /**
+     * Shown before a flight plan names the aircraft, so the card is never blank. iOS uses
+     * the same word, and the string appears on the notification twice — inside the title
+     * and as the subtext when the route is empty — so a mismatch is visible in two places.
+     */
+    const val DEFAULT_CALLSIGN = "IFATC"
 }

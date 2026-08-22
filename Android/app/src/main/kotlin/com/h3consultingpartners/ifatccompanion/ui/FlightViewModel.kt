@@ -935,6 +935,13 @@ class FlightViewModel(
         // add a way to miss one.
         graph.surfaceRouting.autoCrossingCalls = settings.taxiAutoCrossingCalls
         graph.surfaceRouting.autoRecalculate = settings.taxiAutoRecalculate
+        // The deviation flow reads the satellite opt-in on every tick, so the change takes
+        // effect within a second — but the *locked* deviations for the route were solved
+        // under the old answer, so they have to be dropped and re-solved. iOS calls this
+        // applySatelliteDeviationSettingChange.
+        if (previous.satelliteDeviationsEnabled != settings.satelliteDeviationsEnabled) {
+            graph.weatherDeviation.invalidateLockedDeviations()
+        }
         // The weather endpoint is what the service fetches from, so a typed change has to
         // reach it rather than only the settings store.
         if (previous.weatherBaseURL != settings.weatherBaseURL) {

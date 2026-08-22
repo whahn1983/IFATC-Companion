@@ -63,8 +63,10 @@ import java.lang.ref.WeakReference
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.plus
 
@@ -630,6 +632,12 @@ class AppGraph private constructor(
             coordinator = flightSessionCoordinator,
             scope = sessionScope,
             clock = clock,
+            // "Weather ahead on route" on the Lock Screen. The deviation flow's own banner,
+            // which is the only thing that knows there is weather on the route and how far
+            // ahead it is; the flight session carries no weather at all.
+            weatherAlert = weatherDeviation.state
+                .map { it.bannerText }
+                .stateIn(sessionScope, SharingStarted.Eagerly, null),
             onStopRequested = {
                 connect.disconnect()
                 // stopMock, not mockFeed.stop: the periodic weather refresh belongs to the

@@ -156,10 +156,11 @@ class AndroidSpeechService(
     private suspend fun <T> withEngine(
         voiceId: String?,
         configuration: SpeechConfiguration,
+        isPilot: Boolean = false,
         enqueue: (TextToSpeech) -> T,
     ): T? = engineLock.withLock {
         val engine = tts ?: return@withLock null
-        applyVoice(engine, voiceId, configuration)
+        applyVoice(engine, voiceId, configuration, isPilot)
         enqueue(engine)
     }
 
@@ -429,7 +430,7 @@ class AndroidSpeechService(
         } else {
             // The engine couldn't render to a file (or the effect is off) — speak it
             // plainly so the call is never silent.
-            speakAndWait(call.text, call.voiceId, call.configuration)
+            speakAndWait(call.text, call.voiceId, call.configuration, isPilot = call.isPilot)
         }
 
         if (call.isPilot && call.configuration.radioEffectEnabled) {
@@ -461,7 +462,7 @@ class AndroidSpeechService(
             utteranceCompletions[id] = completion
 
             // Voice and enqueue together, under the lock — see [engineLock].
-            val queued = withEngine(call.voiceId, call.configuration) {
+            val queued = withEngine(call.voiceId, call.configuration, isPilot = call.isPilot) {
                 it.synthesizeToFile(call.text, null, file, id)
             } ?: TextToSpeech.ERROR
             if (queued != TextToSpeech.SUCCESS) {
@@ -494,11 +495,12 @@ class AndroidSpeechService(
         text: String,
         voiceId: String?,
         configuration: SpeechConfiguration,
+        isPilot: Boolean = false,
     ) {
         val id = "speak-${utteranceCounter.incrementAndGet()}"
         val completion = CompletableDeferred<Boolean>()
         utteranceCompletions[id] = completion
-        val queued = withEngine(voiceId, configuration) {
+        val queued = withEngine(voiceId, configuration, isPilot = isPilot) {
             it.speak(text, TextToSpeech.QUEUE_ADD, volumeParams(configuration.voiceVolume), id)
         } ?: TextToSpeech.ERROR
         if (queued != TextToSpeech.SUCCESS) {
@@ -528,6 +530,7 @@ class AndroidSpeechService(
         engine: TextToSpeech,
         voiceId: String?,
         configuration: SpeechConfiguration,
+        isPilot: Boolean = false,
     ) {
         val voice = voiceId
             ?.takeIf { it.isNotEmpty() }
@@ -539,7 +542,12 @@ class AndroidSpeechService(
         // multiplier. The pitch carries across directly; the rate is mapped so the
         // setting's midpoint is the engine's natural speed.
         engine.setSpeechRate(androidRate(configuration.speechRate))
-        engine.setPitch(configuration.speechPitch.coerceIn(0.5, 2.0).toFloat())
+        // Own-ship calls sit 8% below the configured pitch, as iOS does. Both voices fall
+        // back to defaultVoiceID unless the pilot has chosen a separate one, which is the
+        // common case — so without this the pilot's read-backs come out identical to the
+        // controller's calls and the transcript is the only way to tell who is speaking.
+        val pitch = configuration.speechPitch * (if (isPilot) PILOT_PITCH_MULTIPLIER else 1.0)
+        engine.setPitch(pitch.coerceIn(0.5, 2.0).toFloat())
     }
 
     companion object {
@@ -549,6 +557,13 @@ class AndroidSpeechService(
 
         const val VOICE_SAMPLE_LINE =
             "Companion one, radar contact, climb and maintain flight level two four zero."
+
+        /**
+         * Own-ship transmissions are spoken 8% below the configured pitch, so the pilot
+         * stays audibly distinct from the controller even when both share a system voice.
+         * iOS uses the same figure.
+         */
+        const val PILOT_PITCH_MULTIPLIER = 0.92
 
         private const val RENDER_TIMEOUT_MILLIS = 15_000L
         private const val SPEAK_TIMEOUT_MILLIS = 60_000L
