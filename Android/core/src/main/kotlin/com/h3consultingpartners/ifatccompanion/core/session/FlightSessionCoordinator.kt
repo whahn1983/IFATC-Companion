@@ -1567,6 +1567,28 @@ class FlightSessionCoordinator(
     }
 
     /** A tap on one of the weather response card's buttons. */
+    /**
+     * The pilot tapped the ATC screen's weather banner.
+     *
+     * iOS asks the working controller about the weather ahead — the deviation flow's own
+     * "ask Center" call, which names the precipitation, its distance and its clock
+     * position, and answers "no significant precipitation along your route at this time"
+     * when there is nothing there. Android sent a *ride report* request instead: a
+     * different question, answered with turbulence rather than with the weather the banner
+     * is warning about.
+     *
+     * Falls back to the ride report when there is no deviation flow attached, because a
+     * banner that does nothing when tapped is worse than one that answers the wrong
+     * question.
+     */
+    fun contactAtcAboutWeather() {
+        if (weatherDeviation == null) {
+            performPilotAction(PilotAction.RIDE_REPORT)
+            return
+        }
+        performWeatherDeviationAction(WeatherDeviationAction.ASK_CENTER)
+    }
+
     fun performWeatherDeviationAction(action: WeatherDeviationAction) {
         val flow = weatherDeviation ?: return
         if (_state.value.companionStandby) return

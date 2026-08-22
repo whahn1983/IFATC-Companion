@@ -586,7 +586,7 @@ class FlightViewModel(
         updateUi { it.copy(subscriptionRequested = false) }
     }
 
-    fun onContactAtcAboutWeather() = coordinator.performPilotAction(PilotAction.RIDE_REPORT)
+    fun onContactAtcAboutWeather() = coordinator.contactAtcAboutWeather()
 
     // endregion
 

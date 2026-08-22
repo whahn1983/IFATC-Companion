@@ -14,10 +14,16 @@ verified by hand against both sources before this document was written: the chec
 
 ## Progress
 
-**96 of the 100 are closed and the remaining four are partly closed. Nothing is left
-open.** Each closed entry below carries a ✅ naming what closes it; each 🟡 says which piece
-is still out and why — in every case because the thing it depends on is genuinely absent or
-deliberately off, not because it is unwired. This document stays the record of what the audit found *and* of what has been done
+**99 of the 100 are closed. The one remainder is partly closed; nothing is open.** Each
+closed entry below carries a ✅ naming what closes it; the single 🟡 says which rows are
+still out and why — because the data behind them is genuinely absent or deliberately off,
+not because anything is unwired.
+
+Three entries carried a 🟡 longer than they deserved. Two were closed under a duplicate
+entry elsewhere in this document and the note here was never updated — the chatter's
+frequency change, and the go-around pattern altitude. Checking a status line against the
+code is the only way to know it is still true; that is the same lesson this audit exists to
+record, pointing the other way. This document stays the record of what the audit found *and* of what has been done
 about it, rather than being quietly rewritten.
 
 The closed set was deliberately taken worst-first rather than easiest-first: the app had
@@ -359,7 +365,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** `SessionSnapshot.weatherDeviation` is declared (SessionSnapshot.kt:88) and never written by captureSnapshot nor read by restore. `WeatherDeviationContext` appears only inside core/weather/deviation/, never in the session or persistence path.
 
 **Background chatter never learns the field's runways, and does not react to a frequency change**  
-🟡 Half-closed: the runway pools are bound through `ChatterRunwayResolver`, so the chatter names runways the field actually has. Ending the exchange on the old frequency mid-call is still open — `AmbientChatterService.facilityDidChange` has no caller.  
+✅ Closed: the runway pools are bound through `ChatterRunwayResolver`, so the chatter names runways the field actually has, and `IFATCCompanionApplication` collects `currentFacility` into `AmbientChatterService.facilityDidChange`, so tuning away abandons the exchange on the old frequency.  
 *Ported, not wired* · iOS: `IFATCCompanion/App/AppModel.swift:1156-1170 (configureChatter binds both facility *and* runways, and pipes $currentFacility into chatter.facilityDidChange), :1178-1194 (chatterRunwayContext)`
 
 - **iOS:** The chatter references the real active runways for whichever field is in play — parsed out of that field's ATIS by ATISRunwayParser and reconciled against the OSM runway inventory — and when the pilot changes frequency, chatter on the old frequency is ended mid-exchange and chatter for the new one begins.
@@ -431,7 +437,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** `PilotActionAvailability` gates the button on `hasSmootherAltitudeSuggestion`, fed from `current.smootherAltitudeLabel` (FlightSessionCoordinator.kt:1191) — a `FlightSessionState` field (FlightSessionState.kt:106) that nothing ever assigns, so it is permanently null and the button never renders. Even if it did, `performPilotAction` returns early for `ACCEPT_SMOOTHER_ALTITUDE` (FlightSessionCoordinator.kt:859-864). `WeatherSessionController.computeSmootherAltitude` (line 295) and `noteSmootherAltitude` (line 320) are never called in main — only `clearSmootherAltitude` from AppGraph.kt:179. `nextAltitudeStep` (line 896) has no smoother-altitude preference.
 
 **Approach's terminal altitude and the go-around pattern altitude are not elevation-aware**  
-🟡 Partly closed: the approach terminal altitude is now elevation-aware; the go-around pattern altitude is not.  
+✅ Closed: `buildContext` derives `approachDefaultAltitude` from the live field elevation, and the go-around reads that same value as its pattern altitude — the same single source iOS uses for both.  
 *Behaves differently* · iOS: `IFATCCompanion/App/AppModel.swift:4136-4138 and 3485 (liveFieldElevationMSL)`
 
 - **iOS:** `buildContext` sets `approachDefaultAltitude = roundedUpToThousand((liveFieldElevationMSL() ?? 0) + 3000)` — 3,000 ft above the *destination field*, in MSL. At Denver that is 9,000 ft, which is also what `goAround()` uses as the pattern altitude (AppModel.swift:4613).
@@ -626,7 +632,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** `ScreenModels.kt:77` sets `facilityLabel = session.currentFacility.title`, so the pill always reads a bare "Center". The sector name is available — `FlightSessionState.centerSectorName` (FlightSessionState.kt:70) is maintained by FlightSessionCoordinator.kt:1403-1408 and is already used for the Settings "Working sector" row (ScreenModels.kt:234) — it is simply not used here, despite the comment at AtcScreen.kt:167-172 claiming the pill does show it.
 
 **The ATC weather banner uses a different trigger and different text, and tapping it sends a ride report instead of a weather advisory**  
-🟡 Partly closed: the banner now keys off the precipitation conflict and its distance; what tapping it sends is unchanged.  
+✅ Closed: the banner keys off the precipitation conflict and its distance, and tapping it now asks the working controller about the weather ahead (`WeatherDeviationAction.ASK_CENTER`) instead of requesting a ride report — a different question, answered with turbulence rather than with the weather the banner is warning about. Falls back to the ride report only when no deviation flow is attached, because a banner that does nothing when tapped is worse than one that answers the wrong question.  
 *Behaves differently* · iOS: `IFATCCompanion/Views/ATCView.swift:30, :287-311 (banner, `model.askCenterAboutWeather()`); AppModel.swift:6375-6389 (`weatherBannerVisible` / `weatherBannerText`), :6703-6722 (`askCenterAboutWeather`)`
 
 - **iOS:** Shows the banner only when weather alerts are enabled and there is a flyable precipitation conflict or an active ride SIGMET, with the text "Weather ahead — contact ATC", "<Turbulence> advisory — contact ATC", or "Weather near final — advisory only". Tapping it posts a pilot request for a weather advisory and runs the controller's advisory through the deviation engine.

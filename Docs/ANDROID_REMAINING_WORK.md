@@ -8,7 +8,7 @@ Sizes are the real cost including tests, not the size of the diff. "Needs a devi
 the work cannot be trusted without running it, and this repository's CI has no device or
 emulator: it compiles `:app`, gates Android Lint, and runs R8, and that is all it can do.
 
-Status at the time of writing: `:core` is **1055 tests / 92 classes / 0 failures**; `:app`
+Status at the time of writing: `:core` is **1058 tests / 93 classes / 0 failures**; `:app`
 compiles, lints clean under `abortOnError = true`, and produces a minified release bundle.
 
 ---
@@ -45,10 +45,11 @@ is precisely why it survived this long, and why the 🔌 status exists.
 controller reply on any frequency**, **Say Again never makes the controller repeat**, and
 **Unable is answered with silence**.
 
-**Status: 96 of the 100 are closed and the remaining four are partly closed. Nothing is
-open.** Each partial is listed in `ANDROID_PARITY_GAPS.md` with what is still out and why —
-in every case because the thing it depends on is genuinely absent or deliberately off,
-not because it is unwired.
+**Status: 99 of the 100 are closed. The one remainder is partly closed; nothing is open.**
+It is the Weather Diagnostics card, listed in `ANDROID_PARITY_GAPS.md` with the rows still
+out and why: the wind-triangle rows need a wind triangle Android does not solve, and the
+OPERA byte counters would read zero because OPERA rendering is off on both platforms by
+decision.
 
 The deliberate differences that remain are recorded in `ANDROID_PARITY_MATRIX.md` (🔵) and
 in section 4 below. None of the 100 is one of those.

@@ -16,7 +16,7 @@ because a screen exists.
 | 🔵 **Android-native substitution** | Deliberately different because the platform is, with the difference stated. |
 
 > **Verification status of the two modules.** `:core` is compiled and its tests are run —
-> **1055 tests across 92 classes, 0 failures, 0 skipped** — and the per-area counts below
+> **1058 tests across 93 classes, 0 failures, 0 skipped** — and the per-area counts below
 > are real.
 >
 > `:app` is now compiled too, by CI (`.github/workflows/android.yml`): `assembleDebug`
@@ -281,9 +281,9 @@ Stated plainly, and none of them hidden behind a ✅ elsewhere in this file.
    maths that has never been played.
 3. **100 parity gaps found by audit**, listed in `ANDROID_PARITY_GAPS.md` — 37 of them
    high, and 47 of them subsystems that existed in `:core` with passing tests and were
-   constructed nowhere in `:app`. **96 are now closed and the remaining four are partly
-   closed — none is open.** Each 🟡 there names the piece still out and why: in every case
-   its upstream is genuinely absent or deliberately off, not unwired. The rows below
+   constructed nowhere in `:app`. **99 are now closed and the one remainder is partly
+   closed — none is open.** The single 🟡 there names the rows still out and why: the data
+   behind them is genuinely absent or deliberately off, not unwired. The rows below
    describe what is *ported*; a ✅ or 🟡 on a row does not by itself mean the running app
    reaches it.
 4. **EUMETNET OPERA rendering stays off**, exactly as it is on iOS. Not a gap so much as
@@ -294,7 +294,7 @@ Stated plainly, and none of them hidden behind a ✅ elsewhere in this file.
 | | |
 | --- | --- |
 | `:core` compile | ✅ `./gradlew -c settings-core.gradle.kts :core:compileKotlin` |
-| `:core` tests | ✅ **1055 tests, 92 classes, 0 failures, 0 skipped** |
+| `:core` tests | ✅ **1058 tests, 93 classes, 0 failures, 0 skipped** |
 | Compose screens type-check | ✅ `./gradlew -c settings-uicheck.gradle.kts :uicheck:compileKotlin` |
 | `:app` compile | ❌ not possible here |
 | Instrumented tests | ❌ not possible here |
