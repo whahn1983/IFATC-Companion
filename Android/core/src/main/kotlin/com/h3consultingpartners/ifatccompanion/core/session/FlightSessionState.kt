@@ -178,3 +178,22 @@ data class FlightSessionState(
     val atcCommunicationStarted: Boolean
         get() = transcript.any { it.isControllerExchange }
 }
+
+/**
+ * What the saved-flight library says about the session in progress.
+ *
+ * The session needs two facts from a store it does not own — whether the slot it is bound
+ * to still exists, and what that slot is called — to answer "would this be lost?" and "what
+ * would clearing retire?". Passing them in as a small snapshot keeps the coordinator
+ * ignorant of persistence, which is what lets both be tested without a filesystem.
+ */
+data class SavedFlightBinding(
+    /** The bound slot's name, or null when the session is not bound to one. */
+    val activeFlightName: String? = null,
+    /**
+     * Whether the bound slot is still in the library. False after the pilot deletes the
+     * flight they are flying — which unbinds the session rather than ending it, so it
+     * becomes unsaved again.
+     */
+    val activeFlightStillInLibrary: Boolean = false,
+)

@@ -7,6 +7,8 @@ import com.h3consultingpartners.ifatccompanion.core.airports.RunwayDatabase
 import com.h3consultingpartners.ifatccompanion.core.atc.ATCContext
 import com.h3consultingpartners.ifatccompanion.core.atc.ATCStateMachine
 import com.h3consultingpartners.ifatccompanion.core.atc.PhaseDetector
+import com.h3consultingpartners.ifatccompanion.core.atc.PilotIntent
+import com.h3consultingpartners.ifatccompanion.core.atc.PilotIntentParser
 import com.h3consultingpartners.ifatccompanion.core.atc.PilotResponseEngine
 import com.h3consultingpartners.ifatccompanion.core.atc.RunwayLineupDetector
 import com.h3consultingpartners.ifatccompanion.core.connect.IFConnectManager
@@ -21,23 +23,22 @@ import com.h3consultingpartners.ifatccompanion.core.model.ATCTransmission
 import com.h3consultingpartners.ifatccompanion.core.model.AircraftState
 import com.h3consultingpartners.ifatccompanion.core.model.FlightPhase
 import com.h3consultingpartners.ifatccompanion.core.model.FlightPlan
-import com.h3consultingpartners.ifatccompanion.core.atc.PilotIntent
-import com.h3consultingpartners.ifatccompanion.core.atc.PilotIntentParser
+import com.h3consultingpartners.ifatccompanion.core.persistence.SavedFlightPolicy
 import com.h3consultingpartners.ifatccompanion.core.persistence.SessionSnapshot
 import com.h3consultingpartners.ifatccompanion.core.phraseology.PhraseologyEngine
 import com.h3consultingpartners.ifatccompanion.core.platform.Clock
 import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticCategory
 import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticsSink
 import com.h3consultingpartners.ifatccompanion.core.settings.AppSettings
+import kotlin.math.abs
+import kotlin.math.ceil
+import kotlin.math.max
+import kotlin.math.roundToInt
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
-import kotlin.math.abs
-import kotlin.math.ceil
-import kotlin.math.max
-import kotlin.math.roundToInt
 
 /**
  * The flight session: it takes telemetry in, runs the ATC conversation, and publishes
@@ -88,6 +89,15 @@ class FlightSessionCoordinator(
      * keep constructing this with no extra argument.
      */
     private val taxiContextProvider: () -> TaxiClearanceContext? = { null },
+    /**
+     * What the saved-flight library currently says about this session.
+     *
+     * Read through a lambda rather than held, because the answer changes when the pilot
+     * saves, loads or deletes — none of which the session hears about. Defaulted so the
+     * coordinator stays independent of the library and every existing caller and test keeps
+     * constructing it unchanged.
+     */
+    private val savedFlightBinding: () -> SavedFlightBinding = { SavedFlightBinding() },
 ) {
 
     private val _state = MutableStateFlow(FlightSessionState())
@@ -821,6 +831,58 @@ class FlightSessionCoordinator(
         _state.update { it.copy(sessionEnded = true) }
     }
 
+    /**
+     * Re-read the saved-flight library.
+     *
+     * Saving, loading or deleting changes what [FlightSessionState.hasUnsavedFlight] and
+     * [FlightSessionState.savedFlightRetiredByClearing] should say, and the session has no
+     * way to hear about any of them. Without this the Save button stays disabled after the
+     * pilot binds a slot, and the "will be lost" warning keeps appearing for a flight that
+     * is now safely in the list.
+     */
+    fun refreshSavedFlightState() = recomputeDerivedState()
+
+    /**
+     * Put the flight down and start from a clean session.
+     *
+     * Everything that describes *this* flight goes: the conversation, the clearances, the
+     * read-back gate, the ground references, the phase and the last fix. The flight plan
+     * stays, because a pilot starting again is usually flying the same route — which is
+     * what iOS promises in as many words ("Your settings and flight plan are kept").
+     *
+     * The last fix goes with the rest deliberately. Distance-based decisions — arrival-ATIS
+     * range, the weather corridor, which airport surface to pre-cache — would otherwise be
+     * measured from the previous aircraft's position until the next telemetry tick lands.
+     *
+     * This resets only what the coordinator owns. Weather, ATIS, the airport surface, the
+     * chatter and the speech queue live in their own engines, and the app resets those
+     * alongside this — the split iOS does not have, because there it is all one object.
+     */
+    fun resetForNewFlight() {
+        // reset() lands on NOT_CONNECTED, which is a *link* state, not a conversational
+        // one. A session that still has a live link is idle, not disconnected, so the two
+        // cursors would disagree and the ATC screen would offer nothing at all.
+        stateMachine.reset()
+        stateMachine.restore(ATCState.CONNECTED_IDLE)
+        // reset(), not clear(): clear() is the pilot-answered path and returns early when
+        // the gate is already open, leaving a pending transmission behind.
+        readbackGate.reset()
+        sectorTracker.reset()
+        sectorLoadRequested = false
+        arrivalGatePosition = null
+        departureFieldElevationMSL = 0.0
+        liftoffAltitudeMSL = 0.0
+
+        val plan = _state.value.flightPlan
+        _state.value = FlightSessionState(
+            flightPlan = plan,
+            atcState = ATCState.CONNECTED_IDLE,
+            currentFacility = ATCFacility.CLEARANCE,
+        )
+        recomputeDerivedState()
+        diagnostics.log(DiagnosticCategory.SESSION, message = "Started a new flight")
+    }
+
     fun post(tx: ATCTransmission, speakIt: Boolean = true) {
         // A controller call that would only repeat the last one, and which the pilot has
         // already acknowledged, adds nothing. A call that went unanswered is never held —
@@ -903,6 +965,15 @@ class FlightSessionCoordinator(
                     ATCFacility.GROUND,
                 hasSmootherAltitudeSuggestion = current.smootherAltitudeLabel != null,
             )
+            // The three saved-flight answers. Declared on the state since the port began and
+            // computed by nothing until now, so every one of them read `false` for the life
+            // of the app: Save was permanently disabled and no confirmation ever warned that
+            // a flight was about to be thrown away.
+            val binding = savedFlightBinding()
+            val complete = SavedFlightPolicy.flightIsComplete(
+                atcStateIsParked = current.flightHasEnded,
+                arrivalAnnounced = current.flightHasEnded,
+            )
             current.copy(
                 companionStandby = standby,
                 availableActions = PilotActionAvailability.availableActions(inputs),
@@ -912,6 +983,26 @@ class FlightSessionCoordinator(
                     currentState = stateMachine.current,
                 ),
                 mockMode = settings.mockMode,
+                canSaveCurrentFlight = SavedFlightPolicy.canSaveCurrentFlight(
+                    mockMode = settings.mockMode,
+                    flightIsComplete = complete,
+                    transcriptIsEmpty = current.transcript.isEmpty(),
+                    hasDeparted = current.hasDeparted,
+                    departure = current.flightPlan.departure,
+                    destination = current.flightPlan.destination,
+                ),
+                hasUnsavedFlight = SavedFlightPolicy.hasUnsavedFlight(
+                    mockMode = settings.mockMode,
+                    flightIsComplete = complete,
+                    transcriptIsEmpty = current.transcript.isEmpty(),
+                    hasDeparted = current.hasDeparted,
+                    autoSaveFlights = settings.autoSaveFlights,
+                    activeFlightStillInLibrary = binding.activeFlightStillInLibrary,
+                ),
+                savedFlightRetiredByClearing = SavedFlightPolicy.retiredByClearing(
+                    flightIsComplete = complete,
+                    activeFlightName = binding.activeFlightName,
+                ),
             )
         }
     }
