@@ -687,7 +687,12 @@ class FlightViewModel(
 
                 graph.surfaceRouting.updateLive(
                     coordinate = state.aircraftState.coordinate,
-                    heading = state.aircraftState.heading,
+                    // True first. Everything downstream of this is true-frame geometry —
+                    // the runway-crossing gate against a great-circle bearing, the taxi
+                    // route's reversal and U-turn tests against leg bearings, and the
+                    // aircraft symbol drawn on a north-up canvas — so feeding the magnetic
+                    // heading offsets all three by the local declination.
+                    heading = state.aircraftState.trueHeading ?: state.aircraftState.heading,
                     onGround = state.aircraftState.onGround,
                     groundSpeed = state.aircraftState.groundSpeed,
                 )

@@ -23,6 +23,7 @@ import com.h3consultingpartners.ifatccompanion.core.settings.AppSettings
 import com.h3consultingpartners.ifatccompanion.core.weather.SIGMET
 import com.h3consultingpartners.ifatccompanion.core.weather.TurbulenceSeverity
 import com.h3consultingpartners.ifatccompanion.core.weather.radar.RadarOverlayModel
+import java.util.Locale
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
@@ -120,6 +121,22 @@ class WeatherDeviationController(
         val statusLine: String = "",
         /** The ATC tab's "weather ahead — contact ATC" banner, or null. */
         val bannerText: String? = null,
+        /**
+         * The Weather Diagnostics "Route conflict" line, composed here rather than in the
+         * UI because every input it needs — the detector, its config floor, and the record
+         * of a reroute thrown out for solving onto the flight path — is controller state.
+         * It is also the one line that explains *why no deviation was offered*, so a
+         * version of it assembled from only the fields that happen to be published would
+         * silently be the useless version.
+         */
+        val routeConflictStatus: String = "No conflict",
+        /**
+         * The fix the flow intends to rejoin at — the conflict's own choice, falling back
+         * to the one already committed. Deliberately not the drawn map marker: the marker
+         * exists only while a line is drawn, so reading it would blank the row in exactly
+         * the case (a reroute solved onto the flight path) a pilot is most likely checking.
+         */
+        val selectedRejoinFix: String? = null,
     ) {
         val isActive: Boolean get() = conflict != null || context.state != WeatherDeviationState.NONE
     }
@@ -336,6 +353,8 @@ class WeatherDeviationController(
     }
 
     private fun recomputeLockedDeviations(inputs: Inputs, position: Coordinate): List<RouteWeatherConflict> {
+        // Belongs to the walk about to run; see [discardedOnRouteExcursionNM].
+        discardedOnRouteExcursionNM = null
         if (!inputs.overlay.isEnabled || !inputs.overlay.coverageAvailable || hazards.isEmpty()) {
             return emptyList()
         }
@@ -458,11 +477,28 @@ class WeatherDeviationController(
 
         val filedRoute = (listOf(origin) + RouteGeometry.upcomingRouteCoordinates(route, origin))
             .filter { it.isValid }
-        return softened.mapNotNull { deviation ->
+        var discarded: Double? = null
+        val measured = softened.mapNotNull { deviation ->
             deviation.maxRouteExcursionNM = detector.routeExcursionNM(deviation.deviationPath, filedRoute)
-            deviation.takeIf { it.maxRouteExcursionNM >= detector.config.minRouteExcursionNM }
+            if (deviation.maxRouteExcursionNM < detector.config.minRouteExcursionNM) {
+                // The first one thrown out is the one reported: the walk hands the flow to
+                // the next system down the route, so without this the discard — and the
+                // weather it was for — leaves no trace anywhere.
+                if (discarded == null) discarded = deviation.maxRouteExcursionNM
+                return@mapNotNull null
+            }
+            deviation
         }
+        discardedOnRouteExcursionNM = discarded
+        return measured
     }
+
+    /**
+     * How far off the route the last reroute thrown out for deviating nowhere actually
+     * solved, or null when this walk threw none out. Belongs to the walk that produced it —
+     * a stale value would explain away weather the current recompute never looked at.
+     */
+    private var discardedOnRouteExcursionNM: Double? = null
 
     /**
      * Soften the final turn back onto the route by rejoining at a fix farther down it.
@@ -1156,7 +1192,73 @@ class WeatherDeviationController(
             actions = actions(inputs),
             statusLine = statusLine(inputs),
             bannerText = bannerText(inputs),
+            routeConflictStatus = routeConflictStatus(inputs),
+            selectedRejoinFix = activeConflict?.rejoinFix?.name ?: context.rejoinFix,
         )
+    }
+
+    /**
+     * The "Route conflict" line, in the three cases iOS distinguishes.
+     *
+     * The distinctions are the whole value of the row. An active conflict is qualified by
+     * whether it is close enough to work now ("— monitoring" until then) and by whether its
+     * solved reroute actually leaves the route — because when it does not, no mint line is
+     * drawn, and a card reporting a conflict the map shows no line for reads as a bug rather
+     * than a suppressed line. With no active conflict, qualifying weather still sitting on
+     * the route is reported as monitored rather than as "No conflict", which would contradict
+     * the cells the map is painting straight ahead. Only a genuinely clear route says so.
+     */
+    private fun routeConflictStatus(inputs: Inputs): String {
+        val floor = detector.config.minRouteExcursionNM
+        // A reroute the walk threw out for solving onto the flight path, reported wherever
+        // the readout lands. Discarding one hands the flow to the next system down the
+        // route, so the usual outcome is an ordinary conflict line for *that* deviation with
+        // the discard invisible; this is the sentence that keeps it on the record either way.
+        val discardNote = discardedOnRouteExcursionNM?.let {
+            String.format(
+                Locale.US,
+                " (an earlier reroute solved %.1f NM off the route, floor %.0f NM — discarded)",
+                it, floor,
+            )
+        } ?: ""
+
+        val conflict = activeConflict
+        if (conflict != null) {
+            val stage = if (conflict.withinTacticalRange) "" else " — monitoring"
+            // Name the measurement and the floor it missed rather than saying "no lateral
+            // deviation available", which this branch never means: a small number is a line
+            // solved along the flight path, 0.0 the degenerate fallback with no candidate.
+            val measured = if (conflict.maxRouteExcursionNM < Double.MAX_VALUE) {
+                String.format(
+                    Locale.US, " (solved %.1f NM off it, floor %.0f NM)",
+                    conflict.maxRouteExcursionNM, floor,
+                )
+            } else {
+                ""
+            }
+            val noLine = if (leavesRoute(conflict)) {
+                ""
+            } else {
+                " — reroute lies on the flight path, not drawn$measured"
+            }
+            val distance = conflict.distanceAheadNM.roundToInt()
+            return "${conflict.severity.displayLabel} ${conflict.hazard.source.label}, " +
+                "$distance NM$stage$noLine$discardNote"
+        }
+
+        val position = aircraftOrDeparture(inputs)
+        val onRoute = position?.let {
+            detector.nearestRouteHazard(
+                route = RouteGeometry.upcomingRouteCoordinates(fullRoutePolyline(inputs.plan), it),
+                from = it,
+                hazards = hazards,
+            )
+        }
+        if (onRoute != null) {
+            return "${onRoute.hazard.intensity.displayLabel} ${onRoute.hazard.source.label} " +
+                "on route, ${onRoute.distanceNM.roundToInt()} NM — monitoring$discardNote"
+        }
+        return "No conflict"
     }
 
     // endregion

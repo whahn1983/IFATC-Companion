@@ -31,6 +31,9 @@ import kotlin.test.assertTrue
  */
 class WeatherDeviationControllerTest {
 
+    /** What `rejoinMarker` labels an unnamed fix. It is a map label, never a fix name. */
+    private val REJOIN_MARKER_PLACEHOLDER = "Rejoin"
+
     private val departure = Coordinate(40.0, -95.0)
 
     /** Due north from the departure, so "along the route" and "north" are the same thing. */
@@ -306,6 +309,93 @@ class WeatherDeviationControllerTest {
             "the armed interior turn must stay in the true frame",
         )
     }
+
+    // endregion
+
+    // region The Weather Diagnostics route-conflict line
+
+    /**
+     * The row names the weather and how far ahead it is. It used to read
+     * "heavy ahead, 40 NM at 12 o'clock" — the clock position of a cell is what the *banner*
+     * is for; what Diagnostics has to answer is which hazard source found it, so a radar
+     * conflict and a SIGMET conflict can be told apart at a glance.
+     */
+    @Test
+    fun theRouteConflictRowNamesTheSeverityTheSourceAndTheDistance() {
+        val flow = controller()
+
+        flow.update(inputs(listOf(stormOnCourse(150.0)), atAlongNM = 110.0))
+
+        val status = flow.state.value.routeConflictStatus
+        assertTrue(status.startsWith("Heavy NOAA/NWS radar precipitation,"), status)
+        assertTrue(Regex("\\d+ NM").containsMatchIn(status), status)
+        assertFalse(status.contains("o'clock"), status)
+    }
+
+    /**
+     * Weather detected far down the route is monitored, not yet worked. Without the
+     * qualifier the row is indistinguishable from a conflict the banner should already have
+     * raised, and the absent banner reads as the bug.
+     */
+    @Test
+    fun weatherBeyondTacticalRangeIsReportedAsMonitoring() {
+        val flow = controller()
+
+        flow.update(inputs(listOf(stormOnCourse(320.0)), atAlongNM = 30.0))
+
+        val status = flow.state.value.routeConflictStatus
+        assertTrue(status.contains("monitoring"), status)
+    }
+
+    /** A route with nothing on it says so, and says nothing more. */
+    @Test
+    fun aClearRouteReportsNoConflict() {
+        val flow = controller()
+
+        flow.update(inputs(emptyList(), atAlongNM = 110.0))
+
+        assertEquals("No conflict", flow.state.value.routeConflictStatus)
+    }
+
+    /**
+     * The rejoin fix is the flow's own choice, not the drawn map marker.
+     *
+     * Reading the marker blanked the row in exactly the case a pilot is most likely checking
+     * it — a conflict whose reroute solves onto the flight path, so nothing is drawn — and,
+     * for a committed deviation with no stored fix, printed the literal word "Rejoin", which
+     * is not a fix and appears in no flight plan. This pins the source of the value both
+     * before and after the deviation is committed; the undrawn-line case is not reachable
+     * from this fixture's geometry.
+     */
+    @Test
+    fun theRejoinFixFollowsTheFlowNotTheMapMarker() {
+        val flow = controller()
+        val cells = listOf(stormOnCourse(150.0))
+
+        flow.update(inputs(cells, atAlongNM = 110.0))
+
+        val detected = flow.state.value
+        val conflict = assertNotNull(detected.conflict, "the fixture must produce a conflict here")
+        val fix = assertNotNull(conflict.rejoinFix?.name, "and one that picked a rejoin fix")
+        assertEquals(fix, detected.selectedRejoinFix)
+        assertTrue(fix != REJOIN_MARKER_PLACEHOLDER, "the fixture must exercise a real fix name")
+
+        flow.perform(WeatherDeviationAction.REQUEST_RIGHT_DEVIATION, inputs(cells, atAlongNM = 110.0))
+
+        val committed = flow.state.value
+        assertEquals(
+            committed.context.rejoinFix, committed.selectedRejoinFix,
+            "once committed the row follows the stored fix",
+        )
+        assertTrue(
+            committed.selectedRejoinFix != REJOIN_MARKER_PLACEHOLDER,
+            "the marker's placeholder name must never reach the diagnostics row",
+        )
+    }
+
+    // endregion
+
+    // region Deviation lifecycle
 
     @Test
     fun reportingClearOfWeatherEndsTheDeviation() {

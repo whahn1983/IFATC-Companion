@@ -431,6 +431,35 @@ still passed. When porting a conversion, read the iOS comment on the field, not 
 function. `WeatherDeviationControllerTest.theSpokenHeadingIsCorrectedButTheStoredTurnGeometryStaysTrue`
 now pins it.
 
+**A row existing is not the same as a row being right.** The Weather Diagnostics card was
+declared closed on the strength of having all eighteen of iOS's rows. An adversarial audit
+against the iOS originals then found four of them reading the wrong source: the precip
+source named the last covered provider over a region with no coverage, the route-conflict
+line answered "No conflict" for weather the map was painting straight ahead, the rejoin fix
+read the drawn map marker (so it blanked in the case a pilot checks it, and could print the
+marker's placeholder word "Rejoin"), and the sim-reported wind was fed the steering-filtered
+wind, so the implausible reading the row exists to expose made the row vanish instead. When
+closing a "this screen is missing rows" gap, diff what each row is FED, not just that it
+renders — and check the composition, not only the field. Two of those four were multi-branch
+strings on iOS that Android had collapsed to one branch.
+
+**Diagnostics text that needs engine internals belongs in the engine.** The route-conflict
+and rejoin-fix lines need the detector, its excursion floor, and the record of a reroute
+discarded for solving onto the flight path. Assembled in `ScreenModels.kt` from only the
+fields that happened to be published, they were silently the useless version of themselves.
+Composed on `WeatherDeviationController.State`, they are correct *and* testable in `:core` —
+which matters doubly here, because `ScreenModels.kt` is one of the CI-only files.
+
+**Frame discipline is a whole-tree property, not a per-feature one.** Hunting for
+true-vs-magnetic mixes in the weather flow turned one up in the surface pipeline instead:
+`FlightViewModel` fed `AircraftState.heading` (magnetic) to `updateLive` where iOS feeds
+`trueHeading ?? heading`. Everything downstream is true-frame — the runway-crossing gate
+against a great-circle bearing, the taxi route's 120° reversal and U-turn tests against leg
+bearings, and the aircraft symbol on a north-up canvas — so at a field with 15°E variation
+the symbol sat askew on the taxiway and the A* seed test could drop the forward endpoint and
+plan the route backwards. Every other Android site already preferred true. When you audit one
+frame conversion, grep every reader of `AircraftState.heading` in the tree.
+
 **A per-tick owner is a component too.** `HeadingSolver` was ported in full, tested, and
 correct — and produced nothing, because every function in it is pure over one sample and
 nothing held the running estimate between samples. Two of its pieces

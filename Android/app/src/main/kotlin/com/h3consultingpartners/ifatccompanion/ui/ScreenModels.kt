@@ -9,6 +9,7 @@ import com.h3consultingpartners.ifatccompanion.core.geo.Coordinate
 import com.h3consultingpartners.ifatccompanion.core.geo.Geo
 import com.h3consultingpartners.ifatccompanion.core.geo.WindEstimator
 import com.h3consultingpartners.ifatccompanion.core.model.ATCFacility
+import com.h3consultingpartners.ifatccompanion.core.model.AircraftState
 import com.h3consultingpartners.ifatccompanion.core.persistence.SavedFlight
 import com.h3consultingpartners.ifatccompanion.core.phraseology.PhraseologyProfilesState
 import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticRecord
@@ -415,7 +416,7 @@ fun FlightViewModel.diagnosticsModel(
         atisSummary = atisDiagnosticsSummary(weather),
         weatherEndpointText = weather.status,
         weatherDiagnostics = weatherDiagnosticRows(
-            weather, deviation, windDiagnostics(), departureHeadingSummary(),
+            weather, deviation, session.aircraftState, windDiagnostics(), departureHeadingSummary(),
         ),
         showSampledRadarCells = ui.showSampledRadarCells,
         discoveredStateCount = connect.manifestEntries.size,
@@ -476,22 +477,29 @@ private fun atisDiagnosticsSummary(weather: WeatherSessionState): String? {
 private fun weatherDiagnosticRows(
     weather: WeatherSessionState,
     deviation: WeatherDeviationController.State,
+    aircraft: AircraftState,
     wind: WindEstimator,
     departureHeadingSummary: String?,
 ): List<Pair<String, String>> {
     val overlay = weather.radarOverlay
     val d = WeatherProviderDiagnostics(
-        radarSource = overlay.sourceDescription,
+        // "None" rather than the last provider's name when nothing covers the region. The
+        // no-provider branch of the overlay refresh leaves sourceDescription untouched, so
+        // passing it through unconditionally reports NOAA radar as the active source over an
+        // ocean — or over Europe, after a leg change drops coverage — beside "Coverage: No".
+        radarSource = if (overlay.coverageAvailable) {
+            "${overlay.sourceDescription} (${overlay.layerLabel})"
+        } else {
+            "None"
+        },
         radarCoverageAvailable = overlay.coverageAvailable,
         lastRadarUpdateMillis = overlay.lastUpdatedMillis,
         lastAviationUpdateMillis = weather.lastUpdateMillis,
         hazardCount = deviation.hazards.size,
-        routeConflictStatus = deviation.conflict?.let { conflict ->
-            "${conflict.severity.name.lowercase()} ahead, " +
-                "${conflict.distanceAheadNM.roundToInt()} NM at " +
-                "${conflict.centerClock} o'clock"
-        } ?: "No conflict",
-        selectedRejoinFix = deviation.rejoinMarker?.name,
+        // Both composed in the controller: they need the detector, its excursion floor and
+        // the record of a discarded reroute, none of which belong in a UI mapper.
+        routeConflictStatus = deviation.routeConflictStatus,
+        selectedRejoinFix = deviation.selectedRejoinFix,
         lastDeviationStateRawValue = deviation.context.state.rawValue,
         coverageMessage = overlay.unavailableMessage.takeIf { !overlay.coverageAvailable },
         // The two winds and the declination that turn a mint-line leg (a *true* course)
@@ -501,8 +509,14 @@ private fun weatherDiagnosticRows(
         // the solved wind is solved independently of the one being steered by.
         solvedWindFromDegrees = wind.solved?.fromDegrees,
         solvedWindKnots = wind.solved?.speedKnots,
-        reportedWindDirectionTrue = wind.reported?.fromDegrees,
-        reportedWindKnots = wind.reported?.speedKnots,
+        // Straight off the telemetry, deliberately NOT through `wind.reported`. That path
+        // drops a reading above the plausibility cap and floors anything under 2 kt to
+        // calm — correct for the wind that is *steered by*, and exactly wrong for the row
+        // whose job is to be held up against Infinite Flight's own panel. A build reporting
+        // 460 kt is the one case this row exists to show, and the filter would make the row
+        // vanish instead.
+        reportedWindDirectionTrue = aircraft.reportedWindDirectionTrue,
+        reportedWindKnots = aircraft.reportedWindSpeedKnots,
         windSourceIsSimReported = wind.isSimReported,
         magneticVariationEast = wind.variationDegreesEast,
         // The two ends of the last correction actually applied. Printed as a pair rather
@@ -516,7 +530,6 @@ private fun weatherDiagnosticRows(
     return listOfNotNull(
         "Precip source" to d.radarSource,
         "Overlay coverage" to d.coverageText,
-        "Overlay layer" to overlay.layerLabel,
         "Last radar update" to formatClockTime(d.lastRadarUpdateMillis),
         "Last aviation wx update" to formatClockTime(d.lastAviationUpdateMillis),
         "METARs" to listOfNotNull(
