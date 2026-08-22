@@ -21,6 +21,8 @@ import com.h3consultingpartners.ifatccompanion.core.mock.MockSimulatorFeed
 import com.h3consultingpartners.ifatccompanion.core.net.AppHttp
 import com.h3consultingpartners.ifatccompanion.core.net.HttpFetching
 import com.h3consultingpartners.ifatccompanion.core.net.OkHttpFetcher
+import com.h3consultingpartners.ifatccompanion.core.persistence.SavedFlightStore
+import com.h3consultingpartners.ifatccompanion.core.persistence.SavedFlightsController
 import com.h3consultingpartners.ifatccompanion.core.persistence.SessionStateStore
 import com.h3consultingpartners.ifatccompanion.core.phraseology.PhraseologyMode
 import com.h3consultingpartners.ifatccompanion.core.phraseology.PhraseologyProfileStore
@@ -116,6 +118,52 @@ class AppGraph private constructor(
     }
 
     val settingsRepository: SettingsRepository by lazy { SettingsRepository(settingsStore) }
+
+    /** The pilot's library of flights. Ported with tests since the start; wired only now. */
+    val savedFlightStore: SavedFlightStore by lazy {
+        SavedFlightStore(files = fileStore, clock = clock).also { it.load() }
+    }
+
+    /**
+     * Save, clear and load a flight.
+     *
+     * The engines it resets are the ones the coordinator does not own — weather, ATIS, the
+     * airport surface, the speech queue. iOS resets all of it inside one `AppModel`; here
+     * the split is real, so putting a flight down has to reach each of them.
+     */
+    val savedFlights: SavedFlightsController by lazy {
+        SavedFlightsController(
+            store = savedFlightStore,
+            diagnostics = diagnostics,
+            session = { flightSessionCoordinator.state.value },
+            captureSnapshot = { flightSessionCoordinator.captureSnapshot() },
+            resetSession = {
+                flightSessionCoordinator.resetForNewFlight()
+                // Everything the coordinator does not own. iOS resets all of this inside one
+                // AppModel; here the split is real, so putting a flight down has to reach
+                // each engine that was holding a piece of it. Silence first — a half-spoken
+                // clearance for a flight that no longer exists is the most obviously wrong
+                // thing the app could do.
+                speech.stop()
+                chatter.stop()
+                surfaceRouting.clear()
+                weather.clearSmootherAltitude()
+            },
+            restoreSession = { snapshot ->
+                flightSessionCoordinator.restore(snapshot)
+                // The world is re-derived rather than restored: the aircraft's real position
+                // and the weather on the route are whatever they are now, not what they were
+                // when the flight was put away.
+                applicationScope.launch {
+                    surface.refresh(snapshot.flightPlan ?: flightSessionCoordinator.state.value.flightPlan)
+                    weather.refresh()
+                    weather.refreshAtis()
+                }
+            },
+            clearResumableSession = { sessionStore.clear() },
+            settings = { settingsRepository.state.value.autoSaveFlights },
+        )
+    }
 
     val entitlements: PlayBillingRepository by lazy {
         PlayBillingRepository(
@@ -252,6 +300,10 @@ class AppGraph private constructor(
             // short of 27". The route engine has always been able to produce this; nothing
             // carried it into the clearance.
             taxiContextProvider = { surfaceRouting.taxiClearanceContext() },
+            // Reaching `savedFlights`, which reaches back here, is not a cycle: neither
+            // lambda runs during construction, and by the time either is invoked both are
+            // built. Same arrangement as `speech` and `chatter` above.
+            savedFlightBinding = { savedFlights.binding() },
         ).also { coordinator ->
             // The taxi phrasing must follow the pilot's digit style and phraseology pack
             // like every other line, so it tracks the same engine rather than snapshotting

@@ -13,9 +13,11 @@ import com.h3consultingpartners.ifatccompanion.core.session.FlightSessionState
 import com.h3consultingpartners.ifatccompanion.ui.map.RouteMap
 import com.h3consultingpartners.ifatccompanion.ui.map.TaxiMap
 import com.h3consultingpartners.ifatccompanion.ui.screens.AppTab
+import com.h3consultingpartners.ifatccompanion.ui.screens.AtcDestination
 import com.h3consultingpartners.ifatccompanion.ui.screens.AtcScreen
 import com.h3consultingpartners.ifatccompanion.ui.screens.DiagnosticsScreen
 import com.h3consultingpartners.ifatccompanion.ui.screens.FlightScreen
+import com.h3consultingpartners.ifatccompanion.ui.screens.FlightsScreen
 import com.h3consultingpartners.ifatccompanion.ui.screens.PhraseologyProfilesScreen
 import com.h3consultingpartners.ifatccompanion.ui.screens.SettingsScreen
 import com.h3consultingpartners.ifatccompanion.ui.screens.SubscriptionScreen
@@ -50,6 +52,9 @@ fun AppNavHost(
     modifier: Modifier = Modifier,
     onRequestMicrophone: () -> Boolean = { false },
     onSelectTab: (AppTab) -> Unit = {},
+    /** Where the ATC tab is. Owned by the shell, which draws the top bar that must agree. */
+    atcDestination: AtcDestination = AtcDestination.ROOT,
+    onAtcDestination: (AtcDestination) -> Unit = {},
 ) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val weather by viewModel.weatherState.collectAsStateWithLifecycle()
@@ -63,6 +68,8 @@ fun AppNavHost(
     val routing by viewModel.surfaceRouting.collectAsStateWithLifecycle()
     val baseMap by viewModel.baseMap.collectAsStateWithLifecycle()
     val radarRaster by viewModel.radarRaster.collectAsStateWithLifecycle()
+    val savedFlights by viewModel.savedFlights.collectAsStateWithLifecycle()
+    val activeSavedFlightID by viewModel.activeSavedFlightID.collectAsStateWithLifecycle()
     var settingsDestination by rememberSaveable { mutableStateOf(SettingsDestination.ROOT) }
 
     // The subscribe banner on the ATC tab cannot navigate itself — this file owns the
@@ -84,8 +91,26 @@ fun AppNavHost(
         }
     }
 
+    // System back leaves the flights list before it leaves the app.
+    BackHandler(enabled = tab == AppTab.ATC && atcDestination == AtcDestination.FLIGHTS) {
+        onAtcDestination(AtcDestination.ROOT)
+    }
+
     when (tab) {
-        AppTab.ATC -> AtcScreen(
+        AppTab.ATC -> if (atcDestination == AtcDestination.FLIGHTS) {
+            FlightsScreen(
+                model = viewModel.flightsModel(
+                    session = session,
+                    settings = settings,
+                    flights = savedFlights,
+                    activeFlightID = activeSavedFlightID,
+                    nowMillis = viewModel.nowMillis(),
+                ),
+                actions = viewModel.flightsActions(),
+                modifier = modifier,
+            )
+        } else {
+            AtcScreen(
             model = viewModel.atcModel(session, settings, weather, ui),
             actions = viewModel.atcActions(onRequestMicrophone),
             modifier = modifier,
@@ -102,7 +127,8 @@ fun AppNavHost(
                     onCrossingReadback = viewModel::onCrossingReadback,
                 )
             },
-        )
+            )
+        }
 
         AppTab.FLIGHT -> FlightScreen(
             model = viewModel.flightModel(session, settings, ui),

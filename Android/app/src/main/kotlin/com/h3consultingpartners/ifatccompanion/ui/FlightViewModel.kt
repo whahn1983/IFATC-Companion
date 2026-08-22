@@ -14,6 +14,7 @@ import com.h3consultingpartners.ifatccompanion.core.geo.Coordinate
 import com.h3consultingpartners.ifatccompanion.core.model.ATCFacility
 import com.h3consultingpartners.ifatccompanion.core.model.ATCState
 import com.h3consultingpartners.ifatccompanion.core.model.FlightPlan
+import com.h3consultingpartners.ifatccompanion.core.persistence.SavedFlight
 import com.h3consultingpartners.ifatccompanion.core.phraseology.PhraseologyProfile
 import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticCategory
 import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticLevel
@@ -122,6 +123,8 @@ class FlightViewModel(
         observeBaseMapImagery()
 
         observeRadarRaster()
+
+        observeAutoSave()
 
         // Load the airport surface whenever the flight's endpoints change.
         //
@@ -333,6 +336,79 @@ class FlightViewModel(
             return
         }
         graph.radarRaster.load(region, RADAR_RASTER_SIZE)?.let { _radarRaster.value = it }
+    }
+
+    // endregion
+
+    // region Saved flights
+
+    /** The pilot's library, newest first — whatever the store currently holds. */
+    val savedFlights: StateFlow<List<SavedFlight>> = graph.savedFlightStore.flights
+
+    /** The slot the live session is bound to, so the list can mark which flight is flying. */
+    val activeSavedFlightID: StateFlow<String?> = graph.savedFlightStore.activeFlightID
+
+    /**
+     * Save the flight in progress.
+     *
+     * The controller refuses whatever the disabled button refuses, so a save that arrives
+     * from a confirmation dialog is held to the same rule.
+     */
+    fun onSaveCurrentFlight() {
+        graph.savedFlights.saveCurrentFlight()
+        coordinator.refreshSavedFlightState()
+    }
+
+    /** Put this flight down and start again from the gate, keeping the plan and settings. */
+    fun onStartNewFlight() {
+        graph.savedFlights.startNewFlight()
+        coordinator.refreshSavedFlightState()
+    }
+
+    /** Carry on a previous flight exactly where it was left. */
+    fun onLoadSavedFlight(flight: SavedFlight) {
+        graph.savedFlights.loadSavedFlight(flight)
+        coordinator.refreshSavedFlightState()
+    }
+
+    /**
+     * Remove a saved flight. Deleting the one being flown unbinds it rather than ending it —
+     * the flight carries on and simply stops being saved anywhere, which is why the session
+     * has to be told to re-read the library afterwards.
+     */
+    fun onDeleteSavedFlight(flight: SavedFlight) {
+        graph.savedFlights.deleteSavedFlight(flight)
+        coordinator.refreshSavedFlightState()
+    }
+
+    /**
+     * The clock, for the list's "saved 3 min ago".
+     *
+     * Read through the graph rather than `System.currentTimeMillis()` so the whole app has
+     * one notion of now — the same `Clock` every engine and every test is built against.
+     */
+    fun nowMillis(): Long = graph.clock.nowMillis()
+
+    /** The route warning shown before loading, or null when the routes agree. */
+    fun endpointMismatch(flight: SavedFlight): String? = graph.savedFlights.endpointMismatch(flight)
+
+    /**
+     * Keep a bound slot current as the flight progresses.
+     *
+     * Hung off the transcript growing rather than a timer, for the same reason the crash
+     * snapshot is: transmissions are seconds apart at their densest, and the transcript is
+     * the part a reload cannot reconstruct from the next telemetry fix.
+     */
+    private fun observeAutoSave() {
+        viewModelScope.launch {
+            session
+                .map { it.transcript.size }
+                .distinctUntilChanged()
+                .collect { size ->
+                    if (size == 0) return@collect
+                    graph.savedFlights.autoSave()
+                }
+        }
     }
 
     // endregion

@@ -45,6 +45,13 @@ fun AppShell(
     title: String,
     modifier: Modifier = Modifier,
     topBarActions: @Composable () -> Unit = {},
+    /**
+     * The top-left control. Empty on a tab root; a back arrow on a screen pushed over one.
+     *
+     * Android's system back gesture handles this too, but a visible affordance is what tells
+     * the pilot they are one level down rather than on a tab that has changed shape.
+     */
+    navigationIcon: @Composable () -> Unit = {},
     content: @Composable (Modifier) -> Unit,
 ) {
     Scaffold(
@@ -52,6 +59,7 @@ fun AppShell(
         topBar = {
             TopAppBar(
                 title = { Text(title) },
+                navigationIcon = { navigationIcon() },
                 actions = { topBarActions() },
             )
         },
@@ -73,3 +81,12 @@ fun AppShell(
         }
     }
 }
+
+/**
+ * Where the ATC tab is: its own screen, or the saved-flights list pushed over it.
+ *
+ * iOS pushes `FlightsListView` onto the ATC navigation stack, so the flights live under ATC
+ * rather than in a tab of their own. Kept the same here: a pilot looking for their flights
+ * should find them where they found them on the other device.
+ */
+enum class AtcDestination { ROOT, FLIGHTS }

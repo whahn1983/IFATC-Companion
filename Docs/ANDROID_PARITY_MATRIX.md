@@ -278,13 +278,12 @@ Stated plainly, and none of them hidden behind a ✅ elsewhere in this file.
    Flight installation to connect to. Nothing in the port has been *heard* — the radio
    effect chain, the TTS voices, the chatter mix and the squelch bursts are all ported
    maths that has never been played.
-3. **The Flights list screen** is not built (the store behind it is).
-4. **Play In-App Review** is not called. The engagement counting that decides *when* to
+3. **Play In-App Review** is not called. The engagement counting that decides *when* to
    ask is ported; the Play API call itself is not.
-5. **The go-around re-establish loop** is not wired into the airborne ladder: the action
+4. **The go-around re-establish loop** is not wired into the airborne ladder: the action
    and its phraseology are ported, but after a go-around the automatic flow does not yet
    hold for the pilot to re-establish with Approach the way iOS does.
-6. **EUMETNET OPERA rendering stays off**, exactly as it is on iOS. Not a gap so much as
+5. **EUMETNET OPERA rendering stays off**, exactly as it is on iOS. Not a gap so much as
    a carried-across decision, recorded here so it is not mistaken for one.
 
 ## What was verified, and how

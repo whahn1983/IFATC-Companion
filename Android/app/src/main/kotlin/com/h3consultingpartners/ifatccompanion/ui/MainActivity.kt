@@ -9,12 +9,19 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.res.stringResource
 import androidx.core.content.ContextCompat
@@ -25,6 +32,8 @@ import com.h3consultingpartners.ifatccompanion.AppGraph
 import com.h3consultingpartners.ifatccompanion.R
 import com.h3consultingpartners.ifatccompanion.ui.screens.AppShell
 import com.h3consultingpartners.ifatccompanion.ui.screens.AppTab
+import com.h3consultingpartners.ifatccompanion.ui.screens.AtcDestination
+import com.h3consultingpartners.ifatccompanion.ui.screens.ClearFlightConfirmation
 import com.h3consultingpartners.ifatccompanion.ui.theme.IFATCCompanionTheme
 
 /**
@@ -128,10 +137,61 @@ class MainActivity : ComponentActivity() {
                     )
                 }
 
+                // Where the ATC tab is. Hoisted here rather than kept inside AppNavHost
+                // because the top bar is drawn by the shell *around* the nav host, and the
+                // Flights entry, the back arrow and the title all have to agree with it.
+                var atcDestination by rememberSaveable { mutableStateOf(AtcDestination.ROOT) }
+                var confirmClearFlight by rememberSaveable { mutableStateOf(false) }
+                val onAtc = tab == AppTab.ATC
+
+                if (confirmClearFlight) {
+                    ClearFlightConfirmation(
+                        hasUnsavedFlight = session.hasUnsavedFlight,
+                        canSaveCurrentFlight = session.canSaveCurrentFlight,
+                        retiredName = session.savedFlightRetiredByClearing,
+                        onSaveAndClear = {
+                            viewModel.onSaveCurrentFlight()
+                            viewModel.onStartNewFlight()
+                            confirmClearFlight = false
+                        },
+                        onClear = {
+                            viewModel.onStartNewFlight()
+                            confirmClearFlight = false
+                        },
+                        onDismiss = { confirmClearFlight = false },
+                    )
+                }
+
                 AppShell(
                     selectedTab = tab,
-                    onSelectTab = { tab = it },
-                    title = titleFor(tab),
+                    onSelectTab = {
+                        // Leaving the tab closes what was pushed over it, so coming back
+                        // lands on ATC rather than on a list the pilot had finished with.
+                        if (it != AppTab.ATC) atcDestination = AtcDestination.ROOT
+                        tab = it
+                    },
+                    title = if (onAtc && atcDestination == AtcDestination.FLIGHTS) {
+                        "Flights"
+                    } else {
+                        titleFor(tab)
+                    },
+                    navigationIcon = {
+                        if (onAtc && atcDestination == AtcDestination.FLIGHTS) {
+                            IconButton(onClick = { atcDestination = AtcDestination.ROOT }) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                            }
+                        }
+                    },
+                    topBarActions = {
+                        if (onAtc && atcDestination == AtcDestination.ROOT) {
+                            IconButton(onClick = { confirmClearFlight = true }) {
+                                Icon(Icons.Filled.Refresh, contentDescription = "Clear Flight")
+                            }
+                            IconButton(onClick = { atcDestination = AtcDestination.FLIGHTS }) {
+                                Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Flights")
+                            }
+                        }
+                    },
                 ) { modifier ->
                     AppNavHost(
                         tab = tab,
@@ -140,6 +200,8 @@ class MainActivity : ComponentActivity() {
                         modifier = modifier,
                         onRequestMicrophone = ::ensureMicrophonePermission,
                         onSelectTab = { tab = it },
+                        atcDestination = atcDestination,
+                        onAtcDestination = { atcDestination = it },
                     )
                 }
             }

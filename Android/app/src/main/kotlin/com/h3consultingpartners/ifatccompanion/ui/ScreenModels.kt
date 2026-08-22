@@ -7,6 +7,7 @@ import com.h3consultingpartners.ifatccompanion.core.config.AppConfig
 import com.h3consultingpartners.ifatccompanion.core.connect.IFConnectState
 import com.h3consultingpartners.ifatccompanion.core.geo.Coordinate
 import com.h3consultingpartners.ifatccompanion.core.model.ATCFacility
+import com.h3consultingpartners.ifatccompanion.core.persistence.SavedFlight
 import com.h3consultingpartners.ifatccompanion.core.phraseology.PhraseologyProfilesState
 import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticRecord
 import com.h3consultingpartners.ifatccompanion.core.session.FlightSessionState
@@ -25,6 +26,8 @@ import com.h3consultingpartners.ifatccompanion.ui.screens.DiagnosticsScreenActio
 import com.h3consultingpartners.ifatccompanion.ui.screens.DiagnosticsScreenModel
 import com.h3consultingpartners.ifatccompanion.ui.screens.FlightScreenActions
 import com.h3consultingpartners.ifatccompanion.ui.screens.FlightScreenModel
+import com.h3consultingpartners.ifatccompanion.ui.screens.FlightsScreenActions
+import com.h3consultingpartners.ifatccompanion.ui.screens.FlightsScreenModel
 import com.h3consultingpartners.ifatccompanion.ui.screens.PhraseologyProfilesActions
 import com.h3consultingpartners.ifatccompanion.ui.screens.PhraseologyProfilesModel
 import com.h3consultingpartners.ifatccompanion.ui.screens.SettingsScreenActions
@@ -505,3 +508,52 @@ private fun standPosition(surface: SurfaceSessionState, arriving: Boolean, gate:
 }
 
 // endregion
+
+/**
+ * The Flights list's model.
+ *
+ * "How long ago" is formatted here rather than in the screen: the screen is compiled by
+ * `:uicheck` against desktop Compose with no Android SDK, and a relative-time format is
+ * exactly the kind of thing that would reach for one.
+ */
+fun FlightViewModel.flightsModel(
+    session: FlightSessionState,
+    settings: AppSettings,
+    flights: List<SavedFlight>,
+    activeFlightID: String?,
+    nowMillis: Long,
+): FlightsScreenModel = FlightsScreenModel(
+    flights = flights,
+    activeFlightID = activeFlightID,
+    canSaveCurrentFlight = session.canSaveCurrentFlight,
+    hasUnsavedFlight = session.hasUnsavedFlight,
+    retiredByNewFlight = session.savedFlightRetiredByClearing,
+    mockMode = settings.mockMode,
+    savedAgo = flights.associate { it.id to relativeTime(nowMillis - it.savedAtMillis) },
+)
+
+fun FlightViewModel.flightsActions(): FlightsScreenActions = FlightsScreenActions(
+    onSave = ::onSaveCurrentFlight,
+    onStartNewFlight = ::onStartNewFlight,
+    onLoad = ::onLoadSavedFlight,
+    onDelete = ::onDeleteSavedFlight,
+    endpointMismatch = ::endpointMismatch,
+)
+
+/**
+ * "3 minutes ago" and friends, coarse on purpose.
+ *
+ * A saved flight's age is context, not a measurement: the pilot is deciding which of three
+ * rows to tap, and a ticking seconds count would redraw the list for no gain.
+ */
+private fun relativeTime(elapsedMillis: Long): String {
+    if (elapsedMillis < 0) return "just now"
+    val minutes = elapsedMillis / 60_000
+    return when {
+        minutes < 1 -> "just now"
+        minutes < 60 -> "$minutes min ago"
+        minutes < 60 * 24 -> "${minutes / 60} hr ago"
+        minutes < 60 * 24 * 7 -> "${minutes / (60 * 24)} days ago"
+        else -> "${minutes / (60 * 24 * 7)} weeks ago"
+    }
+}
