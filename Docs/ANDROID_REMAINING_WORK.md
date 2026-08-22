@@ -8,7 +8,7 @@ Sizes are the real cost including tests, not the size of the diff. "Needs a devi
 the work cannot be trusted without running it, and this repository's CI has no device or
 emulator: it compiles `:app`, gates Android Lint, and runs R8, and that is all it can do.
 
-Status at the time of writing: `:core` is **1035 tests / 87 classes / 0 failures**; `:app`
+Status at the time of writing: `:core` is **1040 tests / 88 classes / 0 failures**; `:app`
 compiles, lints clean under `abortOnError = true`, and produces a minified release bundle.
 
 ---
@@ -45,8 +45,8 @@ is precisely why it survived this long, and why the 🔌 status exists.
 controller reply on any frequency**, **Say Again never makes the controller repeat**, and
 **Unable is answered with silence**.
 
-**Status: 76 of the 100 are closed and three are partly closed, and all 37 rated high are
-done.** What remains is 9 medium and 12 low, listed with their evidence in
+**Status: 80 of the 100 are closed and three are partly closed, and all 37 rated high are
+done.** What remains is 7 medium and 10 low, listed with their evidence in
 `ANDROID_PARITY_GAPS.md`. None of them stops a gate-to-gate flight.
 
 The deliberate differences that remain are recorded in `ANDROID_PARITY_MATRIX.md` (🔵) and

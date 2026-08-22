@@ -847,13 +847,57 @@ class FlightSessionCoordinator(
         }
     }
 
+    /**
+     * Tower's takeoff clearance, once the aircraft is actually on the runway.
+     *
+     * Three cases, as iOS has them:
+     *
+     * - **Already rolling.** The aircraft has begun its take-off run, so the clearance is
+     *   overdue; issue it at once.
+     * - **Lined up and stopped.** Arm a short countdown and clear only when it expires and
+     *   the aircraft is *still* lined up. A real controller does not key the mic the
+     *   instant the nose swings onto the centreline; Android's did, so the clearance
+     *   arrived mid-turn, before the aircraft had settled.
+     * - **Neither.** Still manoeuvring onto the runway — disarm, so a pilot who lines up,
+     *   thinks better of it and taxis clear is not cleared for take-off from the taxiway.
+     *
+     * The countdown is a clock reading rather than a timer because this runs off the 1 Hz
+     * telemetry tick: every tick re-checks the conditions, which is exactly the re-check
+     * iOS does when its timer fires, and it cannot fire against a stale picture.
+     */
     private fun maybeIssueTakeoffClearance(aircraft: AircraftState) {
         if (stateMachine.current != ATCState.LINE_UP_WAIT && !_state.value.monitoringTower) return
         val runway = buildContext(stateMachine.current).runway
-        val ready = lineupDetector.isLinedUp(aircraft, runway) ||
-            lineupDetector.isDepartingRoll(aircraft, runway) ||
+        val rolling = lineupDetector.isDepartingRoll(aircraft, runway) ||
             _state.value.phase == FlightPhase.TAKEOFF
-        if (!ready) return
+        val linedUp = lineupDetector.isLinedUp(aircraft, runway)
+
+        if (!rolling && !linedUp) {
+            takeoffClearanceArmedAtMillis = null
+            return
+        }
+
+        if (!rolling) {
+            val stopped = (aircraft.onGround ?: true) &&
+                (aircraft.groundSpeed ?: 0.0) < LINED_UP_STOPPED_GROUND_SPEED
+            if (!stopped) {
+                // Lined up and still moving: rolling into position, not holding on it.
+                takeoffClearanceArmedAtMillis = null
+                return
+            }
+            val armedAt = takeoffClearanceArmedAtMillis
+            if (armedAt == null) {
+                takeoffClearanceArmedAtMillis = clock.nowMillis()
+                return
+            }
+            if (clock.nowMillis() - armedAt < TAKEOFF_CLEARANCE_DELAY_MILLIS) return
+            if (_state.value.hasDeparted) {
+                takeoffClearanceArmedAtMillis = null
+                return
+            }
+        }
+
+        takeoffClearanceArmedAtMillis = null
         // When Ground already handed the pilot to Tower to monitor, that call *was* the
         // hand-off, so the clearance must not re-announce a "contact Tower".
         advanceAndPost(
@@ -862,6 +906,9 @@ class FlightSessionCoordinator(
             announceHandoff = !_state.value.monitoringTower,
         )
     }
+
+    /** When the aircraft first settled lined up and stopped, or null if it has not. */
+    private var takeoffClearanceArmedAtMillis: Long? = null
 
     /**
      * Advance the state machine and post the resulting controller call, preceded by a
@@ -2113,6 +2160,7 @@ class FlightSessionCoordinator(
         departureFieldElevationMSL = 0.0
         liftoffAltitudeMSL = 0.0
         flightCompleteAnnounced = false
+        takeoffClearanceArmedAtMillis = null
 
         val plan = _state.value.flightPlan
         _state.value = FlightSessionState(
@@ -2937,6 +2985,15 @@ class FlightSessionCoordinator(
 
         /** The heading vectors fall back to with no telemetry at all. */
         const val FALLBACK_VECTOR_HEADING = 270.0
+
+        /**
+         * How long an aircraft holds on the runway before Tower clears it for take-off.
+         * iOS uses the same five seconds.
+         */
+        const val TAKEOFF_CLEARANCE_DELAY_MILLIS = 5_000L
+
+        /** Below this, an aircraft lined up on the runway is holding rather than rolling. */
+        const val LINED_UP_STOPPED_GROUND_SPEED = 5.0
 
         /** The seed a plan with no numeric flight number falls back to. iOS uses the same. */
         const val SQUAWK_FALLBACK_SEED = 4271

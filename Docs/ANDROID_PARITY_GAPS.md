@@ -14,8 +14,8 @@ verified by hand against both sources before this document was written: the chec
 
 ## Progress
 
-76 of the 100 are closed and three are partly closed; the rest stand. **All 37 rated high
-are closed** — every gap a pilot meets in a normal flight. What remains is 9 medium and 12
+80 of the 100 are closed and three are partly closed; the rest stand. **All 37 rated high
+are closed** — every gap a pilot meets in a normal flight. What remains is 7 medium and 10
 low. Each closed entry below carries a ✅ (or 🟡) line naming what closes it and, where a
 piece is still open, what that piece is — so this document stays the record of what the
 audit found *and* of what has been done about it rather than being quietly rewritten.
@@ -456,6 +456,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** `resolveRunway` (FlightSessionCoordinator.kt:1535-1544) checks the filed arrival/departure/plan runway and then returns `RunwayDatabase.runways(icao).firstOrNull().orEmpty()` — the first ident in the table, not the into-wind active runway. It never consults the parsed approach procedure, never consults the loaded surface, and returns an empty string at any field outside the built-in table (so the clearance reads "runway , cleared for takeoff"). `ATCContext.runwayIsKnown` is never set, so it stays `true` even for a derived runway.
 
 **Takeoff clearance fires the instant the aircraft is lined up, with no delay and no stopped check**  
+✅ Closed: `maybeIssueTakeoffClearance` clears an aircraft already rolling at once, arms a five-second hold for one lined up *and stopped*, and disarms when it manoeuvres off — re-checked on every telemetry tick rather than by a timer that could fire against a stale picture.  
 *Behaves differently* · iOS: `IFATCCompanion/App/AppModel.swift:2293-2334 (autoAdvanceTakeoffClearance, isLinedUpAndStopped, armTakeoffClearance) and :681 (takeoffClearanceDelay = 5)`
 
 - **iOS:** If the aircraft is already rolling, clear immediately; if it is lined up *and stopped* (`onGround && groundSpeed < 5`), arm a 5-second countdown and clear only after re-checking that it is still lined up, still not departed, the gate is still open and no human controller is staffing; if it is neither (still manoeuvring onto the runway) cancel the timer.
@@ -687,6 +688,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** `nextAltitudeStep` (FlightSessionCoordinator.kt:896-900) starts from `assignedAltitude` alone (ignoring how high the aircraft actually is), falls back to `flightPlan.cruiseAltitude` with no 35,000 ft backstop — so with no cruise altitude filed the request asks for 2,000 ft — floors at 2,000 rather than 4,000, and never consults the smoother-altitude suggestion.
 
 **The takeoff clearance is issued instantly rather than after the realism delay**  
+✅ Closed — same fix as the takeoff-clearance timing gap above.  
 *Behaves differently* · iOS: `IFATCCompanion/App/AppModel.swift:2313 (armTakeoffClearance), :681 (`var takeoffClearanceDelay: TimeInterval = 5`), :2293 (autoAdvanceTakeoffClearance)`
 
 - **iOS:** When the aircraft settles lined up and stopped, Tower waits 5 seconds, re-checks that the pilot is still lined up, has not departed, is not standing by for a human controller and does not owe a read-back, and only then clears the takeoff. An aircraft already rolling is cleared immediately.
@@ -779,12 +781,14 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** `ScreenModels.kt:431` sets `pireps = weather.pireps.filter { it.coordinate?.isValid == true }` with no turbulence filter, and `RouteMapLayers.kt:220-223` draws each one (colouring a SMOOTH report green). The map therefore carries green "nothing here" dots that the iOS map never shows — under a legend whose first entry is "Light/chop".
 
 **The ATC connection pill never says "Mock Mode"**  
+✅ Closed: the pill reads "Mock Mode" on the demo feed, and `title` rather than `detailedTitle` otherwise — the long form with the failure reason is what Settings shows.  
 *Behaves differently* · iOS: `IFATCCompanion/Views/ATCView.swift:183-185 (`connectionText = settings.mockMode ? "Mock Mode" : connect.connectionState.title`)`
 
 - **iOS:** In Mock Mode the ATC header's connection pill reads "Mock Mode" (amber). Otherwise it shows the short connection title.
 - **Android:** `ScreenModels.kt:77` sets `connectionText = session.connectionState.detailedTitle` unconditionally. Since Mock Mode is the default and nothing ever connects, the pill reads "Disconnected" with an amber dot for the whole of a mock flight. It also uses `detailedTitle` (the long form iOS reserves for Settings) rather than `title` in the space-constrained pill — `IFConnectTypes.kt:27-46` documents exactly that split.
 
 **The human-ATC standby banner shows a generic hint instead of the staffing summary**  
+✅ Closed: the banner shows `liveATC.summary` — which position is staffed and who is working it — falling back to the generic hint only when there is no summary.  
 *Behaves differently* · iOS: `IFATCCompanion/Views/ATCView.swift:371-390 (a Card headed "Human ATC Active" with `model.liveATC.summary` beneath it)`
 
 - **iOS:** When the companion steps aside for a live controller, the ATC screen shows a card titled "Human ATC Active" with the detected-staffing summary (which frequency, which controller) underneath.

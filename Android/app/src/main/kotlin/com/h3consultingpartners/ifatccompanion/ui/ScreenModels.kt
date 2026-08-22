@@ -90,8 +90,18 @@ fun FlightViewModel.atcModel(
         } else {
             session.currentFacility.title
         },
-        connectionText = session.connectionState.detailedTitle,
-        standbyText = if (session.companionStandby) PilotActionPresentation.STANDBY_HINT else null,
+        // Mock Mode is the default and nothing ever connects in it, so the pill read
+        // "Disconnected" for the whole of a demo flight. And `title`, not `detailedTitle`:
+        // the long form with the failure reason attached is what Settings shows, and
+        // IFConnectState documents that split — the pill has no room for it.
+        connectionText = if (settings.mockMode) MOCK_MODE_PILL else session.connectionState.title,
+        // The staffing summary, not a generic hint: the pilot needs to know *which*
+        // position is staffed to know whose instructions they are now following.
+        standbyText = if (session.companionStandby) {
+            session.liveATC.summary.ifBlank { PilotActionPresentation.STANDBY_HINT }
+        } else {
+            null
+        },
         weatherBannerText = weatherBannerText(weather, deviation),
         frequencyText = { facility -> formatFrequency(frequencyForFacility(facility)) },
         canTune = { facility -> facility in session.relevantFacilities },
@@ -443,6 +453,9 @@ private fun weatherDiagnosticRows(weather: WeatherSessionState): List<Pair<Strin
 // region Formatting
 
 internal const val EM_DASH = "—"
+
+/** What the ATC header's connection pill reads while the flight is running on the demo feed. */
+internal const val MOCK_MODE_PILL = "Mock Mode"
 
 /** Display form of an altitude, matching the phraseology engine: "FL370" or "5,000". */
 internal fun formatAltitude(feet: Int): String = when {
