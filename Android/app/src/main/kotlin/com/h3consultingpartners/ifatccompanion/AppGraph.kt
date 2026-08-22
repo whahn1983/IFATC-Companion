@@ -45,6 +45,7 @@ import com.h3consultingpartners.ifatccompanion.core.surface.routing.AirportSurfa
 import com.h3consultingpartners.ifatccompanion.core.surface.routing.TaxiKind
 import com.h3consultingpartners.ifatccompanion.core.weather.AviationWeatherService
 import com.h3consultingpartners.ifatccompanion.core.weather.WeatherSessionController
+import com.h3consultingpartners.ifatccompanion.core.weather.deviation.WeatherDeviationController
 import com.h3consultingpartners.ifatccompanion.core.weather.radar.PrecipitationOverlayService
 import com.h3consultingpartners.ifatccompanion.data.AndroidFileStore
 import com.h3consultingpartners.ifatccompanion.data.DataStoreKeyValueStore
@@ -181,6 +182,7 @@ class AppGraph private constructor(
                 chatter.stop()
                 surfaceRouting.clear()
                 weather.clearSmootherAltitude()
+                weatherDeviation.reset()
                 // The link is bound to whatever flight was live when it opened: after a
                 // swap in the sim it keeps serving the previous aircraft's position and
                 // plan. This is the same thing the Reconnect button does by hand, which is
@@ -341,6 +343,27 @@ class AppGraph private constructor(
      */
     val sessionStore: SessionStateStore by lazy { SessionStateStore(fileStore, clock) }
 
+    /**
+     * The simulated weather-deviation flow: the storms on the route, the reroute drawn
+     * around them, and the exchange with the controller that gets the aircraft past.
+     *
+     * `RouteWeatherConflictDetector`, `WeatherDeviationEngine`, `WeatherDeviationPhraseology`
+     * and `WeatherHazard` are together some 4,800 lines of ported, tested logic that until
+     * now was constructed nowhere: no hazards were ever built, no conflict was ever detected,
+     * the mint line and its faint previews had no assignment anywhere in `:app`, and the ATC
+     * screen's deviation slot was filled by an empty default.
+     */
+    val weatherDeviation: WeatherDeviationController by lazy {
+        WeatherDeviationController(
+            clock = clock,
+            diagnostics = diagnostics,
+            settingsProvider = { settingsRepository.state.value },
+            // The weather calls follow the pilot's pack and digit style like every other
+            // line, so the engine tracks the session's rather than a default.
+            engineProvider = { flightSessionCoordinator.phraseologyEngine },
+        )
+    }
+
     val flightSessionCoordinator: FlightSessionCoordinator by lazy {
         FlightSessionCoordinator(
             scope = sessionScope,
@@ -362,6 +385,7 @@ class AppGraph private constructor(
             // engine's `profile` was supplied by nothing, so none of it changed a word.
             profileProvider = { phraseologyProfiles.activeProfile },
             authorizeCrossing = { surfaceRouting.crossingReadbackReceived() },
+            weatherDeviation = weatherDeviation,
             // Who answers a Ride Report or Destination Weather request. The whole
             // RideReportEngine was ported, tested and constructed nowhere, so Center never
             // answered either one.

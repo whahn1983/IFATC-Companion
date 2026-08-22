@@ -3,7 +3,9 @@ package com.h3consultingpartners.ifatccompanion.core.session
 import com.h3consultingpartners.ifatccompanion.core.model.ATCTransmission
 import com.h3consultingpartners.ifatccompanion.core.phraseology.PhraseologyEngine
 import com.h3consultingpartners.ifatccompanion.core.weather.METAR
+import com.h3consultingpartners.ifatccompanion.core.weather.SIGMET
 import com.h3consultingpartners.ifatccompanion.core.weather.SmootherAltitude
+import com.h3consultingpartners.ifatccompanion.core.weather.radar.RadarOverlayModel
 
 /**
  * The weather engine's half of a weather-aware controller call.
@@ -58,6 +60,15 @@ interface WeatherAnswering {
      */
     fun metar(arriving: Boolean): METAR?
 
+    /**
+     * The precipitation overlay as it stands: which provider, whether there is coverage, and
+     * the cells the deviation flow routes around.
+     */
+    fun radarOverlay(): RadarOverlayModel
+
+    /** SIGMETs whose area lies along the route — the only ones that raise an advisory. */
+    fun routeSigmets(): List<SIGMET>
+
     /** No weather engine attached: every request is unanswerable and nothing is blocked. */
     object None : WeatherAnswering {
         override suspend fun rideReport(callsign: PhraseologyEngine.Callsign): ATCTransmission? = null
@@ -74,5 +85,9 @@ interface WeatherAnswering {
         override fun altitudeIsBlockedByRideReports(altitudeFt: Int): Boolean = false
 
         override fun metar(arriving: Boolean): METAR? = null
+
+        override fun radarOverlay(): RadarOverlayModel = RadarOverlayModel()
+
+        override fun routeSigmets(): List<SIGMET> = emptyList()
     }
 }

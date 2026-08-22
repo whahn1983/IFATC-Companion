@@ -21,6 +21,7 @@ import com.h3consultingpartners.ifatccompanion.ui.screens.FlightsScreen
 import com.h3consultingpartners.ifatccompanion.ui.screens.PhraseologyProfilesScreen
 import com.h3consultingpartners.ifatccompanion.ui.screens.SettingsScreen
 import com.h3consultingpartners.ifatccompanion.ui.screens.SubscriptionScreen
+import com.h3consultingpartners.ifatccompanion.ui.screens.WeatherDeviationCard
 import com.h3consultingpartners.ifatccompanion.ui.screens.WeatherScreen
 
 /**
@@ -70,6 +71,7 @@ fun AppNavHost(
     val radarRaster by viewModel.radarRaster.collectAsStateWithLifecycle()
     val savedFlights by viewModel.savedFlights.collectAsStateWithLifecycle()
     val activeSavedFlightID by viewModel.activeSavedFlightID.collectAsStateWithLifecycle()
+    val deviation by viewModel.weatherDeviation.collectAsStateWithLifecycle()
     var settingsDestination by rememberSaveable { mutableStateOf(SettingsDestination.ROOT) }
 
     // The subscribe banner on the ATC tab cannot navigate itself — this file owns the
@@ -111,7 +113,7 @@ fun AppNavHost(
             )
         } else {
             AtcScreen(
-            model = viewModel.atcModel(session, settings, weather, ui),
+            model = viewModel.atcModel(session, settings, weather, ui, deviation),
             actions = viewModel.atcActions(onRequestMicrophone),
             modifier = modifier,
             taxiMap = {
@@ -125,6 +127,13 @@ fun AppNavHost(
                     nextInstruction = routing.nextInstruction,
                     onAction = viewModel::onTaxiAction,
                     onCrossingReadback = viewModel::onCrossingReadback,
+                )
+            },
+            weatherDeviationCard = {
+                WeatherDeviationCard(
+                    statusLine = deviation.statusLine,
+                    actions = deviation.actions,
+                    onAction = viewModel::onWeatherDeviationAction,
                 )
             },
             )
@@ -142,7 +151,7 @@ fun AppNavHost(
             modifier = modifier,
             routeMap = {
                 RouteMap(
-                    model = viewModel.routeMapModel(session, weather, ui, radarRaster),
+                    model = viewModel.routeMapModel(session, weather, ui, radarRaster, deviation),
                     showSampledCells = ui.showSampledRadarCells,
                     // Coastlines and the graticule are always on; the imagery half is
                     // whatever has been fetched, which is nothing until it arrives and

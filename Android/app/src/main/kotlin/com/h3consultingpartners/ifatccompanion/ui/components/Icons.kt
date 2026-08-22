@@ -1,6 +1,7 @@
 package com.h3consultingpartners.ifatccompanion.ui.components
 
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.AirplanemodeActive
 import androidx.compose.material.icons.filled.Apartment
 import androidx.compose.material.icons.filled.ArrowCircleDown
@@ -17,6 +18,9 @@ import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.FirstPage
 import androidx.compose.material.icons.filled.FlightLand
 import androidx.compose.material.icons.filled.FlightTakeoff
+import androidx.compose.material.icons.filled.ForkRight
+import androidx.compose.material.icons.filled.Replay
+import androidx.compose.material.icons.filled.TurnLeft
 import androidx.compose.material.icons.filled.LocalParking
 import androidx.compose.material.icons.filled.Power
 import androidx.compose.material.icons.filled.Public
@@ -53,6 +57,10 @@ object IFATCIcons {
         "arrow_circle_up" -> Icons.Filled.ArrowCircleUp
         "arrow_circle_down" -> Icons.Filled.ArrowCircleDown
         "turn_right" -> Icons.Filled.TurnRight
+        "turn_left" -> Icons.Filled.TurnLeft
+        "fork_right" -> Icons.Filled.ForkRight
+        "arrow_forward" -> Icons.AutoMirrored.Filled.ArrowForward
+        "replay" -> Icons.Filled.Replay
         "air" -> Icons.Filled.Air
         "partly_cloudy_day" -> Icons.Filled.WbSunny
         "record_voice_over" -> Icons.Filled.RecordVoiceOver

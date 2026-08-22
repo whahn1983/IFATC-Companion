@@ -16,6 +16,7 @@ import com.h3consultingpartners.ifatccompanion.core.settings.AppSettings
 import com.h3consultingpartners.ifatccompanion.core.surface.SurfaceSessionState
 import com.h3consultingpartners.ifatccompanion.core.surface.routing.AirportSurfaceState
 import com.h3consultingpartners.ifatccompanion.core.weather.WeatherSessionState
+import com.h3consultingpartners.ifatccompanion.core.weather.deviation.WeatherDeviationController
 import com.h3consultingpartners.ifatccompanion.ui.map.RadarRaster
 import com.h3consultingpartners.ifatccompanion.ui.map.RouteMapModel
 import com.h3consultingpartners.ifatccompanion.ui.map.TaxiCrossingMarker
@@ -59,6 +60,7 @@ fun FlightViewModel.atcModel(
     settings: AppSettings,
     weather: WeatherSessionState,
     ui: FlightViewModel.UiState,
+    deviation: WeatherDeviationController.State = WeatherDeviationController.State(),
 ): AtcScreenModel {
     val plan = session.flightPlan
     val arrivalPhaseAtis = session.hasDeparted
@@ -76,7 +78,7 @@ fun FlightViewModel.atcModel(
         facilityLabel = session.currentFacility.title,
         connectionText = session.connectionState.detailedTitle,
         standbyText = if (session.companionStandby) PilotActionPresentation.STANDBY_HINT else null,
-        weatherBannerText = weatherBannerText(weather),
+        weatherBannerText = weatherBannerText(weather, deviation),
         frequencyText = { facility -> formatFrequency(frequencyForFacility(facility)) },
         canTune = { facility -> facility in session.relevantFacilities },
         tunableFacilities = ATCFacility.entries.filter { it in session.relevantFacilities },
@@ -140,7 +142,19 @@ private fun smootherAltitudeTitle(weather: WeatherSessionState): String? {
     return "$verb ${formatAltitude(suggestion.altitudeFt)}"
 }
 
-private fun weatherBannerText(weather: WeatherSessionState): String? {
+/**
+ * The ATC tab's weather banner.
+ *
+ * The deviation flow's own banner comes first: it knows the precipitation on the route, how
+ * far ahead it is, and whether the pilot has already engaged it, none of which a SIGMET list
+ * can answer. The SIGMET line is the fallback for an advisory with no precipitation conflict
+ * behind it.
+ */
+private fun weatherBannerText(
+    weather: WeatherSessionState,
+    deviation: WeatherDeviationController.State,
+): String? {
+    deviation.bannerText?.let { return it }
     if (weather.routeSigmets.isEmpty()) return null
     val hazard = weather.routeSigmets.first().hazard ?: "Advisory"
     return "$hazard along your route"
@@ -413,6 +427,7 @@ fun FlightViewModel.routeMapModel(
     weather: WeatherSessionState,
     ui: FlightViewModel.UiState,
     radarRaster: RadarRaster? = null,
+    deviation: WeatherDeviationController.State = WeatherDeviationController.State(),
 ): RouteMapModel {
     val plan = session.flightPlan
     val routeFixes = plan.waypoints.mapNotNull { it.coordinate?.takeIf(Coordinate::isValid) }
@@ -442,6 +457,10 @@ fun FlightViewModel.routeMapModel(
             weather.radarOverlay.shouldDisplayRaster(session.mockMode)
         },
         radarOpacity = weather.radarOverlay.opacity.toFloat(),
+        // The mint reroute the pilot is flying (or being offered), and every other one on
+        // the plan drawn faint. Both were declared on the model and assigned by nothing.
+        deviationLine = deviation.deviationLine,
+        deviationPreviews = deviation.previews,
     )
 }
 

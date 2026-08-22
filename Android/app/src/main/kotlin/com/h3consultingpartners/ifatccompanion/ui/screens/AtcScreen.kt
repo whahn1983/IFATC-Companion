@@ -15,6 +15,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.CompareArrows
+import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Dialpad
 import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.Mic
@@ -52,6 +53,7 @@ import com.h3consultingpartners.ifatccompanion.core.model.ATCFacility
 import com.h3consultingpartners.ifatccompanion.core.session.FlightSessionState
 import com.h3consultingpartners.ifatccompanion.core.session.PilotAction
 import com.h3consultingpartners.ifatccompanion.core.session.PilotActionPresentation
+import com.h3consultingpartners.ifatccompanion.core.session.WeatherDeviationAction
 import com.h3consultingpartners.ifatccompanion.ui.components.ActionButton
 import com.h3consultingpartners.ifatccompanion.ui.components.Card
 import com.h3consultingpartners.ifatccompanion.ui.components.CurrentTransmission
@@ -654,6 +656,44 @@ private fun PushToTalkButton(
  * because it sits inside a `LazyColumn`, and nesting a scrollable in a scrollable is
  * both an error and unnecessary for a handful of buttons.
  */
+/**
+ * The simulated weather-deviation exchange: what the controller has said about the weather
+ * ahead, and the requests the pilot can make about it.
+ *
+ * A separate card from Responses because it is a separate conversation — it comes and goes
+ * with the weather rather than with the phase of flight, and iOS gives it its own card in
+ * the same slot for the same reason.
+ */
+@Composable
+fun WeatherDeviationCard(
+    statusLine: String,
+    actions: List<WeatherDeviationAction>,
+    onAction: (WeatherDeviationAction) -> Unit,
+) {
+    if (actions.isEmpty()) return
+    Card(title = "Weather", icon = Icons.Filled.Cloud) {
+        Text(
+            text = statusLine,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        ButtonGrid(
+            actions.map { action ->
+                @Composable {
+                    val presentation = PilotActionPresentation.weatherPresentation(action)
+                    ActionButton(
+                        title = presentation.title,
+                        icon = IFATCIcons.forKey(presentation.iconKey),
+                        onClick = { onAction(action) },
+                        tint = emphasisColor(presentation.emphasis),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            },
+        )
+    }
+}
+
 @Composable
 private fun ButtonGrid(buttons: List<@Composable () -> Unit>) {
     if (buttons.isEmpty()) return

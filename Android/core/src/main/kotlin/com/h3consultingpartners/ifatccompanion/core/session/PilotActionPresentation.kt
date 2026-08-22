@@ -19,6 +19,25 @@ object PilotActionPresentation {
     )
 
     /**
+     * The weather response card's buttons, in the order iOS lists them.
+     *
+     * Kept beside the pilot-action presentations rather than in the screen, because what a
+     * button says is phraseology-adjacent and belongs where the rest of the wording lives.
+     */
+    fun weatherPresentation(action: WeatherDeviationAction): Presentation = when (action) {
+        WeatherDeviationAction.ASK_CENTER -> Presentation("Contact ATC", "cloud")
+        WeatherDeviationAction.REQUEST_RIGHT_DEVIATION -> Presentation("Right Dev", "turn_right")
+        WeatherDeviationAction.REQUEST_LEFT_DEVIATION -> Presentation("Left Dev", "turn_left")
+        WeatherDeviationAction.REQUEST_VECTOR -> Presentation("Vectors", "fork_right")
+        WeatherDeviationAction.REQUEST_HIGHER -> Presentation("Higher Wx", "arrow_circle_up")
+        WeatherDeviationAction.REQUEST_LOWER -> Presentation("Lower Wx", "arrow_circle_down")
+        WeatherDeviationAction.CLEAR_OF_WEATHER ->
+            Presentation("Clear of Wx", "check_circle", Emphasis.POSITIVE)
+        WeatherDeviationAction.CONTINUE_ON_COURSE -> Presentation("Continue", "arrow_forward")
+        WeatherDeviationAction.SAY_AGAIN -> Presentation("Say Again", "replay")
+    }
+
+    /**
      * Canonical display order for the response buttons (gate-to-gate, then the
      * enroute/arrival requests). The grid renders whichever of these are currently
      * available for the tuned controller and phase.

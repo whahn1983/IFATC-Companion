@@ -24,6 +24,7 @@ import com.h3consultingpartners.ifatccompanion.core.session.FlightSessionCoordin
 import com.h3consultingpartners.ifatccompanion.core.session.FlightSessionState
 import com.h3consultingpartners.ifatccompanion.core.session.PilotAction
 import com.h3consultingpartners.ifatccompanion.core.session.PilotActionPresentation
+import com.h3consultingpartners.ifatccompanion.core.session.WeatherDeviationAction
 import com.h3consultingpartners.ifatccompanion.core.settings.AppSettings
 import com.h3consultingpartners.ifatccompanion.core.settings.NOAARadarOverlayMode
 import com.h3consultingpartners.ifatccompanion.core.settings.SettingsRepository
@@ -668,6 +669,16 @@ class FlightViewModel(
      * `crossingReadbackReceived()` here authorized it silently.
      */
     fun onCrossingReadback() = coordinator.readBack()
+
+    /**
+     * What the weather-deviation flow currently says: the mint line, the faint previews,
+     * the response card's buttons and its status line.
+     */
+    val weatherDeviation = graph.weatherDeviation.state
+
+    /** A tap on one of the weather response card's buttons. */
+    fun onWeatherDeviationAction(action: WeatherDeviationAction) =
+        coordinator.performWeatherDeviationAction(action)
 
     // endregion
 

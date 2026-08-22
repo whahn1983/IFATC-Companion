@@ -14,14 +14,22 @@ verified by hand against both sources before this document was written: the chec
 
 ## Progress
 
-37 of the 100 are closed, and one is half-closed; the rest stand. Each closed entry below
+43 of the 100 are closed and two are half-closed; the rest stand. Each closed entry below
 carries a ✅ line naming what closes it, so this document stays the record of what the
 audit found *and* of what has been done about it rather than being quietly rewritten.
 
 The closed set is deliberately the block that made the app unflyable rather than the
-easiest thirty-four: the app had no data source in either mode, no flight plan, no
-Infinite Flight link, no entitlement enforcement, and six of the pilot's response buttons
-put a call in the transcript and left the frequency silent.
+easiest few: the app had no data source in either mode, no flight plan, no Infinite Flight
+link, no entitlement enforcement, six of the pilot's response buttons put a call in the
+transcript and left the frequency silent, and the whole simulated weather-deviation flow —
+4,800 lines of ported, tested logic — was constructed nowhere.
+
+One thing inside the weather flow is deliberately still out: the recovery paths for a
+deviation already under way — the telemetry-discontinuity resync, the off-path re-plan, the
+redraw when an entry point falls behind the aircraft, and the re-vector onto a fresh line
+while already committed. A pilot who flies well off the drawn line keeps the line they were
+given rather than being re-vectored onto a new one. It is called out in
+`WeatherDeviationController`'s own KDoc so nobody has to find it by flying it.
 
 ## What this means
 
@@ -98,6 +106,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** buildContext never sets `departureHeading`, `runwayIsKnown` or `firstFixName`, so they take their ATCContext defaults of 0, true and "". `PhraseologyEngine.kt:386` takes the `departureHeading <= 0` branch on every departure, so the clearance is always "fly runway heading". `HeadingSolver` (core/geo/HeadingSolver.kt:44) is referenced from nowhere in main; nor are `FlightPlan.initialDepartureFix` (FlightPlan.kt:226) or `nextUnpassedWaypoint` (FlightPlan.kt:188). `WeatherProviderDiagnostics.departureHeadingSummary` (line 84), the counterpart of iOS's `lastDepartureHeadingSummary`, is never assigned either.
 
 **The whole simulated weather-deviation ATC conversation is ported but never constructed**  
+✅ Closed: `WeatherDeviationController` runs the flow and the ATC screen's deviation slot is filled — the card's buttons dispatch through `WeatherDeviationEngine`.  
 *Ported, not wired* · iOS: `IFATCCompanion/App/AppModel.swift:6703 (askCenterAboutWeather), :6746 (requestWeatherDeviation), :6777 (requestVectorAroundWeather), :6605 (applyDeviationResult)`
 
 - **iOS:** With a route-weather conflict active, the ATC tab shows a deviation card whose buttons run a full exchange with Center: ask about weather ahead, request a left/right deviation, request a vector around it, request higher/lower for weather, report clear of weather, continue on course. WeatherDeviationEngine drives the lifecycle and the deviation line drawn on the route map.
@@ -258,12 +267,14 @@ running app and behaving differently from the iOS build the pilot is comparing a
 ### Screens and settings
 
 **"Weather deviation alerts" picker renders but is read by nothing**  
+✅ Closed: the flow reads it for both the banner and the auto-issued advisory.  
 *Ported, not wired* · iOS: `IFATCCompanion/Views/SettingsView.swift:321-323; AppModel.swift:6376 (`guard settings.weatherDeviationAlerts.alertsEnabled`), and `suggestsDeviation` gating the deviation half of the flow`
 
 - **iOS:** Off / Advisory only / Advisory + suggested deviation. `alertsEnabled` gates whether the weather banner appears at all; `suggestsDeviation` decides whether a suggested deviation accompanies the advisory.
 - **Android:** `SettingsScreen.kt:352-358` renders the picker and persists the choice, but `weatherDeviationAlerts` has no reader anywhere in `app/src/main` or `core/src/main` outside `AppSettings.kt`, `SettingsRepository.kt`, `SettingsKeys.kt` and `SettingsScreen.kt`. Setting it to "Off" does not suppress the Android weather banner, which is gated only on `weather.routeSigmets.isEmpty()` (ScreenModels.kt:143-147).
 
 **Route map never draws the mint deviation line, the faint preview reroutes, or the rejoin marker**  
+✅ Closed: `deviationLine` and `deviationPreviews` are assigned from the flow's published state.  
 *Ported, not wired* · iOS: `IFATCCompanion/Views/RouteMapView.swift:158-179 (`model.weatherDeviationPreviews` polylines, `model.weatherDeviationLine` polyline, `model.weatherRejoinMarker`); AppModel.swift:6410-6440 (`weatherDeviationLine`)`
 
 - **iOS:** Draws dashed mint preview reroutes for weather systems further along the route, the solid/committed mint deviation line for the system being worked, and a mint "rejoin" marker at the fix the deviation rejoins the route at.
@@ -283,6 +294,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** `AppNavHost.kt:117-129` drops `TaxiMap(...)` straight into `item { taxiMap() }` (AtcScreen.kt:172) with no `Card` wrapper. `TaxiMapLayers.kt:96-121` renders only the canvas, the next-instruction text, a read-back-crossing button and the crossing/off-route action buttons. There is no title, no header chips (`TaxiMapModel.destinationLabel` at TaxiMapLayers.kt:56 is populated by ScreenModels.kt:492 and then never read by any composable), no off-route banner, no Expand control and no expanded map (`TaxiMap(expanded = true)` is never called), and no attribution — despite the file's own KDoc at TaxiMapLayers.kt:72-73 saying "the attribution shown beneath the map is the licence condition, not decoration", and Docs/ANDROID_PARITY_MATRIX.md:225 claiming "OSM attribution on every surface map, tappable, ODbL 1.0 — ✅ tested". `AirportSurfaceState.taxiMapVisible`, `.mapExpanded` and `.offRoute` are never read by any UI.
 
 **The whole simulated weather-deviation card is absent from the Android ATC screen — the slot exists and is never filled**  
+✅ Closed: `WeatherDeviationCard` fills the slot, keyed off `availableWeatherDeviationActions`.  
 *Ported, not wired* · iOS: `IFATCCompanion/Views/ATCView.swift:34 (`if model.weatherDeviationCardVisible { weatherDeviationCard }`), :315-360 (the card and its nine buttons); IFATCCompanion/App/AppModel.swift:6489 (`weatherActions`), :6703 (`askCenterAboutWeather`), :6746 (`requestWeatherDeviation`)`
 
 - **iOS:** When a route-weather conflict or ride SIGMET is being worked, ATCView shows a "Weather Deviation (Simulated)" card with a status line ("Moderate precipitation, 42 NM ahead. Say intentions.") and up to nine buttons — Contact ATC, Right Dev, Left Dev, Vectors, Higher Wx, Lower Wx, Clear of Wx, Continue, Say Again — each driving `AppModel`'s deviation methods through `WeatherDeviationEngine`.
@@ -311,6 +323,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** RadarImageSampler.kt exists in :core with 25 unit tests but is called from nowhere in :app. The only precipitation image path in the app is app/map/RadarRasterLoader.kt, which calls PrecipitationOverlayService.overlayImage for the map's *visible* region and decodes it straight to a bitmap for drawing — it never hands the bytes to the sampler and never produces a RadarCell. WeatherSessionState.radarOverlay.sampledCells is written in exactly one place (WeatherSessionController.kt:188) and only to emptyList(). So the Diagnostics "Sampled cells" row (app/ui/ScreenModels.kt:367) always reads 0, the RouteMapLayers sampled-cell layer (RouteMapLayers.kt:191) never draws anything even with the diagnostics toggle on, and there is no cell data for any deviation to be computed from.
 
 **The entire simulated weather-deviation flow is in :core and constructed nowhere in :app — no hazards, no conflict detection, no mint line, no deviation ATC calls**  
+✅ Closed: hazards are built from the radar cells, the whole-route walk locks a reroute per system, and the mint line and its faint previews reach `RouteMapModel`.  
 *Ported, not wired* · iOS: `IFATCCompanion/App/AppModel.swift:754 (deviationEngine = WeatherDeviationEngine(phraseology: WeatherDeviationPhraseology(engine: engine))), :5229 recomputeWeatherHazards, :5455 recomputeLockedDeviations, :5504 computeDeviations, :6746 requestWeatherDeviation, :6663/:6713 deviationEngine.issueAdvisory, :7304 beginDeviationTurn, :7965 rejoinTurn, :8044 reportClearOfWeather; IFATCCompanion/Weather/WeatherDeviationEngine.swift, WeatherDeviationPhraseology.swift, RouteWeatherConflictDetector.swift, WeatherHazard.swift`
 
 - **iOS:** On every telemetry tick iOS builds weather hazards from radar cells, runs RouteWeatherConflictDetector over the upcoming route corridor, draws the mint deviation line plus faint previews on the route map, raises the "contact ATC" banner inside the ~60 NM tactical range, issues the ATC weather advisory, puts up the response card (Vectors / left deviation / right deviation / higher / lower / continue), assigns a heading and a downstream rejoin fix, monitors clear-of-weather and clears the aircraft back to the filed route. It also raises the altitude-change-only advisory (higher/lower/continue, never deviate) when a turbulence or icing SIGMET lies along the route with no precipitation conflict.
@@ -329,6 +342,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** Android's `ATISSession` holds exactly these fields (core/atis/ATISSession.kt:62,63,66,67,75,76,79) but nothing bridges them to the snapshot: `captureSnapshot` sets none of the six (nor `departureATIS`/`arrivalATIS`/`lastArrivalATISAttemptMillis`), and `restore` reads none of them. After a relaunch mid-taxi the pilot silently loses the information code they had copied and the ATIS button reappears.
 
 **An in-progress weather diversion does not survive a reconnect**  
+✅ Closed: the deviation context is captured into and restored from the session snapshot.  
 *Absent* · iOS: `IFATCCompanion/App/AppModel.swift:3561 (`weatherDeviation: weatherDeviation`), :3690 (`if let deviation = snap.weatherDeviation { weatherDeviation = deviation }`)`
 
 - **iOS:** The deviation lifecycle — including a committed diversion and its "clear of weather" button — is snapshotted and restored, so backgrounding the app mid-diversion does not drop it.
@@ -576,6 +590,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** `ScreenModels.kt:77` sets `facilityLabel = session.currentFacility.title`, so the pill always reads a bare "Center". The sector name is available — `FlightSessionState.centerSectorName` (FlightSessionState.kt:70) is maintained by FlightSessionCoordinator.kt:1403-1408 and is already used for the Settings "Working sector" row (ScreenModels.kt:234) — it is simply not used here, despite the comment at AtcScreen.kt:167-172 claiming the pill does show it.
 
 **The ATC weather banner uses a different trigger and different text, and tapping it sends a ride report instead of a weather advisory**  
+🟡 Partly closed: the banner now keys off the precipitation conflict and its distance; what tapping it sends is unchanged.  
 *Behaves differently* · iOS: `IFATCCompanion/Views/ATCView.swift:30, :287-311 (banner, `model.askCenterAboutWeather()`); AppModel.swift:6375-6389 (`weatherBannerVisible` / `weatherBannerText`), :6703-6722 (`askCenterAboutWeather`)`
 
 - **iOS:** Shows the banner only when weather alerts are enabled and there is a flyable precipitation conflict or an active ride SIGMET, with the text "Weather ahead — contact ATC", "<Turbulence> advisory — contact ATC", or "Weather near final — advisory only". Tapping it posts a pilot request for a weather advisory and runs the controller's advisory through the deviation engine.

@@ -380,6 +380,10 @@ class WeatherSessionController(
     override fun metar(arriving: Boolean): METAR? =
         if (arriving) _state.value.destinationMetar else _state.value.departureMetar
 
+    override fun radarOverlay(): RadarOverlayModel = _state.value.radarOverlay
+
+    override fun routeSigmets(): List<SIGMET> = _state.value.routeSigmets
+
     /**
      * A reported ride of moderate or worse covering the target band is what makes a
      * controller refuse a climb into it — the one case where "unable higher" is the more

@@ -42,6 +42,7 @@ import com.h3consultingpartners.ifatccompanion.core.platform.Clock
 import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticCategory
 import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticsSink
 import com.h3consultingpartners.ifatccompanion.core.settings.AppSettings
+import com.h3consultingpartners.ifatccompanion.core.weather.deviation.WeatherDeviationController
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.max
@@ -172,6 +173,16 @@ class FlightSessionCoordinator(
      * with nothing on the frequency and nothing in the transcript.
      */
     private val authorizeCrossing: () -> Unit = {},
+    /**
+     * The simulated weather-deviation flow — the storms on the route, the reroute drawn
+     * around them, and the exchange with the controller that gets the aircraft past.
+     *
+     * Injected rather than constructed here because it is a whole subsystem of its own with
+     * its own state, and because a session under test has no weather to route around.
+     * Defaulted to null, which is exactly the app the port shipped: no hazards, no mint
+     * line, and a response card that could never appear.
+     */
+    private val weatherDeviation: WeatherDeviationController? = null,
 ) {
 
     private val _state = MutableStateFlow(FlightSessionState())
@@ -326,6 +337,7 @@ class FlightSessionCoordinator(
 
         captureDepartureFieldElevation(aircraft, previous)
         updateCenterSector(aircraft)
+        updateWeatherDeviation(aircraft, detection.phase)
 
         _state.update {
             it.copy(
@@ -1359,6 +1371,66 @@ class FlightSessionCoordinator(
         advanceAndPost(target, automatic = false)
     }
 
+    // region Weather deviation
+
+    /**
+     * One tick of the weather-deviation flow, and whatever the controller says off its own
+     * bat: the auto-issued advisory, a turn as the aircraft reaches a vertex of the reroute,
+     * the auto-resume at the rejoin.
+     */
+    private fun updateWeatherDeviation(aircraft: AircraftState, phase: FlightPhase) {
+        val flow = weatherDeviation ?: return
+        emit(flow.update(weatherDeviationInputs(aircraft, phase)))
+    }
+
+    /** A tap on one of the weather response card's buttons. */
+    fun performWeatherDeviationAction(action: WeatherDeviationAction) {
+        val flow = weatherDeviation ?: return
+        if (_state.value.companionStandby) return
+        val current = _state.value
+        emit(flow.perform(action, weatherDeviationInputs(current.aircraftState, current.phase)))
+    }
+
+    private fun weatherDeviationInputs(aircraft: AircraftState, phase: FlightPhase): WeatherDeviationController.Inputs {
+        val current = _state.value
+        return WeatherDeviationController.Inputs(
+            plan = current.flightPlan,
+            aircraft = aircraft,
+            phase = phase,
+            atcState = stateMachine.current,
+            currentFacility = current.currentFacility,
+            hasDeparted = current.hasDeparted,
+            companionStandby = current.companionStandby,
+            assignedAltitude = current.assignedAltitude,
+            overlay = weatherAnswers.radarOverlay(),
+            routeSigmets = weatherAnswers.routeSigmets(),
+        )
+    }
+
+    /**
+     * Put the flow's transmissions on the frequency.
+     *
+     * A controller-initiated call — one ATC makes on its own, with no pilot request waiting
+     * on an answer — is held when it would only repeat a call the pilot has already
+     * acknowledged; those are the ones that can come out verbatim-identical back to back. A
+     * reply to a pilot request is always transmitted: a request left unanswered reads as a
+     * dropped call.
+     */
+    private fun emit(emission: WeatherDeviationController.Emission) {
+        if (emission.transmissions.isEmpty()) return
+        emission.transmissions.forEach { tx ->
+            val fromPilot = tx.sender == ATCTransmission.Sender.PILOT
+            post(
+                tx,
+                speakIt = if (fromPilot) settings.speakPilot else true,
+                allowRepeat = !emission.controllerInitiated,
+            )
+        }
+        recomputeDerivedState()
+    }
+
+    // endregion
+
     // region Arrival ramp
 
     /**
@@ -1800,6 +1872,7 @@ class FlightSessionCoordinator(
             awaitingCenterSectorCheckIn = awaitingCenterSectorCheckIn,
             monitoringTower = current.monitoringTower,
             gateMonitored = current.gateMonitored,
+            weatherDeviation = weatherDeviation?.state?.value?.context,
             atcCommunicationStarted = current.atcCommunicationStarted,
             flightPlan = current.flightPlan,
             tunedFacility = current.currentFacility,
@@ -1863,6 +1936,10 @@ class FlightSessionCoordinator(
                 sessionEnded = false,
             )
         }
+        // An in-progress diversion has to come back with the flight, or the deviation card
+        // and its "clear of weather" button vanish when the link drops mid-diversion and the
+        // pilot is left flying an approved reroute the app has forgotten about.
+        snapshot.weatherDeviation?.let { weatherDeviation?.restore(it) }
         recomputeDerivedState()
         diagnostics.log(
             DiagnosticCategory.SESSION,
@@ -1929,6 +2006,7 @@ class FlightSessionCoordinator(
             atcState = ATCState.CONNECTED_IDLE,
             currentFacility = ATCFacility.CLEARANCE,
         )
+        weatherDeviation?.reset()
         recomputeDerivedState()
         diagnostics.log(DiagnosticCategory.SESSION, message = "Started a new flight")
     }
@@ -2032,6 +2110,8 @@ class FlightSessionCoordinator(
             current.copy(
                 companionStandby = standby,
                 availableActions = PilotActionAvailability.availableActions(inputs),
+                availableWeatherDeviationActions =
+                    weatherDeviation?.state?.value?.actions?.toSet() ?: emptySet(),
                 relevantFacilities = AtcFlowOrder.relevantFacilities(
                     currentFacility = current.currentFacility,
                     pendingCheckInFacility = current.pendingCheckInFacility,
