@@ -805,7 +805,19 @@ class FlightViewModel(
     // region Settings
 
     fun updateSettings(settings: AppSettings) {
+        // A mode change is not a settings write, it is a change of data source: the demo
+        // feed and the Infinite Flight link have to be started and torn down in a
+        // particular order, and the entitlement decides whether leaving Mock Mode is
+        // allowed at all. Compared before the write, because the controller persists the
+        // mode itself and reads the previous value to decide.
+        val modeChanged = settingsRepository.state.value.mockMode != settings.mockMode
         settingsRepository.replace(settings)
+        if (modeChanged) {
+            graph.flightSource.toggleMockMode(
+                on = settings.mockMode,
+                hasLiveAccess = graph.entitlements.state.value.hasLiveAccess,
+            )
+        }
         // Chatter reads density, volume and the on/off toggle straight from settings, so
         // it is re-configured here rather than only when those specific fields change.
         graph.chatter.configure(settings)
@@ -834,6 +846,15 @@ class FlightViewModel(
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     fun onPreviewVoice(voiceId: String) = graph.speech.previewVoice(voiceId)
+
+    /**
+     * The Settings "Connect" / "Reconnect" control.
+     *
+     * In Mock Mode it restarts the demo; in Live Connected Mode it drops the link and
+     * brings it back up, which is what recovers a session after the tablet changed
+     * network or Infinite Flight was restarted.
+     */
+    fun onReconnect() = graph.flightSource.reconnect()
 
     fun onRefreshAirportData() {
         viewModelScope.launch { graph.surface.refresh(session.value.flightPlan) }

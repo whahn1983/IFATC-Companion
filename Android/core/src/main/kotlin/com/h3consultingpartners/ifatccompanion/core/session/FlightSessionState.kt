@@ -135,6 +135,17 @@ data class FlightSessionState(
      */
     val sessionEnded: Boolean = false,
 
+    /**
+     * Set from the pilot's To Gate call until the aircraft is parked at the stand.
+     *
+     * What turns the arrival into a staged taxi-in rather than one burst of ramp calls:
+     * while it is set, "monitor ramp to the gate" plays as the aircraft slows and the
+     * block-in follows once it has actually stopped.
+     */
+    val awaitingGateArrival: Boolean = false,
+    /** Whether the "monitor ramp to the gate" stage has already played. */
+    val gateMonitored: Boolean = false,
+
     // endregion
 ) {
 

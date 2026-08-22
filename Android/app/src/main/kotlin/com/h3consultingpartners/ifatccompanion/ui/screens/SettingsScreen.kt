@@ -42,6 +42,9 @@ data class SettingsScreenModel(
     val workingSectorText: String?,
     val overpassEndpoint: String,
     val surfaceCacheSummary: String?,
+    /** The Infinite Flight link as it stands, for the Connect row's label and caption. */
+    val connectionActive: Boolean,
+    val connectionDetail: String,
 )
 
 data class SettingsScreenActions(
@@ -52,6 +55,7 @@ data class SettingsScreenActions(
     val onRefreshAirportData: () -> Unit,
     val onClearAirportCache: () -> Unit,
     val onResetAppData: () -> Unit,
+    val onReconnect: () -> Unit,
     val onOpenLink: (String) -> Unit,
 )
 
@@ -101,6 +105,7 @@ fun SettingsScreen(
                     label = SettingsLabels.HOST,
                     value = s.host,
                     placeholder = SettingsLabels.HOST_PLACEHOLDER,
+                    enabled = model.hasLiveAccess,
                     onValueChange = { value -> update { it.copy(host = value) } },
                 )
                 TextFieldRow(
@@ -108,6 +113,7 @@ fun SettingsScreen(
                     value = if (s.port > 0) s.port.toString() else "",
                     placeholder = SettingsLabels.PORT_PLACEHOLDER,
                     numeric = true,
+                    enabled = model.hasLiveAccess,
                     onValueChange = { value ->
                         update { it.copy(port = value.filter(Char::isDigit).toIntOrNull() ?: 0) }
                     },
@@ -115,6 +121,7 @@ fun SettingsScreen(
                 SettingsToggle(
                     label = SettingsLabels.AUTO_DISCOVER,
                     checked = s.autoDiscover,
+                    enabled = model.hasLiveAccess,
                     onCheckedChange = { on -> update { it.copy(autoDiscover = on) } },
                 )
                 SettingsToggle(
@@ -122,6 +129,20 @@ fun SettingsScreen(
                     checked = s.keepScreenAwake,
                     onCheckedChange = { on -> update { it.copy(keepScreenAwake = on) } },
                 )
+                // Only in Live Connected Mode, and only for a subscriber: there is no link
+                // to bring up in the demo, and offering one to a pilot who cannot use it
+                // is an invitation to a failure they can do nothing about.
+                if (!s.mockMode && model.hasLiveAccess) {
+                    SettingsLink(
+                        label = if (model.connectionActive) SettingsLabels.RECONNECT else SettingsLabels.CONNECT,
+                        onClick = actions.onReconnect,
+                    )
+                    Text(
+                        text = model.connectionDetail,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
 
@@ -538,10 +559,12 @@ private fun TextFieldRow(
     placeholder: String,
     onValueChange: (String) -> Unit,
     numeric: Boolean = false,
+    enabled: Boolean = true,
 ) {
     OutlinedTextField(
         value = value,
         onValueChange = onValueChange,
+        enabled = enabled,
         label = { Text(label) },
         placeholder = { Text(placeholder) },
         singleLine = true,

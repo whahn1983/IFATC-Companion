@@ -234,6 +234,8 @@ fun FlightViewModel.settingsModel(
     workingSectorText = session.centerSectorName,
     overpassEndpoint = AppConfig.Endpoints.OVERPASS_ENDPOINTS.firstOrNull().orEmpty(),
     surfaceCacheSummary = surface.cacheSummary,
+    connectionActive = session.connectionState.isActive,
+    connectionDetail = session.connectionState.detailedTitle,
 )
 
 fun FlightViewModel.settingsActions(
@@ -247,6 +249,7 @@ fun FlightViewModel.settingsActions(
     onRefreshAirportData = ::onRefreshAirportData,
     onClearAirportCache = ::onClearAirportCache,
     onResetAppData = ::onResetAppData,
+    onReconnect = ::onReconnect,
     onOpenLink = ::onOpenLink,
 )
 

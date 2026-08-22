@@ -133,6 +133,21 @@ class SurfaceSessionController(
     fun surfaceFor(arriving: Boolean): AirportSurfaceModel? =
         if (arriving) _state.value.arrival else _state.value.departure
 
+    /**
+     * The runway-end idents the loaded extract has for a field, or nothing before it loads.
+     *
+     * Matched by ICAO rather than by which end of the flight it is, because the caller —
+     * the runway-in-use decision — only knows the field it is asking about.
+     */
+    fun runwayIdents(icao: String): List<String> {
+        val code = icao.uppercase()
+        val state = _state.value
+        val surface = listOfNotNull(state.departure, state.arrival)
+            .firstOrNull { it.icao.uppercase() == code }
+            ?: return emptyList()
+        return surface.runways.flatMap { it.idents }.distinct()
+    }
+
     fun graphFor(arriving: Boolean): SurfaceGraph? =
         if (arriving) _state.value.arrivalGraph else _state.value.departureGraph
 

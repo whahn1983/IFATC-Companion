@@ -32,34 +32,34 @@ pilot lines are not decoration: remove one and the flow stops there, on both pla
 | 8 | Pilot | Ramp | Start approved, United 598. |
 | 9 | Pilot | Ground | Ground, United 598, request taxi. |
 | 10 | ATC | Ramp | United 598, contact Ground on 121.900. |
-| 11 | ATC | Ground | United 598, taxi to runway 26L via . Contact Tower when ready. |
-| 12 | Pilot | Ground | Taxi to runway 26L via , United 598. |
+| 11 | ATC | Ground | United 598, taxi to runway 27 via A, E. Contact Tower when ready. |
+| 12 | Pilot | Ground | Taxi to runway 27 via A, E, United 598. |
 | 13 | Pilot | Ground | Ground, United 598, request taxi. |
-| 14 | Pilot | Ground | Taxi to runway 26L via , United 598. |
-| 15 | Pilot | Tower | Tower, United 598, holding short runway 26L, ready for departure. |
+| 14 | Pilot | Ground | Taxi to runway 27 via A, E, United 598. |
+| 15 | Pilot | Tower | Tower, United 598, holding short runway 27, ready for departure. |
 | 16 | ATC | Ground | United 598, contact Tower on 118.300. |
-| 17 | ATC | Tower | United 598, runway 26L, line up and wait. |
-| 18 | Pilot | Tower | Runway 26L, line up and wait, United 598. |
-| 19 | ATC | Tower | United 598, wind 000 at 0, runway 26L, cleared for takeoff. |
-| 20 | Pilot | Tower | Runway 30L, cleared for takeoff, United 598. |
+| 17 | ATC | Tower | United 598, runway 27, line up and wait. |
+| 18 | Pilot | Tower | Runway 27, line up and wait, United 598. |
+| 19 | ATC | Tower | United 598, wind 270 at 8, runway 27, cleared for takeoff, fly heading 007, climb and maintain 6,000. |
+| 20 | Pilot | Tower | Runway 27, cleared for takeoff, heading 007, climb and maintain 6,000, United 598. |
 | 21 | ATC | Tower | United 598, contact Departure on 124.350. |
-| 22 | ATC | Departure | United 598, radar contact, climb and maintain FL180, resume own navigation. |
-| 23 | Pilot | Departure | Climb and maintain FL180, resume own navigation, United 598. |
+| 22 | ATC | Departure | United 598, radar contact, climb and maintain FL180, resume own navigation, direct TBONE. |
+| 23 | Pilot | Departure | Climb and maintain FL180, resume own navigation, direct TBONE, United 598. |
 | 24 | ATC | Departure | United 598, contact Center on 133.400. |
 | 25 | ATC | Center | United 598, radar contact, climb and maintain FL370. |
 | 26 | Pilot | Center | Climb and maintain FL370, United 598. |
 | 27 | ATC | Center | United 598, descend via the KKILR arrival, maintain 11,000 crossing KKILR. |
 | 28 | Pilot | Center | Descend via the KKILR arrival, United 598. |
 | 29 | ATC | Center | United 598, contact Approach on 119.700. |
-| 30 | ATC | Approach | United 598, descend and maintain 3,000, expect the ILS runway 30L approach. |
+| 30 | ATC | Approach | United 598, descend and maintain 4,000, expect the ILS runway 30L approach. |
 | 31 | ATC | Approach | United 598, cleared ILS RWY 30L approach. |
 | 32 | ATC | Approach | United 598, contact Tower on 118.300. |
 | 33 | Pilot | Tower | Contacting Tower on 118.300, United 598. |
-| 34 | ATC | Tower | United 598, wind 000 at 0, runway 30L, cleared to land. |
+| 34 | ATC | Tower | United 598, wind 270 at 8, runway 30L, cleared to land. |
 | 35 | ATC | Tower | United 598, exit the runway when able, contact Ground on 121.900 once on the taxiway. |
 | 36 | Pilot | Tower | Exiting the runway, contact Ground, United 598. |
-| 37 | ATC | Ground | United 598, taxi to parking via available taxiways. |
-| 38 | Pilot | Ground | Taxi to parking via available taxiways, United 598. |
+| 37 | ATC | Ground | United 598, taxi to parking via A. |
+| 38 | Pilot | Ground | Taxi to parking via A, United 598. |
 
 ---
 
@@ -109,11 +109,15 @@ pilot lines are not decoration: remove one and the flow stops there, on both pla
    no live ATIS or surface data behind it. In a live flight they come from the same places
    they do on iOS.
 
-5. **Taxi routes read "via " with nothing after it here** for the same reason: no
-   OpenStreetMap surface is loaded in the scripted run, so the taxiway list is empty and
-   the fallback planner has nothing to name. With a surface loaded the route names its
-   taxiways, and a low-confidence route draws dashed on the map rather than being spoken
-   as if it were certain.
+5. **Taxi routes here are the deterministic fallback planner's** ("via A, E"), because no
+   OpenStreetMap surface is loaded in the scripted run. With a surface loaded the live
+   route supersedes them and names the field's real taxiways, and a low-confidence route
+   draws dashed on the map rather than being spoken as if it were certain.
+
+6. **The wind is the no-report default, 270 at 8**, on both platforms — there is no METAR
+   behind the scripted flight. It is also what the runway in use is picked from: KIAH's
+   most into-wind runway for a 270 wind is 27, which is why the departure clearance names
+   it. With a live METAR both follow the real wind.
 
 ---
 

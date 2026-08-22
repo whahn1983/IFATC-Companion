@@ -2,6 +2,7 @@ package com.h3consultingpartners.ifatccompanion.core.session
 
 import com.h3consultingpartners.ifatccompanion.core.enroute.CenterSectorDatabase
 import com.h3consultingpartners.ifatccompanion.core.model.ATCFacility
+import com.h3consultingpartners.ifatccompanion.core.atc.TaxiRoutePlanner
 import com.h3consultingpartners.ifatccompanion.core.model.ATCState
 import com.h3consultingpartners.ifatccompanion.core.model.ATCTransmission
 import com.h3consultingpartners.ifatccompanion.core.model.AircraftState
@@ -518,17 +519,29 @@ class FlightSessionCoordinatorTest {
         assertEquals("27", context.crossingRunway)
     }
 
+    /**
+     * No OpenStreetMap coverage, an Overpass outage, or simply no route computed yet — and
+     * a taxi clearance still names taxiways.
+     *
+     * This used to assert the opposite, because the fallback planner was ported and then
+     * referenced nowhere: the three fields came only from the live route and fell back to
+     * empty, so the clearance read "taxi to runway 26L via ." at every field the app had no
+     * extract for, and at every field before one landed. That is not a generic clearance,
+     * it is a broken sentence.
+     */
     @Test
-    fun `a taxi clearance stays generic when no route is available`() = runTest {
+    fun `a taxi clearance falls back to the deterministic layout when no route is available`() = runTest {
         val coordinator = coordinator(this)
         coordinator.ingestFlightPlan(plan)
         advanceUntilIdle()
 
-        // No OpenStreetMap coverage, an Overpass outage, or simply no route computed yet:
-        // the clearance must degrade to the generic form rather than say something wrong.
         val context = coordinator.buildContext(ATCState.GROUND_TAXI)
-        assertEquals("", context.taxiway)
-        assertNull(context.crossingRunway)
+        assertTrue(context.taxiway.isNotBlank(), "a clearance with no taxiways in it is not sayable")
+        assertEquals(
+            TaxiRoutePlanner().plan(plan.departure, context.runway, arrival = false).taxiwaysText,
+            context.taxiway,
+            "the fallback must be the deterministic planner's route, not an improvised one",
+        )
     }
 
     // endregion

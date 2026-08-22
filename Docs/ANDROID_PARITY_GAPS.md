@@ -12,6 +12,17 @@ That confirmation rate is high enough to be worth distrusting, so three findings
 verified by hand against both sources before this document was written: the check-in reply,
 `sayAgain`, and `unable`. All three were exactly as reported.
 
+## Progress
+
+34 of the 100 are closed, and one is half-closed; the rest stand. Each closed entry below
+carries a ✅ line naming what closes it, so this document stays the record of what the
+audit found *and* of what has been done about it rather than being quietly rewritten.
+
+The closed set is deliberately the block that made the app unflyable rather than the
+easiest thirty-four: the app had no data source in either mode, no flight plan, no
+Infinite Flight link, no entitlement enforcement, and six of the pilot's response buttons
+put a call in the transcript and left the frequency silent.
+
 ## What this means
 
 The five gaps `ANDROID_REMAINING_WORK.md` tracked were real and are now closed. They were
@@ -52,30 +63,35 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** `GateAssigner` (core/surface/routing/GateAssignment.kt:408) and its `assign`/`mayAssign` are called from nowhere in `:app` or in the coordinator, and `AutoGateStamp` is only used inside its own file. Meanwhile `SettingsScreen.kt:429-430` renders the `autoAssignGates` switch and `SettingsRepository` persists it, so the pilot can turn on a feature that has no implementation behind it.
 
 **Request Higher / Request Lower get no controller answer and never change the assigned altitude**  
+✅ Closed: `altitudeRequest` posts the climb/descend instruction with a read-back, denies a climb into a moderate-or-worse reported ride, and updates `assignedAltitude`.  
 *Absent* · iOS: `IFATCCompanion/App/AppModel.swift:4478 (requestHigher), :4494 (requestLower)`
 
 - **iOS:** The pilot request is posted, then the controller answers — `climbMaintain` / `descendPilotsDiscretion` with a matching altitude read-back — and `assignedAltitude` moves to the new level. A climb into a band with a moderate-or-worse ride report is denied with "unable higher, traffic and reported turbulence at that level".
 - **Android:** `performPilotAction` posts `pilotEngine.requestHigher/requestLower` and then calls `onPilotRequest`, whose `when` has no REQUEST_HIGHER/REQUEST_LOWER branch and falls through to `else -> return` (FlightSessionCoordinator.kt:876-886). `PhraseologyEngine.climbMaintain` (line 441) and `.descendPilotsDiscretion` (line 471) exist and are called from nowhere in main. `assignedAltitude` is only ever written by `updateAssignedAltitude` on a state transition and by the go-around. There is no turbulence-band denial.
 
 **Ride Report and Destination Weather requests are unanswered — RideReportEngine is never constructed**  
+✅ Closed: `WeatherAnswering` is the seam; `WeatherSessionController` implements it and the coordinator posts the ride report / destination weather with a courtesy Roger read-back.  
 *Ported, not wired* · iOS: `IFATCCompanion/App/AppModel.swift:4880 (requestRideReport), :4929 (requestDestinationWeather), :4912 (computeSmootherAltitude)`
 
 - **iOS:** On Center, Ride Report posts the pilot's request and Center reads back the PIREP-derived ride reports along the route, optionally offering a smoother altitude; Dest WX has Center read the destination weather.
 - **Android:** `RideReportEngine` (core/weather/deviation/RideReportEngine.kt:24), which owns both replies including `destinationWeather` at line 177, is constructed only in RideReportEngineTest. `performPilotAction` posts `pilotEngine.requestRideReports` / `pilotEngine.requestWeather` and `onPilotRequest` has no branch for either, so the pilot transmits and nothing answers. FlightViewModel.onContactAtcAboutWeather (FlightViewModel.kt:535) routes the weather banner's CTA into the same dead end.
 
 **Takeoff and landing clearances speak "wind 000 at 0" — buildContext hardcodes the wind to zero**  
+✅ Closed: `buildContext` reads the METAR through `WeatherAnswering.metar`, falling back to 270 at 8 rather than to zero.  
 *Behaves differently* · iOS: `IFATCCompanion/App/AppModel.swift:4010-4012 (`let metar = arrival ? destinationMETAR : departureMETAR; let windDir = metar?.windDirection ?? 270; let windSpeed = metar?.windSpeed ?? 8`)`
 
 - **iOS:** The context carries the field's METAR wind (falling back to 270 at 8), which the takeoff clearance, the line-up-and-wait call and the cleared-to-land call all speak: "United 598, wind 270 at 8, runway 26L, cleared for takeoff".
 - **Android:** `FlightSessionCoordinator.buildContext` (core/session/FlightSessionCoordinator.kt:1508-1509) sets `windDirection = 0, windSpeed = 0` literally, with no METAR lookup. `ATCStateMachine.kt:119-120,129-130,194-195` feed those straight into `PhraseologyEngine.clearedForTakeoff` and `.clearedToLand`, which format `%03d` of the direction — so every clearance in the app says "wind 000 at 0".
 
 **The arrival Ramp / "To Gate" flow does nothing — the To Gate button is offered and is a no-op**  
+✅ Closed: `contactRamp` → `arriveAtGate` posts the inbound call and the gate routing, then stages `monitor ramp to the gate` and the block-in from telemetry.  
 *Ported, not wired* · iOS: `IFATCCompanion/App/AppModel.swift:2687 (arriveAtGate), :1966-1976 (the gateMonitored staging in handle(state:)), :2755 (completeGateArrival), :2893 (announceArrival)`
 
 - **iOS:** Tuning Ramp on arrival and tapping To Gate posts the pilot's inbound call, Ramp answers with a routing to the gate, then as the aircraft slows below 8 kt Ramp says "monitor ramp to the gate", and once stopped at the stand with the parking brake set the block-in and "flight complete" are announced.
 - **Android:** `FlightSessionCoordinator.performPilotAction` (core/session/FlightSessionCoordinator.kt:859) handles `PilotAction.TO_GATE` with `return` and a comment saying the subsystem "is wired in separately" and "until those land, the button is not offered" — but it *is* offered: `PilotActionAvailability.kt:92` returns `setOf(PilotAction.TO_GATE)` whenever the working facility is RAMP after departure, and FlightViewModel.onPilotAction routes it straight to performPilotAction. `RampPhraseologyEngine.arrivalInbound`, `.proceedToGate` and `.monitorRampToGate` are called from nowhere in main. There is no `isSlowingAtGate` equivalent and no `gateMonitored` stage at all.
 
 **The departure heading and first-fix name are never computed, so the takeoff clearance always says "fly runway heading"**  
+✅ Closed: `departureGuidance` measures the bearing from the runway marker, the on-ground position or the field, converts true→magnetic, and names the next unpassed fix.  
 *Ported, not wired* · iOS: `IFATCCompanion/App/AppModel.swift:4048-4090 (headingOrigin / interceptFix / assignedHeading), :4176 (`firstFixName: directFix?.name ?? ""`)`
 
 - **iOS:** iOS measures the bearing from the departure runway marker (or the on-ground position, or the field) to the SID's first fix, converts it from true to magnetic via HeadingSolver, and hands it to the takeoff clearance — which says "fly heading 085" unless that is within 10° of runway heading. The departure climb call then says "resume own navigation, direct <fix>".
@@ -90,6 +106,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 ### ATC, phraseology, en-route
 
 **Approach request is never granted**  
+✅ Closed: `requestApproach` posts the cleared-approach call with the FINAL read-back attached.  
 *Absent* · iOS: `IFATCCompanion/App/AppModel.swift:4577-4591`
 
 - **iOS:** `requestApproach()` posts the pilot request and then Approach answers: `engine.clearedApproach(cs:procedure:runway:)` (or the string form), with `pilotEngine.readback(for: .final, context:)` attached as the read-back so the Read Back button echoes the approach clearance.
@@ -102,54 +119,63 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** `FlightSessionCoordinator.checkIn()` (Android/core/.../session/FlightSessionCoordinator.kt:659-706) posts only `pilotEngine.requestHandoff(...)`, clears `pendingCheckInFacility` and calls `recomputeDerivedState()`. There is no controller reply on any path except the two special cases handled first (go-around resume, and the Center-to-Center sector check-in at line 693). Checking in with Departure, Approach, Tower or Ground therefore produces the pilot's call and silence.
 
 **Every takeoff and landing clearance reads "wind 000 at 0"**  
+✅ Closed — same fix as the wind gap above.  
 *Behaves differently* · iOS: `IFATCCompanion/App/AppModel.swift:4010-4012 and 4155-4160`
 
 - **iOS:** `buildContext` reads the relevant METAR (departure or destination) and sets `windDirection = metar?.windDirection ?? 270`, `windSpeed = metar?.windSpeed ?? 8`. So Tower says "wind 270 at 8, runway 27, cleared for takeoff" — and `Phonetic.wind` speaks it.
 - **Android:** `FlightSessionCoordinator.buildContext` hard-codes `windDirection = 0, windSpeed = 0` (FlightSessionCoordinator.kt:1506-1507). The coordinator is constructed with no weather/METAR provider at all (AppGraph.kt:321-341 passes scope, clock, diagnostics, connect, settingsProvider, speak, taxiContextProvider, savedFlightBinding). Every `clearedForTakeoff` and `clearedToLand` therefore reads "wind 000 at 0", spoken as zero-zero-zero at zero.
 
 **Ground never hands the pilot to Tower to monitor before departure**  
+✅ Closed: `maybeMonitorTowerHandoff` fires from `GroundHandoffSignals`, and a Tower check-in while monitoring answers with `numberOneForTakeoff`.  
 *Ported, not wired* · iOS: `IFATCCompanion/App/AppModel.swift:2275-2287 (maybeMonitorTowerHandoff), 2247-2266 (autoAdvanceMonitoringTower), 4702-4710 ("number one for departure")`
 
 - **iOS:** As the departure taxi comes within `OSMSurface.monitorTowerLeadMeters` (600 m) of the runway, Ground posts `engine.monitorTower(cs:frequency:)` ("monitor Tower on 118.3") and latches `monitoringTower`. That then (a) makes Tower proactively issue "line up and wait" as the aircraft rolls up, (b) suppresses the redundant "contact Tower" on the takeoff clearance, (c) adds Check In to the Tower button set, and (d) makes a Tower check-in answer with `engine.numberOneForTakeoff(cs:runway:)` and nothing else.
 - **Android:** `FlightSessionState.monitoringTower` (FlightSessionState.kt:67) is read in three places (FlightSessionCoordinator.kt:530, 541, and PilotActionAvailability.kt:145) and captured/restored in snapshots — but nothing in `:core` main or `:app` ever sets it to true. `engine.monitorTower` is never called outside a test, `numberOneForTakeoff` is never called at all, and the surface coordinator's `approachingRunwayHandoff` flag (surface/routing/AirportSurfaceCoordinator.kt:1411-1414) is computed and then consumed by nobody.
 
 **Request Higher and Request Lower post only the pilot's half**  
+✅ Closed — see `altitudeRequest`.  
 *Ported, not wired* · iOS: `IFATCCompanion/App/AppModel.swift:4478-4502`
 
 - **iOS:** `requestHigher()` posts the pilot request, then either denies it (`deny(c, reason: "unable higher, traffic and reported turbulence at that level")` when a ride-report item of severity >= .moderate covers the target altitude band) or sets `assignedAltitude` and posts `engine.climbMaintain(cs:altitude:)` with an `altitudeReadback("Climb", ...)` attached. `requestLower()` posts the pilot request then `engine.descendPilotsDiscretion(cs:altitude:)` with a matching read-back, and updates `assignedAltitude`. Both then clear the one-shot smoother-altitude hint.
 - **Android:** `performPilotAction` (FlightSessionCoordinator.kt:836-842) builds `pilotEngine.requestHigher/requestLower`, posts it, and calls `onPilotRequest(action)` — which (line 876-886) maps only CLEARANCE/PUSHBACK/ENGINE_START/TAXI/READY/TAKEOFF and `else -> return`. No controller answer, no denial branch, and `assignedAltitude` is never updated by the request.
 
 **Ride Report and Dest Wx get no answer; RideReportEngine is constructed nowhere**  
+✅ Closed — see `WeatherAnswering`.  
 *Ported, not wired* · iOS: `IFATCCompanion/App/AppModel.swift:4880-4900 (requestRideReport) and 4929-4941 (requestDestinationWeather)`
 
 - **iOS:** `requestRideReport()` posts the pilot request, refreshes weather, recomputes ride items, computes a smoother altitude, and posts `rideEngine.rideReport(assessment:items:referenceAltitudeFt:smoother:callsign:)` with a courtesy `pilotEngine.roger(...)` attached as the read-back. `requestDestinationWeather()` does the same with `rideEngine.destinationWeather(metar:callsign:icao:)`.
 - **Android:** `performPilotAction` (FlightSessionCoordinator.kt:845-846) posts `pilotEngine.requestRideReports` / `pilotEngine.requestWeather` and stops. `FlightViewModel.onContactAtcAboutWeather()` (app/.../ui/FlightViewModel.kt:535) routes to the same dead branch. Center never answers a ride-report or destination-weather request.
 
 **Takeoff clearance never issues a departure heading, and the departure climb never names the first fix**  
+✅ Closed — see `departureGuidance`.  
 *Ported, not wired* · iOS: `IFATCCompanion/App/AppModel.swift:4056-4090 and 4168-4172`
 
 - **iOS:** `buildContext` computes `departureHeading` from the bearing to `flightPlan.initialDepartureFix(sidFixes:origin:)`, converted true→magnetic, and `firstFixName` from `nextUnpassedWaypoint`/the first filed fix. With a heading known, `ATCStateMachine.towerDeparture` takes the rich branch — "wind 270 at 8, runway 27, cleared for takeoff, fly heading 085, climb and maintain 5,000" — and `departureClimb` says "resume own navigation, direct SSCOT".
 - **Android:** `buildContext` never sets `departureHeading` or `firstFixName`, so both keep their ATCContext defaults (0 and ""). `ATCStateMachine.kt:115` therefore always takes the `else` branch (the plain "cleared for takeoff"), and `departureClimb` always says the bare "resume own navigation". The four-argument `clearedForTakeoff` overload, its runway-alignment test and its read-back are all correctly ported (PhraseologyEngine.kt:369-408) and unreachable.
 
 **Taxi clearances lose their route whenever the OSM surface has not resolved**  
+✅ Closed: `buildContext` falls back to `TaxiRoutePlanner` whenever no live route has resolved.  
 *Ported, not wired* · iOS: `IFATCCompanion/App/AppModel.swift:4026-4028 (taxiPlanner.plan) with IFATCCompanion/ATC/TaxiRoutePlanner.swift`
 
 - **iOS:** `buildContext` always fills `taxiway`, `crossingRunway` and `parkingTaxiway` from `taxiPlanner.plan(airport:runway:arrival:)` — a deterministic fallback layout that works at any field, with or without OpenStreetMap data. A live OSM route later supersedes the clearance, but there is never a routeless clearance.
 - **Android:** `buildContext` sources those three fields solely from `taxiContextProvider()` (FlightSessionCoordinator.kt:1488, 1509-1511) which returns null until the Overpass fetch resolves; the fields then fall back to `""`/null. `TaxiRoutePlanner.kt` — a faithful port of the same class, with `plan`, `defaultRoute`, `generatedLayout`, `replacingFallbackRoute` and `runwayNumber` — is referenced nowhere. With an empty `via`, `PhraseologyEngine.taxiToRunway` (line 281) emits "…, taxi to runway 27 via . Contact Tower when ready."
 
 **The hold-for-check-in (semi-automatic) airborne flow has no Android counterpart**  
+✅ Closed: `advanceSemiAutomatic` issues the hand-off alone and holds the new controller until the pilot checks in.  
 *Absent* · iOS: `IFATCCompanion/App/AppModel.swift:2350-2397 (advanceSemiAutomatic, issueAutoHandoff), dispatched at 2033`
 
 - **iOS:** Once the pilot has tuned any frequency by hand (`manualTuning` latches true), a facility change posts *only* the hand-off — `issueAutoHandoff(from:to:)` — sets `pendingCheckInFacility` and does not advance the state machine. The new controller says nothing until the pilot tunes and checks in. It also holds the whole flow while `pendingCheckInFacility != nil`, and sets that flag explicitly on the FINAL (→ Tower) and runwayExit (→ Ground) steps.
 - **Android:** `advanceAutomaticFlow` (FlightSessionCoordinator.kt:354-403) has one path only — the iOS non-manual one. It gates on standby, the read-back gate, `isManualGroundFlow` and `goAroundInProgress`, but never on `pendingCheckInFacility`, and always calls `advanceAndPost(target, automatic = true)`, which posts the hand-off *and* the new controller's instruction back to back (FlightSessionCoordinator.kt:590-624). `FlightSessionState.manualTuning` is set by `tuneTo` (line 916) and persisted in snapshots, but is read nowhere in `:core` main or `:app` — so at the TRACON ceiling the pilot hears "contact Center on 133.4" immediately followed by Center's clearance, before they have tuned or checked in.
 
 **To Gate is a dead button and the whole arrival Ramp flow is missing**  
+✅ Closed — see `arriveAtGate`.  
 *Ported, not wired* · iOS: `IFATCCompanion/App/AppModel.swift:2671-2681 (contactRamp) and 2687-2716 (arriveAtGate); IFATCCompanion/Phraseology/RampPhraseologyEngine.swift (arrivalInbound, proceedToGate, monitorRampToGate)`
 
 - **iOS:** Tapping To Gate calls `contactRamp()` → `arriveAtGate()`, which tunes Ramp, posts `rampEngine.arrivalInbound(cs:gate:)` and `rampEngine.proceedToGate(cs:gate:via:)` ("proceed to gate B44 via the inner alley"), then stages `rampEngine.monitorRampToGate` as the aircraft slows (AppModel.swift:1968-1971) and the block-in once parked.
 - **Android:** `performPilotAction` (FlightSessionCoordinator.kt:859-864) handles `PilotAction.TO_GATE` with a bare `return` and a comment claiming the arrival-ramp flow is "wired in separately" and that "the button is not offered". It *is* offered: `PilotActionAvailability.availableActions` returns `setOf(PilotAction.TO_GATE)` for `ATCFacility.RAMP` (PilotActionAvailability.kt:92), the Ramp tune button is live on arrival via `canContactRamp` (app/.../screens/AtcScreen.kt:410-421), and `ResponsesCard` renders every action in `session.availableActions` (AtcScreen.kt:456-495) wired to `onPilotAction` → `performPilotAction`. So the pilot taps To Gate and nothing happens at all.
 
 **Vectors request produces no vector**  
+✅ Closed: `requestVectors` computes a 30° intercept with `ApproachIntercept` and reads the heading back.  
 *Ported, not wired* · iOS: `IFATCCompanion/App/AppModel.swift:4535-4575`
 
 - **iOS:** `requestVectors()` posts the pilot request, then computes a real 30° intercept to the final approach course with `ApproachIntercept.heading(finalCourse:aircraft:runwayReference:variationDegreesEast:)` and posts an Approach call — "fly heading 083, vectors for the ILS runway 27 approach" — with a read-back that echoes the heading (the safety-critical element).
@@ -166,12 +192,14 @@ running app and behaving differently from the iOS build the pilot is comparing a
 ### Found by the completeness pass
 
 **Mock Mode's telemetry never reaches the flight session, and the feed is never started at launch — the app has no data source in either mode**  
+✅ Closed: `MockSimulatorFeed.onState` is assigned in `AppGraph`, and `FlightSourceController.startAtLaunch` starts a feed at launch.  
 *Ported, not wired* · iOS: `IFATCCompanion/App/AppModel.swift:1068 (`mock.onState = { [weak self] state in self?.handle(state: state) }`), :1086-1091 (pin to Mock Mode, then `startMock()`), :1431 `func startMock()``
 
 - **iOS:** AppModel subscribes to the mock feed exactly as it subscribes to the live link (`mock.onState` at AppModel.swift:1068), and at launch it pins to Mock Mode when unentitled and calls `startMock()` (AppModel.swift:1086-1091). `startMock()` (AppModel.swift:1431-1456) disconnects Connect, resets the state machine, calls `stateMachine.setConnected()` and sets `atcState = .connectedIdle`, then the feed's 1 Hz synthesized `AircraftState` drives the whole gate-to-gate flow. Mock Mode is the free demo the entire app is sold on.
 - **Android:** `MockSimulatorFeed.onState` — whose own KDoc says "the same closure shape `IFConnectManager.onState` has, so the session coordinator subscribes to the mock feed exactly as it does to the live link" (core/mock/MockSimulatorFeed.kt:76-81) — is never assigned anywhere in `:app` or `core/src/main`, and `mockFeed.state` is never collected. The coordinator's only telemetry subscription is `connect?.onState = ::ingestAircraftState` (core/session/FlightSessionCoordinator.kt:197), and `connect(...)` is never called (already-confirmed gap). `ingestAircraftState` has zero call sites outside `core/src/test`. Separately, nothing starts the feed at process start: `mockFeed.start()` is reached only from `AppGraph.setMockMode(true)` (AppGraph.kt:496-501), whose only caller is `FlightViewModel.onToggleMockMode` (FlightViewModel.kt:957-959), the Diagnostics screen switch — even though `AppSettings.mockMode` defaults to `true` (core/settings/AppSettings.kt:365). `setMockMode` also never resets the state machine or moves it to `CONNECTED_IDLE` (`ATCStateMachine.setConnected` has no caller in main; `resetForNewFlight` is called only from AppGraph.kt:170, the Clear Flight path), so `FlightSessionState.atcState` stays at its `NOT_CONNECTED` default (FlightSessionState.kt:37). Net effect: on a fresh launch the Android app is a static shell — no aircraft state, no phase, no ATC flow, no taxi, nothing — and even toggling Mock Mode in Diagnostics only spins a feed whose output goes nowhere. AppGraph.kt:247 asserts the opposite in a comment: "On [sessionScope]: its ticks are pushed straight into the coordinator's state."
 
 **No entitlement enforcement at all — nothing observes the billing state, so Live Connected Mode is never locked, unlocked, or revoked mid-flight**  
+✅ Closed: `AppGraph` observes the billing state into `FlightSourceController.applyEntitlement`, which locks to Mock Mode on loss and promotes on gain.  
 *Absent* · iOS: `IFATCCompanion/App/AppModel.swift:1114-1141 (`observeEntitlements()` / `applyEntitlement(hasLiveAccess:)`), :1086, :1618-1621 (`toggleMockMode` guard)`
 
 - **iOS:** `observeEntitlements()` (AppModel.swift:1114-1118) subscribes to `entitlements.$hasLiveAccess` and routes every change through `applyEntitlement` (AppModel.swift:1129-1141): losing access logs "Live subscription not active — locking to Mock Mode", forces `settings.mockMode = true` and calls `startMock()`; gaining it switches to Live and calls `enterLiveMode()`. `toggleMockMode` (AppModel.swift:1618-1621) additionally refuses to leave Mock Mode without entitlement, and SettingsView.swift:88 disables the toggle outright. This is the only thing that makes the subscription mean anything — including a refund or a lapse that lands mid-flight.
@@ -190,6 +218,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** `FlightSessionCoordinator.buildEngine()` (core/session/FlightSessionCoordinator.kt:227-230) is `PhraseologyEngine(digitStyle = settings.digitStyle, mode = settings.phraseologyMode)` — the `profile` parameter (PhraseologyEngine.kt:29) is never supplied anywhere in `core/src/main` or `app/src/main`, and the coordinator is constructed with no reference to `PhraseologyProfileStore` at all (AppGraph.kt:320-341). The engine reads `profile` in six places — `airlineCallName` (PhraseologyEngine.kt:89, :99) and the CLEARANCE / TAXI_TO_RUNWAY / TAKEOFF / LANDING template lookups (:171, :262, :331, :599) — all of which see `null` forever. Meanwhile the whole Phraseology Profiles screen ships and works: create, edit, add example, import JSON, share JSON, and select active (`FlightViewModel.onSelectActiveProfile`, FlightViewModel.kt:894-897, which sets `activeProfileID` and then calls `coordinator.applyEngineConfig()` — which rebuilds an engine that ignores the profile).
 
 **`FlightSessionState.hasLiveAccess` has no writer, so a paying subscriber sees the Subscribe banner and "Unlock Live Connected Mode" forever**  
+✅ Closed: `FlightSessionCoordinator.setLiveAccess`, driven by the same billing observer.  
 *Ported, not wired* · iOS: `IFATCCompanion/Views/ATCView.swift:27 (`if !entitlements.hasLiveAccess { subscribeBanner }`), IFATCCompanion/Views/SettingsView.swift:81 (`private var liveLocked: Bool { !entitlements.hasLiveAccess }`), :73-75 (subscription footer)`
 
 - **iOS:** Every entitlement-gated piece of UI reads `entitlements.hasLiveAccess` live from `EntitlementManager` (EntitlementManager.swift:26, kept fresh by `Transaction.updates`). The ATC screen's subscribe banner disappears the moment the subscription is confirmed, and Settings flips to the "Live Connected Mode is active" footer and un-disables the Mock Mode toggle.
@@ -204,12 +233,14 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** The picker itself is fully ported and tested (GateAssignment.kt: StandProfile.from, StandOperators, GateAssigner.assign/mayAssign/isAppAssigned/couldUpgrade/mayUpgrade, AutoGateStamp.decode) and the persistence exists (SettingsKeys.AUTO_ASSIGN_GATES / AUTO_ASSIGNED_DEPARTURE_GATE / AUTO_ASSIGNED_ARRIVAL_GATE, SettingsRepository.setAutoAssignedDepartureGate/ArrivalGate) — but no production code ever calls any of it. GateAssigner.assign has zero call sites outside its own file; setAutoAssignedDepartureGate/ArrivalGate have zero callers; AirportSurfaceCoordinator.surfaceModel(...) — the read-only surface accessor iOS uses for exactly this — has zero callers. Toggling "Auto-assign gates" in SettingsScreen.kt:429 writes a boolean nobody reads, so a blank gate stays blank and the taxi route has no stand to route to or from.
 
 **Mock Mode never installs the scripted flight plan, so the demo runs with an empty plan**  
+✅ Closed: `FlightPlanComposer` composes the plan from the pilot's fields and the demo route, with the pilot's entries always winning.  
 *Absent* · iOS: `IFATCCompanion/App/AppModel.swift:4247-4280 (syncFlightPlanFromSettings), especially :4258-4261 (United/598), :4262-4263 (KIAH/KMSP), :4265-4266 (cruise 37000), :4274-4277 (gates C24/C6), :4278 (mock.route.waypoints); called from toggleMockMode at :1621-1625`
 
 - **iOS:** When Mock Mode is on, syncFlightPlanFromSettings fills every blank plan field from MockSimulatorFeed.defaultRoute(): airline "United" / flight number "598", departure KIAH, destination KMSP, cruise 37000 ft, departure gate C24, arrival gate C6, and the five synthetic fixes TBONE, KMCI, KOMA, KDSM, FARGO. Anything the pilot typed wins; toggleMockMode(true) re-runs it so the demo always has a plan.
 - **Android:** Nothing in Android reads graph.mockFeed.route into the flight plan. AppGraph.setMockMode(true) (AppGraph.kt:496) only calls connect.disconnect() and mockFeed.start(). The only consumer of mockFeed.route in the whole app is FlightViewModel.mockRouteText() at :977, a Diagnostics label string. AppSettings defaults departure/destination/callsign/gates to "" and cruiseAltitude to 0, and FlightPlan is only ever populated by IFConnectManager (which is never connected — see the gap above) or by the pilot typing into the Flight-screen override fields. So the demo starts with a blank plan: no route line on the weather map, no surface load (the surface refresh in FlightViewModel.kt:141-149 returns early when both endpoints are blank), no taxi map (observeTaxi guards on `plan.departure.length >= 3`), no United 598 identity, no gates for the gate-routed taxi, and no waypoints for the weather-deviation demo the mock radar cells exist to drive.
 
 **The Infinite Flight Connect link is never opened — connect() and startAutoDiscover() have no caller in :app**  
+✅ Closed: `FlightSourceController.connectToInfiniteFlight` decides between the stored endpoint and auto-discovery, and persists what discovery finds.  
 *Ported, not wired* · iOS: `IFATCCompanion/App/AppModel.swift:1544 (connectToInfiniteFlight), :1550 (connect.startAutoDiscover), :1556 (connect.connect(host:port:rediscoverOnFailure:onRediscovered:)), :1652 (reconnect); IFATCCompanion/Views/SettingsView.swift:118 (Connect/Reconnect button)`
 
 - **iOS:** On entering Live mode iOS calls connectToInfiniteFlight(): with no stored host and auto-discover on it runs connect.startAutoDiscover and connects to whatever the search finds, persisting the address; with a stored host and auto-discover on it calls connect(host:port:rediscoverOnFailure:true) so a stale address is re-searched and overwritten when the network changed; with auto-discover off it dials the entered address exactly. Settings also has an explicit Connect/Reconnect button (model.reconnect()).
@@ -236,6 +267,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** `RouteMapModel` declares `deviationLine` (RouteMapLayers.kt:68) and `deviationPreviews` (:70), and `RouteMap` genuinely draws both (RouteMapLayers.kt:200-209) — but `FlightViewModel.routeMapModel()` (ScreenModels.kt:408-443) never sets either field, so both are always empty. There is no counterpart to `weatherRejoinMarker` at all. Meanwhile WeatherScreen.kt:186-189 tells the pilot verbatim that "The mint paths are the simulated recommended reroutes around the precipitation on your route" — describing something that can never appear.
 
 **Settings → Infinite Flight Connection has no Connect/Reconnect button, and Host / Port / Auto-discover are read by nothing**  
+✅ Closed: the Connect/Reconnect row and the connection caption ship, and the three fields are locked without a subscription.  
 *Absent* · iOS: `IFATCCompanion/Views/SettingsView.swift:96-124 (Host/IP, Port, "Auto-discover on local network", the Connect/Reconnect button at :118-121 and the `connect.connectionState.detailedTitle` line at :122); IFATCCompanion/App/AppModel.swift:1544-1566 (`connectToInfiniteFlight`, which branches on `settings.autoDiscover` and uses `settings.host`/`settings.port`)`
 
 - **iOS:** The Connection section shows Host/IP and Port fields, an Auto-discover toggle, a Connect/Reconnect button (shown whenever Mock Mode is off and the user has Live access) and a live connection-state line. `connectToInfiniteFlight()` reads all three settings: blank host + auto-discover → `connect.startAutoDiscover`; host + auto-discover → connect with rediscovery on failure; host without auto-discover → connect to exactly what was typed.
@@ -256,12 +288,14 @@ running app and behaving differently from the iOS build the pilot is comparing a
 ### Weather and ATIS
 
 **A pilot's "Destination Weather" request gets no controller answer — RideReportEngine.destinationWeather is never called**  
+✅ Closed — see `WeatherAnswering`.  
 *Ported, not wired* · iOS: `IFATCCompanion/App/AppModel.swift:4929 requestDestinationWeather → :4936 rideEngine.destinationWeather(metar:callsign:icao:); engine at IFATCCompanion/Weather/RideReportEngine.swift:124`
 
 - **iOS:** Posts the pilot's request, refreshes weather, then posts a Center read-out of the destination METAR — "<city> is reporting wind 270 at 12, visibility 10, ceiling 3000 broken, altimeter 29.92" (QNH in hPa in ICAO mode) — or "<city> weather is not available at this time." when there is no METAR, with a courtesy "Roger" attached as the read-back.
 - **Android:** FlightSessionCoordinator.performPilotAction maps PilotAction.DEST_WX to pilotEngine.requestWeather(context, context.plan.destination) — the pilot's half only — and onPilotRequest has no DEST_WX case, so nothing answers. The Kotlin port of the read-out exists (core/weather/deviation/RideReportEngine.kt:221-222, "$city is reporting ...") but is unreachable from the app.
 
 **A pilot's "Ride Report" request gets no controller answer — RideReportEngine.rideReport is never called**  
+✅ Closed — see `WeatherAnswering`.  
 *Ported, not wired* · iOS: `IFATCCompanion/App/AppModel.swift:4880 requestRideReport → :4892 rideEngine.rideReport(assessment:items:referenceAltitudeFt:smoother:callsign:); engine at IFATCCompanion/Weather/RideReportEngine.swift:59`
 
 - **iOS:** Posts the pilot's request, refreshes weather, recomputes the ride items, then posts a Center transmission relaying the lead PIREP — its severity, reported altitude, distance ahead or "along your route", nearest fix, reporting aircraft type, age in minutes, the contributing factors — and attaches a courtesy "Roger" as the read-back so the Read Back button acknowledges the report. With nothing along the route it says "overall ride is smooth along your route at this time."
@@ -322,12 +356,14 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** buildContext sets `rampProfile` but not `pushDirection` or `rampSpot`, so both take their ATCContext defaults of `""` and every airport gets the generic push. `ATCStateMachine.kt:97` and `PilotResponseEngine.kt:45` read them and always see empty.
 
 **Request Approach and Request Vectors are unanswered; the vector heading engine is unwired**  
+✅ Closed — see `requestVectors` and `requestApproach`.  
 *Absent* · iOS: `IFATCCompanion/App/AppModel.swift:4535 (requestVectors), :4564 (approachInterceptHeading), :4577 (requestApproach)`
 
 - **iOS:** Vectors posts the request and Approach answers with a real 30° intercept to the final approach course — computed by ApproachIntercept from the runway's magnetic course, the aircraft's side of the centerline and the local variation — with the heading as the read-back. Request Approach posts the request and Approach issues the cleared-approach with a matching read-back.
 - **Android:** `performPilotAction` posts `pilotEngine.requestVectors` / `.requestApproach` and `onPilotRequest` has no branch for either, so nothing answers until the automatic flow happens to reach FINAL on its own. `ApproachIntercept` (core/atc/ApproachIntercept.kt:16) is called from nowhere in main — the only mention outside its own file is a CONTRACT comment in HeadingSolver.kt:401 — so no vector heading is ever produced.
 
 **The Accept-smoother-altitude button never appears, and would do nothing if it did**  
+✅ Closed: the ride report stores the suggestion, `smootherAltitudeLabel` publishes it, and `acceptSmootherAltitude` flies it.  
 *Ported, not wired* · iOS: `IFATCCompanion/App/AppModel.swift:4508 (acceptSmootherAltitude), :302 (smootherAltitudeActionTitle), :236 (`if suggestedSmootherAltitude != nil { actions.insert(.acceptSmootherAltitude) }`)`
 
 - **iOS:** After a ride report suggests a smoother level, a labelled "Climb FL390" button appears on Center; tapping it posts the request, has the controller clear the aircraft there with a read-back, sets assignedAltitude and clears the suggestion.
@@ -340,6 +376,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** `LiveFlightUpdateProjection.from` (core/liveupdate/LiveFlightUpdateProjection.kt:56) sets `weatherAlert = null` unconditionally — the field is modelled and rendered but never populated. The projection is fed only `FlightSessionState`, which carries no weather conflict, and `FlightSessionActiveFlightController.kt:49` is the only caller.
 
 **The approach fallback altitude is never elevation-aware**  
+✅ Closed: `approachDefaultAltitude` is derived from the live field elevation.  
 *Behaves differently* · iOS: `IFATCCompanion/App/AppModel.swift:4138 (`let approachDefault = Self.roundedUpToThousand((liveFieldElevationMSL() ?? 0) + 3000)`), :3485 (liveFieldElevationMSL)`
 
 - **iOS:** When the flight plan supplies no intercept altitude, Approach assigns 3,000 ft above the *destination field*, estimated live from MSL − AGL near the field and rounded up — 9,000 ft at Denver, not 3,000.
@@ -354,12 +391,14 @@ running app and behaving differently from the iOS build the pilot is comparing a
 ### ATC, phraseology, en-route
 
 **Accept Smoother Altitude never appears, and is a no-op if it did**  
+✅ Closed — see the smoother-altitude gap above.  
 *Ported, not wired* · iOS: `IFATCCompanion/App/AppModel.swift:4508-4521 (acceptSmootherAltitude), 237 (availability), 4891 (suggestion set), 4967-4971 (nextAltitude preference)`
 
 - **iOS:** A ride report publishes `suggestedSmootherAltitude`; the button then appears labelled "Climb FL390" / "Descend FL330", and tapping it posts the pilot request plus `engine.climbMaintain`/`descendPilotsDiscretion` to that exact level with a read-back, updates `assignedAltitude` and clears the hint. The hint also biases the next plain Request Higher/Lower toward that level.
 - **Android:** `PilotActionAvailability` gates the button on `hasSmootherAltitudeSuggestion`, fed from `current.smootherAltitudeLabel` (FlightSessionCoordinator.kt:1191) — a `FlightSessionState` field (FlightSessionState.kt:106) that nothing ever assigns, so it is permanently null and the button never renders. Even if it did, `performPilotAction` returns early for `ACCEPT_SMOOTHER_ALTITUDE` (FlightSessionCoordinator.kt:859-864). `WeatherSessionController.computeSmootherAltitude` (line 295) and `noteSmootherAltitude` (line 320) are never called in main — only `clearSmootherAltitude` from AppGraph.kt:179. `nextAltitudeStep` (line 896) has no smoother-altitude preference.
 
 **Approach's terminal altitude and the go-around pattern altitude are not elevation-aware**  
+🟡 Partly closed: the approach terminal altitude is now elevation-aware; the go-around pattern altitude is not.  
 *Behaves differently* · iOS: `IFATCCompanion/App/AppModel.swift:4136-4138 and 3485 (liveFieldElevationMSL)`
 
 - **iOS:** `buildContext` sets `approachDefaultAltitude = roundedUpToThousand((liveFieldElevationMSL() ?? 0) + 3000)` — 3,000 ft above the *destination field*, in MSL. At Denver that is 9,000 ft, which is also what `goAround()` uses as the pattern altitude (AppModel.swift:4613).
@@ -378,6 +417,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** `performPilotAction(TAXI)` (FlightSessionCoordinator.kt:838) always posts `pilotEngine.requestTaxi` and `onPilotRequest` advances straight to `ATCState.GROUND_TAXI` (line 883), so Ramp itself issues the Ground taxi clearance in one step. There is no `onDepartureRampPreTaxi` equivalent and no `rampEngine.pushComplete`/`contactGround` call anywhere in main. `ATCContext.rampSpot` is likewise never populated by `buildContext`.
 
 **Runway in use is the first one listed, ignores the filed approach, and is empty at unknown fields**  
+✅ Closed: `resolveRunway` honours the parsed approach, then the filed runway, then the real active runway for the live wind, then the field's own OSM runway ends.  
 *Behaves differently* · iOS: `IFATCCompanion/App/AppModel.swift:4207-4243 (resolvedRunway)`
 
 - **iOS:** Resolves in order: on arrival the parsed approach's runway, then the filed arrival runway; on departure the filed departure runway; then the plan's runway; then `runways.activeRunway(for:windDirection:windSpeed:)` — the into-wind pick from the field's real inventory; then the into-wind pick among the runway idents in the loaded airport surface; and finally, as a *name only*, the wind direction rounded to the nearest ten, returned with `isKnown == false` so no caller reads it back as a heading.
@@ -454,6 +494,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** `FlightSessionCoordinator.handleSpokenPilotText` (core/session/FlightSessionCoordinator.kt:1450-1464) parses the intent and calls `readBack()` / `sayAgain()` / `unable()` / `checkIn()` / `performPilotAction(action)` directly, with no equivalent flag. Every one of those paths posts with `speakIt = settings.speakPilot` (FlightSessionCoordinator.kt:646, 691, 706, 789, 867, 928), and `AppSettings.speakPilot` defaults to `true` (core/settings/AppSettings.kt:135). So on Android, holding the mic and saying "cross runway six right, United five nine eight" is immediately followed by the app's TTS reciting the same line back over the radio. `grep` for `pilotInputViaVoice` or any "via voice" flag in `core/src/main` and `app/src/main` returns nothing.
 
 **The Settings Mock Mode toggle persists the flag but never switches modes — the feed is neither started nor stopped and the session is not ended**  
+✅ Closed: `updateSettings` routes a mode change through `FlightSourceController.toggleMockMode`.  
 *Ported, not wired* · iOS: `IFATCCompanion/Views/SettingsView.swift:85-89 (toggle bound to `model.toggleMockMode`, `.disabled(liveLocked)`), IFATCCompanion/App/AppModel.swift:1616-1633`
 
 - **iOS:** The Settings Mock Mode toggle is bound directly to `model.toggleMockMode($0)` (SettingsView.swift:86-88), which clears the airport surface, rebuilds the plan from the mock route and calls `startMock()`, or calls `enterLiveMode()` (AppModel.swift:1625-1632) — and refuses the switch without entitlement. The Diagnostics toggle (DiagnosticsView.swift:41-43) calls the identical method, so both switches do the same thing.
@@ -474,6 +515,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** FlightViewModel.onRefreshAirportData() (FlightViewModel.kt:838-840) calls graph.surface.refresh(session.value.flightPlan) and omits the forceRefresh argument, which defaults to false (SurfaceSessionController.kt:88). AirportSurfaceProvider.surface (AirportSurfaceProvider.kt:156-170) returns the cached model immediately when `!forceRefresh` and the cache is neither stale (75-day interval, OSMSurfaceConstants.CACHE_REFRESH_INTERVAL_SECONDS) nor schema-outdated, so the button performs no network request at all for a recently-cached airport. It also targets SurfaceSessionController rather than AirportSurfaceCoordinator, so even a successful re-fetch does not refresh the surface an in-progress taxi is routing on; AirportSurfaceCoordinator.refreshData() (which does pass forceRefresh = true, AirportSurfaceCoordinator.kt:1719-1725) has no caller.
 
 **Live ATC staffing status never reaches the session, so the companion never stands by for a human controller in live mode**  
+✅ Closed: `AppGraph` mirrors `IFConnectManager.state.liveATC` into `FlightSessionCoordinator.applyLiveATC` in live mode.  
 *Ported, not wired* · iOS: `IFATCCompanion/App/AppModel.swift:1381-1386 (connect.$liveATC subscription) and :1410-1428 (applyLiveATC); IFATCCompanion/Connect/IFConnectStateReader.swift:194-228 (readATCStatus) feeding IFConnectManager's published liveATC`
 
 - **iOS:** iOS subscribes to connect.$liveATC and, in live mode, applies each status to model.liveATC. That drives companionShouldStandBy — the per-frequency, location-aware rule that makes the companion go quiet while the pilot is tuned to a staffed human IFATC controller — and logs the human-ATC and standby transitions; the Diagnostics and ATC views show liveATC.summary.
@@ -486,6 +528,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** AirportSurfaceCoordinator.prepareSimulatedSurfaces(...) is never called from :app or :core, so `simulatedReferences` (AirportSurfaceCoordinator.kt:307) is always empty outside tests. loadSimulatedSurface (AirportSurfaceCoordinator.kt:757-772) reads `if (simulatedReferences[icao] == null) { installSyntheticSurface(generation); return }`, so in Mock Mode it always takes the synthetic branch and fetchRealSimulatedSurface (the path whose KDoc says it exists precisely to stop the demo dropping onto "the tiny synthetic field") is unreachable. The same omission leaves runwayIdentsByICAO unpopulated for the demo airports, since recordRunwayIdents is reached from storeSimulatedSurface. Note this is not covered by SurfaceSessionController.refresh (FlightViewModel.kt:145) — that warms the provider's cache but never touches the coordinator's simulatedSurfaces/simulatedReferences maps.
 
 **The field's OSM runway idents are never consulted — cachedRunwayIdents has no caller, and wind-based active-runway selection is unwired**  
+✅ Closed: `SurfaceSessionController.runwayIdents` feeds `resolveRunway`.  
 *Ported, not wired* · iOS: `IFATCCompanion/AirportSurface/AirportSurfaceCoordinator.swift:307 (cachedRunwayIdents); IFATCCompanion/App/AppModel.swift:1178-1190 (chatterRunwayContext) and :4207-4242 (resolvedRunway, especially :4230)`
 
 - **iOS:** iOS uses the runway-end idents parsed from the loaded airport surface in two places. (1) resolvedRunway falls back, after the filed/typed runway and the curated RunwayDatabase, to runways.activeRunway(among: airportSurface.cachedRunwayIdents(icao:), windDirection:, windSpeed:) — picking the into-wind runway from the field's *real* runways, and only then to a wind-derived name flagged as not-known. (2) chatterRunwayContext feeds those idents (reconciled against the ATIS active runways) to the background chatter so its runway references are the field's actual runways.
@@ -562,12 +605,14 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** IFATCCompanionApplication.kt:55 calls chatter.bindContext(facility = { ... }) and omits the runways lambda, so AmbientChatterService keeps its default `{ ChatterRunwayContext() }` (AmbientChatterService.kt:137) — an all-empty context — at the one read site (AmbientChatterService.kt:352). ATISRunwayParser.kt (216 lines, ported with tests) is called from nowhere at all. A pilot hears simulated traffic cleared onto runways picked at random, which at a given field will routinely be runways that do not exist there and will contradict the ATIS the app just read them.
 
 **No periodic weather/ATIS refresh — PIREPs freeze at the connect-time snapshot and the arrival D-ATIS is never fetched in flight**  
+✅ Closed: `FlightSourceController` arms a 300 s weather + ATIS refresh for as long as a feed is running.  
 *Absent* · iOS: `IFATCCompanion/App/AppModel.swift:5010 (weatherRefreshInterval = 300), :5025 armWeatherRefreshTimer → :5032 refreshWeather() → :5075/:5113 refreshATIS()`
 
 - **iOS:** While a feed is active a timer re-fetches METARs/TAF/PIREPs/SIGMETs — and D-ATIS with them — every 300 s, the interval deliberately set to the service's cache TTL so each tick revalidates. docs/Weather.md states the reason outright: "so the PIREP/ride-report pool stays current through a long flight instead of freezing at the connect-time snapshot". Because refreshATIS runs inside refreshWeather, the arrival field's ATIS starts being fetched as soon as the aircraft comes inside the 100 NM arrival range.
 - **Android:** There is no timer. graph.weather.refresh() has exactly three call sites in :app: FlightViewModel.kt:149 (fires only when flightPlan.departure/destination changes, i.e. essentially once at connect), FlightViewModel.kt:798 (the manual "Refresh weather" button, WeatherScreen.kt:169), and AppGraph.kt:188 (restoring a saved flight). Consequences a pilot sees: the PIREP list and ride assessment on the Weather tab, and the ride index, stop updating after the first fetch and go stale as reports fall behind the aircraft; and because WeatherSessionController.refreshAtis only fetches the arrival ATIS when already within ARRIVAL_ATIS_RANGE_NM = 100 (WeatherSessionController.kt:376-380) and that check last ran at the gate, arrivalAtis stays null — so `atisButtonVisible = atis != null` (ScreenModels.kt:83) hides the ATIS button for the whole arrival unless the pilot happens to tap it (onTuneAtis, FlightViewModel.kt:502, is the only other refreshAtis caller).
 
 **The smoother-altitude suggestion is never computed, so the green "Climb/Descend FLxxx" accept button can never appear**  
+✅ Closed — see the smoother-altitude gap above.  
 *Ported, not wired* · iOS: `IFATCCompanion/App/AppModel.swift:4891 (suggestedSmootherAltitude = smoother), :237 (actions.insert(.acceptSmootherAltitude)), :4508 acceptSmootherAltitude, :4969; UI at IFATCCompanion/Views/ATCView.swift:551-554`
 
 - **iOS:** After a ride report, computeSmootherAltitude scans route-corridor PIREPs at *other* levels and, when one supports it, names a specific smoother altitude in the controller's call ("Smooth ride reported at flight level three three zero; advise if you'd like to climb."), stores it as a one-shot hint, adds the .acceptSmootherAltitude response button, and targets the next higher/lower request at that exact level.
@@ -586,6 +631,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** There is no `snapshotForSaving` equivalent — `SavedFlightsController.saveCurrentFlight` (core/persistence/SavedFlightsController.kt:58) calls the same `captureSnapshot` the resume path uses, which never sets `diagnostics`. `DiagnosticsStore` (core/diagnostics/DiagnosticsStore.kt) exposes `log`, `clear` and `exportText` and has no `restore`, so `DiagnosticsSnapshot` has no consumer.
 
 **The altitude ladder for Request Higher/Lower uses a different base and a different floor**  
+✅ Closed: the ladder now measures from `max(assignedAltitude, live altitude)` with a 4,000 ft floor and a 35,000 ft base, and prefers the smoother level.  
 *Behaves differently* · iOS: `IFATCCompanion/App/AppModel.swift:4966-4977 (nextAltitude), called at :4480 and :4496 with `from: max(assignedAltitude, aircraftAltInt())``
 
 - **iOS:** Prefers a ride-report-backed smoother level when it lies in the requested direction; otherwise starts from `max(assignedAltitude, current aircraft altitude)`, falls back to the cruise altitude or 35,000 ft when that is zero, steps 2,000 ft, and never returns below 4,000 ft.

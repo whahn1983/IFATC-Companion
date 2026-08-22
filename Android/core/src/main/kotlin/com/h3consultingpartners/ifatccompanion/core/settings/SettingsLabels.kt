@@ -41,6 +41,8 @@ object SettingsLabels {
     const val PORT_PLACEHOLDER = "10112"
     const val AUTO_DISCOVER = "Auto-discover on local network"
     const val KEEP_SCREEN_AWAKE = "Keep screen awake"
+    const val CONNECT = "Connect"
+    const val RECONNECT = "Reconnect"
 
     // Voice
     const val VOICE_ENABLED = "Voice enabled"

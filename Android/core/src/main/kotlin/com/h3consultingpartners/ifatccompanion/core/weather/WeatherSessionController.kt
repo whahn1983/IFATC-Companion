@@ -4,6 +4,10 @@ import com.h3consultingpartners.ifatccompanion.core.airports.AirportDatabase
 import com.h3consultingpartners.ifatccompanion.core.atis.AirportATIS
 import com.h3consultingpartners.ifatccompanion.core.atis.ATISDiagnostics
 import com.h3consultingpartners.ifatccompanion.core.atis.ATISService
+import com.h3consultingpartners.ifatccompanion.core.model.ATCTransmission
+import com.h3consultingpartners.ifatccompanion.core.phraseology.PhraseologyEngine
+import com.h3consultingpartners.ifatccompanion.core.session.WeatherAnswering
+import com.h3consultingpartners.ifatccompanion.core.weather.deviation.RideReportEngine
 import com.h3consultingpartners.ifatccompanion.core.geo.Coordinate
 import com.h3consultingpartners.ifatccompanion.core.geo.Geo
 import com.h3consultingpartners.ifatccompanion.core.model.AircraftState
@@ -78,7 +82,13 @@ class WeatherSessionController(
     private val diagnostics: DiagnosticsSink = DiagnosticsSink.noop,
     private val mock: MockSimulatorFeed? = null,
     private val settingsProvider: () -> AppSettings = { AppSettings() },
-) {
+    /**
+     * The phraseology in force, read per call so the ride read-out follows the pilot's
+     * digit style and pack like every other line rather than a snapshot taken at
+     * construction.
+     */
+    private val phraseologyProvider: () -> PhraseologyEngine = { PhraseologyEngine() },
+) : WeatherAnswering {
 
     private val _state = MutableStateFlow(WeatherSessionState())
     val state: StateFlow<WeatherSessionState> = _state.asStateFlow()
@@ -322,7 +332,63 @@ class WeatherSessionController(
     }
 
     /** Clear the one-shot hint from the last ride report. */
-    fun clearSmootherAltitude() = noteSmootherAltitude(null)
+    override fun clearSmootherAltitude() = noteSmootherAltitude(null)
+
+    // endregion
+
+    // region Answering the controller
+
+    /**
+     * Center's read-out of the ride along the route, composed from freshly-fetched reports.
+     *
+     * The whole sequence is here rather than in the flight session because every input is
+     * this object's: the PIREP pool, the corridor analysis, the reference altitude and the
+     * smoother-level search. The session asks and posts; this decides what the answer says.
+     */
+    override suspend fun rideReport(callsign: PhraseologyEngine.Callsign): ATCTransmission {
+        refresh()
+        recomputeRideItems()
+        val reference = rideReferenceAltitudeFt()
+        // Remembered, not just returned: the suggestion is what makes the accept button
+        // appear and what the next plain higher/lower request is aimed at.
+        val smoother = computeSmootherAltitude(reference)
+        noteSmootherAltitude(smoother)
+        val snapshot = _state.value
+        return RideReportEngine(phraseologyProvider()).rideReport(
+            assessment = snapshot.rideAssessment,
+            items = snapshot.rideReportItems,
+            referenceAltitudeFt = reference,
+            smoother = smoother,
+            callsign = callsign,
+        )
+    }
+
+    override suspend fun destinationWeather(
+        callsign: PhraseologyEngine.Callsign,
+        icao: String,
+    ): ATCTransmission {
+        refresh()
+        return RideReportEngine(phraseologyProvider()).destinationWeather(
+            metar = _state.value.destinationMetar,
+            callsign = callsign,
+            icaoCode = icao,
+        )
+    }
+
+    override fun smootherAltitude(): SmootherAltitude? = _state.value.suggestedSmootherAltitude
+
+    override fun metar(arriving: Boolean): METAR? =
+        if (arriving) _state.value.destinationMetar else _state.value.departureMetar
+
+    /**
+     * A reported ride of moderate or worse covering the target band is what makes a
+     * controller refuse a climb into it — the one case where "unable higher" is the more
+     * useful answer than granting the request.
+     */
+    override fun altitudeIsBlockedByRideReports(altitudeFt: Int): Boolean =
+        _state.value.rideReportItems.any {
+            it.severity >= TurbulenceSeverity.MODERATE && it.altitudeBand?.contains(altitudeFt) == true
+        }
 
     // endregion
 

@@ -18,6 +18,7 @@ import com.h3consultingpartners.ifatccompanion.core.diagnostics.DiagnosticsStore
 import com.h3consultingpartners.ifatccompanion.core.map.BaseImageryService
 import com.h3consultingpartners.ifatccompanion.core.map.CoastlineData
 import com.h3consultingpartners.ifatccompanion.core.mock.MockSimulatorFeed
+import com.h3consultingpartners.ifatccompanion.core.model.FlightPhase
 import com.h3consultingpartners.ifatccompanion.core.net.AppHttp
 import com.h3consultingpartners.ifatccompanion.core.net.HttpFetching
 import com.h3consultingpartners.ifatccompanion.core.net.OkHttpFetcher
@@ -32,6 +33,8 @@ import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticLevel
 import com.h3consultingpartners.ifatccompanion.core.platform.FileStore
 import com.h3consultingpartners.ifatccompanion.core.review.ReviewRequestManager
 import com.h3consultingpartners.ifatccompanion.core.session.FlightSessionCoordinator
+import com.h3consultingpartners.ifatccompanion.core.session.FlightSourceController
+import com.h3consultingpartners.ifatccompanion.core.session.GroundHandoffSignals
 import com.h3consultingpartners.ifatccompanion.core.session.TaxiClearanceContext
 import com.h3consultingpartners.ifatccompanion.core.settings.AppSettings
 import com.h3consultingpartners.ifatccompanion.core.settings.SettingsRepository
@@ -39,6 +42,7 @@ import com.h3consultingpartners.ifatccompanion.core.surface.AirportSurfaceCache
 import com.h3consultingpartners.ifatccompanion.core.surface.AirportSurfaceProvider
 import com.h3consultingpartners.ifatccompanion.core.surface.SurfaceSessionController
 import com.h3consultingpartners.ifatccompanion.core.surface.routing.AirportSurfaceCoordinator
+import com.h3consultingpartners.ifatccompanion.core.surface.routing.TaxiKind
 import com.h3consultingpartners.ifatccompanion.core.weather.AviationWeatherService
 import com.h3consultingpartners.ifatccompanion.core.weather.WeatherSessionController
 import com.h3consultingpartners.ifatccompanion.core.weather.radar.PrecipitationOverlayService
@@ -177,6 +181,11 @@ class AppGraph private constructor(
                 chatter.stop()
                 surfaceRouting.clear()
                 weather.clearSmootherAltitude()
+                // The link is bound to whatever flight was live when it opened: after a
+                // swap in the sim it keeps serving the previous aircraft's position and
+                // plan. This is the same thing the Reconnect button does by hand, which is
+                // what pilots were having to do after clearing or loading a flight.
+                flightSource.refreshConnection()
             },
             restoreSession = { snapshot ->
                 flightSessionCoordinator.restore(snapshot)
@@ -188,6 +197,7 @@ class AppGraph private constructor(
                     weather.refresh()
                     weather.refreshAtis()
                 }
+                flightSource.refreshConnection()
             },
             clearResumableSession = { sessionStore.clear() },
             settings = { settingsRepository.state.value.autoSaveFlights },
@@ -244,8 +254,19 @@ class AppGraph private constructor(
      * the foreground service, the notification actions and the UI all address it.
      */
     /** Mock Mode's scripted feed — the free, offline flight, and the tests' stand-in sim. */
-    /** On [sessionScope]: its ticks are pushed straight into the coordinator's state. */
-    val mockFeed: MockSimulatorFeed by lazy { MockSimulatorFeed(scope = sessionScope, clock = clock) }
+    /**
+     * On [sessionScope]: its ticks are pushed straight into the coordinator's state.
+     *
+     * The subscription is the whole point of the feed and was missing: `onState` is the
+     * same closure shape `IFConnectManager.onState` has precisely so the session takes the
+     * demo exactly as it takes the live link, and with nothing assigned to it the mock
+     * flight synthesized a full gate-to-gate telemetry stream that reached nobody.
+     */
+    val mockFeed: MockSimulatorFeed by lazy {
+        MockSimulatorFeed(scope = sessionScope, clock = clock).also { feed ->
+            feed.onState = { state -> flightSessionCoordinator.ingestAircraftState(state) }
+        }
+    }
 
     val weatherService: AviationWeatherService by lazy {
         AviationWeatherService(http, clock = clock, diagnostics = diagnostics)
@@ -284,6 +305,9 @@ class AppGraph private constructor(
             diagnostics = diagnostics,
             mock = mockFeed,
             settingsProvider = { settingsRepository.state.value },
+            // The ride read-out is a controller call like any other, so it follows the
+            // pilot's digit style and phraseology pack rather than a default engine.
+            phraseologyProvider = { flightSessionCoordinator.phraseologyEngine },
         )
     }
 
@@ -333,6 +357,30 @@ class AppGraph private constructor(
             // lambda runs during construction, and by the time either is invoked both are
             // built. Same arrangement as `speech` and `chatter` above.
             savedFlightBinding = { savedFlights.binding() },
+            // Who answers a Ride Report or Destination Weather request. The whole
+            // RideReportEngine was ported, tested and constructed nowhere, so Center never
+            // answered either one.
+            weatherAnswers = weather,
+            // Mock Mode only: walk the scripted aircraft to the stand so the block-in the
+            // arrival flow waits for actually happens.
+            advanceMockToGate = { mockFeed.setPhase(FlightPhase.PARKED) },
+            // The field's real runway ends, once its surface has been fetched — which,
+            // at the departure airport by the time a takeoff clearance is due, is the
+            // field the aircraft is sitting on.
+            surfaceRunwaysProvider = { icao -> surface.runwayIdents(icao) },
+            // What the departure taxi looks like right now, for the monitor-Tower hand-off
+            // and the "line up and wait" that follows it. Read as one snapshot so all four
+            // facts describe the same instant.
+            groundHandoffSignals = {
+                val routing = surfaceRouting.state.value
+                GroundHandoffSignals(
+                    isDepartureSurface = routing.kind == TaxiKind.DEPARTURE,
+                    approachingRunwayHandoff = routing.approachingRunwayHandoff,
+                    approachingRunwayLineup = routing.approachingRunwayLineup,
+                    awaitingCrossingReadback = routing.awaitingCrossingReadback,
+                    awaitingTaxiReadback = routing.awaitingTaxiReadback,
+                )
+            },
         ).also { coordinator ->
             // The taxi phrasing must follow the pilot's digit style and phraseology pack
             // like every other line, so it tracks the same engine rather than snapshotting
@@ -378,6 +426,69 @@ class AppGraph private constructor(
     }
 
     /**
+     * Which data source the flight runs on, and everything that starting one entails.
+     *
+     * Until this existed the app had no data source in either mode: the mock feed's
+     * `onState` was unassigned, `connect(...)` and `startAutoDiscover(...)` had no call
+     * sites anywhere, and `AppSettings.mockMode` defaulted to true with nothing acting on
+     * it. A fresh launch produced a static shell — no aircraft state, no phase, no ATC
+     * flow. The sequencing itself lives in `:core` because the order these engines are
+     * started and reset in is a decision, not an Android detail.
+     */
+    val flightSource: FlightSourceController by lazy {
+        FlightSourceController(
+            coordinator = flightSessionCoordinator,
+            connect = connect,
+            mock = mockFeed,
+            scope = sessionScope,
+            diagnostics = diagnostics,
+            settingsProvider = { settingsRepository.settings },
+            persistMockMode = { on -> settingsRepository.setMockMode(on) },
+            persistEndpoint = { host, port ->
+                settingsRepository.setHost(host)
+                settingsRepository.setPort(port)
+            },
+            // Everything a fresh session has to reset that the coordinator does not own.
+            // The same set the Clear Flight path resets, for the same reason: silence
+            // first, because a half-spoken clearance for a flight that no longer exists is
+            // the most obviously wrong thing the app could do.
+            resetSubsystems = {
+                speech.stop()
+                chatter.stop()
+                surfaceRouting.clear()
+                weather.clearSmootherAltitude()
+            },
+            refreshWeather = {
+                weather.refresh()
+                weather.refreshAtis()
+                surface.refresh(flightSessionCoordinator.state.value.flightPlan)
+            },
+            // A mock snapshot must never be restored into a live flight, or the reverse:
+            // the transcript would describe a flight that is not happening. Mock Mode never
+            // restores at all — its feed always restarts at PREFLIGHT, so a restored
+            // transcript at cruise would describe a flight the feed is not flying.
+            restoreSession = {
+                val snapshot = sessionStore.loadResumable()
+                    ?.takeIf { !it.mockMode && !settingsRepository.state.value.mockMode }
+                if (snapshot == null) {
+                    false
+                } else {
+                    flightSessionCoordinator.restore(snapshot)
+                    diagnostics.log(
+                        DiagnosticCategory.SESSION,
+                        message = "Restored the previous session after a relaunch",
+                    )
+                    true
+                }
+            },
+            unbindSavedFlight = { savedFlightStore.setActive(null) },
+            reviewBeforeFirstCall = {
+                reviewLauncher.requestIfAppropriate(ReviewRequestManager.Trigger.BEFORE_FIRST_CALL)
+            },
+        )
+    }
+
+    /**
      * The computed route, reduced to the three fields a clearance needs.
      *
      * Written here rather than in `:core` so the ATC flow keeps knowing nothing about the
@@ -409,7 +520,9 @@ class AppGraph private constructor(
             clock = clock,
             onStopRequested = {
                 connect.disconnect()
-                mockFeed.stop()
+                // stopMock, not mockFeed.stop: the periodic weather refresh belongs to the
+                // running feed, and a stopped flight must not keep fetching for it.
+                flightSource.stopMock()
                 chatter.stop()
                 // Tearing down the transports is not enough on its own: without this the
                 // session still looks active, so the service that Stop was meant to end
@@ -494,19 +607,7 @@ class AppGraph private constructor(
      * rather than running both; turning it off stops the feed and lets discovery start.
      */
     fun setMockMode(enabled: Boolean) {
-        if (enabled) {
-            connect.disconnect()
-            mockFeed.start()
-        } else {
-            mockFeed.stop()
-            // The mock feed was the only thing driving the state, so switching it off ends
-            // the flight. Without this the session stays "active" with nothing feeding it.
-            flightSessionCoordinator.endSession()
-        }
-        diagnostics.log(
-            DiagnosticCategory.SESSION,
-            message = if (enabled) "Mock Mode on" else "Mock Mode off",
-        )
+        flightSource.toggleMockMode(enabled, hasLiveAccess = entitlements.state.value.hasLiveAccess)
     }
 
     // endregion
@@ -533,22 +634,39 @@ class AppGraph private constructor(
         // here costs nothing anyone is waiting on.
         applicationScope.launch { CoastlineData.lines() }
 
-        // Resume a flight the process did not survive. loadResumable already refuses a
-        // completed session and anything older than its window, so this is a no-op on a
-        // normal cold start.
-        sessionStore.loadResumable()?.let { snapshot ->
-            if (snapshot.mockMode == settingsRepository.state.value.mockMode) {
-                flightSessionCoordinator.restore(snapshot)
-                diagnostics.log(
-                    DiagnosticCategory.SESSION,
-                    message = "Restored the previous session after a relaunch",
-                )
-            } else {
-                // A mock snapshot must never be restored into a live flight, or the
-                // reverse: the transcript would describe a flight that is not happening.
-                sessionStore.clear()
+        // Mirror the Infinite Flight link into the session: the connection state every
+        // screen shows, and the live-ATC staffing that decides whether the companion steps
+        // aside for a human controller. Both were published by the manager and read by
+        // nobody, so the ATC header never left "Not connected" and the standby guard never
+        // engaged on a live flight.
+        applicationScope.launch {
+            connect.state.collect { link ->
+                flightSessionCoordinator.applyConnectionState(link.connectionState)
+                if (!settingsRepository.state.value.mockMode) {
+                    flightSessionCoordinator.applyLiveATC(link.liveATC)
+                }
             }
         }
+
+        // Keep the active mode in sync with the subscription. Whenever Live access is lost
+        // — expired, revoked, refunded — the app falls back to Mock Mode mid-flight rather
+        // than continuing to serve a paid feature, and whenever it is gained the pilot is
+        // promoted out of the demo without having to find the toggle.
+        applicationScope.launch {
+            entitlements.state
+                .map { it.hasLiveAccess }
+                .distinctUntilChanged()
+                .collect { hasAccess ->
+                    flightSessionCoordinator.setLiveAccess(hasAccess)
+                    flightSource.applyEntitlement(hasAccess)
+                }
+        }
+
+        // Bring up a data source. Everything above is arrangement; this is the app
+        // starting to fly. A resumable session is restored inside the live path, which is
+        // where iOS restores it — a mock flight always begins at the gate, because its
+        // feed does.
+        flightSource.startAtLaunch(hasLiveAccess = entitlements.state.value.hasLiveAccess)
 
         // Keep the snapshot current. Written when the transcript grows rather than on a
         // timer: transmissions are seconds apart at their densest, and the transcript is

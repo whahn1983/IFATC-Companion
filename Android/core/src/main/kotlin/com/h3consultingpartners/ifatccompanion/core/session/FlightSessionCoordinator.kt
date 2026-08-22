@@ -3,8 +3,10 @@ package com.h3consultingpartners.ifatccompanion.core.session
 import com.h3consultingpartners.ifatccompanion.core.airports.AirportDatabase
 import com.h3consultingpartners.ifatccompanion.core.airports.ProcedureParser
 import com.h3consultingpartners.ifatccompanion.core.airports.RampProfile
+import com.h3consultingpartners.ifatccompanion.core.airports.RampType
 import com.h3consultingpartners.ifatccompanion.core.airports.RunwayDatabase
 import com.h3consultingpartners.ifatccompanion.core.atc.ATCContext
+import com.h3consultingpartners.ifatccompanion.core.atc.ApproachIntercept
 import com.h3consultingpartners.ifatccompanion.core.atc.ATCStateMachine
 import com.h3consultingpartners.ifatccompanion.core.atc.GoAroundPattern
 import com.h3consultingpartners.ifatccompanion.core.atc.PhaseDetector
@@ -12,12 +14,16 @@ import com.h3consultingpartners.ifatccompanion.core.atc.PilotIntent
 import com.h3consultingpartners.ifatccompanion.core.atc.PilotIntentParser
 import com.h3consultingpartners.ifatccompanion.core.atc.PilotResponseEngine
 import com.h3consultingpartners.ifatccompanion.core.atc.RunwayLineupDetector
+import com.h3consultingpartners.ifatccompanion.core.atc.TaxiRoutePlanner
+import com.h3consultingpartners.ifatccompanion.core.connect.IFConnectConnectionState
 import com.h3consultingpartners.ifatccompanion.core.connect.IFConnectManager
+import com.h3consultingpartners.ifatccompanion.core.connect.LiveATCStatus
 import com.h3consultingpartners.ifatccompanion.core.enroute.CenterSector
 import com.h3consultingpartners.ifatccompanion.core.enroute.CenterSectorDatabase
 import com.h3consultingpartners.ifatccompanion.core.enroute.CenterSectorTracker
 import com.h3consultingpartners.ifatccompanion.core.geo.Coordinate
 import com.h3consultingpartners.ifatccompanion.core.geo.Geo
+import com.h3consultingpartners.ifatccompanion.core.geo.HeadingSolver
 import com.h3consultingpartners.ifatccompanion.core.geo.validCoordinateOrNull
 import com.h3consultingpartners.ifatccompanion.core.model.ATCFacility
 import com.h3consultingpartners.ifatccompanion.core.model.ATCState
@@ -27,7 +33,10 @@ import com.h3consultingpartners.ifatccompanion.core.model.FlightPhase
 import com.h3consultingpartners.ifatccompanion.core.model.FlightPlan
 import com.h3consultingpartners.ifatccompanion.core.persistence.SavedFlightPolicy
 import com.h3consultingpartners.ifatccompanion.core.persistence.SessionSnapshot
+import com.h3consultingpartners.ifatccompanion.core.phraseology.Phonetic
 import com.h3consultingpartners.ifatccompanion.core.phraseology.PhraseologyEngine
+import com.h3consultingpartners.ifatccompanion.core.phraseology.PhraseologyProcedure
+import com.h3consultingpartners.ifatccompanion.core.phraseology.RampPhraseologyEngine
 import com.h3consultingpartners.ifatccompanion.core.platform.Clock
 import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticCategory
 import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticsSink
@@ -37,6 +46,7 @@ import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.roundToInt
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -108,6 +118,41 @@ class FlightSessionCoordinator(
      * Center-to-Center hand-off assertable in a way the global set does not.
      */
     private val sectorDatabase: CenterSectorDatabase = CenterSectorDatabase.shared,
+    /**
+     * Who answers a Ride Report or Destination Weather request, and what a reported ride
+     * says about climbing into a given level.
+     *
+     * The flight session does not own the weather — deliberately, since the ATC state
+     * machine and the weather feed share almost nothing but the flight plan. But the
+     * controller still has to answer, so the session asks through this seam. Defaulted to
+     * [WeatherAnswering.None] so the coordinator stays independent of the weather subsystem.
+     */
+    private val weatherAnswers: WeatherAnswering = WeatherAnswering.None,
+    /**
+     * Move the demo's scripted aircraft to the stand.
+     *
+     * Only Mock Mode has anything to do here: the demo has to be walked to the gate for the
+     * block-in to play out, and the session does not own the feed. A no-op everywhere else.
+     */
+    private val advanceMockToGate: () -> Unit = {},
+    /**
+     * The runway-end idents the loaded airport surface has for a field.
+     *
+     * Picking the into-wind runway from a field's *real* runways is what the wind is
+     * genuinely good for; guessing a runway name from the wind alone is what it is not.
+     * Defaulted to nothing so the coordinator stays independent of the surface subsystem.
+     */
+    private val surfaceRunwaysProvider: (icao: String) -> List<String> = { emptyList() },
+    /**
+     * What the airport surface knows about the departure taxi right now.
+     *
+     * Drives the monitor-Tower hand-off and the "line up and wait" that follows it — the
+     * whole of which was ported (`monitorTower`, `numberOneForTakeoff`,
+     * `approachingRunwayHandoff`) and reachable from nothing, so `monitoringTower` was
+     * never set on any flight. Defaulted to all-false so the coordinator stays independent
+     * of the surface subsystem.
+     */
+    private val groundHandoffSignals: () -> GroundHandoffSignals = { GroundHandoffSignals() },
 ) {
 
     private val _state = MutableStateFlow(FlightSessionState())
@@ -173,7 +218,17 @@ class FlightSessionCoordinator(
     private var engine: PhraseologyEngine = buildEngine()
     private var stateMachine = ATCStateMachine(engine)
     private var pilotEngine = PilotResponseEngine(engine)
+    private var rampEngine = RampPhraseologyEngine(engine)
     private val phaseDetector = PhaseDetector()
+
+    /**
+     * The deterministic taxi layout every field falls back to.
+     *
+     * A live OpenStreetMap route supersedes it the moment one resolves; until then this
+     * is what keeps a clearance from reading "taxi to runway 27 via ." — which is what
+     * it read at every field with no extract, and at every field before one landed.
+     */
+    private val taxiPlanner = TaxiRoutePlanner()
     private val lineupDetector = RunwayLineupDetector()
     private val intentParser = PilotIntentParser()
 
@@ -220,6 +275,7 @@ class FlightSessionCoordinator(
         stateMachine = ATCStateMachine(engine)
         stateMachine.restore(restored)
         pilotEngine = PilotResponseEngine(engine)
+        rampEngine = RampPhraseologyEngine(engine)
         onEngineRebuilt?.invoke(engine)
         recomputeDerivedState()
     }
@@ -336,6 +392,83 @@ class FlightSessionCoordinator(
         recomputeDerivedState()
     }
 
+    /**
+     * Replace the plan outright, whatever the override flag says.
+     *
+     * This is the plan-sync path — the pilot's own saved fields, composed by
+     * [FlightPlanComposer] — and it is the one caller that must never be refused. The
+     * override guard on [ingestFlightPlan] exists to keep Infinite Flight from overwriting
+     * a plan the pilot typed; a re-sync *is* what the pilot typed, so routing it through
+     * that guard would mean a Mock Mode switch left the previous mode's route in place.
+     */
+    fun applyFlightPlan(plan: FlightPlan) {
+        _state.update { it.copy(flightPlan = plan) }
+        recomputeDerivedState()
+    }
+
+    /**
+     * Apply a live-ATC staffing snapshot and log the two transitions worth logging.
+     *
+     * Ported from `AppModel.applyLiveATC(_:)` (IFATCCompanion/App/AppModel.swift:1410). The
+     * two are deliberately separate: a human controller being *present* in the session says
+     * nothing about which frequency the pilot is on, and only the second — being tuned to
+     * that controller — is what makes the companion stand aside.
+     */
+    /**
+     * Whether the pilot currently holds Live access.
+     *
+     * Carried on the session because every screen that has to lock a paid control reads
+     * the session, not the billing client — and because a subscription that lapses
+     * mid-flight has to take the lock with it rather than waiting for a relaunch.
+     */
+    fun setLiveAccess(hasLiveAccess: Boolean) {
+        if (_state.value.hasLiveAccess == hasLiveAccess) return
+        _state.update { it.copy(hasLiveAccess = hasLiveAccess) }
+        recomputeDerivedState()
+    }
+
+    /**
+     * Mirror the Infinite Flight link's state into the session.
+     *
+     * The session carries it rather than reading the manager directly because everything
+     * that reads it — the ATC screen's header, the Live Update notification, the saved
+     * flight's summary — reads one snapshot of the flight, and a second source would let
+     * the two disagree by a frame.
+     */
+    fun applyConnectionState(connectionState: IFConnectConnectionState) {
+        if (_state.value.connectionState == connectionState) return
+        _state.update { it.copy(connectionState = connectionState) }
+        recomputeDerivedState()
+    }
+
+    fun applyLiveATC(status: LiveATCStatus) {
+        val previous = _state.value.liveATC
+        _state.update { it.copy(liveATC = status) }
+        if (status.humanControllerActive != previous.humanControllerActive) {
+            diagnostics.log(
+                DiagnosticCategory.ATC,
+                message = if (status.humanControllerActive) {
+                    val who = status.controllerName?.let { " ($it)" }.orEmpty()
+                    "Human ATC online in session$who."
+                } else {
+                    "Human ATC no longer present in session."
+                },
+            )
+        }
+        if (status.companionShouldStandBy != previous.companionShouldStandBy) {
+            diagnostics.log(
+                DiagnosticCategory.ATC,
+                message = if (status.companionShouldStandBy) {
+                    val facility = status.tunedFacility?.title ?: status.tunedFrequencyName ?: "a controller"
+                    "Tuned to human ATC ($facility) — companion standing by on this frequency."
+                } else {
+                    "Off the human-controlled frequency — companion resuming."
+                },
+            )
+        }
+        recomputeDerivedState()
+    }
+
     // endregion
 
     // region The automatic flow
@@ -357,10 +490,29 @@ class FlightSessionCoordinator(
         if (readbackGate.isClosed && !settings.mockMode) return
 
         // The pre-departure ground sequence is pilot-driven end to end, so telemetry
-        // never advances it. The one exception is the takeoff clearance, which fires
-        // once the aircraft is actually lined up on the runway.
+        // never advances it. The exceptions are the monitor-Tower hand-off as the aircraft
+        // nears the runway, and the takeoff clearance once it is actually lined up —
+        // neither of which a real controller waits for a pilot prompt to issue.
         if (stateMachine.current.isManualGroundFlow) {
-            maybeIssueTakeoffClearance(aircraft)
+            maybeMonitorTowerHandoff()
+            if (stateMachine.current == ATCState.LINE_UP_WAIT || !_state.value.monitoringTower) {
+                maybeIssueTakeoffClearance(aircraft)
+            } else {
+                // The pilot is monitoring Tower — Ground already handed them off, so no
+                // "ready" report or check-in is needed. Tower issues "line up and wait" as
+                // they reach the hold-short, and the clearance follows once lined up.
+                advanceWhileMonitoringTower(aircraft)
+            }
+            return
+        }
+
+        // After the pilot has called Ramp, walk the arrival in to the gate in stages so the
+        // ramp calls never all fire at once: "monitor ramp to the gate" as the aircraft
+        // slows toward a stop, then — a tick later — the block-in once it is actually
+        // parked with the brake set. This runs even while manually tuned, since the pilot
+        // drove the Ramp call themselves.
+        if (current.awaitingGateArrival) {
+            advanceGateArrival(aircraft)
             return
         }
 
@@ -375,6 +527,18 @@ class FlightSessionCoordinator(
         }
 
         val mapped = stateMachine.mappedState(phase)
+
+        // Once the pilot has tuned a frequency by hand they are driving the radio, and a new
+        // controller must not speak before they have arrived on its frequency. Mock Mode is
+        // exempt: it has no live telemetry to drive a hand-off from, so the demo advances on
+        // a button press.
+        if (current.manualTuning && !settings.mockMode) {
+            advanceSemiAutomatic(mapped, aircraft)
+            _state.update { it.copy(atcState = stateMachine.current) }
+            recomputeDerivedState()
+            return
+        }
+
         val previousState = stateMachine.current
         val target = adjustedAirborneTarget(mapped, aircraft)
         if (!AtcFlowOrder.isForward(target, previousState)) return
@@ -388,6 +552,68 @@ class FlightSessionCoordinator(
         if (previousState != ATCState.FINAL && stateMachine.current == ATCState.FINAL) {
             announceApproachToTowerHandoff()
         }
+    }
+
+    /**
+     * The airborne flow while the pilot is tuning frequencies by hand.
+     *
+     * The controller's position-based calls still fire from telemetry — but a *change of
+     * controller* only prompts "contact Center on 133.4" and then waits. The new controller
+     * says nothing until the pilot tunes it and checks in.
+     *
+     * Without this the pilot heard the hand-off and Center's clearance back to back, before
+     * they had touched the radio: the app told them to switch frequency and then talked to
+     * them on the frequency they had not switched to yet. Same-controller continuations —
+     * descend-via-STAR, cleared-approach, exit-the-runway — play on their own, because no
+     * frequency change is involved.
+     */
+    private fun advanceSemiAutomatic(mapped: ATCState, aircraft: AircraftState) {
+        val current = _state.value
+        // Hold while the last instruction is unacknowledged, while waiting for a check-in on
+        // a frequency the pilot was just handed to, or while a go-around is being flown.
+        if (readbackGate.isClosed || current.pendingCheckInFacility != null || goAroundInProgress) return
+
+        val previousState = stateMachine.current
+        val target = adjustedAirborneTarget(mapped, aircraft)
+        if (!AtcFlowOrder.isForward(target, previousState) || target == previousState) return
+
+        val from = AtcFlowOrder.controller(previousState, current.currentFacility)
+        val to = AtcFlowOrder.controller(target, current.currentFacility)
+
+        if (to != from) {
+            // Control passes to a new facility: prompt the hand-off and wait for the pilot to
+            // switch frequency and check in before that controller speaks.
+            val context = buildContext(previousState)
+            post(
+                engine.handoff(
+                    cs = context.callsign,
+                    from = from,
+                    to = to,
+                    frequency = frequencyFor(to, context),
+                ),
+                speakIt = true,
+            )
+            _state.update { it.copy(pendingCheckInFacility = to) }
+            recomputeDerivedState()
+            return
+        }
+
+        // The same controller keeps working the aircraft — issue the call now.
+        advanceAndPost(target, automatic = true, announceHandoff = false)
+        when {
+            previousState != ATCState.FINAL && stateMachine.current == ATCState.FINAL -> {
+                // The cleared-approach call hands the pilot to Tower; wait for them to tune
+                // Tower and check in for the landing clearance.
+                announceApproachToTowerHandoff()
+                _state.update { it.copy(pendingCheckInFacility = ATCFacility.TOWER) }
+            }
+            stateMachine.current == ATCState.RUNWAY_EXIT -> {
+                // The exit-the-runway call already tells the pilot to contact Ground; wait
+                // for them to tune Ground and check in for the taxi-in.
+                _state.update { it.copy(pendingCheckInFacility = ATCFacility.GROUND) }
+            }
+        }
+        recomputeDerivedState()
     }
 
     /**
@@ -526,6 +752,59 @@ class FlightSessionCoordinator(
      * Tower clears the aircraft for takeoff once it is lined up on the runway, or already
      * rolling, or telemetry reports the takeoff phase. No pilot prompt is needed.
      */
+    /**
+     * As the aircraft nears the departure runway, Ground hands it to Tower to *monitor* —
+     * "monitor Tower on 118.3", the red sign short of the runway.
+     *
+     * Fires once per departure taxi, the moment the surface flags the aircraft approaching
+     * the hold-short. No check-in is required afterwards: the read-back tunes the radio to
+     * Tower when auto-tune is on, and the takeoff clearance still plays once the aircraft
+     * is lined up.
+     *
+     * Every one of the guards is load-bearing. The hand-off must not cut across a taxi or
+     * crossing clearance the pilot has not answered — that is how a pilot ends up switching
+     * frequency mid-instruction — and it must not fire on the arrival surface, which is
+     * loaded at the same time.
+     */
+    private fun maybeMonitorTowerHandoff() {
+        val current = _state.value
+        if (current.monitoringTower || current.hasDeparted || current.companionStandby) return
+        if (stateMachine.current != ATCState.GROUND_TAXI) return
+        if (current.currentFacility != ATCFacility.GROUND) return
+        if (readbackGate.isClosed) return
+
+        val signals = groundHandoffSignals()
+        if (!signals.isDepartureSurface || !signals.approachingRunwayHandoff) return
+        if (signals.awaitingCrossingReadback || signals.awaitingTaxiReadback) return
+
+        _state.update { it.copy(monitoringTower = true) }
+        val context = buildContext(ATCState.LINE_UP_WAIT)
+        post(engine.monitorTower(context.callsign, context.towerFrequency), speakIt = true)
+        recomputeDerivedState()
+    }
+
+    /**
+     * While the pilot is monitoring Tower, Tower speaks first.
+     *
+     * Nearing the runway it issues "line up and wait" so the aircraft can roll straight on.
+     * That call is deliberately non-gating — the pilot is monitoring and need not read it
+     * back for the flow to proceed — and the hand-off is suppressed, because the
+     * monitor-Tower call already moved them there.
+     */
+    private fun advanceWhileMonitoringTower(aircraft: AircraftState) {
+        val runway = buildContext(stateMachine.current).runway
+        val onRunway = lineupDetector.isLinedUp(aircraft, runway) ||
+            lineupDetector.isDepartingRoll(aircraft, runway) ||
+            _state.value.phase == FlightPhase.TAKEOFF
+        if (!onRunway && groundHandoffSignals().approachingRunwayLineup) {
+            advanceAndPost(ATCState.LINE_UP_WAIT, automatic = false, announceHandoff = false)
+        } else {
+            // Already on the runway, or not yet within line-up range: let the takeoff
+            // clearance fire once the aircraft is actually lined up.
+            maybeIssueTakeoffClearance(aircraft)
+        }
+    }
+
     private fun maybeIssueTakeoffClearance(aircraft: AircraftState) {
         if (stateMachine.current != ATCState.LINE_UP_WAIT && !_state.value.monitoringTower) return
         val runway = buildContext(stateMachine.current).runway
@@ -726,6 +1005,29 @@ class FlightSessionCoordinator(
         // which would leave the aircraft in the pattern with no clearance to come back.
         if (goAroundInProgress && facility == ATCFacility.APPROACH) {
             resumeApproachAfterGoAround()
+            return
+        }
+
+        // Monitoring Tower before departure. The hand-off already happened — Ground told
+        // the pilot to monitor, not to check in — so a pilot who calls up anyway (typically
+        // well before the runway) gets "you're number one for departure" and nothing else.
+        // The state machine is deliberately left at the taxi state, so the takeoff clearance
+        // still comes only once the aircraft is lined up on the runway.
+        if (current.monitoringTower && !current.hasDeparted && facility == ATCFacility.TOWER) {
+            val context = buildContext(ATCState.LINE_UP_WAIT)
+            post(
+                pilotEngine.requestHandoff(
+                    c = context,
+                    facility = ATCFacility.TOWER,
+                    currentAltitude = checkInAltitude(),
+                    targetAltitude = current.assignedAltitude,
+                    onGround = current.aircraftState.onGround ?: true,
+                ),
+                speakIt = settings.speakPilot,
+            )
+            post(engine.numberOneForTakeoff(context.callsign, context.runway), speakIt = true)
+            _state.update { it.copy(pendingCheckInFacility = null) }
+            recomputeDerivedState()
             return
         }
 
@@ -935,18 +1237,37 @@ class FlightSessionCoordinator(
             PilotAction.TAXI -> pilotEngine.requestTaxi(context)
             PilotAction.READY -> pilotEngine.readyForDeparture(context)
             PilotAction.TAKEOFF -> pilotEngine.requestTakeoff(context)
-            PilotAction.REQUEST_HIGHER -> pilotEngine.requestHigher(
-                context,
-                nextAltitudeStep(current.assignedAltitude, higher = true),
-            )
-            PilotAction.REQUEST_LOWER -> pilotEngine.requestLower(
-                context,
-                nextAltitudeStep(current.assignedAltitude, higher = false),
-            )
-            PilotAction.VECTORS -> pilotEngine.requestVectors(context)
-            PilotAction.APPROACH -> pilotEngine.requestApproach(context)
-            PilotAction.RIDE_REPORT -> pilotEngine.requestRideReports(context)
-            PilotAction.DEST_WX -> pilotEngine.requestWeather(context, context.plan.destination)
+            PilotAction.REQUEST_HIGHER -> {
+                altitudeRequest(context, higher = true)
+                return
+            }
+            PilotAction.REQUEST_LOWER -> {
+                altitudeRequest(context, higher = false)
+                return
+            }
+            // Both are inherently arrival actions, so the context is forced onto the
+            // arrival side even if the conversational state has not caught up — otherwise
+            // the runway, the approach and the wind would all come from the departure end.
+            PilotAction.VECTORS -> {
+                requestVectors(buildContext(stateMachine.current, arrivalOverride = true))
+                return
+            }
+            PilotAction.APPROACH -> {
+                requestApproach(buildContext(stateMachine.current, arrivalOverride = true))
+                return
+            }
+            PilotAction.RIDE_REPORT -> {
+                requestRideReport(context)
+                return
+            }
+            PilotAction.DEST_WX -> {
+                requestDestinationWeather(context)
+                return
+            }
+            PilotAction.ACCEPT_SMOOTHER_ALTITUDE -> {
+                acceptSmootherAltitude(context)
+                return
+            }
             PilotAction.GO_AROUND -> {
                 // Not just the pilot's call: the go-around is a whole exchange — Tower's
                 // pattern vector, the pattern altitude, the hold on the automatic flow, and
@@ -959,10 +1280,8 @@ class FlightSessionCoordinator(
                 checkIn()
                 return
             }
-            PilotAction.TO_GATE, PilotAction.ACCEPT_SMOOTHER_ALTITUDE -> {
-                // Both belong to subsystems that are wired in separately — the arrival
-                // ramp flow and the ride-report suggestion. Until those land, the button
-                // is not offered, so reaching here would be a bug rather than a no-op.
+            PilotAction.TO_GATE -> {
+                contactRamp()
                 return
             }
         }
@@ -991,16 +1310,367 @@ class FlightSessionCoordinator(
         advanceAndPost(target, automatic = false)
     }
 
+    // region Arrival ramp
+
     /**
-     * The altitude a "request higher" / "request lower" asks for: the next flight level
-     * in the correct hemispheric direction, a thousand feet at a time as the iOS requests
-     * do.
+     * The pilot calls Ramp.
+     *
+     * Pre-departure that means the pushback request; on arrival it is the taxi-in to the
+     * gate. Tuning to Ramp itself never transmits — this is the To Gate button.
+     *
+     * The pre-departure branch is deliberately narrow. A late tap, after engine start or
+     * once taxiing, must not rewind the flow back to a pushback the aircraft is long past;
+     * from there the pilot uses Ground.
      */
-    private fun nextAltitudeStep(current: Int, higher: Boolean): Int {
-        val base = if (current > 0) current else _state.value.flightPlan.cruiseAltitude
-        val step = if (higher) ALTITUDE_REQUEST_STEP else -ALTITUDE_REQUEST_STEP
-        return max(ALTITUDE_REQUEST_STEP, base + step)
+    fun contactRamp() {
+        val current = _state.value
+        if (current.companionStandby) return
+        if (current.isArrivalRamp) {
+            arriveAtGate()
+        } else if (current.isPreDeparture && stateMachine.current in RAMP_PUSHBACK_STATES) {
+            performPilotAction(PilotAction.PUSHBACK)
+        }
     }
+
+    /**
+     * Arrival Ramp hand-off: the aircraft is clear of the runway and taxiing in, so Ramp
+     * routes it to the stand.
+     *
+     * This does **not** announce the block-in. The arrival is declared complete only once
+     * the aircraft has actually stopped at the gate with the parking brake set, which the
+     * staged flow above watches for — a parking brake set out on a taxiway must never end
+     * the flight.
+     */
+    fun arriveAtGate() {
+        val current = _state.value
+        if (current.companionStandby || current.flightHasEnded || current.awaitingGateArrival) return
+
+        _state.update {
+            it.copy(
+                manualTuning = true,
+                hasDeparted = true,
+                currentFacility = ATCFacility.RAMP,
+                pendingCheckInFacility = null,
+                atcState = ATCState.GROUND_ARRIVAL,
+                awaitingGateArrival = true,
+                gateMonitored = false,
+            )
+        }
+        val context = buildContext(ATCState.GROUND_ARRIVAL)
+        // A field with no ramp position of its own is worked by Ground throughout, so
+        // there is no Ramp to call up and no routing for it to give.
+        if (context.rampProfile.rampType != RampType.NONE) {
+            post(rampEngine.arrivalInbound(context.callsign, context.gate), speakIt = settings.speakPilot)
+            post(
+                rampEngine.proceedToGate(
+                    cs = context.callsign,
+                    gate = context.gate,
+                    via = if (context.rampProfile.arrivalRampEntryPhrase.contains("inner")) {
+                        "the inner alley"
+                    } else {
+                        "the ramp"
+                    },
+                ),
+                speakIt = true,
+            )
+        }
+        // In Mock Mode drive the scripted aircraft to the stand so the monitored block-in
+        // actually plays out; the demo sets the parking brake in its parked state.
+        if (settings.mockMode) advanceMockToGate()
+        recomputeDerivedState()
+    }
+
+    /** One tick of the staged taxi-in: monitor, then block in. */
+    private fun advanceGateArrival(aircraft: AircraftState) {
+        val current = _state.value
+        if (!current.gateMonitored && isSlowingAtGate(aircraft)) {
+            _state.update { it.copy(gateMonitored = true) }
+            post(rampEngine.monitorRampToGate(buildContext(ATCState.GROUND_ARRIVAL).callsign), speakIt = true)
+        } else if (current.gateMonitored && isParkedAtGate(aircraft)) {
+            completeGateArrival()
+            return
+        }
+        // Keep the radio on Ramp while taxiing in — this is the "tuned to Ramp" the
+        // completion gate checks. Once parked, control returns to the parked facility.
+        _state.update { it.copy(atcState = stateMachine.current, currentFacility = ATCFacility.RAMP) }
+        recomputeDerivedState()
+    }
+
+    private fun completeGateArrival() {
+        _state.update { it.copy(awaitingGateArrival = false) }
+        arrivalGatePosition = null
+        advanceAndPost(ATCState.PARKED, announceHandoff = false)
+        recomputeDerivedState()
+    }
+
+    /** Slow enough that the stand is the next thing to happen, but not yet stopped. */
+    private fun isSlowingAtGate(aircraft: AircraftState): Boolean =
+        (aircraft.onGround ?: true) && (aircraft.groundSpeed ?: 0.0) < RAMP_SLOWING_GROUND_SPEED
+
+    // endregion
+
+    // region Airborne requests
+
+    /**
+     * Request higher or lower — and get an answer.
+     *
+     * Both used to post the pilot's half and stop, so the aircraft asked for a level and
+     * heard nothing, and `assignedAltitude` never moved. Higher can be refused: a reported
+     * ride of moderate or worse covering the target band is exactly what a controller says
+     * "unable" to, and refusing it is more useful than granting a climb into known
+     * turbulence. Lower is always granted at the pilot's discretion, as iOS does.
+     */
+    private fun altitudeRequest(context: ATCContext, higher: Boolean) {
+        val target = nextAltitudeStep(higher)
+        post(
+            if (higher) {
+                pilotEngine.requestHigher(context, target)
+            } else {
+                pilotEngine.requestLower(context, target)
+            },
+            speakIt = settings.speakPilot,
+        )
+
+        val facility = _state.value.workingFacility
+        if (higher && weatherAnswers.altitudeIsBlockedByRideReports(target)) {
+            post(
+                deny(context, facility, "unable higher, traffic and reported turbulence at that level"),
+                speakIt = true,
+            )
+        } else {
+            grantAltitude(context, facility, target, higher)
+        }
+        // The smoother-altitude hint is one-shot: it biased this request, and a stale hint
+        // would silently re-target the next one at a level the ride report no longer names.
+        weatherAnswers.clearSmootherAltitude()
+        refreshSmootherAltitudeLabel()
+    }
+
+    /**
+     * Accept the smoother level the last ride report suggested.
+     *
+     * A direct climb or descent to that exact level — the suggestion already sits in the
+     * cruise band and is drawn from a smoother report, so no turbulence block applies.
+     */
+    private fun acceptSmootherAltitude(context: ATCContext) {
+        val suggestion = weatherAnswers.smootherAltitude() ?: return
+        val facility = _state.value.workingFacility
+        post(
+            if (suggestion.higher) {
+                pilotEngine.requestHigher(context, suggestion.altitudeFt)
+            } else {
+                pilotEngine.requestLower(context, suggestion.altitudeFt)
+            },
+            speakIt = settings.speakPilot,
+        )
+        grantAltitude(context, facility, suggestion.altitudeFt, suggestion.higher)
+        weatherAnswers.clearSmootherAltitude()
+        refreshSmootherAltitudeLabel()
+    }
+
+    /** The controller's climb/descend instruction, its read-back, and the new assignment. */
+    private fun grantAltitude(context: ATCContext, facility: ATCFacility, target: Int, higher: Boolean) {
+        val tx = if (higher) {
+            engine.climbMaintain(context.callsign, target)
+        } else {
+            engine.descendPilotsDiscretion(context.callsign, target)
+        }
+        post(
+            tx.copy(
+                readback = altitudeReadback(
+                    verb = if (higher) "Climb" else "Descend",
+                    altitude = target,
+                    callsign = context.callsign,
+                    facility = facility,
+                ),
+            ),
+            speakIt = true,
+        )
+        _state.update { it.copy(assignedAltitude = target) }
+        recomputeDerivedState()
+    }
+
+    /**
+     * Vectors to final — a real 30° intercept, not a repeat of the current heading.
+     *
+     * The heading is the safety-critical element, so it is what the read-back echoes rather
+     * than a state-derived line.
+     */
+    private fun requestVectors(context: ATCContext) {
+        post(pilotEngine.requestVectors(context), speakIt = settings.speakPilot)
+
+        val runway = context.approachProcedure?.runway ?: context.runway
+        val heading = approachInterceptHeading(runway)
+        // Name the approach as "<type> runway <rwy>" rather than a display name that
+        // already embeds the runway, to avoid "… ILS RWY 01R runway 01R approach".
+        val typeDisplay = context.approachProcedure?.approachTypeDisplay
+            ?: context.approachName.ifEmpty { "ILS" }
+        val typeSpoken = context.approachProcedure?.approachTypeSpoken
+            ?: context.approachName.ifEmpty { "I L S" }
+        val headingDisplay = formatHeading(heading)
+        val headingSpoken = Phonetic.heading(heading, icao = engine.icao)
+        post(
+            ATCTransmission.create(
+                sender = ATCTransmission.Sender.ATC,
+                facility = ATCFacility.APPROACH,
+                displayText = "${context.callsign.display}, fly heading $headingDisplay, " +
+                    "vectors for the $typeDisplay runway $runway approach.",
+                spokenText = "${context.callsign.spoken}, fly heading $headingSpoken, " +
+                    "vectors for the $typeSpoken runway ${Phonetic.runway(runway, engine.icao)} approach.",
+                timestampMillis = clock.nowMillis(),
+                readback = ATCTransmission.Readback(
+                    displayText = "Heading $headingDisplay, ${context.callsign.display}.",
+                    spokenText = "Heading $headingSpoken, ${context.callsign.spoken}.",
+                    facility = ATCFacility.APPROACH,
+                ),
+            ),
+            speakIt = true,
+        )
+    }
+
+    /**
+     * The heading to fly for approach vectors: a 30° intercept to the landing runway's
+     * final approach course, turning toward the extended centreline from whichever side
+     * the aircraft is on.
+     *
+     * Falls back to the current heading when the runway or the position is unknown — a
+     * pilot practising with no telemetry still gets a heading, just not a computed one.
+     */
+    private fun approachInterceptHeading(runway: String): Int {
+        val aircraft = _state.value.aircraftState
+        val fallback = ApproachIntercept.normalizedHeading(aircraft.heading ?: FALLBACK_VECTOR_HEADING)
+        val finalCourse = RunwayDatabase.headingForRunway(runway) ?: return fallback
+        val position = validCoordinateOrNull(aircraft.latitude, aircraft.longitude) ?: return fallback
+        val airport = AirportDatabase.coordinate(_state.value.flightPlan.destination) ?: return fallback
+        return ApproachIntercept.heading(
+            finalCourse = finalCourse,
+            aircraft = position,
+            runwayReference = airport,
+            variationDegreesEast = HeadingSolver.variationDegreesEast(aircraft) ?: 0.0,
+        )
+    }
+
+    /** Cleared for the approach, with the read-back the Read Back button then echoes. */
+    private fun requestApproach(context: ATCContext) {
+        post(pilotEngine.requestApproach(context), speakIt = settings.speakPilot)
+        val procedure = context.approachProcedure
+        val tx = if (procedure != null) {
+            engine.clearedApproach(context.callsign, procedure, context.runway)
+        } else {
+            engine.clearedApproach(context.callsign, context.plan.approach, context.runway)
+        }
+        post(
+            tx.copy(
+                readback = pilotEngine.readback(ATCState.FINAL, context)
+                    .asReadback(facility = ATCFacility.APPROACH),
+            ),
+            speakIt = true,
+        )
+    }
+
+    /**
+     * Center reads back the ride along the route, and offers a smoother level when the
+     * reports support one.
+     *
+     * The answer is not auto-acknowledged. The pilot answers on their own terms — by
+     * accepting the suggested level, or by tapping Read Back for the courtesy "Roger"
+     * attached here, so that button acknowledges *this* report rather than re-deriving a
+     * stale state read-back.
+     */
+    private fun requestRideReport(context: ATCContext) {
+        val facility = _state.value.workingFacility
+        post(pilotEngine.requestRideReports(context), speakIt = settings.speakPilot)
+        scope.launch {
+            val report = weatherAnswers.rideReport(context.callsign) ?: return@launch
+            post(
+                report.copy(readback = pilotEngine.roger(context, facility).asReadback(facility)),
+                speakIt = true,
+            )
+            refreshSmootherAltitudeLabel()
+        }
+    }
+
+    private fun requestDestinationWeather(context: ATCContext) {
+        val facility = _state.value.workingFacility
+        val destination = context.plan.destination
+        post(
+            pilotEngine.requestWeather(context, destination.ifEmpty { "destination" }),
+            speakIt = settings.speakPilot,
+        )
+        scope.launch {
+            val wx = weatherAnswers.destinationWeather(context.callsign, destination) ?: return@launch
+            post(
+                wx.copy(readback = pilotEngine.roger(context, facility).asReadback(facility)),
+                speakIt = true,
+            )
+        }
+    }
+
+    /**
+     * Publish the smoother level as a button label, or clear it.
+     *
+     * The label is what makes the accept button appear at all, and what it reads — "Climb
+     * FL390" / "Descend FL330" — so it has to follow the suggestion rather than be
+     * snapshotted once.
+     */
+    private fun refreshSmootherAltitudeLabel() {
+        val suggestion = weatherAnswers.smootherAltitude()
+        val label = suggestion?.let {
+            "${if (it.higher) "Climb" else "Descend"} ${engine.formatAltDisplay(it.altitudeFt)}"
+        }
+        if (_state.value.smootherAltitudeLabel == label) return
+        _state.update { it.copy(smootherAltitudeLabel = label) }
+        recomputeDerivedState()
+    }
+
+    private fun deny(context: ATCContext, facility: ATCFacility, reason: String): ATCTransmission =
+        ATCTransmission.create(
+            sender = ATCTransmission.Sender.ATC,
+            facility = facility,
+            displayText = "${context.callsign.display}, $reason.",
+            spokenText = "${context.callsign.spoken}, $reason.",
+            timestampMillis = clock.nowMillis(),
+        )
+
+    private fun altitudeReadback(
+        verb: String,
+        altitude: Int,
+        callsign: PhraseologyEngine.Callsign,
+        facility: ATCFacility,
+    ) = ATCTransmission.Readback(
+        displayText = "$verb and maintain ${engine.formatAltDisplay(altitude)}, ${callsign.display}.",
+        spokenText = "$verb and maintain ${engine.spokenAltitude(altitude)}, ${callsign.spoken}.",
+        facility = facility,
+    )
+
+    /**
+     * The level a "request higher" / "request lower" asks for.
+     *
+     * Measured from the higher of the current assignment and the aircraft's actual
+     * altitude, so a pilot who has drifted above their assignment is not offered a "climb"
+     * to a level they are already at. A smoother level the last ride report named wins when
+     * it lies in the requested direction — it is already bounded to the cruise band.
+     */
+    private fun nextAltitudeStep(higher: Boolean): Int {
+        val current = max(
+            _state.value.assignedAltitude,
+            _state.value.aircraftState.altitudeMSL?.toInt() ?: 0,
+        )
+        weatherAnswers.smootherAltitude()?.altitudeFt?.let { suggested ->
+            if ((higher && suggested > current) || (!higher && suggested < current)) return suggested
+        }
+        val base = when {
+            current > 0 -> current
+            _state.value.flightPlan.cruiseAltitude > 0 -> _state.value.flightPlan.cruiseAltitude
+            else -> DEFAULT_CRUISE_ALTITUDE_FT
+        }
+        val target = if (higher) base + ALTITUDE_REQUEST_STEP else base - ALTITUDE_REQUEST_STEP
+        return max(MINIMUM_REQUESTABLE_ALTITUDE_FT, target)
+    }
+
+    private fun formatHeading(degrees: Int): String = degrees.toString().padStart(3, '0')
+
+    // endregion
 
     /**
      * Manually tune the radio. Switching frequency does **not** check in or advance the
@@ -1070,7 +1740,7 @@ class FlightSessionCoordinator(
             hasDeparted = current.hasDeparted,
             arrivalAnnounced = current.flightHasEnded,
             goAroundInProgress = goAroundInProgress,
-            awaitingGateArrival = current.isArrivalRamp,
+            awaitingGateArrival = current.awaitingGateArrival,
             manualTuning = current.manualTuning,
             transcript = current.transcript,
             departure = current.flightPlan.departure,
@@ -1080,6 +1750,7 @@ class FlightSessionCoordinator(
             centerSectorID = sectorTracker.current?.id,
             awaitingCenterSectorCheckIn = awaitingCenterSectorCheckIn,
             monitoringTower = current.monitoringTower,
+            gateMonitored = current.gateMonitored,
             atcCommunicationStarted = current.atcCommunicationStarted,
             flightPlan = current.flightPlan,
             tunedFacility = current.currentFacility,
@@ -1133,6 +1804,8 @@ class FlightSessionCoordinator(
                 hasDeparted = snapshot.hasDeparted,
                 manualTuning = snapshot.manualTuning,
                 monitoringTower = snapshot.monitoringTower ?: false,
+                awaitingGateArrival = snapshot.awaitingGateArrival,
+                gateMonitored = snapshot.gateMonitored ?: false,
                 awaitingReadback = snapshot.awaitingReadback ?: false,
                 transcript = snapshot.transcript,
                 latestTransmission = snapshot.transcript.lastOrNull { tx -> !tx.isATISLine },
@@ -1583,7 +2256,31 @@ class FlightSessionCoordinator(
     /** Mock-mode demo toggle that exercises the step-aside behaviour. */
     fun setSimulateStaffedATC(simulate: Boolean) {
         _state.update { it.copy(simulateStaffedATC = simulate) }
-        recomputeDerivedState()
+        // iOS derives the staffing snapshot from this toggle through a publisher
+        // (AppModel.swift:1389-1394); the same derivation happens inline here, so the
+        // Diagnostics demo produces a real LiveATCStatus rather than only a boolean.
+        if (settings.mockMode) {
+            applyLiveATC(if (simulate) mockStaffedStatus() else LiveATCStatus.none)
+        } else {
+            recomputeDerivedState()
+        }
+    }
+
+    /**
+     * A simulated staffing snapshot for the Diagnostics demo toggle in Mock Mode: pretend
+     * the pilot is tuned to a staffed controller matching the facility they are on.
+     *
+     * Ported from `AppModel.mockStaffedStatus()` (IFATCCompanion/App/AppModel.swift:1399).
+     */
+    fun mockStaffedStatus(): LiveATCStatus {
+        val facility = _state.value.currentFacility
+        return LiveATCStatus(
+            multiplayerOnline = true,
+            serverName = "Expert",
+            humanControllerActive = true,
+            controllerName = "Demo Controller",
+            tunedFrequencyName = if (facility.isFAAATC) facility.title else null,
+        )
     }
 
     // endregion
@@ -1592,14 +2289,42 @@ class FlightSessionCoordinator(
      * Assemble the context the phraseology engine composes from: the callsign, the plan,
      * the runway in use, the frequencies and the procedures.
      */
-    fun buildContext(state: ATCState): ATCContext {
-        val taxiContext = taxiContextProvider()
+    fun buildContext(state: ATCState, arrivalOverride: Boolean? = null): ATCContext {
         val current = _state.value
         val plan = current.flightPlan
         val s = settings
-        val arriving = current.hasDeparted
+        // Requesting an approach or vectors is inherently an arrival action, so callers can
+        // force the arrival side even when the conversational state has not caught up.
+        val arriving = arrivalOverride ?: (current.hasDeparted || state in ARRIVAL_STATES)
         val icao = if (arriving) plan.destination else plan.departure
-        val runway = resolveRunway(plan, arriving)
+
+        // The wind every takeoff and landing clearance reads out. With no report the
+        // fallback is a plausible fixed wind rather than "wind zero zero zero at zero",
+        // which is the one wind a controller never says.
+        val metar = weatherAnswers.metar(arriving)
+        val windDirection = metar?.windDirection ?: DEFAULT_WIND_DIRECTION
+        val windSpeed = metar?.windSpeed ?: DEFAULT_WIND_SPEED
+
+        val sid = ProcedureParser.parseSID(plan.sid, icao)
+        val star = ProcedureParser.parseSTAR(plan.star, icao)
+        val approach = ProcedureParser.parseApproach(plan.approach)
+
+        val resolvedRunway = resolveRunway(plan, arriving, windDirection, windSpeed, approach)
+        val runway = resolvedRunway.ident
+
+        // A live OpenStreetMap route supersedes this the moment one resolves; until then the
+        // deterministic layout is what keeps the clearance from reading "taxi to runway 27
+        // via ." at a field the app has no extract for.
+        val taxi = taxiContextProvider() ?: taxiPlanner.plan(icao, runway, arriving).let {
+            TaxiClearanceContext(
+                taxiways = it.taxiwaysText,
+                crossingRunway = it.crossingRunway,
+                parkingTaxiway = it.parkingTaxiway,
+            )
+        }
+
+        val departure = departureGuidance(plan, sid, resolvedRunway)
+        val rampProfile = RampProfile.profile(icao)
 
         return ATCContext(
             callsign = engine.callsign(
@@ -1609,51 +2334,190 @@ class FlightSessionCoordinator(
             ),
             plan = plan,
             assignedAltitude = current.assignedAltitude,
-            cruiseAltitude = plan.cruiseAltitude,
+            cruiseAltitude = if (plan.cruiseAltitude > 0) plan.cruiseAltitude else DEFAULT_FILED_CRUISE_FT,
             initialClimbAltitude = elevationAwareInitialClimbFt(),
-            windDirection = 0,
-            windSpeed = 0,
+            windDirection = windDirection,
+            windSpeed = windSpeed,
             squawk = DEFAULT_SQUAWK,
             runway = runway,
-            taxiway = taxiContext?.taxiways.orEmpty(),
-            crossingRunway = taxiContext?.crossingRunway,
-            parkingTaxiway = taxiContext?.parkingTaxiway.orEmpty(),
-            approachName = plan.approach,
+            runwayIsKnown = resolvedRunway.isKnown,
+            taxiway = taxi.taxiways,
+            crossingRunway = taxi.crossingRunway,
+            parkingTaxiway = taxi.parkingTaxiway,
+            approachName = approach?.displayName ?: plan.approach.ifEmpty { "the ILS" },
             departureFrequency = DEFAULT_DEPARTURE_FREQUENCY,
             centerFrequency = DEFAULT_CENTER_FREQUENCY,
             approachFrequency = DEFAULT_APPROACH_FREQUENCY,
             towerFrequency = DEFAULT_TOWER_FREQUENCY,
             groundFrequency = DEFAULT_GROUND_FREQUENCY,
-            rampProfile = RampProfile.profile(icao),
-            rampFrequency = RampProfile.profile(icao).rampFrequency,
+            rampProfile = rampProfile,
+            rampFrequency = rampProfile.rampFrequency,
+            // Only spoken when the profile supplies one; otherwise the ramp call falls back
+            // to "push approved, advise ready to taxi".
+            pushDirection = rampProfile.defaultPushDirections.firstOrNull().orEmpty(),
+            rampSpot = if (rampProfile.usesSpots) rampProfile.defaultSpotNames.firstOrNull().orEmpty() else "",
             gate = if (arriving) plan.arrivalGate else plan.departureGate,
+            departureHeading = departure.heading,
+            firstFixName = departure.firstFixName,
             traconCeiling = s.traconCeilingFL * 100,
             approachInterceptAltitude = plan.approachInterceptAltitude,
-            sidProcedure = ProcedureParser.parseSID(plan.sid, icao),
-            starProcedure = ProcedureParser.parseSTAR(plan.star, icao),
-            approachProcedure = ProcedureParser.parseApproach(plan.approach),
+            approachDefaultAltitude = roundedUpToThousand(liveFieldElevationMSL() + APPROACH_DEFAULT_AGL_FT),
+            sidProcedure = sid,
+            starProcedure = star,
+            approachProcedure = approach,
         )
     }
 
+    /** A runway in use, and whether anything actually knows it is the runway in use. */
+    private data class ResolvedRunway(val ident: String, val isKnown: Boolean)
+
     /**
-     * The runway in use for the current end of the flight. A runway the pilot filed or
-     * typed wins; otherwise the field's inventory is consulted, and only then is one
-     * derived from the wind.
+     * The runway in use for the current end of the flight.
+     *
+     * In precedence: on arrival a parsed approach's runway, then the plan's arrival runway;
+     * on departure the plan's departure runway. Then a manual override, then the field's
+     * real active runway for the live wind, then the into-wind pick among the runways the
+     * loaded airport surface actually has.
+     *
+     * Only when none of those knows anything does the wind alone name one — and that is
+     * returned as *not known*, so no caller reads it back as a heading or measures a
+     * departure vector against it.
      */
-    private fun resolveRunway(plan: FlightPlan, arriving: Boolean): String {
-        val filed = if (arriving) {
-            plan.arrivalRunway.ifEmpty { plan.runway }
+    private fun resolveRunway(
+        plan: FlightPlan,
+        arriving: Boolean,
+        windDirection: Int,
+        windSpeed: Int,
+        approach: PhraseologyProcedure?,
+    ): ResolvedRunway {
+        if (arriving) {
+            approach?.runway?.takeIf { it.isNotEmpty() }?.let { return ResolvedRunway(it, true) }
+            plan.arrivalRunway.takeIf { it.isNotEmpty() }?.let { return ResolvedRunway(it, true) }
         } else {
-            plan.departureRunway.ifEmpty { plan.runway }
+            plan.departureRunway.takeIf { it.isNotEmpty() }?.let { return ResolvedRunway(it, true) }
         }
-        if (filed.isNotEmpty()) return filed
+        plan.runway.takeIf { it.isNotEmpty() }?.let { return ResolvedRunway(it, true) }
+
         val icao = if (arriving) plan.destination else plan.departure
-        return RunwayDatabase.runways(icao).firstOrNull().orEmpty()
+        RunwayDatabase.activeRunway(icao, windDirection, windSpeed)
+            ?.let { return ResolvedRunway(it, true) }
+        // Every field whose surface the taxi map has already fetched — which, at the
+        // departure airport by the time a takeoff clearance is due, is the field the
+        // aircraft is sitting on. Picking the into-wind runway from a field's *real*
+        // runways is what the wind is genuinely good for.
+        RunwayDatabase.activeRunwayAmong(surfaceRunwaysProvider(icao), windDirection, windSpeed)
+            ?.let { return ResolvedRunway(it, true) }
+
+        // Last resort, and only a name: the wind direction rounded to the nearest ten, which
+        // at least sounds like a runway at a field nothing knows anything about.
+        val direction = if (windDirection == 0) DEFAULT_WIND_DIRECTION else windDirection
+        var number = (direction / 10.0).roundToInt()
+        if (number <= 0) number = 36
+        if (number > 36) number -= 36
+        return ResolvedRunway(number.toString().padStart(2, '0'), false)
+    }
+
+    /** The heading off the runway and the fix the departure climb names. */
+    private data class DepartureGuidance(val heading: Int, val firstFixName: String)
+
+    /**
+     * The initial departure heading and the "resume own navigation, direct …" fix.
+     *
+     * Neither was ever computed, so every takeoff clearance said "fly runway heading" and
+     * every departure climb said the bare "resume own navigation" — the four-argument
+     * clearance overload and its runway-alignment test were unreachable.
+     *
+     * The heading is measured, in order of preference, from the departure runway marker the
+     * flight plan carries (the point the leg is actually flown from, and what the aircraft's
+     * own FMS measures against), then the live on-ground position, then the field reference.
+     * These are not interchangeable: holding short at a hub puts the aircraft a mile from
+     * the field reference, and a mile against a fix eight miles out is ~10° — enough to flip
+     * the "within 10° of runway heading" test on its own.
+     *
+     * With no located fix the heading is left unknown, so the clearance says "fly runway
+     * heading". It is deliberately *not* the bearing toward the destination, which for a
+     * northbound departure to a southern field would point 180° the wrong way.
+     */
+    private fun departureGuidance(
+        plan: FlightPlan,
+        sid: PhraseologyProcedure?,
+        runway: ResolvedRunway,
+    ): DepartureGuidance {
+        val aircraft = _state.value.aircraftState
+        val fieldPosition = AirportDatabase.coordinate(plan.departure)
+        val onRunwayPosition =
+            if (aircraft.onGround == true) validCoordinateOrNull(aircraft.latitude, aircraft.longitude) else null
+        // A plan can carry a runway marker at the null island; that must not outrank real
+        // telemetry, so it has to be valid to win.
+        val runwayMarker = plan.departureRunwayCoordinate?.let { validCoordinateOrNull(it.latitude, it.longitude) }
+        val origin = runwayMarker ?: onRunwayPosition ?: fieldPosition
+
+        // Once airborne, the next fix *ahead* of the aircraft rather than the runway-end fix
+        // already passed; on the ground, simply the first filed fix.
+        val position = validCoordinateOrNull(aircraft.latitude, aircraft.longitude)
+        val directFix = if (_state.value.hasDeparted && position != null) {
+            plan.nextUnpassedWaypoint(position, fieldPosition)
+        } else {
+            plan.waypoints.firstOrNull()
+        }
+
+        val interceptFix = plan.initialDepartureFix(sid?.fixes.orEmpty(), origin)
+        val intercept = interceptFix?.coordinate
+        val heading = if (origin != null && intercept != null &&
+            Geo.distanceNM(origin, intercept) >= MINIMUM_DEPARTURE_FIX_DISTANCE_NM
+        ) {
+            // The bearing is a *true* course (great-circle geometry) while the pilot flies a
+            // magnetic heading bug — and `clearedForTakeoff` compares this number against the
+            // runway's magnetic heading to decide whether to say "fly runway heading" at all,
+            // so leaving it in the true frame gets both the assignment and that decision
+            // wrong by the local declination.
+            HeadingSolver.assignedHeading(
+                trueCourse = Geo.bearing(origin, intercept),
+                // Inert on the ground, where the wind triangle is not solved; in practice
+                // this is a variation conversion.
+                wind = null,
+                trueAirspeed = null,
+                variationDegreesEast = HeadingSolver.variationDegreesEast(aircraft),
+            )
+        } else {
+            0
+        }
+        if (!runway.isKnown && heading == 0) {
+            // Nothing named the runway and nothing located the fix, so there is no vector to
+            // give and no runway heading worth measuring against. Left at zero deliberately.
+            return DepartureGuidance(heading = 0, firstFixName = directFix?.name.orEmpty())
+        }
+        return DepartureGuidance(heading = heading, firstFixName = directFix?.name.orEmpty())
+    }
+
+    /**
+     * Field elevation under the aircraft right now, in feet MSL, from the difference
+     * between its reported MSL and AGL. Zero when the sim exposes neither.
+     */
+    private fun liveFieldElevationMSL(): Int {
+        val aircraft = _state.value.aircraftState
+        val msl = aircraft.altitudeMSL ?: return 0
+        val agl = aircraft.altitudeAGL ?: return 0
+        return max(0.0, msl - agl).roundToInt()
     }
 
     companion object {
         /** Knots below which a stopped aircraft counts as parked. */
         const val PARKED_GROUND_SPEED = 1.0
+
+        /** Below this the aircraft is on the ramp lead-in rather than still taxiing. */
+        const val RAMP_SLOWING_GROUND_SPEED = 8.0
+
+        /**
+         * The only states a Ramp call before departure may act on. Past them the aircraft
+         * is already moving under Ground, and rewinding to a pushback would be wrong.
+         */
+        val RAMP_PUSHBACK_STATES = setOf(
+            ATCState.NOT_CONNECTED,
+            ATCState.CONNECTED_IDLE,
+            ATCState.CLEARANCE,
+            ATCState.PUSHBACK,
+        )
 
         /**
          * How close to the gate the aircraft must be — with the parking brake set — before
@@ -1664,6 +2528,29 @@ class FlightSessionCoordinator(
         const val GATE_ARRIVAL_RADIUS_METERS = 80.0
 
         const val METERS_PER_NM = 1852.0
+
+        /** The wind a clearance reads when no report is available. Never zero at zero. */
+        const val DEFAULT_WIND_DIRECTION = 270
+        const val DEFAULT_WIND_SPEED = 8
+
+        /** The cruise level a plan with none filed is treated as having. */
+        const val DEFAULT_FILED_CRUISE_FT = 37_000
+
+        /** Terminal approach fallback: this far above the destination field. */
+        const val APPROACH_DEFAULT_AGL_FT = 3_000
+
+        /** Closer than this to the origin, a fix gives no meaningful bearing. */
+        const val MINIMUM_DEPARTURE_FIX_DISTANCE_NM = 0.5
+
+        /** States that are inherently on the arrival side of the flight. */
+        val ARRIVAL_STATES = setOf(
+            ATCState.DESCENT,
+            ATCState.APPROACH,
+            ATCState.FINAL,
+            ATCState.LANDING,
+            ATCState.RUNWAY_EXIT,
+            ATCState.GROUND_ARRIVAL,
+        )
 
         /** Below this AGL a snapshot with no explicit on-ground flag still counts as on the ground. */
         const val ON_GROUND_AGL_FT = 10.0
@@ -1720,6 +2607,15 @@ class FlightSessionCoordinator(
 
         /** Feet a "request higher" / "request lower" moves the assigned altitude by. */
         const val ALTITUDE_REQUEST_STEP = 2_000
+
+        /** The level the ladder measures from when neither an assignment nor a plan says. */
+        const val DEFAULT_CRUISE_ALTITUDE_FT = 35_000
+
+        /** No request goes below this, whatever the ladder arithmetic produces. */
+        const val MINIMUM_REQUESTABLE_ALTITUDE_FT = 4_000
+
+        /** The heading vectors fall back to with no telemetry at all. */
+        const val FALLBACK_VECTOR_HEADING = 270.0
 
         const val DEFAULT_SQUAWK = "4271"
 
