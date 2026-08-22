@@ -41,6 +41,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -176,10 +177,14 @@ class FlightViewModel(
         viewModelScope.launch {
             session
                 .map(::baseMapCoverage)
+                // Dropped rather than collected as an empty list. With no plan filed the
+                // coverage is the aircraft position, and a single failed telemetry read
+                // makes that null — which under collectLatest would cancel an attempt that
+                // was mid-retry and hand the next one a fresh budget, so the bound below
+                // would never actually be reached on a flaky link.
+                .filter { it.isNotEmpty() }
                 .distinctUntilChanged()
-                .collectLatest { coordinates ->
-                    if (coordinates.isNotEmpty()) loadBaseMapImagery(coordinates)
-                }
+                .collectLatest(::loadBaseMapImagery)
         }
     }
 

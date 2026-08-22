@@ -135,9 +135,21 @@ class MapCanvasState(
 
     internal fun onSizeChanged(size: IntSize) {
         canvasSize = size
+
+        // The pilot has put the map somewhere of their own choosing, so a resize must not
+        // take it back. `fitTo` returns before recording a pending fit once that latches,
+        // so re-fitting here would restore whatever was pending *before* they moved —
+        // which, since the default fit is promoted below, is the whole world. The activity
+        // handles orientation itself, so this state survives a rotation and that snap-back
+        // would be the visible result of one.
+        if (hasUserAdjusted) {
+            viewport = viewport?.withCanvasAspect(size.width.toFloat(), size.height.toFloat())
+            return
+        }
+
         // Nothing has asked for a frame yet, so adopt the default one. Promoting it to the
-        // pending fit rather than applying it once is what keeps the aspect correct across
-        // a rotation; [fitTo] replaces it as soon as there is real content to frame.
+        // pending fit rather than applying it once is what keeps the aspect right across a
+        // resize; [fitTo] replaces it as soon as there is real content to frame.
         if (pendingFit.isEmpty() && defaultFit.isNotEmpty()) {
             pendingFit = defaultFit
             pendingPadding = MapProjection.DEFAULT_PADDING_FRACTION

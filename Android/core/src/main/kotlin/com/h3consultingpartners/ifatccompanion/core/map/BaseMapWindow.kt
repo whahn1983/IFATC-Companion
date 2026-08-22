@@ -73,18 +73,39 @@ object BaseMapWindow {
         val centreLatitude = (minLatitude + maxLatitude) / 2
         val centreLongitude = (minLongitude + maxLongitude) / 2
 
-        // Latitude clamps at the Mercator limit; longitude clamps at the antimeridian
-        // rather than wrapping, because a WMS bbox cannot express a window that crosses
-        // it. A route that does gets the widest window this side of the seam, which still
+        // Latitude bounds at the Mercator limit; longitude bounds at the antimeridian
+        // rather than wrapping, because a WMS bbox cannot express a window that crosses it.
+        // A route that does gets the widest window this side of the seam, which still
         // covers most of it.
+        //
+        // The window is **slid** back inside those bounds, not squashed against them.
+        // Clamping each edge on its own puts both edges of a near-polar window on the same
+        // limit, and a window with no extent is silently unrequestable — a flight near the
+        // pole would simply never get imagery and nothing would say why. Sliding gives the
+        // nearest window that Web Mercator can actually express, which is the best answer
+        // available for a latitude the projection cannot reach at all.
+        val (south, north) = slideInside(centreLatitude, latitudeSpan, MapProjection.MAX_LATITUDE)
+        val (west, east) = slideInside(centreLongitude, longitudeSpan, 180.0)
         return RadarBoundingBox(
-            minLatitude = (centreLatitude - latitudeSpan / 2)
-                .coerceIn(-MapProjection.MAX_LATITUDE, MapProjection.MAX_LATITUDE),
-            maxLatitude = (centreLatitude + latitudeSpan / 2)
-                .coerceIn(-MapProjection.MAX_LATITUDE, MapProjection.MAX_LATITUDE),
-            minLongitude = (centreLongitude - longitudeSpan / 2).coerceIn(-180.0, 180.0),
-            maxLongitude = (centreLongitude + longitudeSpan / 2).coerceIn(-180.0, 180.0),
+            minLatitude = south,
+            maxLatitude = north,
+            minLongitude = west,
+            maxLongitude = east,
         )
+    }
+
+    /**
+     * A span of [span] centred as near [centre] as fits inside ±[limit], as (low, high).
+     *
+     * Preserves the span wherever it can, because the span is what decides the resolution
+     * the imagery is requested at. Only a span wider than the whole range loses anything,
+     * and then the answer is the whole range.
+     */
+    private fun slideInside(centre: Double, span: Double, limit: Double): Pair<Double, Double> {
+        if (span >= 2 * limit) return -limit to limit
+        val half = span / 2
+        val settled = centre.coerceIn(-limit + half, limit - half)
+        return settled - half to settled + half
     }
 
     /**

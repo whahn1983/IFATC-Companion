@@ -188,7 +188,7 @@ class MapProjectionTest {
             coordinates = corners,
             canvasWidth = 1080f,
             canvasHeight = 640f,
-            paddingFraction = 0.0,
+            paddingFraction = MapProjection.DEFAULT_PADDING_FRACTION,
         )
         assertNotNull(viewport, "the world must always be fittable")
         // The whole world, not a sliver of it.
@@ -199,13 +199,104 @@ class MapProjectionTest {
     fun `a wide short canvas shows the world in proportion rather than stretched`() {
         // Going through fitting() rather than hard-coding the unit square is the entire
         // reason WORLD_CORNERS is a coordinate pair: fitting applies the aspect correction.
-        val wide = MapProjection.fitting(MapProjection.WORLD_CORNERS, 1080f, 400f, 0.0)
-        assertNotNull(wide)
-        val canvasAspect = 400.0 / 1080.0
-        val viewportAspect = wide.height / wide.width
-        assertTrue(
-            abs(viewportAspect - canvasAspect) < 0.02,
-            "viewport aspect $viewportAspect does not match the canvas' $canvasAspect",
+        // At the padding the app actually uses, not zero: the world is exactly one unit
+        // tall, so any padding at all pushes the vertical span past what the world can
+        // hold — and a clamp that took it back on one axis only was invisible at zero.
+        for ((width, height) in listOf(1080f to 400f, 1080f to 770f, 2400f to 770f, 640f to 1200f)) {
+            val fit = MapProjection.fitting(
+                MapProjection.WORLD_CORNERS, width, height,
+                MapProjection.DEFAULT_PADDING_FRACTION,
+            )
+            assertNotNull(fit, "no fit for ${width}x$height")
+            val canvasAspect = height.toDouble() / width
+            val viewportAspect = fit.height / fit.width
+            assertTrue(
+                abs(viewportAspect - canvasAspect) < 0.01,
+                "${width}x$height: viewport aspect $viewportAspect vs canvas $canvasAspect — " +
+                    "the map would be drawn stretched by ${canvasAspect / viewportAspect}",
+            )
+        }
+    }
+
+    @Test
+    fun `clamping to the world never changes the shape of the viewport`() {
+        // Every fit whose padded height exceeds the world hits this, and the stretch is
+        // silent: x and y are projected independently, so the map is simply drawn wrong.
+        for (viewport in listOf(
+            MapProjection.Viewport(-0.4, -0.125, 1.4, 1.125),
+            MapProjection.Viewport(0.0, -1.0, 2.0, 2.0),
+            MapProjection.Viewport(0.2, 0.4, 0.5, 0.6),
+        )) {
+            val clamped = viewport.clampedToWorld()
+            assertTrue(clamped.height <= 1.0 + 1e-9, "clamped height ${clamped.height}")
+            val before = viewport.width / viewport.height
+            val after = clamped.width / clamped.height
+            assertTrue(
+                abs(before - after) < 1e-6,
+                "aspect changed from $before to $after clamping $viewport",
+            )
+        }
+    }
+
+    @Test
+    fun `a viewport panned off the planet is brought back onto it`() {
+        // Nothing projects outside 0..1 in x, so a viewport with no overlap draws an empty
+        // map — and with no re-centre control and hasUserAdjusted latched, it stays empty.
+        for (viewport in listOf(
+            MapProjection.Viewport(3.2, 0.4, 3.4, 0.6),
+            MapProjection.Viewport(-5.5, 0.4, -5.3, 0.6),
+        )) {
+            val clamped = viewport.clampedToWorld()
+            assertTrue(
+                clamped.maxX > 0.0 && clamped.minX < 1.0,
+                "$clamped still has no part of the world in view",
+            )
+        }
+    }
+
+    @Test
+    fun `a viewport already straddling the antimeridian is left alone`() {
+        // The wrap is deliberate: a route across the seam has to draw as one line.
+        val straddling = MapProjection.Viewport(0.9, 0.4, 1.1, 0.6)
+        val clamped = straddling.clampedToWorld()
+        assertEquals(straddling.minX, clamped.minX, 1e-9)
+        assertEquals(straddling.maxX, clamped.maxX, 1e-9)
+    }
+
+    @Test
+    fun `re-deriving for a new canvas keeps the centre and takes the new shape`() {
+        // What a rotation does to a view the pilot placed themselves. Refitting would throw
+        // their view away; leaving it would draw it at the old aspect on the new canvas.
+        val original = MapProjection.fitting(
+            listOf(Coordinate(40.0, -100.0), Coordinate(35.0, -95.0)), 1080f, 400f,
         )
+        assertNotNull(original)
+        val rotated = original.withCanvasAspect(400f, 1080f)
+        assertEquals(original.centerX, rotated.centerX, 1e-6, "the centre moved")
+        assertEquals(original.centerY, rotated.centerY, 1e-6, "the centre moved")
+        val canvasAspect = 1080.0 / 400.0
+        assertTrue(
+            abs(rotated.height / rotated.width - canvasAspect) < 0.01,
+            "aspect ${rotated.height / rotated.width} does not match the rotated canvas",
+        )
+    }
+
+    @Test
+    fun `longitude past the antimeridian projects past the world edge, not onto it`() {
+        // Viewport lets longitude wrap and the graticule emits meridians beyond ±180 for
+        // that reason. Clamping x here collapsed every one of them onto the seam, so a wide
+        // view drew a stack of gridlines on top of each other, each labelled differently.
+        assertEquals(1.0, MapProjection.toUnit(Coordinate(0.0, 180.0)).x, 1e-9)
+        assertTrue(
+            MapProjection.toUnit(Coordinate(0.0, 200.0)).x > 1.0,
+            "200°E collapsed onto the world edge",
+        )
+        assertTrue(
+            MapProjection.toUnit(Coordinate(0.0, -200.0)).x < 0.0,
+            "200°W collapsed onto the world edge",
+        )
+        // The vertical still is pinned: latitude is bounded by the Mercator limit.
+        assertTrue(MapProjection.toUnit(Coordinate(89.0, 0.0)).y in 0.0..1.0)
+        assertTrue(MapProjection.toUnit(Coordinate(-89.0, 0.0)).y in 0.0..1.0)
     }
 }

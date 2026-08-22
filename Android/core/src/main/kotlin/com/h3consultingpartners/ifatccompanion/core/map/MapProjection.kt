@@ -6,6 +6,7 @@ import kotlin.math.abs
 import kotlin.math.atan
 import kotlin.math.cos
 import kotlin.math.exp
+import kotlin.math.floor
 import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
@@ -51,16 +52,26 @@ object MapProjection {
         Coordinate(-MAX_LATITUDE, 180.0),
     )
 
-    /** Project a coordinate into the 0…1 unit square. */
+    /**
+     * Project a coordinate into unit space.
+     *
+     * `y` is pinned to 0…1: latitude is bounded by the Mercator limit and at exactly that
+     * limit the arithmetic lands a hair either side of the edge, which a renderer would
+     * otherwise have to defend against.
+     *
+     * `x` is **not** pinned, and must not be. A [Viewport] deliberately lets longitude run
+     * outside 0…1 so a route across the antimeridian draws as one line rather than snapping
+     * back across the world, and the graticule emits meridians past ±180 for the same
+     * reason. Clamping x here collapsed every one of them onto the seam, so a wide view
+     * drew a stack of gridlines on top of each other at the world's edge, each labelled
+     * with a different longitude.
+     */
     fun toUnit(coordinate: Coordinate): UnitPoint {
         val latitude = coordinate.latitude.coerceIn(-MAX_LATITUDE, MAX_LATITUDE)
         val x = (coordinate.longitude + 180.0) / 360.0
         val sinLat = tan(PI / 4 + latitude * PI / 360)
         val y = 0.5 - ln(sinLat) / (2 * PI)
-        // At exactly the Mercator limit the arithmetic lands a hair either side of the
-        // edge, so the result is pinned to the unit square rather than left to a rounding
-        // error a renderer would have to defend against.
-        return UnitPoint(x.coerceIn(0.0, 1.0), y.coerceIn(0.0, 1.0))
+        return UnitPoint(x, y.coerceIn(0.0, 1.0))
     }
 
     /** Invert [toUnit]. */
@@ -140,16 +151,58 @@ object MapProjection {
 
         /**
          * Keep the viewport inside the world square vertically and no larger than it.
-         * Longitude is left free to wrap so a route crossing the antimeridian still draws
-         * as one line rather than snapping back across the whole world.
+         *
+         * **Both axes scale together.** Clamping only the height would quietly change the
+         * viewport's aspect, and every layer projects x and y independently — so the map
+         * would be drawn stretched, with nothing on screen to say why. A world-sized fit
+         * hits this on every canvas, because the world is exactly one unit tall and any
+         * padding at all pushes the vertical span past it.
+         *
+         * Longitude is left free to wrap, so a route crossing the antimeridian still draws
+         * as one line rather than snapping back across the whole world — but not free to
+         * wander off the planet entirely. A viewport with no overlap at all is brought back
+         * in whole world-widths, which keeps its relationship to the seam and keeps a map
+         * the pilot has panned into empty space recoverable.
          */
         fun clampedToWorld(): Viewport {
-            var h = height.coerceIn(MIN_SPAN, 1.0)
-            var top = minY
+            if (!minX.isFinite() || !minY.isFinite() || !width.isFinite() || !height.isFinite()) {
+                return this
+            }
+            val scale = when {
+                height > 1.0 -> 1.0 / height
+                height in Double.MIN_VALUE..MIN_SPAN -> MIN_SPAN / height
+                else -> 1.0
+            }
+            val w = width * scale
+            val h = (height * scale).coerceIn(MIN_SPAN, 1.0)
+
+            var top = centerY - h / 2
             if (top < 0.0) top = 0.0
             if (top + h > 1.0) top = max(0.0, 1.0 - h)
-            if (h > 1.0) h = 1.0
-            return Viewport(minX, top, minX + width, top + h)
+
+            var left = centerX - w / 2
+            // No part of the world in view: shift back by whole world-widths.
+            if (left >= 1.0 || left + w <= 0.0) left -= floor(left)
+
+            return Viewport(left, top, left + w, top + h)
+        }
+
+        /**
+         * Re-derive this viewport for a canvas of a different shape, about the same centre.
+         *
+         * Used when the canvas resizes under a view the pilot placed themselves: refitting
+         * would throw their view away, and leaving it alone would draw it at the old aspect
+         * on the new canvas.
+         */
+        fun withCanvasAspect(canvasWidth: Float, canvasHeight: Float): Viewport {
+            if (canvasWidth <= 0f || canvasHeight <= 0f) return this
+            if (width <= 0.0 || height <= 0.0) return this
+            val canvasAspect = canvasWidth.toDouble() / canvasHeight
+            var w = width
+            var h = height
+            if (w / h < canvasAspect) w = h * canvasAspect else h = w / canvasAspect
+            return Viewport(centerX - w / 2, centerY - h / 2, centerX + w / 2, centerY + h / 2)
+                .clampedToWorld()
         }
 
         /** The span of this viewport in nautical miles at its centre latitude. */

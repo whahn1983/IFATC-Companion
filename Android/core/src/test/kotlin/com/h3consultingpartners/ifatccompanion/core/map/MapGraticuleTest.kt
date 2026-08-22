@@ -1,6 +1,7 @@
 package com.h3consultingpartners.ifatccompanion.core.map
 
 import com.h3consultingpartners.ifatccompanion.core.geo.Coordinate
+import kotlin.math.abs
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -141,6 +142,42 @@ class MapGraticuleTest {
             tight.distanceNM < wide.distanceNM,
             "zooming in should shorten the bar: ${tight.distanceNM} vs ${wide.distanceNM}",
         )
+    }
+
+    // endregion
+
+    // region A viewport wider than the world
+
+    @Test
+    fun `a world-wide viewport draws each meridian once`() {
+        // A fit padded to a wide canvas is wider than the world, so the same real meridian
+        // falls inside it more than once. Only one world's worth of coastline is drawn, so
+        // emitting both copies stacks gridlines on top of each other — each labelled with a
+        // different longitude, which reads as a rendering fault rather than a maths one.
+        val wide = MapProjection.fitting(
+            MapProjection.WORLD_CORNERS, 1080f, 280f,
+            MapProjection.DEFAULT_PADDING_FRACTION,
+        )
+        assertNotNull(wide)
+        assertTrue(wide.width > 1.0, "this test is only meaningful for a viewport wider than the world")
+
+        val meridians = MapGraticule.linesFor(wide).filter { !it.isParallel }
+        val labels = meridians.map { it.label }
+        assertEquals(labels.size, labels.toSet().size, "duplicate meridians: $labels")
+
+        val places = meridians.map { MapProjection.toUnit(Coordinate(0.0, it.degrees)).x }
+        for ((a, b) in places.zipWithNext()) {
+            assertTrue(abs(a - b) > 1e-9, "two meridians projected to the same place: $places")
+        }
+    }
+
+    @Test
+    fun `an enormous span does not walk forever`() {
+        // The spacing table bottoms out at 30 degrees, so without a stop a viewport far
+        // wider than the world walks hundreds of steps inside a draw phase.
+        val enormous = MapProjection.Viewport(minX = -40.0, minY = 0.0, maxX = 40.0, maxY = 1.0)
+        val lines = MapGraticule.linesFor(enormous)
+        assertTrue(lines.size < 200, "produced ${lines.size} lines for one frame")
     }
 
     // endregion

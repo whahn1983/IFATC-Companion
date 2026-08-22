@@ -5,6 +5,7 @@ import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.roundToInt
+import kotlin.math.roundToLong
 
 /**
  * The graticule and scale bar: the map's coordinate frame.
@@ -59,6 +60,18 @@ object MapGraticule {
      */
     private const val TARGET_LINES = 4
 
+    /** Meridians closer than a ten-thousandth of a degree are the same line. */
+    private const val DEDUPE_PRECISION = 10_000.0
+
+    /**
+     * A hard stop on the walk along each axis.
+     *
+     * The spacing table bottoms out at 30°, so a viewport far wider than the world would
+     * otherwise walk hundreds of steps inside a draw phase to produce a dozen distinct
+     * lines. No grid is better than a dropped frame.
+     */
+    private const val MAX_LINES_PER_AXIS = 64
+
     /**
      * The graticule for a viewport: the parallels and meridians that fall inside it, at a
      * spacing chosen from the span.
@@ -79,16 +92,30 @@ object MapGraticule {
         val lines = mutableListOf<Line>()
         spacingFor(north - south)?.let { step ->
             var lat = ceil(south / step) * step
-            while (lat <= north) {
+            var drawn = 0
+            while (lat <= north && drawn < MAX_LINES_PER_AXIS) {
                 lines += Line(lat, latitudeLabel(lat, step), isParallel = true)
                 lat += step
+                drawn++
             }
         }
         spacingFor(east - west)?.let { step ->
+            // A viewport can be wider than the world — a fit padded to a wide canvas always
+            // is — and then the same real meridian falls inside it more than once. Only one
+            // world's worth of anything else is drawn, so emitting both copies would stack
+            // gridlines on top of each other, each labelled with a different longitude.
+            val seen = mutableSetOf<Long>()
             var lon = ceil(west / step) * step
-            while (lon <= east) {
-                lines += Line(lon, longitudeLabel(lon, step), isParallel = false)
+            var considered = 0
+            while (lon <= east && considered < MAX_LINES_PER_AXIS) {
+                // Keyed on the rounded value: the arithmetic that walks the range
+                // accumulates error, so 170.00000000000003 and 170.0 are one meridian.
+                val key = (normalisedLongitude(lon) * DEDUPE_PRECISION).roundToLong()
+                if (seen.add(key)) {
+                    lines += Line(lon, longitudeLabel(lon, step), isParallel = false)
+                }
                 lon += step
+                considered++
             }
         }
         return lines
@@ -131,12 +158,22 @@ object MapGraticule {
 
     /** "095°W", zero-padded the way a chart writes longitude. */
     fun longitudeLabel(degrees: Double, step: Double): String {
-        // Normalize into -180…180 so a viewport panned across the antimeridian still
-        // labels its meridians rather than reading "190°E".
-        var d = degrees
-        while (d > 180.0) d -= 360.0
-        while (d < -180.0) d += 360.0
+        val d = normalisedLongitude(degrees)
         return format(abs(d), step, padTo = 3) + if (d < 0) "°W" else "°E"
+    }
+
+    /**
+     * Fold a longitude into −180…180.
+     *
+     * A viewport panned across the antimeridian produces meridians beyond ±180, and so does
+     * any fit wider than the world. They are real lines at real places — 190° E is 170° W —
+     * so they are folded rather than discarded, both to label them and to recognise when
+     * two of them are the same line.
+     */
+    private fun normalisedLongitude(degrees: Double): Double {
+        if (!degrees.isFinite()) return 0.0
+        val wrapped = degrees.mod(360.0)
+        return if (wrapped > 180.0) wrapped - 360.0 else wrapped
     }
 
     private fun format(value: Double, step: Double, padTo: Int = 1): String {

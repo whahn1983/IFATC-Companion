@@ -183,6 +183,12 @@ class BaseMapWindowTest {
             kordToKlax,
             listOf(Coordinate(-33.9461, 151.1772), Coordinate(1.3502, 103.9944)),
             listOf(Coordinate(84.0, -170.0), Coordinate(84.5, 170.0)),
+            // Above the Mercator limit once padded: clamping both edges independently
+            // collapsed this to a zero-height window, which is silently unrequestable —
+            // a polar flight simply never got imagery and nothing said why.
+            listOf(Coordinate(86.5, 10.0), Coordinate(86.7, 12.0)),
+            listOf(Coordinate(-87.0, 0.0)),
+            listOf(Coordinate(0.0, 179.8), Coordinate(0.2, 179.9)),
             listOf(Coordinate(0.0, 0.1), Coordinate(0.001, 0.101)),
         )
         for (route in routes) {
@@ -195,4 +201,22 @@ class BaseMapWindowTest {
     }
 
     // endregion
+
+    @Test
+    fun `a window pressed against a limit keeps its span instead of collapsing`() {
+        // Each edge is derived from the other rather than clamped independently: two
+        // independent clamps land both edges on the same limit and the window has no
+        // extent left at all.
+        for (route in listOf(
+            listOf(Coordinate(86.5, 10.0), Coordinate(86.7, 12.0)),
+            listOf(Coordinate(-86.9, 10.0)),
+            listOf(Coordinate(10.0, 179.9), Coordinate(10.2, -179.9)),
+        )) {
+            val box = BaseMapWindow.coverage(route)
+            assertNotNull(box, "no window for $route")
+            assertTrue(box.maxLatitude > box.minLatitude, "zero-height window for $route")
+            assertTrue(box.maxLongitude > box.minLongitude, "zero-width window for $route")
+            assertTrue(BaseMapWindow.pixelSize(box).isValid, "unrequestable window for $route")
+        }
+    }
 }
