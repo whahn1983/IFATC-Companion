@@ -1,8 +1,6 @@
 package com.h3consultingpartners.ifatccompanion.map
 
-import android.graphics.BitmapFactory
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asImageBitmap
 import com.h3consultingpartners.ifatccompanion.core.geo.Coordinate
 import com.h3consultingpartners.ifatccompanion.core.map.BaseImageryService
 import com.h3consultingpartners.ifatccompanion.core.map.BaseMapWindow
@@ -13,7 +11,6 @@ import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticsSink
 import com.h3consultingpartners.ifatccompanion.ui.map.GeoBounds
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 
 /**
  * Fetches and decodes the route map's satellite underlay.
@@ -81,13 +78,7 @@ class BaseMapImageryLoader(
             }
         }
 
-        // Decoding is measured in tens of milliseconds for an image this size — small, but
-        // not something to do on whichever thread the caller happened to be on.
-        val image = withContext(decodeContext) {
-            runCatching {
-                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
-            }.getOrNull()
-        }
+        val image = decodeRaster(bytes, decodeContext)
         if (image == null) {
             // Bytes that arrived and did not decode mean the response was not the image it
             // claimed to be. Retryable because a truncated body is the likeliest cause.

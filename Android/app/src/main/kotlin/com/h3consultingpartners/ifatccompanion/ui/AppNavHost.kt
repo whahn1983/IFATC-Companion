@@ -62,6 +62,7 @@ fun AppNavHost(
     val voices by viewModel.availableVoices.collectAsStateWithLifecycle()
     val routing by viewModel.surfaceRouting.collectAsStateWithLifecycle()
     val baseMap by viewModel.baseMap.collectAsStateWithLifecycle()
+    val radarRaster by viewModel.radarRaster.collectAsStateWithLifecycle()
     var settingsDestination by rememberSaveable { mutableStateOf(SettingsDestination.ROOT) }
 
     // The subscribe banner on the ATC tab cannot navigate itself — this file owns the
@@ -115,12 +116,15 @@ fun AppNavHost(
             modifier = modifier,
             routeMap = {
                 RouteMap(
-                    model = viewModel.routeMapModel(session, weather, ui),
+                    model = viewModel.routeMapModel(session, weather, ui, radarRaster),
                     showSampledCells = ui.showSampledRadarCells,
                     // Coastlines and the graticule are always on; the imagery half is
                     // whatever has been fetched, which is nothing until it arrives and
                     // nothing at all with no connection.
                     baseMap = baseMap,
+                    // What the pilot is looking at decides what precipitation is fetched,
+                    // the way iOS tracks its visible region.
+                    onRegionSettled = viewModel::onRouteMapRegionSettled,
                 )
             },
         )

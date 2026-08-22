@@ -42,6 +42,7 @@ import com.h3consultingpartners.ifatccompanion.core.weather.radar.PrecipitationO
 import com.h3consultingpartners.ifatccompanion.data.AndroidFileStore
 import com.h3consultingpartners.ifatccompanion.data.DataStoreKeyValueStore
 import com.h3consultingpartners.ifatccompanion.map.BaseMapImageryLoader
+import com.h3consultingpartners.ifatccompanion.map.RadarRasterLoader
 import com.h3consultingpartners.ifatccompanion.service.ActiveFlightController
 import com.h3consultingpartners.ifatccompanion.service.FlightSessionActiveFlightController
 import java.io.File
@@ -179,6 +180,17 @@ class AppGraph private constructor(
 
     val precipitationOverlay: PrecipitationOverlayService by lazy {
         PrecipitationOverlayService(http, clock).also { it.configure(diagnostics) }
+    }
+
+    /**
+     * The precipitation raster the route map draws.
+     *
+     * [precipitationOverlay] chooses the provider, builds the URL, fetches and backs off —
+     * its own KDoc says the image "is fetched by the app" — and until now nothing was the
+     * app. A whole provider ladder produced no pixels.
+     */
+    val radarRaster: RadarRasterLoader by lazy {
+        RadarRasterLoader(overlays = precipitationOverlay, diagnostics = diagnostics)
     }
 
     /**

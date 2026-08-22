@@ -50,6 +50,20 @@ data class BaseMapModel(
     val imageryBounds: GeoBounds? = null,
 )
 
+/**
+ * The precipitation raster, and the exact window it covers.
+ *
+ * Deliberately not part of [BaseMapModel]: the base map is what the route is drawn *on*,
+ * and this is drawn *over* the route. iOS makes the same split — its radar image is a
+ * SwiftUI `.overlay` on the whole map rather than a layer inside it — because precipitation
+ * is the thing the pilot is being asked to act on, and burying it under the route line
+ * would defeat the point of showing it.
+ */
+data class RadarRaster(
+    val image: ImageBitmap,
+    val bounds: GeoBounds,
+)
+
 /** A lat/lon window. Used to place fetched imagery on the canvas. */
 data class GeoBounds(
     val south: Double,
@@ -189,7 +203,26 @@ private fun DrawScope.drawScaleBar(frame: MapFrame, color: Color, textMeasurer: 
  * one NASA GIBS and NOAA both publish in — so placing it is a straight blit into the
  * projected rectangle, with no reprojection.
  */
-private fun DrawScope.drawImagery(frame: MapFrame, image: ImageBitmap, bounds: GeoBounds) {
+/**
+ * Draw a georeferenced raster over the map at [alpha].
+ *
+ * Used for both rasters the route map composites — the satellite underlay beneath
+ * everything and the precipitation overlay above it — because placing either is the same
+ * problem: project the window's corners and blit into the rectangle.
+ */
+fun DrawScope.drawGeoRaster(
+    frame: MapFrame,
+    image: ImageBitmap,
+    bounds: GeoBounds,
+    alpha: Float,
+) = drawImagery(frame, image, bounds, alpha)
+
+private fun DrawScope.drawImagery(
+    frame: MapFrame,
+    image: ImageBitmap,
+    bounds: GeoBounds,
+    alpha: Float = IMAGERY_ALPHA,
+) {
     val topLeft = frame.project(Coordinate(bounds.north, bounds.west))
     val bottomRight = frame.project(Coordinate(bounds.south, bounds.east))
     val targetWidth = bottomRight.x - topLeft.x
@@ -220,7 +253,7 @@ private fun DrawScope.drawImagery(frame: MapFrame, image: ImageBitmap, bounds: G
         srcSize = IntSize(image.width, image.height),
         dstOffset = IntOffset(topLeft.x.toInt(), topLeft.y.toInt()),
         dstSize = IntSize(targetWidth.toInt().coerceAtLeast(1), targetHeight.toInt().coerceAtLeast(1)),
-        alpha = IMAGERY_ALPHA,
+        alpha = alpha,
     )
 }
 

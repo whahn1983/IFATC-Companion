@@ -16,7 +16,7 @@ because a screen exists.
 | 🔵 **Android-native substitution** | Deliberately different because the platform is, with the difference stated. |
 
 > **Verification status of the two modules.** `:core` is compiled and its tests are run —
-> **880 tests across 69 classes, 0 failures, 0 skipped** — and the per-area counts below
+> **885 tests across 70 classes, 0 failures, 0 skipped** — and the per-area counts below
 > are real.
 >
 > `:app` is now compiled too, by CI (`.github/workflows/android.yml`): `assembleDebug`
@@ -109,7 +109,7 @@ because a screen exists.
 | EUMETNET OPERA (**disabled on iOS**) | `EUMETNETORDClient`, `OPERACompositeRenderer` | Both ported; the shipping provider list constructs the provider with `useORD = false`, exactly as iOS does. Europe falls through to the clearly labelled NASA satellite estimate. See `Docs/ANDROID_DATA_SOURCES.md` | ✅ |
 | Weather session (fetch, ride recompute, ATIS cadence, overlay descriptor) | `AppModel.swift` `refreshWeather`/`recomputeRideItems` | `core/weather/WeatherSessionController.kt` — a separate object from the flight coordinator, because the ATC state machine and the weather feed share almost nothing but the flight plan | ✅ 18 tests |
 | Never infer turbulence from radar | design rule | The deviation engine keeps radar precipitation, satellite estimate, advisories and pilot reports as separate inputs; a satellite estimate is never labelled radar | ✅ tested |
-| Precipitation raster drawn on the route map | `RadarOverlayRenderer.swift` | **Not drawn yet.** The provider selection, the URL building and the sampler are all ported and tested, and the vector cells and advisory shading do draw — but the fetched raster is not yet composited onto the canvas | ⬜ |
+| Precipitation raster drawn on the route map | `RadarOverlayRenderer.swift` | `app/map/RadarRasterLoader.kt` fetches and decodes; `ui/map/RouteMapLayers.kt` draws it **over** the route, markers and aircraft, which is where iOS puts it too — a SwiftUI `.overlay` on the whole map rather than a layer inside it. Requested for the region on screen once the map settles, matching iOS's `onMapCameraChange(frequency: .onEnd)`. Placement is exact rather than approximate: the service returns the bbox it rendered, where iOS aligns to the visible region and calls that "intentionally approximate" | 🟡 |
 
 ## 5. Airport surface and taxi routing
 
@@ -278,16 +278,13 @@ Stated plainly, and none of them hidden behind a ✅ elsewhere in this file.
    Flight installation to connect to. Nothing in the port has been *heard* — the radio
    effect chain, the TTS voices, the chatter mix and the squelch bursts are all ported
    maths that has never been played.
-3. **The radar raster is not drawn on the route map.** Provider selection, URL building,
-   fetching and sampling are all ported and tested, and the vector cells and advisory
-   shading do draw; compositing the fetched image onto the canvas is not done.
-4. **The Flights list screen** is not built (the store behind it is).
-5. **Play In-App Review** is not called. The engagement counting that decides *when* to
+3. **The Flights list screen** is not built (the store behind it is).
+4. **Play In-App Review** is not called. The engagement counting that decides *when* to
    ask is ported; the Play API call itself is not.
-6. **The go-around re-establish loop** is not wired into the airborne ladder: the action
+5. **The go-around re-establish loop** is not wired into the airborne ladder: the action
    and its phraseology are ported, but after a go-around the automatic flow does not yet
    hold for the pilot to re-establish with Approach the way iOS does.
-7. **EUMETNET OPERA rendering stays off**, exactly as it is on iOS. Not a gap so much as
+6. **EUMETNET OPERA rendering stays off**, exactly as it is on iOS. Not a gap so much as
    a carried-across decision, recorded here so it is not mistaken for one.
 
 ## What was verified, and how
@@ -295,7 +292,7 @@ Stated plainly, and none of them hidden behind a ✅ elsewhere in this file.
 | | |
 | --- | --- |
 | `:core` compile | ✅ `./gradlew -c settings-core.gradle.kts :core:compileKotlin` |
-| `:core` tests | ✅ **880 tests, 69 classes, 0 failures, 0 skipped** |
+| `:core` tests | ✅ **885 tests, 70 classes, 0 failures, 0 skipped** |
 | Compose screens type-check | ✅ `./gradlew -c settings-uicheck.gradle.kts :uicheck:compileKotlin` |
 | `:app` compile | ❌ not possible here |
 | Instrumented tests | ❌ not possible here |

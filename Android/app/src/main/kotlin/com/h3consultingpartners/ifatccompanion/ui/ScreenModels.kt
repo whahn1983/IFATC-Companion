@@ -1,20 +1,21 @@
 package com.h3consultingpartners.ifatccompanion.ui
 
-import com.h3consultingpartners.ifatccompanion.core.atis.ATISPhraseology
 import com.h3consultingpartners.ifatccompanion.core.airports.AirportDatabase
-import com.h3consultingpartners.ifatccompanion.core.config.AppConfig
-import com.h3consultingpartners.ifatccompanion.core.geo.Coordinate
+import com.h3consultingpartners.ifatccompanion.core.atis.ATISPhraseology
 import com.h3consultingpartners.ifatccompanion.core.billing.EntitlementState
+import com.h3consultingpartners.ifatccompanion.core.config.AppConfig
 import com.h3consultingpartners.ifatccompanion.core.connect.IFConnectState
-import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticRecord
+import com.h3consultingpartners.ifatccompanion.core.geo.Coordinate
 import com.h3consultingpartners.ifatccompanion.core.model.ATCFacility
 import com.h3consultingpartners.ifatccompanion.core.phraseology.PhraseologyProfilesState
+import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticRecord
 import com.h3consultingpartners.ifatccompanion.core.session.FlightSessionState
 import com.h3consultingpartners.ifatccompanion.core.session.PilotActionPresentation
 import com.h3consultingpartners.ifatccompanion.core.settings.AppSettings
 import com.h3consultingpartners.ifatccompanion.core.surface.SurfaceSessionState
 import com.h3consultingpartners.ifatccompanion.core.surface.routing.AirportSurfaceState
 import com.h3consultingpartners.ifatccompanion.core.weather.WeatherSessionState
+import com.h3consultingpartners.ifatccompanion.ui.map.RadarRaster
 import com.h3consultingpartners.ifatccompanion.ui.map.RouteMapModel
 import com.h3consultingpartners.ifatccompanion.ui.map.TaxiCrossingMarker
 import com.h3consultingpartners.ifatccompanion.ui.map.TaxiMapModel
@@ -405,6 +406,7 @@ fun FlightViewModel.routeMapModel(
     session: FlightSessionState,
     weather: WeatherSessionState,
     ui: FlightViewModel.UiState,
+    radarRaster: RadarRaster? = null,
 ): RouteMapModel {
     val plan = session.flightPlan
     val routeFixes = plan.waypoints.mapNotNull { it.coordinate?.takeIf(Coordinate::isValid) }
@@ -427,6 +429,11 @@ fun FlightViewModel.routeMapModel(
         routeSigmets = weather.routeSigmets.filter { it.area.size >= 3 },
         radarCells = weather.radarOverlay.mockCells,
         sampledCells = weather.radarOverlay.sampledCells,
+        // Gated here rather than in the layer: whether there is precipitation to show is a
+        // data question. Mock Mode's hand-authored cells ARE its precipitation, so showing
+        // a fetched raster as well would draw two different weathers at once.
+        radarRaster = radarRaster.takeIf { weather.radarOverlay.shouldDisplay },
+        radarOpacity = weather.radarOverlay.opacity.toFloat(),
     )
 }
 

@@ -8,7 +8,7 @@ Sizes are the real cost including tests, not the size of the diff. "Needs a devi
 the work cannot be trusted without running it, and this repository's CI has no device or
 emulator: it compiles `:app`, gates Android Lint, and runs R8, and that is all it can do.
 
-Status at the time of writing: `:core` is **880 tests / 69 classes / 0 failures**; `:app`
+Status at the time of writing: `:core` is **885 tests / 70 classes / 0 failures**; `:app`
 compiles, lints clean under `abortOnError = true`, and produces a minified release bundle.
 
 ---
@@ -35,11 +35,10 @@ did nothing at all in the app, which is what the parity matrix's 🔌 status now
 
 | # | Work | Size | Notes |
 | --- | --- | --- | --- |
-| 1.1 | **Radar raster on the route map** | Medium | Provider selection, URL building, fetching and the sampler are all ported and tested; the fetched image is never composited onto the Compose canvas. The vector cells and advisory shading already draw, so this is the last mile of an otherwise complete pipeline. |
-| 1.2 | **Flights list screen + wire `SavedFlightStore`** | Medium | The store is ported with tests and constructed nowhere, and the screen that lists saved flights does not exist. Distinct from crash/relaunch session resume, which *is* wired and tested. |
-| 1.3 | **Center sector hand-offs** | Medium (1–2 days) | The sector is named now. Still missing: the spoken crossing hand-off, tuning Center to the tracked sector's frequency, persisting the sector across a reconnect so it is not re-announced, and the `awaitingCenterSectorCheckIn` state that makes a post-handoff check-in a call-up rather than a request. |
-| 1.4 | **Go-around / missed approach re-establish loop** | Small–Medium | The action and its phraseology are ported. The automatic re-establish loop after a go-around is not wired into `adjustedAirborneTarget`, so the ladder does not bring the aircraft back round. |
-| 1.5 | **Play In-App Review** | Small | The engagement counting that decides *when* to ask is ported and tested. The `ReviewManager` call itself is never made. Note Play throttles the prompt, so this cannot be verified by tapping through it. |
+| 1.1 | **Flights list screen + wire `SavedFlightStore`** | Medium | The store is ported with tests and constructed nowhere, and the screen that lists saved flights does not exist. Distinct from crash/relaunch session resume, which *is* wired and tested. |
+| 1.2 | **Center sector hand-offs** | Medium (1–2 days) | The sector is named now. Still missing: the spoken crossing hand-off, tuning Center to the tracked sector's frequency, persisting the sector across a reconnect so it is not re-announced, and the `awaitingCenterSectorCheckIn` state that makes a post-handoff check-in a call-up rather than a request. |
+| 1.3 | **Go-around / missed approach re-establish loop** | Small–Medium | The action and its phraseology are ported. The automatic re-establish loop after a go-around is not wired into `adjustedAirborneTarget`, so the ladder does not bring the aircraft back round. |
+| 1.4 | **Play In-App Review** | Small | The engagement counting that decides *when* to ask is ported and tested. The `ReviewManager` call itself is never made. Note Play throttles the prompt, so this cannot be verified by tapping through it. |
 
 ---
 

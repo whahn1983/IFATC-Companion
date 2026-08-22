@@ -1,9 +1,11 @@
 package com.h3consultingpartners.ifatccompanion.core.weather.radar
 
 import com.h3consultingpartners.ifatccompanion.core.geo.Coordinate
+import com.h3consultingpartners.ifatccompanion.core.map.MapProjection
 import com.h3consultingpartners.ifatccompanion.core.weather.deviation.RadarBoundingBox
 import com.h3consultingpartners.ifatccompanion.core.weather.deviation.WeatherIntensity
 import java.util.UUID
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
@@ -32,6 +34,38 @@ data class MapRegion(
         )
 
     companion object {
+        /**
+         * The region a map viewport is currently showing.
+         *
+         * iOS tracks `visibleRegion` off `onMapCameraChange` and asks the provider for an
+         * image of exactly that; Android's map is its own canvas, so this is the
+         * equivalent conversion. Null for a viewport with no extent, or one panned so far
+         * off the world that there is nothing to request imagery for.
+         */
+        fun showing(viewport: MapProjection.Viewport): MapRegion? {
+            if (viewport.width <= 0.0 || viewport.height <= 0.0) return null
+            if (!viewport.width.isFinite() || !viewport.height.isFinite()) return null
+            val topLeft = MapProjection.toCoordinate(
+                MapProjection.UnitPoint(viewport.minX, viewport.minY),
+            )
+            val bottomRight = MapProjection.toCoordinate(
+                MapProjection.UnitPoint(viewport.maxX, viewport.maxY),
+            )
+            val latitudeDelta = abs(topLeft.latitude - bottomRight.latitude)
+            // A viewport may span more than the world once padded to a wide canvas, and a
+            // request wider than the planet is not one any provider can serve.
+            val longitudeDelta = min(360.0, abs(bottomRight.longitude - topLeft.longitude))
+            if (latitudeDelta <= 0.0 || longitudeDelta <= 0.0) return null
+            return MapRegion(
+                centerLatitude = (topLeft.latitude + bottomRight.latitude) / 2,
+                centerLongitude = MapProjection.toCoordinate(
+                    MapProjection.UnitPoint(viewport.centerX, viewport.centerY),
+                ).longitude,
+                latitudeDelta = latitudeDelta,
+                longitudeDelta = longitudeDelta,
+            )
+        }
+
         /** A padded region enclosing a set of coordinates (null if empty). */
         fun enclosing(coordinates: List<Coordinate>): MapRegion? {
             val first = coordinates.firstOrNull() ?: return null

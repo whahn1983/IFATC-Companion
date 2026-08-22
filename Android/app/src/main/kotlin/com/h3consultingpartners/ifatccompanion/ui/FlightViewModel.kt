@@ -28,12 +28,16 @@ import com.h3consultingpartners.ifatccompanion.core.settings.SettingsRepository
 import com.h3consultingpartners.ifatccompanion.core.surface.routing.AirportSurfaceState
 import com.h3consultingpartners.ifatccompanion.core.surface.routing.TaxiMapAction
 import com.h3consultingpartners.ifatccompanion.core.weather.WeatherSessionState
+import com.h3consultingpartners.ifatccompanion.core.weather.radar.MapRegion
+import com.h3consultingpartners.ifatccompanion.core.weather.radar.PixelSize
 import com.h3consultingpartners.ifatccompanion.map.BaseMapImageryLoader
 import com.h3consultingpartners.ifatccompanion.ui.map.BaseMapModel
+import com.h3consultingpartners.ifatccompanion.ui.map.RadarRaster
 import com.h3consultingpartners.ifatccompanion.ui.screens.FlightOverrides
 import com.h3consultingpartners.ifatccompanion.ui.screens.VoiceOption
 import kotlin.math.roundToInt
 import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -255,6 +259,44 @@ class FlightViewModel(
         // and a perfectly good position would produce no imagery at all. In that one square
         // the position is used unrounded, which costs a few extra fetches over open ocean.
         return listOf(if (rounded.isValid) rounded else here)
+    }
+
+    // endregion
+
+    // region Precipitation raster
+
+    private val _radarRaster = MutableStateFlow<RadarRaster?>(null)
+
+    /**
+     * The fetched precipitation image the route map draws over everything else.
+     *
+     * Null until a region has been looked at and a provider has answered — and null for the
+     * whole flight where no provider covers the route, which is most of the world. The map
+     * is complete without it: the advisory shading, the sampled cells and, in Mock Mode, the
+     * hand-authored precipitation polygons all draw regardless.
+     */
+    val radarRaster: StateFlow<RadarRaster?> = _radarRaster.asStateFlow()
+
+    private var radarRequest: Job? = null
+
+    /**
+     * The route map has settled on a region; fetch precipitation for what is on screen.
+     *
+     * Requested for the visible region rather than the route, which is what iOS does — a
+     * pilot who zooms into the weather ahead should get that weather at full resolution and
+     * not a scaled-down picture of the whole leg. Unlike the satellite underlay this cannot
+     * be fetched once and kept: radar has a time dimension and goes stale, so the same
+     * region is re-requested when the pilot comes back to it.
+     *
+     * Cancelling the previous request rather than queueing behind it matters here: panning
+     * across a route produces a series of regions and only the last one is being looked at.
+     */
+    fun onRouteMapRegionSettled(region: MapRegion) {
+        if (!graph.weather.state.value.radarOverlay.shouldDisplay) return
+        radarRequest?.cancel()
+        radarRequest = viewModelScope.launch {
+            _radarRaster.value = graph.radarRaster.load(region, RADAR_RASTER_SIZE)
+        }
     }
 
     // endregion
@@ -800,6 +842,16 @@ class FlightViewModel(
  * genuinely offline flight must not keep waking the radio for it.
  */
 private val BASE_MAP_IMAGERY_RETRY_DELAYS_SECONDS = listOf(5L, 20L, 60L)
+
+/**
+ * The pixel size the precipitation raster is requested at.
+ *
+ * Fixed rather than measured from the canvas. The map card is a known 280dp tall and this is
+ * a translucent overlay read for shape and colour, not for detail; asking for the device's
+ * true pixel dimensions would triple the download on a high-density phone to draw the same
+ * blob. iOS multiplies by `displayScale` and gets a bigger image for no more information.
+ */
+private val RADAR_RASTER_SIZE = PixelSize(width = 1024, height = 512)
 
 /** One more than the number of waits: the first attempt is not preceded by one. */
 private val BASE_MAP_IMAGERY_ATTEMPTS = BASE_MAP_IMAGERY_RETRY_DELAYS_SECONDS.size + 1

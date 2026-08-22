@@ -11,6 +11,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -32,9 +33,14 @@ import com.h3consultingpartners.ifatccompanion.core.weather.PIREP
 import com.h3consultingpartners.ifatccompanion.core.weather.SIGMET
 import com.h3consultingpartners.ifatccompanion.core.weather.TurbulenceSeverity
 import com.h3consultingpartners.ifatccompanion.core.weather.deviation.WeatherIntensity
+import com.h3consultingpartners.ifatccompanion.core.weather.radar.MapRegion
 import com.h3consultingpartners.ifatccompanion.core.weather.radar.RadarCell
 import com.h3consultingpartners.ifatccompanion.ui.theme.IFATCTheme
 import kotlin.math.roundToInt
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.map
 
 /** Everything the route map draws, already resolved to coordinates. */
 data class RouteMapModel(
@@ -50,6 +56,14 @@ data class RouteMapModel(
     val radarCells: List<RadarCell> = emptyList(),
     /** Opt-in diagnostics: the live-sampled cells that actually drive the deviation math. */
     val sampledCells: List<RadarCell> = emptyList(),
+    /**
+     * The fetched precipitation raster, drawn over everything else. Null when no provider
+     * covers the region, in Mock Mode (whose hand-authored [radarCells] are the
+     * precipitation), or when the overlay is switched off.
+     */
+    val radarRaster: RadarRaster? = null,
+    /** The overlay opacity the pilot chose. Carried through from `RadarOverlayModel`. */
+    val radarOpacity: Float = 0.55f,
     /** The reroute currently being flown or offered. */
     val deviationLine: List<Coordinate> = emptyList(),
     /** Faint previews of the deviations further along the route. */
@@ -67,9 +81,9 @@ data class RouteMapModel(
  * that is only context.
  *
  * Where iOS has MapKit, this draws on the app's own canvas — see [MapCanvas] and
- * Docs/ANDROID_MAPPING.md for why no mapping SDK is used. The precipitation raster the
- * iOS build overlays from the provider is **not** drawn here yet; the vector cells and the
- * advisory shading are. That gap is recorded in the parity matrix.
+ * Docs/ANDROID_MAPPING.md for why no mapping SDK is used. Underneath sits a base map of the
+ * app's own making (coastlines, graticule, satellite underlay); over the top sits the
+ * fetched precipitation raster, in the same place iOS puts it.
  */
 @Composable
 fun RouteMap(
@@ -83,6 +97,15 @@ fun RouteMap(
      * enhancement the caller supplies when it has one.
      */
     baseMap: BaseMapModel = BaseMapModel(),
+    /**
+     * Called with the region on screen once the pilot stops moving the map.
+     *
+     * The precipitation raster is requested for what is actually being looked at, which is
+     * what iOS does off `onMapCameraChange(frequency: .onEnd)`. On-settle rather than
+     * on-change for the same reason iOS chose it: a request per frame of a pinch would be
+     * a request storm on a link that is often a phone hotspot.
+     */
+    onRegionSettled: ((MapRegion) -> Unit)? = null,
 ) {
     // The world is the fallback frame, so the coastlines and graticule draw from the first
     // layout pass even with no plan, no telemetry and no network. Without it the viewport
@@ -123,6 +146,22 @@ fun RouteMap(
     LaunchedEffect(signature) {
         val content = planned.ifEmpty { listOfNotNull(aircraft) }
         if (content.isNotEmpty()) state.fitTo(content)
+    }
+
+    // "Settled" is a pause in movement, not the end of a gesture: MapCanvasState publishes
+    // the viewport as it changes and has no notion of a gesture ending. Reading it inside a
+    // snapshotFlow and debouncing gives the same effect without teaching the canvas about
+    // radar, and the collector restarts on each new value so a pinch reports once.
+    if (onRegionSettled != null) {
+        LaunchedEffect(state, onRegionSettled) {
+            snapshotFlow { state.viewport }
+                .filterNotNull()
+                .debounce(REGION_SETTLE_MILLIS)
+                .map(MapRegion.Companion::showing)
+                .filterNotNull()
+                .distinctUntilChanged()
+                .collect(onRegionSettled)
+        }
     }
 
     Box(
@@ -183,8 +222,18 @@ fun RouteMap(
                 if (!coordinate.isValid) continue
                 drawPirep(frame, coordinate, severityColor(pirep.turbulence ?: TurbulenceSeverity.SMOOTH, semantic))
             }
-            // 8. The aircraft, last, because it is never obscured.
+            // 8. The aircraft.
             drawAircraft(frame, model.aircraft, semantic.aircraft)
+            // 9. Precipitation, over everything.
+            //
+            //    Above the route rather than below it, which is where iOS puts it too —
+            //    a SwiftUI `.overlay` on the whole map, not a layer inside it. It looks
+            //    backwards next to the rule that context sits under content, and it is
+            //    not: precipitation is the one thing on this map the pilot may have to
+            //    act on, and it is translucent, so the route reads straight through it.
+            model.radarRaster?.let { raster ->
+                drawGeoRaster(frame, raster.image, raster.bounds, model.radarOpacity)
+            }
         }
 
         // The canvas draws whatever the base map gives it, so an unplanned flight now
@@ -392,3 +441,11 @@ private const val AIRCRAFT_MARKER_SIZE = 9f
  * each frame and never hits, so the whole point of caching is lost inside the draw phase.
  */
 private const val LABEL_CACHE_SIZE = 32
+
+/**
+ * How long the map must be still before the region counts as settled.
+ *
+ * Long enough that a pinch or a flick reports once rather than continuously; short enough
+ * that a pilot who moves the map and looks does not wait for the precipitation to catch up.
+ */
+private const val REGION_SETTLE_MILLIS = 400L
