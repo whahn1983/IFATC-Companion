@@ -929,6 +929,12 @@ class FlightViewModel(
         // fields back — a gate the app filled in is the app's to withdraw, while one the
         // pilot typed always stays.
         if (autoGatesChanged) viewModelScope.launch { graph.autoGates.applySettingChange() }
+        // The taxi coordinator reads both of these off its own state, so a pilot who
+        // changed either mid-flight kept the value it was constructed with. Assigned
+        // unconditionally: they are two field writes, and comparing them first would only
+        // add a way to miss one.
+        graph.surfaceRouting.autoCrossingCalls = settings.taxiAutoCrossingCalls
+        graph.surfaceRouting.autoRecalculate = settings.taxiAutoRecalculate
         // The weather endpoint is what the service fetches from, so a typed change has to
         // reach it rather than only the settings store.
         if (previous.weatherBaseURL != settings.weatherBaseURL) {
@@ -981,8 +987,20 @@ class FlightViewModel(
      */
     fun onReconnect() = graph.flightSource.reconnect()
 
+    /**
+     * A pilot who taps this knows the cached extract is wrong — stale OSM data, or one
+     * that came back partial. Without `forceRefresh` the provider returns the cache
+     * immediately for anything under the 75-day refresh interval, so the button did
+     * nothing at all for a recently-cached airport.
+     *
+     * It also refreshes the surface the routing coordinator is taxiing on, not only the
+     * session's copy: refreshing the data under an in-progress taxi is the entire point.
+     */
     fun onRefreshAirportData() {
-        viewModelScope.launch { graph.surface.refresh(session.value.flightPlan) }
+        graph.surfaceRouting.refreshData()
+        viewModelScope.launch {
+            graph.surface.refresh(session.value.flightPlan, forceRefresh = true)
+        }
     }
 
     fun onClearAirportCache() {

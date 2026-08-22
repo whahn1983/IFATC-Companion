@@ -1,6 +1,7 @@
 package com.h3consultingpartners.ifatccompanion.audio
 
 import android.content.Context
+import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
@@ -359,7 +360,7 @@ class AndroidSpeechService(
                 it.speak(
                     sample,
                     TextToSpeech.QUEUE_FLUSH,
-                    null,
+                    volumeParams(configuration.voiceVolume),
                     "preview-${utteranceCounter.incrementAndGet()}",
                 )
             }
@@ -498,7 +499,7 @@ class AndroidSpeechService(
         val completion = CompletableDeferred<Boolean>()
         utteranceCompletions[id] = completion
         val queued = withEngine(voiceId, configuration) {
-            it.speak(text, TextToSpeech.QUEUE_ADD, null, id)
+            it.speak(text, TextToSpeech.QUEUE_ADD, volumeParams(configuration.voiceVolume), id)
         } ?: TextToSpeech.ERROR
         if (queued != TextToSpeech.SUCCESS) {
             utteranceCompletions.remove(id)
@@ -506,6 +507,21 @@ class AndroidSpeechService(
         }
         withTimeoutOrNull(SPEAK_TIMEOUT_MILLIS) { completion.await() }
         utteranceCompletions.remove(id)
+    }
+
+    /**
+     * The pilot's Voice volume, as the engine's own per-utterance level.
+     *
+     * The radio path already applied it — `playProcessed` scales the rendered samples — so
+     * the slider governed the radio only while "Transmission static" was on. On the clean
+     * path, and on any call whose render failed and fell back to it, both `speak()` calls
+     * passed a null params Bundle and the engine used its default of 1.0: the slider was
+     * inert and every call came out at full volume. Setting it here makes the clean path
+     * and the radio path agree, and it is the same level the chatter's own fallback then
+     * plays at, since its configuration carries the chatter level rather than the voice one.
+     */
+    private fun volumeParams(volume: Double): Bundle = Bundle().apply {
+        putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, volume.coerceIn(0.0, 1.0).toFloat())
     }
 
     private fun applyVoice(

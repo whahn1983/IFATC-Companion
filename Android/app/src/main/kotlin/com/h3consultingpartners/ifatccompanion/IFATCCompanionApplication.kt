@@ -84,9 +84,21 @@ class IFATCCompanionApplication : Application() {
         // clearance waits behind whatever chatter line is on the air. Either way the pilot
         // does not get the clear call iOS gives them.
         graph.sessionScope.launch {
-            graph.speech.isSpeaking
+            // No distinctUntilChanged: isSpeaking is a StateFlow, which already conflates
+            // equal values, and the operator on one is a deprecation error.
+            graph.speech.isSpeaking.collect { speaking -> chatter.setDucked(speaking) }
+        }
+
+        // Tuning away abandons the exchange on the old frequency. The chatter loop reads
+        // the facility once per exchange, so without this a Tower exchange — its controller
+        // call and the read-back tied to it — plays out in full after the pilot has already
+        // switched to Ground, and the whole inter-exchange gap is waited out before any
+        // chatter for the new frequency begins.
+        graph.sessionScope.launch {
+            graph.flightSessionCoordinator.state
+                .map { it.currentFacility }
                 .distinctUntilChanged()
-                .collect { speaking -> chatter.setDucked(speaking) }
+                .collect { facility -> chatter.facilityDidChange(facility) }
         }
 
         graph.sessionScope.launch {

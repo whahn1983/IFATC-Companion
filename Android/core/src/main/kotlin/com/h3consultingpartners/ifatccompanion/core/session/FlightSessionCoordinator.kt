@@ -965,7 +965,7 @@ class FlightSessionCoordinator(
                         spokenText = readback.spokenText,
                         timestampMillis = clock.nowMillis(),
                     ),
-                    speakIt = settings.speakPilot,
+                    speakIt = shouldSpeakPilot(settings),
                 )
             }
             authorizeCrossing()
@@ -983,7 +983,7 @@ class FlightSessionCoordinator(
         } else {
             pilotEngine.readback(stateMachine.current, buildContext(stateMachine.current))
         }
-        post(tx, speakIt = settingsProvider().speakPilot)
+        post(tx, speakIt = shouldSpeakPilot(settingsProvider()))
 
         // Reading a hand-off back tunes the radio to the new controller, when auto-tune
         // is on. This is the only place the radio moves without the pilot tapping.
@@ -1084,7 +1084,7 @@ class FlightSessionCoordinator(
                     targetAltitude = current.assignedAltitude,
                     onGround = current.aircraftState.onGround ?: true,
                 ),
-                speakIt = settings.speakPilot,
+                speakIt = shouldSpeakPilot(settings),
             )
             post(engine.numberOneForTakeoff(context.callsign, context.runway), speakIt = true)
             _state.update { it.copy(pendingCheckInFacility = null) }
@@ -1108,7 +1108,7 @@ class FlightSessionCoordinator(
                     targetAltitude = current.assignedAltitude,
                     onGround = current.aircraftState.onGround ?: false,
                 ),
-                speakIt = settings.speakPilot,
+                speakIt = shouldSpeakPilot(settings),
             )
             post(engine.radarContact(cs = context.callsign, facility = ATCFacility.CENTER), speakIt = true)
             _state.update { it.copy(pendingCheckInFacility = null) }
@@ -1138,7 +1138,7 @@ class FlightSessionCoordinator(
                     targetAltitude = current.assignedAltitude,
                     onGround = current.aircraftState.onGround ?: false,
                 ),
-                speakIt = settings.speakPilot,
+                speakIt = shouldSpeakPilot(settings),
             )
             post(engine.radarContact(cs = context.callsign, facility = facility), speakIt = true)
             recomputeDerivedState()
@@ -1158,7 +1158,7 @@ class FlightSessionCoordinator(
                 targetAltitude = current.assignedAltitude,
                 onGround = current.aircraftState.onGround ?: false,
             ),
-            speakIt = settings.speakPilot,
+            speakIt = shouldSpeakPilot(settings),
         )
         // announceHandoff = false: the pilot moved the radio themselves, so the controller
         // answers directly rather than opening with a "contact …" they have already acted on.
@@ -1252,7 +1252,7 @@ class FlightSessionCoordinator(
                 targetAltitude = current.assignedAltitude,
                 onGround = current.aircraftState.onGround ?: false,
             ),
-            speakIt = settings.speakPilot,
+            speakIt = shouldSpeakPilot(settings),
         )
         post(
             engine.continueInbound(
@@ -1347,7 +1347,7 @@ class FlightSessionCoordinator(
             }
         }
 
-        post(tx, speakIt = settings.speakPilot)
+        post(tx, speakIt = shouldSpeakPilot(settings))
         onPilotRequest(action)
     }
 
@@ -1428,7 +1428,7 @@ class FlightSessionCoordinator(
             val fromPilot = tx.sender == ATCTransmission.Sender.PILOT
             post(
                 tx,
-                speakIt = if (fromPilot) settings.speakPilot else true,
+                speakIt = if (fromPilot) shouldSpeakPilot(settings) else true,
                 allowRepeat = !emission.controllerInitiated,
             )
         }
@@ -1487,7 +1487,7 @@ class FlightSessionCoordinator(
         // A field with no ramp position of its own is worked by Ground throughout, so
         // there is no Ramp to call up and no routing for it to give.
         if (context.rampProfile.rampType != RampType.NONE) {
-            post(rampEngine.arrivalInbound(context.callsign, context.gate), speakIt = settings.speakPilot)
+            post(rampEngine.arrivalInbound(context.callsign, context.gate), speakIt = shouldSpeakPilot(settings))
             post(
                 rampEngine.proceedToGate(
                     cs = context.callsign,
@@ -1555,7 +1555,7 @@ class FlightSessionCoordinator(
             } else {
                 pilotEngine.requestLower(context, target)
             },
-            speakIt = settings.speakPilot,
+            speakIt = shouldSpeakPilot(settings),
         )
 
         val facility = _state.value.workingFacility
@@ -1588,7 +1588,7 @@ class FlightSessionCoordinator(
             } else {
                 pilotEngine.requestLower(context, suggestion.altitudeFt)
             },
-            speakIt = settings.speakPilot,
+            speakIt = shouldSpeakPilot(settings),
         )
         grantAltitude(context, facility, suggestion.altitudeFt, suggestion.higher)
         weatherAnswers.clearSmootherAltitude()
@@ -1624,7 +1624,7 @@ class FlightSessionCoordinator(
      * than a state-derived line.
      */
     private fun requestVectors(context: ATCContext) {
-        post(pilotEngine.requestVectors(context), speakIt = settings.speakPilot)
+        post(pilotEngine.requestVectors(context), speakIt = shouldSpeakPilot(settings))
 
         val runway = context.approachProcedure?.runway ?: context.runway
         val heading = approachInterceptHeading(runway)
@@ -1679,7 +1679,7 @@ class FlightSessionCoordinator(
 
     /** Cleared for the approach, with the read-back the Read Back button then echoes. */
     private fun requestApproach(context: ATCContext) {
-        post(pilotEngine.requestApproach(context), speakIt = settings.speakPilot)
+        post(pilotEngine.requestApproach(context), speakIt = shouldSpeakPilot(settings))
         val procedure = context.approachProcedure
         val tx = if (procedure != null) {
             engine.clearedApproach(context.callsign, procedure, context.runway)
@@ -1706,7 +1706,7 @@ class FlightSessionCoordinator(
      */
     private fun requestRideReport(context: ATCContext) {
         val facility = _state.value.workingFacility
-        post(pilotEngine.requestRideReports(context), speakIt = settings.speakPilot)
+        post(pilotEngine.requestRideReports(context), speakIt = shouldSpeakPilot(settings))
         scope.launch {
             val report = weatherAnswers.rideReport(context.callsign) ?: return@launch
             post(
@@ -1722,7 +1722,7 @@ class FlightSessionCoordinator(
         val destination = context.plan.destination
         post(
             pilotEngine.requestWeather(context, destination.ifEmpty { "destination" }),
-            speakIt = settings.speakPilot,
+            speakIt = shouldSpeakPilot(settings),
         )
         scope.launch {
             val wx = weatherAnswers.destinationWeather(context.callsign, destination) ?: return@launch
@@ -1825,7 +1825,7 @@ class FlightSessionCoordinator(
     }
 
     private inline fun postPilot(build: (ATCContext) -> ATCTransmission) {
-        post(build(buildContext(stateMachine.current)), speakIt = settings.speakPilot)
+        post(build(buildContext(stateMachine.current)), speakIt = shouldSpeakPilot(settings))
     }
 
     // endregion
@@ -2367,16 +2367,69 @@ class FlightSessionCoordinator(
         if (text.isBlank()) return null
         val intent = intentParser.parse(text)
         val action = intent.pilotAction
-        return when {
-            intent == PilotIntent.READBACK -> { readBack(); intent.title }
-            intent == PilotIntent.SAY_AGAIN -> { sayAgain(); intent.title }
-            intent == PilotIntent.UNABLE -> { unable(); intent.title }
-            intent == PilotIntent.CHECK_IN -> { checkIn(); intent.title }
-            // "Wilco" acknowledges the instruction it answers, which is a read-back.
-            intent == PilotIntent.WILCO -> { readBack(); intent.title }
-            action != null -> { performPilotAction(action); intent.title }
-            else -> null
+        // Bracketed so every pilot transmission this dispatches goes into the transcript
+        // without being synthesized: the pilot has just said it into the microphone, and
+        // hearing the app recite it back at them over the radio is the one thing
+        // push-to-talk must not do.
+        pilotInputViaVoice = true
+        try {
+            return when {
+                intent == PilotIntent.READBACK -> { readBack(); intent.title }
+                intent == PilotIntent.SAY_AGAIN -> { sayAgain(); intent.title }
+                intent == PilotIntent.UNABLE -> { unable(); intent.title }
+                intent == PilotIntent.CHECK_IN -> { checkIn(); intent.title }
+                intent == PilotIntent.WILCO -> { wilco(); intent.title }
+                action != null -> { performPilotAction(action); intent.title }
+                else -> null
+            }
+        } finally {
+            pilotInputViaVoice = false
         }
+    }
+
+    /**
+     * True while [handleSpokenPilotText] is dispatching, i.e. while the transmission being
+     * posted is one the pilot has just spoken themselves.
+     */
+    private var pilotInputViaVoice = false
+
+    /** Whether a pilot transmission posted right now should also be spoken aloud. */
+    private fun shouldSpeakPilot(settings: AppSettings): Boolean =
+        settings.speakPilot && !pilotInputViaVoice
+
+    /**
+     * "Wilco" — will comply.
+     *
+     * It acknowledges the instruction rather than reciting it, which is the whole
+     * difference between it and a read-back, and it is what the pilot actually said. The
+     * app answered it with the full read-back instead, so a pilot who said "wilco" heard
+     * their own aircraft recite an instruction they had not read back.
+     *
+     * A wilco is still an acknowledgement, so it opens the read-back gate like any other
+     * pilot transmission, and it still tunes the radio when the call it answers was a
+     * hand-off — a pilot who says "wilco" to "contact Tower on 118.3" means they are
+     * going there.
+     *
+     * A runway-crossing clearance is the one instruction a wilco may not answer: on
+     * Android reading it back is what authorizes the crossing, and the read-back has to
+     * be the words. That case goes to [readBack].
+     */
+    fun wilco() {
+        if (_state.value.companionStandby) return
+        if (groundHandoffSignals().awaitingCrossingReadback) {
+            readBack()
+            return
+        }
+        val settings = settingsProvider()
+        val context = buildContext(stateMachine.current)
+        // Read before posting: post() makes the pilot's own line the latest transmission,
+        // and a pilot line carries no read-back to tune from.
+        val tuneTo = _state.value.latestTransmission?.readback?.tuneTo
+        post(
+            pilotEngine.wilco(context, _state.value.workingFacility),
+            speakIt = shouldSpeakPilot(settings),
+        )
+        if (tuneTo != null && settings.autoTuneOnHandoff) tuneTo(tuneTo, manual = false)
     }
 
     private fun frequencyFor(facility: ATCFacility, c: ATCContext): Double = when (facility) {
@@ -2481,7 +2534,12 @@ class FlightSessionCoordinator(
             parkingTaxiway = taxi.parkingTaxiway,
             approachName = approach?.displayName ?: plan.approach.ifEmpty { "the ILS" },
             departureFrequency = DEFAULT_DEPARTURE_FREQUENCY,
-            centerFrequency = DEFAULT_CENTER_FREQUENCY,
+            // The sector actually under the aircraft, once the sector map has resolved
+            // one. This is the number the Center tune button shows and every "contact
+            // Center on …" speaks; only the sector-to-sector crossing call used to read
+            // the real frequency, so a Departure→Center hand-off always named the
+            // fallback whatever sector the flight was in.
+            centerFrequency = appliedCenterSector?.frequency ?: DEFAULT_CENTER_FREQUENCY,
             approachFrequency = DEFAULT_APPROACH_FREQUENCY,
             towerFrequency = DEFAULT_TOWER_FREQUENCY,
             groundFrequency = DEFAULT_GROUND_FREQUENCY,
@@ -2784,10 +2842,12 @@ class FlightSessionCoordinator(
 
         // Simulated frequencies, matching the iOS defaults. Real per-facility
         // frequencies are not published as open data for every field.
-        const val DEFAULT_GROUND_FREQUENCY = 121.9
+        const val DEFAULT_GROUND_FREQUENCY = 121.8
         const val DEFAULT_TOWER_FREQUENCY = 118.3
-        const val DEFAULT_DEPARTURE_FREQUENCY = 124.35
-        const val DEFAULT_CENTER_FREQUENCY = 133.4
+        const val DEFAULT_DEPARTURE_FREQUENCY = 124.3
+
+        /** Only reached before the sector map has placed the aircraft in a sector. */
+        const val DEFAULT_CENTER_FREQUENCY = 132.45
         const val DEFAULT_APPROACH_FREQUENCY = 119.7
     }
 }

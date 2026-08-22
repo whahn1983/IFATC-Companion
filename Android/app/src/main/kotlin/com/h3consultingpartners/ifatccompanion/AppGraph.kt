@@ -517,6 +517,11 @@ class AppGraph private constructor(
             clock = clock,
             diagnostics = diagnostics,
         ).also { routing ->
+            // The pilot's stored choices, applied at construction so a launch starts on
+            // them rather than on the coordinator's defaults; FlightViewModel.updateSettings
+            // keeps them current after that.
+            routing.autoCrossingCalls = settingsRepository.state.value.taxiAutoCrossingCalls
+            routing.autoRecalculate = settingsRepository.state.value.taxiAutoRecalculate
             routing.configure(
                 engine = flightSessionCoordinator.phraseologyEngine,
                 emit = { transmission -> flightSessionCoordinator.post(transmission) },

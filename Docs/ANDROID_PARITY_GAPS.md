@@ -14,8 +14,8 @@ verified by hand against both sources before this document was written: the chec
 
 ## Progress
 
-61 of the 100 are closed and three are partly closed; the rest stand. **All 37 rated high
-are closed** — every gap a pilot meets in a normal flight. What remains is 20 medium and 14
+73 of the 100 are closed and three are partly closed; the rest stand. **All 37 rated high
+are closed** — every gap a pilot meets in a normal flight. What remains is 11 medium and 13
 low. Each closed entry below carries a ✅ (or 🟡) line naming what closes it and, where a
 piece is still open, what that piece is — so this document stays the record of what the
 audit found *and* of what has been done about it rather than being quietly rewritten.
@@ -365,6 +365,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** `IFATCCompanionApplication.kt:55` calls `chatter.bindContext(facility = { ... })` and omits the `runways` argument, so `AmbientChatterService` keeps its default `{ ChatterRunwayContext() }` (AmbientChatterService.kt:137,172) and invents random runways forever. `AmbientChatterService.facilityDidChange` (line 236) has no caller in main, so the chatter does not follow the radio. `ATISRunwayParser` (core/atis/ATISRunwayParser.kt:18) is never called.
 
 **Center is always worked on a fixed frequency, and Ground/Departure differ from the iOS numbers**  
+✅ Closed: `buildContext` passes `appliedCenterSector?.frequency`, so the Center tune button and every Center hand-off name the sector under the aircraft. Ground is 121.8, Departure 124.3 and the Center fallback 132.45, matching iOS.  
 *Behaves differently* · iOS: `IFATCCompanion/App/AppModel.swift:4160-4166 (departureFrequency: 124.300, centerFrequency: currentCenterFrequency, approachFrequency: 119.700, towerFrequency: 118.300, groundFrequency: 121.800), :4186-4188 (`currentCenterFrequency` = centerSector?.frequency ?? 132.450)`
 
 - **iOS:** Once the sector map resolves, Center's frequency in the context — the number the tune button shows and every "contact Center on …" speaks — is the *current sector's*, falling back to 132.450. Ground is 121.800 and Departure 124.300.
@@ -434,6 +435,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** `buildContext` never passes `approachDefaultAltitude`, so it stays at the ATCContext default of 3,000 (ATCContext.kt:`DEFAULT_APPROACH_ALTITUDE = 3_000`) regardless of field elevation. `ATCStateMachine`'s APPROACH branch then tells a pilot arriving at Denver to "descend and maintain 3,000" — below the runway — and `FlightSessionCoordinator.goAround()` (line 741, `val patternAltitude = context.approachDefaultAltitude`) assigns the same 3,000 ft pattern, despite its comment claiming "the terminal fallback the context already computes".
 
 **Center hand-offs name a fixed frequency instead of the sector's**  
+✅ Closed — same fix as the Center frequency gap above.  
 *Behaves differently* · iOS: `IFATCCompanion/App/AppModel.swift:4164 (centerFrequency: currentCenterFrequency) and 4188-4190`
 
 - **iOS:** `currentCenterFrequency` returns `centerSector?.frequency ?? 132.450`, so the Departure→Center hand-off, the Center frequency button and every Center call name the frequency of the sector actually under the aircraft. iOS also uses ground 121.800 and departure 124.300.
@@ -467,6 +469,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 ### Audio, billing, review
 
 **A frequency change never abandons the chatter exchange on the old frequency**  
+✅ Closed: `IFATCCompanionApplication` collects `currentFacility` into `chatter.facilityDidChange`.  
 *Ported, not wired* · iOS: `IFATCCompanion/App/AppModel.swift:1160-1167 ($currentFacility.removeDuplicates().sink { self?.chatter.facilityDidChange(to: facility) }); the handler is IFATCCompanion/Chatter/AmbientChatterService.swift:156-182`
 
 - **iOS:** On every distinct facility change AppModel passes the new facility to the chatter service. If a chatter exchange is mid-air for the old facility, abandonCurrentExchange() cuts the playing call, drops the pending read-back tied to it, and the loop settles 0.4–0.8 s and starts a fresh exchange for the newly-tuned frequency — rather than finishing a Tower exchange after the pilot has switched to Ground.
@@ -500,6 +503,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** LiveFlightUpdateProjection.kt:55 hardcodes weatherAlert = null. The field exists on LiveFlightUpdate (:39) and FlightNotifications.kt:137 is ready to render it, so the notification is structurally complete and permanently blank in that slot — the advisory never appears. The proximate cause is upstream of my lane: WeatherSessionController.kt's own KDoc (line 68-69) says "The route-conflict/deviation solver is not driven from here yet", and grep finds no construction of RouteWeatherConflictDetector or WeatherDeviationEngine outside core/weather/deviation itself, so no conflict state exists for the projection to read. I report it here because the missing content is on the Live Flight Update, and because Docs/ANDROID_PARITY_MATRIX.md:105 marks route weather conflict detection ✅ rather than recording it as undriven.
 
 **The Voice volume slider does nothing unless the radio voice effect is on**  
+✅ Closed: both clean-path `speak()` calls pass `KEY_PARAM_VOLUME`, so the slider governs the clean path, the Settings audition and the chatter's render fallback.  
 *Behaves differently* · iOS: `IFATCCompanion/Speech/SpeechService.swift:110 (utterance.volume = Float(min(max(settings.voiceVolume, 0), 1))) and SpeechService.swift:252 for the Settings audition`
 
 - **iOS:** Every utterance — controller, pilot, ATIS, and the Settings voice audition — is stamped with the user's voiceVolume, on both the clean path and the radio-effect path, so the slider always governs how loud the radio is relative to everything else the phone is playing.
@@ -520,6 +524,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** `FlightSessionCoordinator.unable()` is a one-liner: `fun unable() = postPilot { pilotEngine.unable(it, _state.value.workingFacility) }` (core/session/FlightSessionCoordinator.kt:657). `postPilot` (kt:927-929) posts exactly one transmission and returns. There is no controller response, no "advise able to comply", and no read-back — so tapping the red Unable button (rendered from `PilotActionPresentation.Acknowledgement.UNABLE`, PilotActionPresentation.kt:81, dispatched at FlightViewModel.kt:486) leaves the controller mute.
 
 **A push-to-talk transmission is spoken back at the pilot — the "input came by voice" suppression is missing**  
+✅ Closed: `handleSpokenPilotText` brackets its dispatch with `pilotInputViaVoice`, and every pilot post goes through `shouldSpeakPilot`.  
 *Behaves differently* · iOS: `IFATCCompanion/App/AppModel.swift:3538 (`private var shouldSpeakPilot: Bool { settings.speakPilot && !pilotInputViaVoice }`), :4350-4360 (`handleSpokenInput` sets `pilotInputViaVoice = true` around `perform(intent)`)`
 
 - **iOS:** `handleSpokenInput` brackets the dispatched action with `pilotInputViaVoice = true / false` (AppModel.swift:4356-4358) with the comment "The user already spoke this; don't re-speak the pilot transmission." Every pilot transmission is posted with `speak: shouldSpeakPilot` (AppModel.swift:3534), which is `settings.speakPilot && !pilotInputViaVoice` — so a read-back the pilot said into the mic goes into the transcript but is not synthesized back at them.
@@ -541,6 +546,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 ### Airport surface, Connect, Mock Mode
 
 **"Refresh airport data" in Settings does not force a refresh, so it is a no-op for up to 75 days**  
+✅ Closed: the button passes `forceRefresh = true` and also calls `AirportSurfaceCoordinator.refreshData()`, so the surface an in-progress taxi is routing on is refreshed too.  
 *Behaves differently* · iOS: `IFATCCompanion/AirportSurface/AirportSurfaceCoordinator.swift:1290-1293 (refreshData → loadSurface(..., forceRefresh: true)); IFATCCompanion/Views/SettingsView.swift:412-416`
 
 - **iOS:** The Settings button calls model.airportSurface.refreshData(), which re-loads the *currently active* airport's surface with forceRefresh: true — bypassing the cache-freshness check so a pilot who knows the OSM data changed (or whose extract came back partial) actually gets a new Overpass fetch.
@@ -603,6 +609,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** `SettingsScreen.kt:342-347` renders the field and persists it, but `AppGraph.kt:250-251` builds `AviationWeatherService(http, clock, diagnostics)` with the default base URL and `AviationWeatherService.configure(baseUrl = …)` (AviationWeatherService.kt:87-92) is never called. `weatherBaseURL` has no reader outside the settings plumbing, so editing the endpoint changes nothing.
 
 **The ATC status pill never shows the working Center sector name**  
+✅ Closed: `facilityLabel` reads `centerSectorName` for Center, falling back to the plain title before the sector map has resolved one.  
 *Behaves differently* · iOS: `IFATCCompanion/Views/ATCView.swift:191-192 (`model.facilityLabel(for: model.currentFacility)`); AppModel.swift:2596-2602 (`facilityLabel` returns `sector.radioName` for Center)`
 
 - **iOS:** The facility pill reads "Fort Worth Center" once an enroute sector is known, and the plain title for every other facility.
@@ -622,12 +629,14 @@ running app and behaving differently from the iOS build the pilot is comparing a
 - **Android:** `:core` has all four rules ported verbatim on `ATISSession` (`atisButtonVisible` ATISSession.kt:130, `atisButtonSubtitle` :149-152 returning exactly "Info $code"/"Listen", `atisReceiptSummary` :160-167 returning the same sentence, plus `departureATISDismissed`/`arrivalATISDismissed` at :75-76 set at :244) — and `ATISSession` is never instantiated in `:app`; only its static `atisTransmission` is used (AndroidSpeechService.kt:279). `ScreenModels.kt:83-93` re-derives all four differently: `atisButtonVisible = atis != null` (never dismissed), subtitle "Information Bravo" or empty string, `atisButtonActive = atisReceiptSummary(...) != null` (so the button *does* render filled/active, which iOS explicitly refuses), and receipt "Reporting information Bravo".
 
 **The Tune Frequency grid is built from the raw enum instead of the ported `AtcFlowOrder.tunableFacilities`, so Ramp can appear twice and the order differs**  
+✅ Closed: the grid is built from `AtcFlowOrder.tunableFacilities`, which excludes Ramp — `AtcScreen` appends its own Ramp button.  
 *Behaves differently* · iOS: `IFATCCompanion/Views/ATCView.swift:477-479 (`AppModel.tunableFacilities.filter { model.relevantFacilities.contains($0) }`); AppModel.swift:2579-2580 (`[.clearance, .ground, .tower, .departure, .center, .approach]`, deliberately excluding Ramp, which ATCView adds separately at :445-455)`
 
 - **iOS:** The grid lists only the six ATC positions in the fixed gate-to-gate order, and appends a single Ramp button separately when `model.canContactRamp`.
 - **Android:** `:core` already carries the exact list as `AtcFlowOrder.tunableFacilities` (AtcFlowOrder.kt:122-129), whose KDoc says "Ramp is handled separately because it is only live for the push and the gate" — and it is referenced by nothing. `ScreenModels.kt:82` instead does `ATCFacility.entries.filter { it in session.relevantFacilities }`, and `ATCFacility.entries` is ordered CLEARANCE, RAMP, GROUND, TOWER, DEPARTURE, CENTER, APPROACH. `relevantFacilities` always contains `currentFacility` (AtcFlowOrder.kt:110), so while the pilot is tuned to Ramp the grid renders a Ramp button from the loop, and `AtcScreen.kt:411-425` then renders a second Ramp button because `canContactRamp` is still true (PilotActionAvailability.kt:184-187 keeps it true for the push and until PARKED).
 
 **The three airport-surface toggles (auto crossing calls, auto-recalculate, auto-assign gates) render but are applied to nothing; GateAssigner is constructed only in tests**  
+✅ Closed: `taxiAutoCrossingCalls` and `taxiAutoRecalculate` are applied to `AirportSurfaceCoordinator` at construction and on every settings change; `autoAssignGates` drives `AutoGateController`.  
 *Ported, not wired* · iOS: `IFATCCompanion/Views/SettingsView.swift:409-411 and their bindings at :381-397; AppSettings.swift:246-268 ("Applied to `AirportSurfaceCoordinator.autoCrossingCalls` by `AppModel`")`
 
 - **iOS:** `taxiAutoCrossingCalls` and `taxiAutoRecalculate` are pushed onto the live `AirportSurfaceCoordinator`; `autoAssignGates`' setter also calls `model.applyAutoGateSettingChange()` so it takes effect on the flight already loaded.
@@ -725,6 +734,7 @@ running app and behaving differently from the iOS build the pilot is comparing a
 ### Found by the completeness pass
 
 **Saying "wilco" produces the full read-back instead of a wilco — `PilotResponseEngine.wilco` is never called**  
+✅ Closed: `wilco()` posts the acknowledgement, opens the read-back gate and tunes on a hand-off; a runway-crossing clearance still goes to `readBack`, since on Android the words are what authorizes the crossing.  
 *Behaves differently* · iOS: `IFATCCompanion/App/AppModel.swift:4446-4449 (`func wilco()` → `postPilot(pilotEngine.wilco(context:facility:))`), dispatched from `perform(_:)` at AppModel.swift:4368 (`case .wilco: wilco()`)`
 
 - **iOS:** The `.wilco` intent has its own action: `wilco()` posts `pilotEngine.wilco(context:facility:)` — the short "Wilco, <callsign>" acknowledgement — which is a different transmission from a read-back.

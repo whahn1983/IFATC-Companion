@@ -11,6 +11,7 @@ import com.h3consultingpartners.ifatccompanion.core.model.ATCFacility
 import com.h3consultingpartners.ifatccompanion.core.persistence.SavedFlight
 import com.h3consultingpartners.ifatccompanion.core.phraseology.PhraseologyProfilesState
 import com.h3consultingpartners.ifatccompanion.core.platform.DiagnosticRecord
+import com.h3consultingpartners.ifatccompanion.core.session.AtcFlowOrder
 import com.h3consultingpartners.ifatccompanion.core.session.FlightSessionState
 import com.h3consultingpartners.ifatccompanion.core.session.PilotActionPresentation
 import com.h3consultingpartners.ifatccompanion.core.settings.AppSettings
@@ -81,13 +82,24 @@ fun FlightViewModel.atcModel(
         nearestAirport = session.aircraftState.nearestAirport
             ?: plan.departure.ifEmpty { EM_DASH },
         assignedAltitudeText = formatAltitude(session.assignedAltitude),
-        facilityLabel = session.currentFacility.title,
+        // Center identifies itself by the sector actually working the aircraft — "Fort
+        // Worth Center" — the moment the sector map knows one, and by its plain title
+        // before that. Every other facility is always its plain title.
+        facilityLabel = if (session.currentFacility == ATCFacility.CENTER) {
+            session.centerSectorName ?: session.currentFacility.title
+        } else {
+            session.currentFacility.title
+        },
         connectionText = session.connectionState.detailedTitle,
         standbyText = if (session.companionStandby) PilotActionPresentation.STANDBY_HINT else null,
         weatherBannerText = weatherBannerText(weather, deviation),
         frequencyText = { facility -> formatFrequency(frequencyForFacility(facility)) },
         canTune = { facility -> facility in session.relevantFacilities },
-        tunableFacilities = ATCFacility.entries.filter { it in session.relevantFacilities },
+        // The ported gate-to-gate order, not the raw enum. Ramp is deliberately absent
+        // from that list because AtcScreen appends its own Ramp button whenever the pilot
+        // can call the ramp — building the grid from ATCFacility.entries put a second one
+        // in the grid whenever they were already tuned to it.
+        tunableFacilities = AtcFlowOrder.tunableFacilities.filter { it in session.relevantFacilities },
         atisButtonVisible = atis != null,
         atisButtonSubtitle = atis?.letter(arrivalPhaseAtis)
             ?.let { "Information ${ATISPhraseology.phoneticLetter(it)}" }

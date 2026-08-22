@@ -112,8 +112,11 @@ type-checked. When you need an Android API near the UI — `BitmapFactory`, say 
 outside those directories (see `app/map/BaseMapImageryLoader.kt`, which exists exactly
 because `BitmapFactory` cannot live in `ui/map`).
 
-`:uicheck` does **not** cover `ScreenModels.kt`, `AppNavHost.kt`, `FlightViewModel.kt` or
-`MainActivity.kt`. Changes to those are compiled only by CI.
+`:uicheck` does **not** cover `ScreenModels.kt`, `AppNavHost.kt`, `FlightViewModel.kt`,
+`MainActivity.kt`, `AppGraph.kt`, `IFATCCompanionApplication.kt`, or anything under
+`app/audio`, `app/service`, `app/map`, `app/billing`, `app/data`, `app/notification` or
+`app/simbrief`. Changes to any of those are compiled only by CI, at four minutes a round
+trip — so read the declaration you are calling, including its parameter *types*.
 
 ---
 
@@ -300,6 +303,15 @@ lines of `RasterImage.kt`, which is where `RasterImageDecoder.decode` is declare
 interface has a second member — `decodeScaled` — twenty lines further down. CI found it
 after four minutes. **Read a whole interface before implementing it**, not the part of it
 your call site happens to need.
+
+And a fifth: two one-line changes in `:app` cost another four-minute round trip. A `Float`
+was passed where the callee wanted a `Double` — `speakChatter(text, voiceId, volume: Double)`
+against `RadioAudioEngine.chatterSpeechLevel: Float` — and `distinctUntilChanged()` was
+applied straight to a `StateFlow`, which is a **deprecation error**, not a warning, because
+a `StateFlow` already conflates equal values. So, in these CI-only files: check the
+parameter *types* of every call you write, not only that the symbol exists; and never chain
+`distinctUntilChanged()` onto a `StateFlow` — it is legal only after a `map`, `filter` or
+`combine` has turned it into a plain `Flow`.
 
 **"Tests pass" is not "the feature works".** `CenterSectorDatabase` had 17 passing tests and
 was constructed nowhere. `SurfaceSessionController.refresh` had exactly one caller — a

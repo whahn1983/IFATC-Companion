@@ -22,7 +22,7 @@ pilot lines are not decoration: remove one and the flow stops there, on both pla
 | # | Who | Frequency | Transmission |
 | --- | --- | --- | --- |
 | 0 | Pilot | Clearance | Clearance, United 598, request IFR clearance to KMSP. |
-| 1 | ATC | Clearance | United 598, cleared to KMSP via the filed route, climb via SID except maintain 5,000, expect FL370 one zero minutes after departure, departure frequency 124.350, squawk 0133. When ready for pushback, contact Ramp on 131.000. |
+| 1 | ATC | Clearance | United 598, cleared to KMSP via the filed route, climb via SID except maintain 5,000, expect FL370 one zero minutes after departure, departure frequency 124.300, squawk 0133. When ready for pushback, contact Ramp on 131.000. |
 | 2 | Pilot | Clearance | Cleared to KMSP, climb via SID except maintain 5,000, squawk 0133, United 598. |
 | 3 | Pilot | Ramp | Ramp, United 598, ready to push. |
 | 4 | ATC | Ramp | United 598, pushback approved, advise ready to taxi. |
@@ -31,7 +31,7 @@ pilot lines are not decoration: remove one and the flow stops there, on both pla
 | 7 | ATC | Ramp | United 598, start approved. |
 | 8 | Pilot | Ramp | Start approved, United 598. |
 | 9 | Pilot | Ground | Ground, United 598, request taxi. |
-| 10 | ATC | Ramp | United 598, contact Ground on 121.900. |
+| 10 | ATC | Ramp | United 598, contact Ground on 121.800. |
 | 11 | ATC | Ground | United 598, taxi to runway 27 via A, E. Contact Tower when ready. |
 | 12 | Pilot | Ground | Taxi to runway 27 via A, E, United 598. |
 | 13 | Pilot | Ground | Ground, United 598, request taxi. |
@@ -42,10 +42,10 @@ pilot lines are not decoration: remove one and the flow stops there, on both pla
 | 18 | Pilot | Tower | Runway 27, line up and wait, United 598. |
 | 19 | ATC | Tower | United 598, wind 270 at 8, runway 27, cleared for takeoff, fly heading 007, climb and maintain 6,000. |
 | 20 | Pilot | Tower | Runway 27, cleared for takeoff, heading 007, climb and maintain 6,000, United 598. |
-| 21 | ATC | Tower | United 598, contact Departure on 124.350. |
+| 21 | ATC | Tower | United 598, contact Departure on 124.300. |
 | 22 | ATC | Departure | United 598, radar contact, climb and maintain FL180, resume own navigation, direct TBONE. |
 | 23 | Pilot | Departure | Climb and maintain FL180, resume own navigation, direct TBONE, United 598. |
-| 24 | ATC | Departure | United 598, contact Center on 133.400. |
+| 24 | ATC | Departure | United 598, contact Center on 132.450. |
 | 25 | ATC | Center | United 598, radar contact, climb and maintain FL370. |
 | 26 | Pilot | Center | Climb and maintain FL370, United 598. |
 | 27 | ATC | Center | United 598, descend via the KKILR arrival, maintain 11,000 crossing KKILR. |
@@ -56,7 +56,7 @@ pilot lines are not decoration: remove one and the flow stops there, on both pla
 | 32 | ATC | Approach | United 598, contact Tower on 118.300. |
 | 33 | Pilot | Tower | Contacting Tower on 118.300, United 598. |
 | 34 | ATC | Tower | United 598, wind 270 at 8, runway 30L, cleared to land. |
-| 35 | ATC | Tower | United 598, exit the runway when able, contact Ground on 121.900 once on the taxiway. |
+| 35 | ATC | Tower | United 598, exit the runway when able, contact Ground on 121.800 once on the taxiway. |
 | 36 | Pilot | Tower | Exiting the runway, contact Ground, United 598. |
 | 37 | ATC | Ground | United 598, taxi to parking via A. |
 | 38 | Pilot | Ground | Taxi to parking via A, United 598. |
