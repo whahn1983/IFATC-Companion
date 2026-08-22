@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Only strings the *platform* shows outside the app's own Compose UI live here:
+  the launcher label, notification-channel names, permission rationale, and
+  accessibility labels for icon-only controls.
+
+  Every piece of ported prose — phraseology, screen copy, disclaimers, attribution —
+  lives in Kotlin in :core (core.ui.UiStrings and the phraseology engine) instead.
+  Two reasons: the pure Compose screens must type-check without the Android SDK
+  (see settings-uicheck.gradle.kts), and, more importantly, keeping the ported
+  wording in one reviewable Kotlin file lets tests assert the exact disclaimer and
+  attribution text — which is how this port proves parity rather than claiming it.
+  The app ships a single locale (en), matching iOS, so nothing is lost.
+-->
+<resources>
+    <string name="app_name">IFATC Companion</string>
+
+    <string name="notification_channel_active_flight">Live Flight Update</string>
+    <string name="notification_channel_active_flight_description">Shows your current flight phase, controller and telemetry while a flight is running, with Read Back and Check In actions.</string>
+
+    <string name="notification_connecting">Connecting to Infinite Flight…</string>
+    <string name="notification_next_facility">Next: %1$s</string>
+    <string name="notification_standby">Standing by for staffed ATC</string>
+    <string name="notification_updated_at">Updated %1$s</string>
+
+    <string name="permission_notifications_title">Show your live flight?</string>
+    <string name="permission_microphone_title">Use the microphone?</string>
+    <string name="permission_continue">Continue</string>
+    <string name="permission_not_now">Not now</string>
+
+    <string name="permission_notifications_rationale">IFATC Companion shows your live flight — phase, controller, altitude and heading — on a notification you can act on without opening the app. Allow notifications to use it.</string>
+    <string name="permission_microphone_rationale">Push-to-talk uses the microphone so you can speak your read-backs and requests instead of tapping. Recognition runs on your device; nothing is recorded or uploaded.</string>
+    <string name="permission_local_network_rationale">IFATC Companion connects to Infinite Flight on your own Wi-Fi network to read your flight and exchange ATC messages. No data leaves your network.</string>
+
+</resources>

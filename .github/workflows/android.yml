@@ -1,0 +1,197 @@
+name: Android
+
+# This repository holds both the iOS app and the Android port. Everything Android lives
+# under Android/, so the path filter below keeps this workflow off iOS work entirely: an
+# iOS-only commit or pull request never queues these jobs, burns no minutes, and shows no
+# check at all.
+#
+# Deliberately NOT a required status check. Path-filtered workflows and required checks
+# interact badly — a pull request that touches no Android file never reports the check,
+# and GitHub reads "never reported" as "not satisfied", which makes the pull request
+# permanently unmergeable. Leaving it advisory avoids that trap without needing the usual
+# workaround (a second always-green workflow sharing the job name), which would itself put
+# a job on every iOS pull request.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Android/**'
+      - '.github/workflows/android.yml'
+  pull_request:
+    paths:
+      - 'Android/**'
+      # Included so a change to this file is exercised by the file itself.
+      - '.github/workflows/android.yml'
+  workflow_dispatch:
+
+# Read-only. Nothing here publishes, comments, or writes to the repository.
+permissions:
+  contents: read
+
+# A new push to the same branch cancels the run it supersedes, so a burst of commits costs
+# one build rather than one per commit.
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Matches the sourceCompatibility / jvmTarget every module is configured with.
+  JAVA_VERSION: '17'
+
+jobs:
+  # The engine. Pure Kotlin/JVM with no android.* or androidx.* anywhere, which is what
+  # lets it build and test with nothing but a JDK — no SDK, no emulator. This is the job
+  # that has real coverage behind it, so it is also the fastest signal.
+  engine:
+    name: Core engine tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Run :core tests
+        working-directory: Android
+        run: ./gradlew -c settings-core.gradle.kts :core:test --no-daemon
+
+      # These figures are quoted in the docs as evidence of what is verified, and they had
+      # already drifted twice — a doc claiming 819 tests while 872 ran is a claim nobody
+      # can act on. Cheap to check, and the failure names the number to write.
+      - name: Documented test counts match the run
+        working-directory: Android
+        run: |
+          python3 - <<'EOF'
+          import glob, pathlib, re, sys, xml.etree.ElementTree as ET
+
+          tests = classes = 0
+          for path in glob.glob("core/build/test-results/test/*.xml"):
+              root = ET.parse(path).getroot()
+              classes += 1
+              tests += int(root.get("tests"))
+          print(f"ran {tests} tests across {classes} classes")
+
+          bad = []
+          for doc in ("../Docs/ANDROID_PARITY_MATRIX.md", "../Docs/ANDROID_REMAINING_WORK.md"):
+              text = pathlib.Path(doc).read_text()
+              for claimed_tests, claimed_classes in re.findall(
+                  r"\*\*(\d+) tests(?:,| across| /) (\d+) classes", text
+              ):
+                  if (int(claimed_tests), int(claimed_classes)) != (tests, classes):
+                      bad.append(f"{doc}: claims {claimed_tests} tests / {claimed_classes} classes")
+
+          if bad:
+              print(f"\nStale counts — should be {tests} tests / {classes} classes:")
+              print("\n".join("  " + line for line in bad))
+              sys.exit(1)
+          print("documented counts agree")
+          EOF
+
+      # Only on failure: the HTML report says which assertion went, which the log does not.
+      - name: Upload test report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-test-report
+          path: Android/core/build/reports/tests/
+          retention-days: 7
+
+  # The Compose screens, type-checked against JetBrains Compose desktop artifacts, which
+  # publish the same androidx.compose.* packages. This catches screen-level Kotlin errors
+  # without an Android SDK, and it is the check that ran locally throughout the port.
+  screens:
+    name: Compose screens type-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Type-check the screens
+        working-directory: Android
+        run: ./gradlew -c settings-uicheck.gradle.kts :uicheck:compileKotlin --no-daemon
+
+  # The one that matters most. The :app module was written in an environment with no
+  # Android SDK and no reachable Google Maven, so it has never been compiled — every
+  # Android-API line in it is unverified, and two rounds of static review found 23 defects
+  # that a compiler would have caught in seconds. This job is what finally settles that.
+  #
+  # It was written expecting to fail on its first run, and did not: :app compiled clean the
+  # first time it was ever compiled anywhere. What it did catch was lint — which had
+  # abortOnError = false and so reported "14 errors, 63 warnings" while exiting 0. Lint now
+  # gates, which is why the Android Lint step below is worth its 90 seconds.
+  app:
+    name: Android app build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      # The runner image ships an SDK, but not necessarily the compileSdk this project
+      # pins. This installs cmdline-tools and accepts licences so the platform can be
+      # fetched, rather than failing on whatever the image happened to include.
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Assemble debug
+        working-directory: Android
+        # No --stacktrace: every failure this job has ever caught was a Kotlin
+        # compile error, and 160 lines of Gradle internals after it push the
+        # "e: file://…" lines out of any readable tail of the log.
+        run: ./gradlew :app:assembleDebug --no-daemon
+
+      # Lint is a separate step so a compile failure is not mistaken for a lint failure,
+      # and so lint still runs when the build succeeds.
+      - name: Android Lint
+        working-directory: Android
+        run: ./gradlew :app:lintDebug --no-daemon
+
+      # The release build is where R8 runs, and R8 is the difference between "compiles" and
+      # "works in production": it strips unreachable code, and a reflective or generated
+      # entry point it cannot see gets removed. This app persists settings, saved flights,
+      # phraseology profiles and the airport-surface cache through kotlinx.serialization,
+      # which is exactly the shape R8 tends to break — so a debug-only pipeline would have
+      # shipped that unverified. Unsigned: no signing material is committed, and an
+      # unsigned bundle exercises minification just as well as a signed one.
+      - name: Bundle release (exercises R8 and resource shrinking)
+        working-directory: Android
+        run: ./gradlew :app:bundleRelease --no-daemon
+
+      # The route map's coastlines are a Java resource inside :core, not an Android res/
+      # entry, so nothing in the build graph declares them and no compiler error appears if
+      # they stop being packaged. Losing them would look like a rendering bug and would
+      # only be visible on a device. This asserts the release bundle actually carries them.
+      - name: Bundled map data is in the release bundle
+        working-directory: Android
+        run: |
+          bundle=$(find app/build/outputs/bundle -name '*.aab' | head -1)
+          test -n "$bundle" || { echo "no bundle produced"; exit 1; }
+          unzip -l "$bundle" | grep -q 'coastlines\.json' || {
+            echo "coastlines.json is missing from $bundle — the route map would draw no coastlines"
+            unzip -l "$bundle" | grep -i json || true
+            exit 1
+          }
+          echo "coastlines.json present in $bundle"
+
+      - name: Upload lint report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-lint-report
+          path: Android/app/build/reports/lint-results-*.html
+          retention-days: 7
+          if-no-files-found: ignore

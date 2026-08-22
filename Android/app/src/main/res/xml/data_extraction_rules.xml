@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12+ (dataExtractionRules). Same allow-list semantics and the same intent
+     as backup_rules.xml: user preferences, saved flights and phraseology profiles
+     transfer; the cached Play entitlement and every cache never do, because nothing
+     outside these <include> entries is eligible in the first place. -->
+<data-extraction-rules>
+    <cloud-backup>
+        <include domain="file" path="datastore/ifatc_settings.preferences_pb" />
+        <include domain="file" path="ifatc/saved_flights" />
+        <include domain="file" path="ifatc/phraseology_profiles" />
+    </cloud-backup>
+    <device-transfer>
+        <include domain="file" path="datastore/ifatc_settings.preferences_pb" />
+        <include domain="file" path="ifatc/saved_flights" />
+        <include domain="file" path="ifatc/phraseology_profiles" />
+    </device-transfer>
+</data-extraction-rules>

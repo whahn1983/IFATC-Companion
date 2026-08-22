@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Only the colours the XML themes themselves reference live here — the window
+  background, the night window background and the splash backdrop. Everything else
+  the app draws is Compose, and its palette is ui/theme/Color.kt, which carries the
+  same iOS provenance. A full copy of the palette used to be duplicated here and was
+  entirely unreferenced: two brand palettes that could silently drift apart, with the
+  XML one wired to nothing. Add a colour here only when XML needs it.
+-->
+<resources>
+    <!-- Surfaces — iOS WidgetBackground light/dark. -->
+    <color name="ifatc_surface_light">#FFF2F5F6</color>
+    <color name="ifatc_surface_dark">#FF161A21</color>
+
+    <!-- Splash backdrop — deepest blue of the app icon's radar gradient. -->
+    <color name="ifatc_radar_deep">#FF0A1A38</color>
+</resources>

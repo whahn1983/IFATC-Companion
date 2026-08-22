@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Everything the app fetches from the internet (aviation weather, D-ATIS,
+         precipitation imagery, Overpass) is HTTPS with the platform trust store.
+         User-added CAs are not trusted, and cleartext is refused. -->
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <!-- The link to Infinite Flight Connect is a raw TCP socket to a device on the
+         user's own Wi-Fi (RFC 1918 / link-local). Raw sockets are outside this
+         policy, but these entries are declared so any diagnostic HTTP probe against
+         the simulator host is permitted while the public internet stays HTTPS-only. -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
+    </domain-config>
+</network-security-config>

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 11 and below (fullBackupContent).
+
+     This is an ALLOW-LIST. Once any <include> is present the platform backs up
+     nothing else, so the cached Play entitlement, the surface and weather caches,
+     the diagnostics log and all shared preferences are already excluded by virtue
+     of not being listed. Matching <exclude> entries used to appear here and were
+     dead configuration — lint rejected them as "not in an included path" — and
+     worse, they implied a protection that came from somewhere else entirely.
+
+     Settings, saved flights and custom phraseology profiles are worth restoring.
+     The cached entitlement deliberately is not: it is re-queried from Play Billing
+     on launch and must never travel between accounts or devices. -->
+<full-backup-content>
+    <include domain="file" path="datastore/ifatc_settings.preferences_pb" />
+    <include domain="file" path="ifatc/saved_flights" />
+    <include domain="file" path="ifatc/phraseology_profiles" />
+</full-backup-content>
